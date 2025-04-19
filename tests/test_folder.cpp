@@ -1380,6 +1380,76 @@ int test_folder_create_path_trailing_slash() {
   return 0;
 }
 
+int test_folder_create_path_idempotent() {
+  std::cout << "  Running test_folder_create_path_idempotent..." << std::endl;
+  cleanup_test_dir(get_test_path("test_folder_path_idempotent_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_folder_path_idempotent_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id1 = nullptr;
+  err = vxcore_folder_create_path(ctx, notebook_id, "a/b/c", &folder_id1);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id1);
+
+  char *folder_id2 = nullptr;
+  err = vxcore_folder_create_path(ctx, notebook_id, "a/b/c", &folder_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id2);
+
+  ASSERT_EQ(std::string(folder_id1), std::string(folder_id2));
+
+  vxcore_string_free(folder_id1);
+  vxcore_string_free(folder_id2);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_folder_path_idempotent_nb"));
+  std::cout << "  PASS test_folder_create_path_idempotent" << std::endl;
+  return 0;
+}
+
+int test_folder_create_path_id_correct() {
+  std::cout << "  Running test_folder_create_path_id_correct..." << std::endl;
+  cleanup_test_dir(get_test_path("test_folder_path_id_correct_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_folder_path_id_correct_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create_path(ctx, notebook_id, "x/y/z", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id);
+
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "x/y/z", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(config_json);
+
+  auto j = nlohmann::json::parse(config_json);
+  std::string config_id = j.value("id", std::string());
+  ASSERT_EQ(std::string(folder_id), config_id);
+
+  vxcore_string_free(config_json);
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_folder_path_id_correct_nb"));
+  std::cout << "  PASS test_folder_create_path_id_correct" << std::endl;
+  return 0;
+}
+
 // ============================================================================
 // MetadataStore Sync Integration Tests
 // ============================================================================
@@ -4974,6 +5044,8 @@ int main() {
   RUN_TEST(test_folder_create_path_partial_exists);
   RUN_TEST(test_folder_create_path_empty);
   RUN_TEST(test_folder_create_path_trailing_slash);
+  RUN_TEST(test_folder_create_path_idempotent);
+  RUN_TEST(test_folder_create_path_id_correct);
 
   // MetadataStore sync integration tests
   RUN_TEST(test_metadata_store_sync_on_reopen);

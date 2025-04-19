@@ -44,12 +44,27 @@ VxCoreError FolderManager::CreateFolderPath(const std::string &folder_path,
       return VXCORE_ERR_INVALID_PARAM;
     }
 
-    VxCoreError err = CreateFolder(current_parent, folder_name, folder_id);
-    if (err != VXCORE_OK && err != VXCORE_ERR_ALREADY_EXISTS) {
+    std::string component_path = ConcatenatePaths(current_parent, folder_name);
+
+    // Check if this component already exists.
+    std::string config_json;
+    VxCoreError err = GetFolderConfig(component_path, config_json);
+    if (err == VXCORE_OK) {
+      // Folder exists — extract its ID from config JSON.
+      auto j = nlohmann::json::parse(config_json);
+      folder_id = j.value("id", std::string());
+    } else if (err == VXCORE_ERR_NOT_FOUND) {
+      // Folder does not exist — create it.
+      err = CreateFolder(current_parent, folder_name, folder_id);
+      if (err != VXCORE_OK) {
+        return err;
+      }
+    } else {
+      // Unexpected error — propagate.
       return err;
     }
 
-    current_parent = ConcatenatePaths(current_parent, folder_name);
+    current_parent = component_path;
   }
 
   out_folder_id = folder_id;
