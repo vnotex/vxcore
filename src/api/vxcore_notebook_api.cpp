@@ -10,6 +10,7 @@
 #include "core/metadata_store.h"
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
+#include "utils/logger.h"
 #include "vxcore/vxcore.h"
 
 VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const char *path,
@@ -434,9 +435,13 @@ VXCORE_API VxCoreError vxcore_notebook_history_get_resolved(VxCoreContextHandle 
     }
 
     auto history = vxcore::GetHistory(store);
+    VXCORE_LOG_INFO("history_get_resolved: %zu entries from store for notebook %s",
+                    history.size(), notebook_id);
     nlohmann::json arr = nlohmann::json::array();
     for (const auto &entry : history) {
       auto path = store->GetNodePathById(entry.file_id);
+      VXCORE_LOG_INFO("history_get_resolved: file_id=%s -> path=%s", entry.file_id.c_str(),
+                      path.empty() ? "DROPPED" : path.c_str());
       if (path.empty()) {
         continue;
       }

@@ -553,6 +553,69 @@ int test_history_get_resolved_empty() {
   return 0;
 }
 
+int test_history_unindexed_file_records_history() {
+  std::cout << "  Running test_history_unindexed_file_records_history..." << std::endl;
+  cleanup_test_dir(get_test_path("test_history_unindexed"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a RAW notebook (not bundled)
+  char *notebook_id = nullptr;
+  std::string nb_root = get_test_path("test_history_unindexed");
+  std::filesystem::create_directories(nb_root);
+  err = vxcore_notebook_create(ctx, nb_root.c_str(),
+                               "{\"name\":\"Unindexed Test\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create files on disk WITHOUT vxcore_file_create — these are unindexed
+  write_file(nb_root + "/unindexed-note.md", "# Test Note\n");
+  write_file(nb_root + "/another-note.md", "# Another Note\n");
+  std::filesystem::create_directories(nb_root + "/subfolder");
+  write_file(nb_root + "/subfolder/deep-note.md", "# Sub Note\n");
+
+  // Open root-level buffers — this should trigger TrySyncAndGetFile fallback
+  char *buffer_id1 = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "unindexed-note.md", &buffer_id1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id2 = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "another-note.md", &buffer_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open subfolder buffer — sync should discover subfolder contents
+  char *buffer_id3 = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "subfolder/deep-note.md", &buffer_id3);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Check history — root-level files should have entries via TrySyncAndGetFile
+  char *history_json = nullptr;
+  err = vxcore_notebook_history_get(ctx, notebook_id, &history_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto arr = nlohmann::json::parse(history_json);
+  ASSERT_TRUE(arr.is_array());
+  // At least the 2 root-level files should be recorded; subfolder file may also be
+  ASSERT_TRUE(arr.size() >= static_cast<size_t>(2));
+  // Each entry should have fileId and openedUtc
+  for (const auto &entry : arr) {
+    ASSERT_TRUE(entry.contains("fileId"));
+    ASSERT_FALSE(entry["fileId"].get<std::string>().empty());
+    ASSERT_TRUE(entry["openedUtc"].get<int64_t>() > 0);
+  }
+
+  vxcore_string_free(history_json);
+  vxcore_string_free(buffer_id3);
+  vxcore_string_free(buffer_id2);
+  vxcore_string_free(buffer_id1);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_history_unindexed"));
+  std::cout << "  ✓ test_history_unindexed_file_records_history passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running history tests..." << std::endl;
 
@@ -570,6 +633,7 @@ int main() {
   RUN_TEST(test_history_get_resolved_basic);
   RUN_TEST(test_history_get_resolved_filters_deleted);
   RUN_TEST(test_history_get_resolved_empty);
+  RUN_TEST(test_history_unindexed_file_records_history);
 
   std::cout << "All history tests passed!" << std::endl;
   return 0;

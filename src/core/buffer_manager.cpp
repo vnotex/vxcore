@@ -5,6 +5,7 @@
 
 #include "buffer_provider.h"
 #include "config_manager.h"
+#include "folder_manager.h"
 #include "history_manager.h"
 #include "metadata_store.h"
 #include "notebook.h"
@@ -14,6 +15,29 @@
 #include "utils/utils.h"
 
 namespace vxcore {
+
+static std::optional<StoreFileRecord> TrySyncAndGetFile(Notebook *notebook, MetadataStore *store,
+                                                        const std::string &file_path) {
+  auto *folder_mgr = notebook->GetFolderManager();
+  if (!folder_mgr) {
+    VXCORE_LOG_DEBUG("TrySyncAndGetFile: FolderManager is null");
+    return std::nullopt;
+  }
+  auto [parent, name] = SplitPath(file_path);
+  VXCORE_LOG_DEBUG("TrySyncAndGetFile: syncing parent folder '%s' for file '%s'", parent.c_str(),
+                   file_path.c_str());
+  std::string config_json;
+  VxCoreError err = folder_mgr->GetFolderConfig(parent, config_json);
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_DEBUG("TrySyncAndGetFile: GetFolderConfig('%s') failed: %d", parent.c_str(), err);
+    return std::nullopt;
+  }
+  auto result = store->GetFileByPath(file_path);
+  if (result.has_value()) {
+    VXCORE_LOG_INFO("TrySyncAndGetFile: file now found after sync: id=%s", result->id.c_str());
+  }
+  return result;
+}
 
 BufferManager::BufferManager(ConfigManager *config_manager, NotebookManager *notebook_manager)
     : config_manager_(config_manager), notebook_manager_(notebook_manager) {
@@ -201,6 +225,9 @@ std::string BufferManager::OpenBuffer(const std::string &notebook_id,
     }
   }
 
+  VXCORE_LOG_INFO("OpenBuffer: notebook_id=%s, effective_path=%s",
+                  effective_notebook_id.c_str(), effective_path.c_str());
+
   // Check if buffer already exists (de-duplication)
   std::string existing_id = FindBufferByPath(effective_notebook_id, effective_path);
   if (!existing_id.empty()) {
@@ -210,9 +237,19 @@ std::string BufferManager::OpenBuffer(const std::string &notebook_id,
         auto *store = nb->GetMetadataStore();
         if (store) {
           auto file_record = store->GetFileByPath(effective_path);
+          VXCORE_LOG_INFO("OpenBuffer[dedup]: GetFileByPath(%s) -> %s", effective_path.c_str(),
+                          file_record.has_value() ? file_record->id.c_str() : "NOT_FOUND");
+          if (!file_record.has_value()) {
+            file_record = TrySyncAndGetFile(nb, store, effective_path);
+          }
           if (file_record.has_value()) {
             RecordFileOpen(store, file_record->id);
+            VXCORE_LOG_INFO("OpenBuffer[dedup]: RecordFileOpen called for file_id=%s",
+                            file_record->id.c_str());
           }
+        } else {
+          VXCORE_LOG_WARN("OpenBuffer[dedup]: MetadataStore is null for notebook %s",
+                          effective_notebook_id.c_str());
         }
       }
     }
@@ -250,9 +287,19 @@ std::string BufferManager::OpenBuffer(const std::string &notebook_id,
     auto *store = notebook->GetMetadataStore();
     if (store) {
       auto file_record = store->GetFileByPath(effective_path);
+      VXCORE_LOG_INFO("OpenBuffer[new]: GetFileByPath(%s) -> %s", effective_path.c_str(),
+                      file_record.has_value() ? file_record->id.c_str() : "NOT_FOUND");
+      if (!file_record.has_value()) {
+        file_record = TrySyncAndGetFile(notebook, store, effective_path);
+      }
       if (file_record.has_value()) {
         RecordFileOpen(store, file_record->id);
+        VXCORE_LOG_INFO("OpenBuffer[new]: RecordFileOpen called for file_id=%s",
+                        file_record->id.c_str());
       }
+    } else {
+      VXCORE_LOG_WARN("OpenBuffer[new]: MetadataStore is null for notebook %s",
+                      effective_notebook_id.c_str());
     }
   }
 
