@@ -412,7 +412,7 @@ VxCoreContext
 |--------|---------|-----|
 | Config location | `<root>/vx_notebook/config.json` | Session config only |
 | Metadata folder | `<root>/vx_notebook/` | `<local_data>/notebooks/<id>/` |
-| Database location | `<metadata_folder>/metadata.db` | `<metadata_folder>/metadata.db` |
+| Database location | `<local_data_folder>/notebooks/<id>/metadata.db` (see notebook.cpp:167-169) | `<local_data_folder>/notebooks/<id>/metadata.db` (see notebook.cpp:167-169) |
 | Portable | Yes (self-contained) | No (external metadata) |
 
 ### Path Handling
