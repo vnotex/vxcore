@@ -1,4 +1,7 @@
 #include "vxcore/vxcore.h"
+
+#include "core/context.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -48,21 +51,46 @@ VXCORE_API const char *vxcore_error_message(VxCoreError error) {
 
 VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
                                              VxCoreContextHandle *out_context) {
+  (void)config_json;
   if (!out_context) {
     return VXCORE_ERR_NULL_POINTER;
   }
-  *out_context = nullptr;
-  return VXCORE_ERR_UNSUPPORTED;
+
+  try {
+    auto *ctx = new vxcore::VxCoreContext();
+    ctx->config_manager = std::make_unique<vxcore::ConfigManager>();
+
+    VxCoreError err = ctx->config_manager->loadConfigs();
+    if (err != VXCORE_OK) {
+      delete ctx;
+      return err;
+    }
+
+    *out_context = reinterpret_cast<VxCoreContextHandle>(ctx);
+    return VXCORE_OK;
+  } catch (...) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  }
 }
 
-VXCORE_API void vxcore_context_destroy(VxCoreContextHandle context) { (void)context; }
+VXCORE_API void vxcore_context_destroy(VxCoreContextHandle context) {
+  if (context) {
+    auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+    delete ctx;
+  }
+}
 
 VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context,
                                                      const char **out_message) {
   if (!context || !out_message) {
     return VXCORE_ERR_NULL_POINTER;
   }
-  *out_message = "No error";
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (ctx->last_error.empty()) {
+    *out_message = "No error";
+  } else {
+    *out_message = ctx->last_error.c_str();
+  }
   return VXCORE_OK;
 }
 

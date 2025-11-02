@@ -1,5 +1,2 @@
-# Third-party dependencies will be added here
-# Examples:
-# - SQLite
-# - Lua 5.4
-# - JSON library (nlohmann/json, rapidjson, etc.)
+add_library(nlohmann_json INTERFACE)
+target_include_directories(nlohmann_json INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})

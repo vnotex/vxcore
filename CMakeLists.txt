@@ -43,6 +43,11 @@ install(DIRECTORY include/
     FILES_MATCHING PATTERN "*.h"
 )
 
+install(DIRECTORY data/
+    DESTINATION ${CMAKE_INSTALL_BINDIR}/data
+    FILES_MATCHING PATTERN "*.json"
+)
+
 include(CMakePackageConfigHelpers)
 
 write_basic_package_version_file(

@@ -9,6 +9,11 @@ set(VXCORE_SOURCES
     api/vxcore_events.cpp
     api/handle_manager.cpp
     api/error_handler.cpp
+    core/context.cpp
+    core/config_manager.cpp
+    core/vxcore_config.cpp
+    core/vxcore_session_config.cpp
+    platform/path_provider.cpp
 )
 
 if(VXCORE_BUILD_SHARED)
@@ -25,9 +30,13 @@ target_include_directories(vxcore
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/src
 )
 
+target_link_libraries(vxcore PRIVATE nlohmann_json)
+
 if(WIN32)
+    target_link_libraries(vxcore PRIVATE shell32)
     target_compile_definitions(vxcore PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
