@@ -1,5 +1,13 @@
 add_executable(vxcore-cli
     main.cpp
+    args.cpp
+    json_helpers.cpp
+    notebook_cmd.cpp
+)
+
+target_include_directories(vxcore-cli
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party
 )
 
 target_link_libraries(vxcore-cli

@@ -1,5 +1,7 @@
 add_executable(vxcore-tests
-    unit/test_main.cpp
+    test_main.cpp
+    test_core.cpp
+    test_notebook.cpp
 )
 
 target_link_libraries(vxcore-tests
@@ -13,3 +15,4 @@ target_include_directories(vxcore-tests
 )
 
 add_test(NAME vxcore-tests COMMAND vxcore-tests)
+

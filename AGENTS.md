@@ -17,6 +17,7 @@
 - **Platform**: Use `VXCORE_API` macro for exports; Windows DLL-safe; no Qt dependencies
 - **JSON**: Communication boundary uses JSON over C ABI for cross-platform stability
 - **Namespaces**: C++ code in `namespace vxcore`; close with `// namespace vxcore`
+- **File Format**: Use Unix line ending
 
 ## Architecture Notes
 - C ABI for cross-platform embedding (desktop/iOS/Android)

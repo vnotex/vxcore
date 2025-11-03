@@ -18,6 +18,9 @@ public:
 
   const VxCoreConfig &getConfig() const { return config_; }
   const VxCoreSessionConfig &getSessionConfig() const { return session_config_; }
+  VxCoreSessionConfig &getSessionConfig() { return session_config_; }
+
+  std::string getLocalDataPath() const { return local_data_path_.string(); }
 
   VxCoreError saveSessionConfig();
 

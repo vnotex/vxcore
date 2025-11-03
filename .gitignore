@@ -43,3 +43,6 @@
 build
 
 compile_commands.json
+
+# Test artifacts
+test_notebook

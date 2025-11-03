@@ -1,26 +1,28 @@
+#include "args.h"
+#include "notebook_cmd.h"
 #include "vxcore/vxcore.h"
 #include <iostream>
 
 int main(int argc, char *argv[]) {
-  (void)argc;
-  (void)argv;
+  vxcore_cli::ParsedArgs args = vxcore_cli::ArgsParser::parse(argc, argv);
 
-  std::cout << "VxCore CLI v" << vxcore_get_version_string() << std::endl;
-
-  VxCoreVersion version = vxcore_get_version();
-  std::cout << "Version: " << version.major << "." << version.minor << "." << version.patch
-            << std::endl;
-
-  std::cout << "Error message test: " << vxcore_error_message(VXCORE_OK) << std::endl;
-
-  VxCoreContextHandle ctx = nullptr;
-  VxCoreError err = vxcore_context_create(nullptr, &ctx);
-  if (err == VXCORE_OK) {
-    std::cout << "Context created successfully" << std::endl;
-    vxcore_context_destroy(ctx);
-  } else {
-    std::cout << "Failed to create context: " << vxcore_error_message(err) << std::endl;
+  if (args.command.empty() || args.command == "help" || args.options.count("help")) {
+    vxcore_cli::ArgsParser::showHelp();
+    return 0;
   }
 
-  return 0;
+  if (args.command == "version") {
+    VxCoreVersion version = vxcore_get_version();
+    std::cout << "VxCore v" << version.major << "." << version.minor << "." << version.patch
+              << std::endl;
+    return 0;
+  }
+
+  if (args.command == "notebook") {
+    return vxcore_cli::NotebookCommand::execute(args);
+  }
+
+  std::cerr << "Unknown command: " << args.command << std::endl;
+  vxcore_cli::ArgsParser::showHelp();
+  return 1;
 }
