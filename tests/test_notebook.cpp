@@ -4,7 +4,7 @@
 
 #include <string>
 
-TEST(test_notebook_create_bundled) {
+int test_notebook_create_bundled() {
   cleanup_test_dir("test_nb_bundled");
 
   VxCoreContextHandle ctx = nullptr;
@@ -17,14 +17,15 @@ TEST(test_notebook_create_bundled) {
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
 
-  ASSERT(std::filesystem::exists("test_nb_bundled/vx_notebook/config.json"));
+  ASSERT(path_exists("test_nb_bundled/vx_notebook/config.json"));
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir("test_nb_bundled");
+  return 0;
 }
 
-TEST(test_notebook_create_raw) {
+int test_notebook_create_raw() {
   cleanup_test_dir("test_nb_raw");
 
   VxCoreContextHandle ctx = nullptr;
@@ -37,14 +38,15 @@ TEST(test_notebook_create_raw) {
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
 
-  ASSERT(!std::filesystem::exists("test_nb_raw/vx_notebook"));
+  ASSERT(!path_exists("test_nb_raw/vx_notebook"));
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir("test_nb_raw");
+  return 0;
 }
 
-TEST(test_notebook_open_close) {
+int test_notebook_open_close() {
   cleanup_test_dir("test_nb_open");
 
   VxCoreContextHandle ctx = nullptr;
@@ -70,9 +72,10 @@ TEST(test_notebook_open_close) {
   vxcore_string_free(notebook_id2);
   vxcore_context_destroy(ctx);
   cleanup_test_dir("test_nb_open");
+  return 0;
 }
 
-TEST(test_notebook_get_properties) {
+int test_notebook_get_properties() {
   cleanup_test_dir("test_nb_props");
 
   VxCoreContextHandle ctx = nullptr;
@@ -98,9 +101,10 @@ TEST(test_notebook_get_properties) {
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir("test_nb_props");
+  return 0;
 }
 
-TEST(test_notebook_set_properties) {
+int test_notebook_set_properties() {
   cleanup_test_dir("test_nb_set_props");
 
   VxCoreContextHandle ctx = nullptr;
@@ -128,9 +132,10 @@ TEST(test_notebook_set_properties) {
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir("test_nb_set_props");
+  return 0;
 }
 
-TEST(test_notebook_list) {
+int test_notebook_list() {
   cleanup_test_dir("test_nb_list1");
   cleanup_test_dir("test_nb_list2");
 
@@ -163,9 +168,10 @@ TEST(test_notebook_list) {
   vxcore_context_destroy(ctx);
   cleanup_test_dir("test_nb_list1");
   cleanup_test_dir("test_nb_list2");
+  return 0;
 }
 
-TEST(test_notebook_persistence) {
+int test_notebook_persistence() {
   cleanup_test_dir("test_nb_persist");
 
   VxCoreContextHandle ctx1 = nullptr;
@@ -203,4 +209,5 @@ TEST(test_notebook_persistence) {
   vxcore_string_free(reopened_id);
   vxcore_context_destroy(ctx2);
   cleanup_test_dir("test_nb_persist");
+  return 0;
 }

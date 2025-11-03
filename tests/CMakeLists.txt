@@ -1,18 +1,18 @@
-add_executable(vxcore-tests
-    test_main.cpp
-    test_core.cpp
-    test_notebook.cpp
-)
+function(add_vxcore_test test_name)
+    add_executable(${test_name} ${test_name}.cpp)
+    target_link_libraries(${test_name} PRIVATE vxcore)
+    target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+endfunction()
 
-target_link_libraries(vxcore-tests
-    PRIVATE
-        vxcore
-)
-
-target_include_directories(vxcore-tests
-    PRIVATE
-        ${CMAKE_SOURCE_DIR}/src
-)
-
-add_test(NAME vxcore-tests COMMAND vxcore-tests)
+add_vxcore_test(test_version)
+add_vxcore_test(test_error_message)
+add_vxcore_test(test_context_create_destroy)
+add_vxcore_test(test_notebook_create_bundled)
+add_vxcore_test(test_notebook_create_raw)
+add_vxcore_test(test_notebook_open_close)
+add_vxcore_test(test_notebook_get_properties)
+add_vxcore_test(test_notebook_set_properties)
+add_vxcore_test(test_notebook_list)
+add_vxcore_test(test_notebook_persistence)
 

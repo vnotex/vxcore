@@ -3,8 +3,9 @@
 ## Build Commands
 - **Configure**: `cmake -B build -DVXCORE_BUILD_TESTS=ON`
 - **Build**: `cmake --build build`
-- **Run all tests**: `ctest --test-dir build` or `build/bin/vxcore-tests`
-- **Run single test**: CTest doesn't support filtering; run `build/bin/vxcore-tests` directly
+- **Run all tests**: `ctest --test-dir build -C Debug` (Windows) or `ctest --test-dir build` (Unix)
+- **Run single test**: `ctest --test-dir build -C Debug -R test_name`
+- **Run test category**: `ctest --test-dir build -C Debug -R notebook` (runs all notebook tests)
 
 ## Code Style
 - **Language**: C++17 with C ABI for public API
