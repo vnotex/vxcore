@@ -29,6 +29,16 @@
 #define ASSERT_NULL(ptr) ASSERT((ptr) == nullptr)
 #define ASSERT_NOT_NULL(ptr) ASSERT((ptr) != nullptr)
 
+#define RUN_TEST(test_func)                                                                        \
+  do {                                                                                             \
+    int result = test_func();                                                                      \
+    if (result != 0) {                                                                             \
+      std::cerr << "✗ Test " << #test_func << " failed at " << __FILE__ << ":" << __LINE__       \
+                << std::endl;                                                                      \
+      return result;                                                                               \
+    }                                                                                              \
+  } while (0)
+
 inline bool path_exists(const std::string &path) {
 #ifdef _WIN32
   return PathFileExistsA(path.c_str());

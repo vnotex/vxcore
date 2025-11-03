@@ -6,6 +6,8 @@
 #include "vxcore_session_config.h"
 
 #include <filesystem>
+#include <string>
+
 #include <nlohmann/json.hpp>
 
 namespace vxcore {

@@ -36,17 +36,11 @@ int test_context_create_destroy() {
 
 int main() {
   std::cout << "Running core tests..." << std::endl;
-  int result = 0;
-  
-  result |= test_version();
-  result |= test_error_message();
-  result |= test_context_create_destroy();
-  
-  if (result == 0) {
-    std::cout << "✓ All core tests passed" << std::endl;
-  } else {
-    std::cerr << "✗ Some core tests failed" << std::endl;
-  }
-  
-  return result;
+
+  RUN_TEST(test_version);
+  RUN_TEST(test_error_message);
+  RUN_TEST(test_context_create_destroy);
+
+  std::cout << "✓ All core tests passed" << std::endl;
+  return 0;
 }

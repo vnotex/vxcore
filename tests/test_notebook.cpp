@@ -229,21 +229,15 @@ int test_notebook_persistence() {
 
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
-  int result = 0;
-  
-  result |= test_notebook_create_bundled();
-  result |= test_notebook_create_raw();
-  result |= test_notebook_open_close();
-  result |= test_notebook_get_properties();
-  result |= test_notebook_set_properties();
-  result |= test_notebook_list();
-  result |= test_notebook_persistence();
-  
-  if (result == 0) {
-    std::cout << "✓ All notebook tests passed" << std::endl;
-  } else {
-    std::cerr << "✗ Some notebook tests failed" << std::endl;
-  }
-  
-  return result;
+
+  RUN_TEST(test_notebook_create_bundled);
+  RUN_TEST(test_notebook_create_raw);
+  RUN_TEST(test_notebook_open_close);
+  RUN_TEST(test_notebook_get_properties);
+  RUN_TEST(test_notebook_set_properties);
+  RUN_TEST(test_notebook_list);
+  RUN_TEST(test_notebook_persistence);
+
+  std::cout << "✓ All notebook tests passed" << std::endl;
+  return 0;
 }
