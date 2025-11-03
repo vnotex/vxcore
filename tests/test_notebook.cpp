@@ -2,9 +2,11 @@
 
 #include "vxcore/vxcore.h"
 
+#include <iostream>
 #include <string>
 
 int test_notebook_create_bundled() {
+  std::cout << "  Running test_notebook_create_bundled..." << std::endl;
   cleanup_test_dir("test_nb_bundled");
 
   VxCoreContextHandle ctx = nullptr;
@@ -22,10 +24,12 @@ int test_notebook_create_bundled() {
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir("test_nb_bundled");
+  std::cout << "  ✓ test_notebook_create_bundled passed" << std::endl;
   return 0;
 }
 
 int test_notebook_create_raw() {
+  std::cout << "  Running test_notebook_create_raw..." << std::endl;
   cleanup_test_dir("test_nb_raw");
 
   VxCoreContextHandle ctx = nullptr;
@@ -43,10 +47,12 @@ int test_notebook_create_raw() {
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir("test_nb_raw");
+  std::cout << "  ✓ test_notebook_create_raw passed" << std::endl;
   return 0;
 }
 
 int test_notebook_open_close() {
+  std::cout << "  Running test_notebook_open_close..." << std::endl;
   cleanup_test_dir("test_nb_open");
 
   VxCoreContextHandle ctx = nullptr;
@@ -72,10 +78,12 @@ int test_notebook_open_close() {
   vxcore_string_free(notebook_id2);
   vxcore_context_destroy(ctx);
   cleanup_test_dir("test_nb_open");
+  std::cout << "  ✓ test_notebook_open_close passed" << std::endl;
   return 0;
 }
 
 int test_notebook_get_properties() {
+  std::cout << "  Running test_notebook_get_properties..." << std::endl;
   cleanup_test_dir("test_nb_props");
 
   VxCoreContextHandle ctx = nullptr;
@@ -101,10 +109,12 @@ int test_notebook_get_properties() {
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir("test_nb_props");
+  std::cout << "  ✓ test_notebook_get_properties passed" << std::endl;
   return 0;
 }
 
 int test_notebook_set_properties() {
+  std::cout << "  Running test_notebook_set_properties..." << std::endl;
   cleanup_test_dir("test_nb_set_props");
 
   VxCoreContextHandle ctx = nullptr;
@@ -132,10 +142,12 @@ int test_notebook_set_properties() {
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir("test_nb_set_props");
+  std::cout << "  ✓ test_notebook_set_properties passed" << std::endl;
   return 0;
 }
 
 int test_notebook_list() {
+  std::cout << "  Running test_notebook_list..." << std::endl;
   cleanup_test_dir("test_nb_list1");
   cleanup_test_dir("test_nb_list2");
 
@@ -168,10 +180,12 @@ int test_notebook_list() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir("test_nb_list1");
   cleanup_test_dir("test_nb_list2");
+  std::cout << "  ✓ test_notebook_list passed" << std::endl;
   return 0;
 }
 
 int test_notebook_persistence() {
+  std::cout << "  Running test_notebook_persistence..." << std::endl;
   cleanup_test_dir("test_nb_persist");
 
   VxCoreContextHandle ctx1 = nullptr;
@@ -209,5 +223,27 @@ int test_notebook_persistence() {
   vxcore_string_free(reopened_id);
   vxcore_context_destroy(ctx2);
   cleanup_test_dir("test_nb_persist");
+  std::cout << "  ✓ test_notebook_persistence passed" << std::endl;
   return 0;
+}
+
+int main() {
+  std::cout << "Running notebook tests..." << std::endl;
+  int result = 0;
+  
+  result |= test_notebook_create_bundled();
+  result |= test_notebook_create_raw();
+  result |= test_notebook_open_close();
+  result |= test_notebook_get_properties();
+  result |= test_notebook_set_properties();
+  result |= test_notebook_list();
+  result |= test_notebook_persistence();
+  
+  if (result == 0) {
+    std::cout << "✓ All notebook tests passed" << std::endl;
+  } else {
+    std::cerr << "✗ Some notebook tests failed" << std::endl;
+  }
+  
+  return result;
 }

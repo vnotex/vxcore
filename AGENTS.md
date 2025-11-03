@@ -4,8 +4,13 @@
 - **Configure**: `cmake -B build -DVXCORE_BUILD_TESTS=ON`
 - **Build**: `cmake --build build`
 - **Run all tests**: `ctest --test-dir build -C Debug` (Windows) or `ctest --test-dir build` (Unix)
-- **Run single test**: `ctest --test-dir build -C Debug -R test_name`
-- **Run test category**: `ctest --test-dir build -C Debug -R notebook` (runs all notebook tests)
+- **Run single module**: `ctest --test-dir build -C Debug -R test_core` or `test_notebook`
+- **Run with verbose**: `ctest --test-dir build -C Debug -V`
+
+## Test Structure
+- Each module (core, notebook) has its own test executable
+- Individual test cases are tracked within each module's main()
+- Add new test cases to existing test_*.cpp files or create new modules as needed
 
 ## Code Style
 - **Language**: C++17 with C ABI for public API
