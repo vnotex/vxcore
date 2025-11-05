@@ -44,6 +44,8 @@ typedef enum {
   VXCORE_ERR_UNKNOWN = 999
 } VxCoreError;
 
+typedef enum { VXCORE_NOTEBOOK_BUNDLED = 0, VXCORE_NOTEBOOK_RAW = 1 } VxCoreNotebookType;
+
 typedef struct VxCoreContext *VxCoreContextHandle;
 typedef struct VxCoreNotebook *VxCoreNotebookHandle;
 typedef struct VxCoreNote *VxCoreNoteHandle;

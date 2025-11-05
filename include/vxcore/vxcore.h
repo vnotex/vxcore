@@ -22,20 +22,26 @@ VXCORE_API void vxcore_context_destroy(VxCoreContextHandle context);
 VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context,
                                                      const char **out_message);
 
+VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const char *path,
+                                              const char *properties_json,
+                                              VxCoreNotebookType type, char **out_notebook_id);
+
 VXCORE_API VxCoreError vxcore_notebook_open(VxCoreContextHandle context, const char *path,
-                                            const char *options_json,
-                                            VxCoreNotebookHandle *out_notebook);
+                                            char **out_notebook_id);
 
 VXCORE_API VxCoreError vxcore_notebook_close(VxCoreContextHandle context,
-                                             VxCoreNotebookHandle notebook);
+                                             const char *notebook_id);
 
-VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const char *path,
-                                              const char *config_json,
-                                              VxCoreNotebookHandle *out_notebook);
+VXCORE_API VxCoreError vxcore_notebook_list(VxCoreContextHandle context,
+                                            char **out_notebooks_json);
 
-VXCORE_API VxCoreError vxcore_notebook_get_info(VxCoreContextHandle context,
-                                                VxCoreNotebookHandle notebook,
-                                                char **out_info_json);
+VXCORE_API VxCoreError vxcore_notebook_get_properties(VxCoreContextHandle context,
+                                                      const char *notebook_id,
+                                                      char **out_properties_json);
+
+VXCORE_API VxCoreError vxcore_notebook_set_properties(VxCoreContextHandle context,
+                                                      const char *notebook_id,
+                                                      const char *properties_json);
 
 VXCORE_API VxCoreError vxcore_note_create(VxCoreContextHandle context,
                                           VxCoreNotebookHandle notebook, const char *params_json,

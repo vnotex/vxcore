@@ -16,7 +16,7 @@
 
 namespace vxcore {
 
-std::filesystem::path PathProvider::getAppDataPath() {
+std::filesystem::path PathProvider::GetAppDataPath() {
 #ifdef _WIN32
   wchar_t *path = nullptr;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &path))) {
@@ -56,7 +56,7 @@ std::filesystem::path PathProvider::getAppDataPath() {
 #endif
 }
 
-std::filesystem::path PathProvider::getLocalDataPath() {
+std::filesystem::path PathProvider::GetLocalDataPath() {
 #ifdef _WIN32
   wchar_t *path = nullptr;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &path))) {
@@ -96,7 +96,7 @@ std::filesystem::path PathProvider::getLocalDataPath() {
 #endif
 }
 
-std::filesystem::path PathProvider::getExecutablePath() {
+std::filesystem::path PathProvider::GetExecutablePath() {
 #ifdef _WIN32
   wchar_t path[MAX_PATH];
   DWORD len = GetModuleFileNameW(nullptr, path, MAX_PATH);
@@ -122,4 +122,4 @@ std::filesystem::path PathProvider::getExecutablePath() {
 #endif
 }
 
-} // namespace vxcore
+}  // namespace vxcore

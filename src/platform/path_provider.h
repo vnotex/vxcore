@@ -7,15 +7,15 @@
 namespace vxcore {
 
 class PathProvider {
-public:
-  static std::filesystem::path getAppDataPath();
-  static std::filesystem::path getLocalDataPath();
-  static std::filesystem::path getExecutablePath();
+ public:
+  static std::filesystem::path GetAppDataPath();
+  static std::filesystem::path GetLocalDataPath();
+  static std::filesystem::path GetExecutablePath();
 
-private:
+ private:
   static constexpr const char *kAppName = "VNote";
 };
 
-} // namespace vxcore
+}  // namespace vxcore
 
 #endif

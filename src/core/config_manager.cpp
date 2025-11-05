@@ -1,37 +1,37 @@
 #include "config_manager.h"
 
-#include "platform/path_provider.h"
-
 #include <fstream>
+
+#include "platform/path_provider.h"
 
 namespace vxcore {
 
 ConfigManager::ConfigManager() : config_(), session_config_() {
-  auto portable_config_path = PathProvider::getExecutablePath() / "config";
+  auto portable_config_path = PathProvider::GetExecutablePath() / "config";
   if (std::filesystem::exists(portable_config_path)) {
     app_data_path_ = portable_config_path;
     local_data_path_ = portable_config_path;
   } else {
-    app_data_path_ = PathProvider::getAppDataPath();
-    local_data_path_ = PathProvider::getLocalDataPath();
+    app_data_path_ = PathProvider::GetAppDataPath();
+    local_data_path_ = PathProvider::GetLocalDataPath();
   }
 }
 
-VxCoreError ConfigManager::loadConfigs() {
-  VxCoreError err = ensureDataFolders();
+VxCoreError ConfigManager::LoadConfigs() {
+  VxCoreError err = EnsureDataFolders();
   if (err != VXCORE_OK) {
     return err;
   }
 
-  err = checkAndMigrateVersion();
+  err = CheckAndMigrateVersion();
   if (err != VXCORE_OK) {
     return err;
   }
 
   nlohmann::json default_json = nlohmann::json::object();
-  auto default_config_path = PathProvider::getExecutablePath() / "data" / "vxcore.json";
+  auto default_config_path = PathProvider::GetExecutablePath() / "data" / "vxcore.json";
   if (std::filesystem::exists(default_config_path)) {
-    err = loadJsonFile(default_config_path, default_json);
+    err = LoadJsonFile(default_config_path, default_json);
     if (err != VXCORE_OK) {
       return err;
     }
@@ -40,7 +40,7 @@ VxCoreError ConfigManager::loadConfigs() {
   nlohmann::json user_json = nlohmann::json::object();
   auto user_config_path = app_data_path_ / "vxcore.json";
   if (std::filesystem::exists(user_config_path)) {
-    err = loadJsonFile(user_config_path, user_json);
+    err = LoadJsonFile(user_config_path, user_json);
     if (err != VXCORE_OK) {
       return err;
     }
@@ -49,20 +49,20 @@ VxCoreError ConfigManager::loadConfigs() {
   nlohmann::json session_json = nlohmann::json::object();
   auto session_config_path = local_data_path_ / "session.json";
   if (std::filesystem::exists(session_config_path)) {
-    err = loadJsonFile(session_config_path, session_json);
+    err = LoadJsonFile(session_config_path, session_json);
     if (err != VXCORE_OK) {
       return err;
     }
   }
 
   default_json.merge_patch(user_json);
-  config_ = VxCoreConfig::fromJson(default_json);
-  session_config_ = VxCoreSessionConfig::fromJson(session_json);
+  config_ = VxCoreConfig::FromJson(default_json);
+  session_config_ = VxCoreSessionConfig::FromJson(session_json);
 
   return VXCORE_OK;
 }
 
-VxCoreError ConfigManager::loadJsonFile(const std::filesystem::path &path,
+VxCoreError ConfigManager::LoadJsonFile(const std::filesystem::path &path,
                                         nlohmann::json &out_json) {
   try {
     std::ifstream file(path);
@@ -78,7 +78,7 @@ VxCoreError ConfigManager::loadJsonFile(const std::filesystem::path &path,
   }
 }
 
-VxCoreError ConfigManager::ensureDataFolders() {
+VxCoreError ConfigManager::EnsureDataFolders() {
   try {
     if (!app_data_path_.empty()) {
       std::filesystem::create_directories(app_data_path_);
@@ -92,9 +92,9 @@ VxCoreError ConfigManager::ensureDataFolders() {
   }
 }
 
-VxCoreError ConfigManager::checkAndMigrateVersion() { return VXCORE_OK; }
+VxCoreError ConfigManager::CheckAndMigrateVersion() { return VXCORE_OK; }
 
-VxCoreError ConfigManager::saveSessionConfig() {
+VxCoreError ConfigManager::SaveSessionConfig() {
   if (local_data_path_.empty()) {
     return VXCORE_ERR_NOT_INITIALIZED;
   }
@@ -105,7 +105,7 @@ VxCoreError ConfigManager::saveSessionConfig() {
     if (!file.is_open()) {
       return VXCORE_ERR_IO;
     }
-    nlohmann::json json = session_config_.toJson();
+    nlohmann::json json = session_config_.ToJson();
     file << json.dump(2);
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &) {
@@ -115,4 +115,4 @@ VxCoreError ConfigManager::saveSessionConfig() {
   }
 }
 
-} // namespace vxcore
+}  // namespace vxcore
