@@ -1,14 +1,14 @@
-#include "vxcore/vxcore.h"
-
-#include "api/api_utils.h"
-#include "core/context.h"
-
 #include <stdlib.h>
 #include <string.h>
 
+#include "api/api_utils.h"
+#include "core/context.h"
+#include "core/notebook_manager.h"
+#include "vxcore/vxcore.h"
+
 VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const char *path,
-                                              const char *properties_json,
-                                              VxCoreNotebookType type, char **out_notebook_id) {
+                                              const char *properties_json, VxCoreNotebookType type,
+                                              char **out_notebook_id) {
   if (!context || !path || !out_notebook_id) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -16,21 +16,21 @@ VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
 
   try {
-    vxcore::NotebookType notebookType =
+    vxcore::NotebookType notebook_type =
         (type == VXCORE_NOTEBOOK_RAW) ? vxcore::NotebookType::Raw : vxcore::NotebookType::Bundled;
 
-    std::string propertiesStr = properties_json ? properties_json : "";
-    std::string notebookId;
+    std::string properties_str = properties_json ? properties_json : "";
+    std::string notebook_id;
 
     VxCoreError err =
-        ctx->notebook_manager->createNotebook(path, notebookType, propertiesStr, notebookId);
+        ctx->notebook_manager->CreateNotebook(path, notebook_type, properties_str, notebook_id);
 
     if (err != VXCORE_OK) {
       ctx->last_error = "Failed to create notebook";
       return err;
     }
 
-    char *id_copy = vxcore_strdup(notebookId.c_str());
+    char *id_copy = vxcore_strdup(notebook_id.c_str());
     if (!id_copy) {
       return VXCORE_ERR_OUT_OF_MEMORY;
     }
@@ -52,15 +52,15 @@ VXCORE_API VxCoreError vxcore_notebook_open(VxCoreContextHandle context, const c
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
 
   try {
-    std::string notebookId;
-    VxCoreError err = ctx->notebook_manager->openNotebook(path, notebookId);
+    std::string notebook_id;
+    VxCoreError err = ctx->notebook_manager->OpenNotebook(path, notebook_id);
 
     if (err != VXCORE_OK) {
       ctx->last_error = "Failed to open notebook";
       return err;
     }
 
-    char *id_copy = vxcore_strdup(notebookId.c_str());
+    char *id_copy = vxcore_strdup(notebook_id.c_str());
     if (!id_copy) {
       return VXCORE_ERR_OUT_OF_MEMORY;
     }
@@ -73,8 +73,7 @@ VXCORE_API VxCoreError vxcore_notebook_open(VxCoreContextHandle context, const c
   }
 }
 
-VXCORE_API VxCoreError vxcore_notebook_close(VxCoreContextHandle context,
-                                             const char *notebook_id) {
+VXCORE_API VxCoreError vxcore_notebook_close(VxCoreContextHandle context, const char *notebook_id) {
   if (!context || !notebook_id) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -82,7 +81,7 @@ VXCORE_API VxCoreError vxcore_notebook_close(VxCoreContextHandle context,
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
 
   try {
-    VxCoreError err = ctx->notebook_manager->closeNotebook(notebook_id);
+    VxCoreError err = ctx->notebook_manager->CloseNotebook(notebook_id);
     if (err != VXCORE_OK) {
       ctx->last_error = "Failed to close notebook";
     }
@@ -102,15 +101,15 @@ VXCORE_API VxCoreError vxcore_notebook_list(VxCoreContextHandle context,
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
 
   try {
-    std::string notebooksJson;
-    VxCoreError err = ctx->notebook_manager->listNotebooks(notebooksJson);
+    std::string notebooks_json;
+    VxCoreError err = ctx->notebook_manager->ListNotebooks(notebooks_json);
 
     if (err != VXCORE_OK) {
       ctx->last_error = "Failed to list notebooks";
       return err;
     }
 
-    char *json_copy = vxcore_strdup(notebooksJson.c_str());
+    char *json_copy = vxcore_strdup(notebooks_json.c_str());
     if (!json_copy) {
       return VXCORE_ERR_OUT_OF_MEMORY;
     }
@@ -133,15 +132,15 @@ VXCORE_API VxCoreError vxcore_notebook_get_properties(VxCoreContextHandle contex
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
 
   try {
-    std::string propertiesJson;
-    VxCoreError err = ctx->notebook_manager->getNotebookProperties(notebook_id, propertiesJson);
+    std::string properties_json;
+    VxCoreError err = ctx->notebook_manager->GetNotebookProperties(notebook_id, properties_json);
 
     if (err != VXCORE_OK) {
       ctx->last_error = "Failed to get notebook properties";
       return err;
     }
 
-    char *json_copy = vxcore_strdup(propertiesJson.c_str());
+    char *json_copy = vxcore_strdup(properties_json.c_str());
     if (!json_copy) {
       return VXCORE_ERR_OUT_OF_MEMORY;
     }
@@ -164,8 +163,7 @@ VXCORE_API VxCoreError vxcore_notebook_set_properties(VxCoreContextHandle contex
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
 
   try {
-    VxCoreError err =
-        ctx->notebook_manager->setNotebookProperties(notebook_id, properties_json);
+    VxCoreError err = ctx->notebook_manager->SetNotebookProperties(notebook_id, properties_json);
 
     if (err != VXCORE_OK) {
       ctx->last_error = "Failed to set notebook properties";

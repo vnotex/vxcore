@@ -5,7 +5,7 @@
 
 namespace vxcore {
 
-std::string generateUUID();
+std::string GenerateUUID();
 
 }
 

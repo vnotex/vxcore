@@ -1,35 +1,34 @@
 #ifndef VXCORE_CONFIG_MANAGER_H
 #define VXCORE_CONFIG_MANAGER_H
 
+#include <filesystem>
+#include <nlohmann/json.hpp>
+#include <string>
+
 #include "vxcore/vxcore_types.h"
 #include "vxcore_config.h"
 #include "vxcore_session_config.h"
 
-#include <filesystem>
-#include <string>
-
-#include <nlohmann/json.hpp>
-
 namespace vxcore {
 
 class ConfigManager {
-public:
+ public:
   ConfigManager();
 
-  VxCoreError loadConfigs();
+  VxCoreError LoadConfigs();
 
-  const VxCoreConfig &getConfig() const { return config_; }
-  const VxCoreSessionConfig &getSessionConfig() const { return session_config_; }
-  VxCoreSessionConfig &getSessionConfig() { return session_config_; }
+  const VxCoreConfig &GetConfig() const { return config_; }
+  const VxCoreSessionConfig &GetSessionConfig() const { return session_config_; }
+  VxCoreSessionConfig &GetSessionConfig() { return session_config_; }
 
-  std::string getLocalDataPath() const { return local_data_path_.string(); }
+  std::string GetLocalDataPath() const { return local_data_path_.string(); }
 
-  VxCoreError saveSessionConfig();
+  VxCoreError SaveSessionConfig();
 
-private:
-  VxCoreError loadJsonFile(const std::filesystem::path &path, nlohmann::json &out_json);
-  VxCoreError ensureDataFolders();
-  VxCoreError checkAndMigrateVersion();
+ private:
+  VxCoreError LoadJsonFile(const std::filesystem::path &path, nlohmann::json &out_json);
+  VxCoreError EnsureDataFolders();
+  VxCoreError CheckAndMigrateVersion();
 
   VxCoreConfig config_;
   VxCoreSessionConfig session_config_;
@@ -37,6 +36,6 @@ private:
   std::filesystem::path local_data_path_;
 };
 
-} // namespace vxcore
+}  // namespace vxcore
 
 #endif

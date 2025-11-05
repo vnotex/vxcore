@@ -1,10 +1,10 @@
 #ifndef VXCORE_NOTEBOOK_H
 #define VXCORE_NOTEBOOK_H
 
-#include "vxcore/vxcore_types.h"
-
 #include <nlohmann/json.hpp>
 #include <string>
+
+#include "vxcore/vxcore_types.h"
 
 namespace vxcore {
 
@@ -14,53 +14,53 @@ struct NotebookConfig {
   std::string id;
   std::string name;
   std::string description;
-  std::string assetsFolder;
-  std::string attachmentsFolder;
+  std::string assets_folder;
+  std::string attachments_folder;
   nlohmann::json metadata;
 
   NotebookConfig();
 
-  static NotebookConfig fromJson(const nlohmann::json &json);
-  nlohmann::json toJson() const;
+  static NotebookConfig FromJson(const nlohmann::json &json);
+  nlohmann::json ToJson() const;
 };
 
 struct NotebookRecord {
   std::string id;
-  std::string rootFolder;
+  std::string root_folder;
   NotebookType type;
-  int64_t lastOpenedTimestamp;
-  NotebookConfig rawConfig;
+  int64_t last_opened_timestamp;
+  NotebookConfig raw_config;
 
   NotebookRecord();
 
-  static NotebookRecord fromJson(const nlohmann::json &json);
-  nlohmann::json toJson() const;
+  static NotebookRecord FromJson(const nlohmann::json &json);
+  nlohmann::json ToJson() const;
 };
 
 class Notebook {
-public:
-  Notebook(const std::string &rootFolder, NotebookType type, const NotebookConfig &config);
+ public:
+  Notebook(const std::string &root_folder, NotebookType type, const NotebookConfig &config);
 
-  const std::string &getId() const { return config_.id; }
-  const std::string &getRootFolder() const { return rootFolder_; }
-  NotebookType getType() const { return type_; }
-  const NotebookConfig &getConfig() const { return config_; }
+  const std::string &GetId() const { return config_.id; }
+  const std::string &GetRootFolder() const { return root_folder_; }
+  NotebookType GetType() const { return type_; }
+  const NotebookConfig &GetConfig() const { return config_; }
 
-  void setConfig(const NotebookConfig &config);
+  void SetConfig(const NotebookConfig &config);
 
-  std::string getDbPath(const std::string &localDataFolder) const;
-  std::string getMetadataFolder() const;
-  std::string getConfigPath() const;
+  std::string GetDbPath(const std::string &local_data_folder) const;
+  std::string GetMetadataFolder() const;
+  std::string GetConfigPath() const;
 
-  VxCoreError loadConfig();
-  VxCoreError saveConfig();
+  VxCoreError LoadConfig();
+  VxCoreError SaveConfig();
 
-private:
-  std::string rootFolder_;
+ private:
+  std::string root_folder_;
   NotebookType type_;
   NotebookConfig config_;
 };
 
-} // namespace vxcore
+}  // namespace vxcore
 
 #endif

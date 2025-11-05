@@ -40,9 +40,11 @@
 # debug information files
 *.dwo
 
-build
+build*
 
 compile_commands.json
 
 # Test artifacts
 test_notebook
+
+.cache

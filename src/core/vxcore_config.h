@@ -11,10 +11,10 @@ struct VxCoreConfig {
 
   VxCoreConfig() : version("0.1.0") {}
 
-  static VxCoreConfig fromJson(const nlohmann::json &json);
-  nlohmann::json toJson() const;
+  static VxCoreConfig FromJson(const nlohmann::json &json);
+  nlohmann::json ToJson() const;
 };
 
-} // namespace vxcore
+}  // namespace vxcore
 
 #endif

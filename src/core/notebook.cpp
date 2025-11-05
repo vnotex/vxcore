@@ -1,20 +1,21 @@
 #include "notebook.h"
 
-#include "utils/utils.h"
-
 #include <vxcore/vxcore_types.h>
 
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 
+#include "utils/utils.h"
+
 namespace vxcore {
 
 NotebookConfig::NotebookConfig()
-    : assetsFolder("vx_assets"), attachmentsFolder("vx_attachments"),
+    : assets_folder("vx_assets"),
+      attachments_folder("vx_attachments"),
       metadata(nlohmann::json::object()) {}
 
-NotebookConfig NotebookConfig::fromJson(const nlohmann::json &json) {
+NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
   NotebookConfig config;
   if (json.contains("id") && json["id"].is_string()) {
     config.id = json["id"].get<std::string>();
@@ -26,10 +27,10 @@ NotebookConfig NotebookConfig::fromJson(const nlohmann::json &json) {
     config.description = json["description"].get<std::string>();
   }
   if (json.contains("assetsFolder") && json["assetsFolder"].is_string()) {
-    config.assetsFolder = json["assetsFolder"].get<std::string>();
+    config.assets_folder = json["assetsFolder"].get<std::string>();
   }
   if (json.contains("attachmentsFolder") && json["attachmentsFolder"].is_string()) {
-    config.attachmentsFolder = json["attachmentsFolder"].get<std::string>();
+    config.attachments_folder = json["attachmentsFolder"].get<std::string>();
   }
   if (json.contains("metadata") && json["metadata"].is_object()) {
     config.metadata = json["metadata"];
@@ -37,86 +38,86 @@ NotebookConfig NotebookConfig::fromJson(const nlohmann::json &json) {
   return config;
 }
 
-nlohmann::json NotebookConfig::toJson() const {
+nlohmann::json NotebookConfig::ToJson() const {
   nlohmann::json json = nlohmann::json::object();
   json["id"] = id;
   json["name"] = name;
   json["description"] = description;
-  json["assetsFolder"] = assetsFolder;
-  json["attachmentsFolder"] = attachmentsFolder;
+  json["assetsFolder"] = assets_folder;
+  json["attachmentsFolder"] = attachments_folder;
   json["metadata"] = metadata;
   return json;
 }
 
-NotebookRecord::NotebookRecord() : type(NotebookType::Bundled), lastOpenedTimestamp(0) {}
+NotebookRecord::NotebookRecord() : type(NotebookType::Bundled), last_opened_timestamp(0) {}
 
-NotebookRecord NotebookRecord::fromJson(const nlohmann::json &json) {
+NotebookRecord NotebookRecord::FromJson(const nlohmann::json &json) {
   NotebookRecord record;
   if (json.contains("id") && json["id"].is_string()) {
     record.id = json["id"].get<std::string>();
   }
   if (json.contains("rootFolder") && json["rootFolder"].is_string()) {
-    record.rootFolder = json["rootFolder"].get<std::string>();
+    record.root_folder = json["rootFolder"].get<std::string>();
   }
   if (json.contains("type") && json["type"].is_string()) {
     std::string typeStr = json["type"].get<std::string>();
     record.type = (typeStr == "raw") ? NotebookType::Raw : NotebookType::Bundled;
   }
   if (json.contains("lastOpenedTimestamp") && json["lastOpenedTimestamp"].is_number()) {
-    record.lastOpenedTimestamp = json["lastOpenedTimestamp"].get<int64_t>();
+    record.last_opened_timestamp = json["lastOpenedTimestamp"].get<int64_t>();
   }
   if (json.contains("rawConfig") && json["rawConfig"].is_object()) {
-    record.rawConfig = NotebookConfig::fromJson(json["rawConfig"]);
+    record.raw_config = NotebookConfig::FromJson(json["rawConfig"]);
   }
   return record;
 }
 
-nlohmann::json NotebookRecord::toJson() const {
+nlohmann::json NotebookRecord::ToJson() const {
   nlohmann::json json = nlohmann::json::object();
   json["id"] = id;
-  json["rootFolder"] = rootFolder;
+  json["rootFolder"] = root_folder;
   json["type"] = (type == NotebookType::Raw) ? "raw" : "bundled";
-  json["lastOpenedTimestamp"] = lastOpenedTimestamp;
+  json["lastOpenedTimestamp"] = last_opened_timestamp;
   if (type == NotebookType::Raw) {
-    json["rawConfig"] = rawConfig.toJson();
+    json["rawConfig"] = raw_config.ToJson();
   }
   return json;
 }
 
-Notebook::Notebook(const std::string &rootFolder, NotebookType type, const NotebookConfig &config)
-    : rootFolder_(rootFolder), type_(type), config_(config) {
+Notebook::Notebook(const std::string &root_folder, NotebookType type, const NotebookConfig &config)
+    : root_folder_(root_folder), type_(type), config_(config) {
   if (config_.id.empty()) {
-    config_.id = generateUUID();
+    config_.id = GenerateUUID();
   }
 }
 
-void Notebook::setConfig(const NotebookConfig &config) { config_ = config; }
+void Notebook::SetConfig(const NotebookConfig &config) { config_ = config; }
 
-std::string Notebook::getDbPath(const std::string &localDataFolder) const {
-  std::filesystem::path dbPath(localDataFolder);
+std::string Notebook::GetDbPath(const std::string &local_data_folder) const {
+  std::filesystem::path dbPath(local_data_folder);
   dbPath /= "notebooks";
   dbPath /= (config_.id + ".db");
   return dbPath.string();
 }
 
-std::string Notebook::getMetadataFolder() const {
-  std::filesystem::path metaPath(rootFolder_);
+std::string Notebook::GetMetadataFolder() const {
+  std::filesystem::path metaPath(root_folder_);
   metaPath /= "vx_notebook";
   return metaPath.string();
 }
 
-std::string Notebook::getConfigPath() const {
-  std::filesystem::path configPath(getMetadataFolder());
+std::string Notebook::GetConfigPath() const {
+  std::filesystem::path configPath(GetMetadataFolder());
   configPath /= "config.json";
   return configPath.string();
 }
 
-VxCoreError Notebook::loadConfig() {
+VxCoreError Notebook::LoadConfig() {
   if (type_ == NotebookType::Raw) {
     return VXCORE_OK;
   }
 
-  std::string configPath = getConfigPath();
+  std::string configPath = GetConfigPath();
   std::ifstream file(configPath);
   if (!file.is_open()) {
     return VXCORE_ERR_IO;
@@ -125,7 +126,7 @@ VxCoreError Notebook::loadConfig() {
   try {
     nlohmann::json json;
     file >> json;
-    config_ = NotebookConfig::fromJson(json);
+    config_ = NotebookConfig::FromJson(json);
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &) {
     return VXCORE_ERR_JSON_PARSE;
@@ -134,22 +135,22 @@ VxCoreError Notebook::loadConfig() {
   }
 }
 
-VxCoreError Notebook::saveConfig() {
+VxCoreError Notebook::SaveConfig() {
   if (type_ == NotebookType::Raw) {
     return VXCORE_OK;
   }
 
   try {
-    std::filesystem::path metaPath(getMetadataFolder());
+    std::filesystem::path metaPath(GetMetadataFolder());
     std::filesystem::create_directories(metaPath);
 
-    std::string configPath = getConfigPath();
+    std::string configPath = GetConfigPath();
     std::ofstream file(configPath);
     if (!file.is_open()) {
       return VXCORE_ERR_IO;
     }
 
-    nlohmann::json json = config_.toJson();
+    nlohmann::json json = config_.ToJson();
     file << json.dump(2);
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &) {
@@ -161,4 +162,4 @@ VxCoreError Notebook::saveConfig() {
   }
 }
 
-} // namespace vxcore
+}  // namespace vxcore

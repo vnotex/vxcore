@@ -1,10 +1,6 @@
 #ifndef VXCORE_NOTEBOOK_MANAGER_H
 #define VXCORE_NOTEBOOK_MANAGER_H
 
-#include "vxcore/vxcore_types.h"
-#include "notebook.h"
-#include "vxcore_session_config.h"
-
 #include <functional>
 #include <map>
 #include <memory>
@@ -12,44 +8,49 @@
 #include <string>
 #include <vector>
 
+#include "notebook.h"
+#include "vxcore/vxcore_types.h"
+#include "vxcore_session_config.h"
+
 namespace vxcore {
 
 class NotebookManager {
-public:
-  NotebookManager(const std::string &localDataFolder, VxCoreSessionConfig *sessionConfig);
+ public:
+  NotebookManager(const std::string &local_data_folder, VxCoreSessionConfig *session_config);
   ~NotebookManager();
 
-  VxCoreError createNotebook(const std::string &rootFolder, NotebookType type,
-                             const std::string &propertiesJson, std::string &outNotebookId);
+  VxCoreError CreateNotebook(const std::string &root_folder, NotebookType type,
+                             const std::string &properties_json, std::string &out_notebook_id);
 
-  VxCoreError openNotebook(const std::string &rootFolder, std::string &outNotebookId);
+  VxCoreError OpenNotebook(const std::string &root_folder, std::string &out_notebook_id);
 
-  VxCoreError closeNotebook(const std::string &notebookId);
+  VxCoreError CloseNotebook(const std::string &notebook_id);
 
-  VxCoreError getNotebookProperties(const std::string &notebookId, std::string &outPropertiesJson);
+  VxCoreError GetNotebookProperties(const std::string &notebook_id,
+                                    std::string &out_properties_json);
 
-  VxCoreError setNotebookProperties(const std::string &notebookId,
-                                    const std::string &propertiesJson);
+  VxCoreError SetNotebookProperties(const std::string &notebook_id,
+                                    const std::string &properties_json);
 
-  VxCoreError listNotebooks(std::string &outNotebooksJson);
+  VxCoreError ListNotebooks(std::string &out_notebooks_json);
 
-  Notebook *getNotebook(const std::string &notebookId);
+  Notebook *GetNotebook(const std::string &notebook_id);
 
-  void setSessionConfigUpdater(std::function<void()> updater);
+  void SetSessionConfigUpdater(std::function<void()> updater);
 
-private:
-  VxCoreError loadNotebookRecord(const std::string &rootFolder, NotebookRecord &record);
-  VxCoreError saveNotebookRecord(const NotebookRecord &record);
-  NotebookRecord *findNotebookRecord(const std::string &id);
-  void updateSessionConfig();
+ private:
+  VxCoreError LoadNotebookRecord(const std::string &root_folder, NotebookRecord &record);
+  VxCoreError SaveNotebookRecord(const NotebookRecord &record);
+  NotebookRecord *FindNotebookRecord(const std::string &id);
+  void UpdateSessionConfig();
 
-  std::string localDataFolder_;
-  VxCoreSessionConfig *sessionConfig_;
+  std::string local_data_folder_;
+  VxCoreSessionConfig *session_config_;
   std::map<std::string, std::unique_ptr<Notebook>> notebooks_;
   std::mutex mutex_;
-  std::function<void()> sessionConfigUpdater_;
+  std::function<void()> session_config_updater_;
 };
 
-} // namespace vxcore
+}  // namespace vxcore
 
 #endif
