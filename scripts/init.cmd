@@ -10,11 +10,11 @@ echo ========================================
 echo.
 
 REM Check if Git Bash is available
-where bash.exe >nul 2>&1
+where git-bash.exe >nul 2>&1
 if %errorlevel% neq 0 (
     echo Error: Git Bash not found in PATH
     echo.
-    echo Please ensure Git for Windows is installed and bash.exe is in your PATH.
+    echo Please ensure Git for Windows is installed and git-bash.exe is in your PATH.
     echo You can download Git for Windows from: https://git-scm.com/download/win
     echo.
     echo Alternatively, run the init.sh script directly from Git Bash:
@@ -35,7 +35,7 @@ set UNIX_PATH=%UNIX_PATH::=%
 set UNIX_PATH=/%UNIX_PATH%
 
 REM Run the bash script
-bash.exe "%UNIX_PATH%/init.sh"
+git-bash.exe -c "cd '%UNIX_PATH%' && ./init.sh"
 
 if %errorlevel% neq 0 (
     echo.
