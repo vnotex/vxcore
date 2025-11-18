@@ -10,6 +10,7 @@ set(VXCORE_SOURCES
     api/vxcore_note_api.cpp
     api/vxcore_tag_api.cpp
     api/vxcore_search_api.cpp
+    api/vxcore_folder_api.cpp
     api/vxcore_events.cpp
     api/handle_manager.cpp
     api/error_handler.cpp
@@ -19,6 +20,8 @@ set(VXCORE_SOURCES
     core/vxcore_session_config.cpp
     core/notebook.cpp
     core/notebook_manager.cpp
+    core/folder.cpp
+    core/folder_manager.cpp
     utils/utils.cpp
     platform/path_provider.cpp
 )

@@ -32,6 +32,9 @@
 - **Memory**: Caller frees strings with `vxcore_string_free()`; context owns handles
 - **Platform**: Use `VXCORE_API` macro for exports; Windows DLL-safe; no Qt dependencies
 - **JSON**: Communication boundary uses JSON over C ABI for cross-platform stability
+  - **JSON keys**: Always use `camelCase` (e.g., `createdUtc`, `modifiedUtc`, `assetsFolder`)
+  - **C++ struct members**: Use `snake_case` (e.g., `created_utc`, `modified_utc`, `assets_folder`)
+  - **Rationale**: User-facing files (config.json, vx.json) follow JavaScript conventions
 - **Namespaces**: C++ code in `namespace vxcore`; close with `// namespace vxcore`
 - **File Format**: Use Unix line ending
 

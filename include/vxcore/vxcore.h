@@ -23,17 +23,15 @@ VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context
                                                      const char **out_message);
 
 VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const char *path,
-                                              const char *properties_json,
-                                              VxCoreNotebookType type, char **out_notebook_id);
+                                              const char *properties_json, VxCoreNotebookType type,
+                                              char **out_notebook_id);
 
 VXCORE_API VxCoreError vxcore_notebook_open(VxCoreContextHandle context, const char *path,
                                             char **out_notebook_id);
 
-VXCORE_API VxCoreError vxcore_notebook_close(VxCoreContextHandle context,
-                                             const char *notebook_id);
+VXCORE_API VxCoreError vxcore_notebook_close(VxCoreContextHandle context, const char *notebook_id);
 
-VXCORE_API VxCoreError vxcore_notebook_list(VxCoreContextHandle context,
-                                            char **out_notebooks_json);
+VXCORE_API VxCoreError vxcore_notebook_list(VxCoreContextHandle context, char **out_notebooks_json);
 
 VXCORE_API VxCoreError vxcore_notebook_get_properties(VxCoreContextHandle context,
                                                       const char *notebook_id,
@@ -64,6 +62,41 @@ VXCORE_API VxCoreError vxcore_note_move(VxCoreContextHandle context, VxCoreNoteb
 
 VXCORE_API VxCoreError vxcore_note_list(VxCoreContextHandle context, VxCoreNotebookHandle notebook,
                                         const char *filter_json, char **out_notes_json);
+
+VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const char *notebook_id,
+                                            const char *parent_path, const char *folder_name,
+                                            char **out_folder_id);
+
+VXCORE_API VxCoreError vxcore_folder_delete(VxCoreContextHandle context, const char *notebook_id,
+                                            const char *folder_path);
+
+VXCORE_API VxCoreError vxcore_folder_get_config(VxCoreContextHandle context,
+                                                const char *notebook_id, const char *folder_path,
+                                                char **out_config_json);
+
+VXCORE_API VxCoreError vxcore_folder_update_metadata(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     const char *folder_path,
+                                                     const char *metadata_json);
+
+VXCORE_API VxCoreError vxcore_folder_list(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *folder_path, char **out_contents_json);
+
+VXCORE_API VxCoreError vxcore_file_track(VxCoreContextHandle context, const char *notebook_id,
+                                         const char *folder_path, const char *file_name,
+                                         char **out_file_id);
+
+VXCORE_API VxCoreError vxcore_file_untrack(VxCoreContextHandle context, const char *notebook_id,
+                                           const char *folder_path, const char *file_name);
+
+VXCORE_API VxCoreError vxcore_file_update_metadata(VxCoreContextHandle context,
+                                                   const char *notebook_id, const char *folder_path,
+                                                   const char *file_name,
+                                                   const char *metadata_json);
+
+VXCORE_API VxCoreError vxcore_file_update_tags(VxCoreContextHandle context, const char *notebook_id,
+                                               const char *folder_path, const char *file_name,
+                                               const char *tags_json);
 
 VXCORE_API VxCoreError vxcore_tag_create(VxCoreContextHandle context, VxCoreNotebookHandle notebook,
                                          const char *tag_name, VxCoreTagHandle *out_tag);
