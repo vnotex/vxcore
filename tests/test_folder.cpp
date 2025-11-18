@@ -216,6 +216,8 @@ int test_folder_delete() {
 int main() {
   std::cout << "\n=== Running Folder Tests ===" << std::endl;
 
+  vxcore_set_test_mode(1);
+
   RUN_TEST(test_folder_create);
   RUN_TEST(test_folder_list);
   RUN_TEST(test_file_track);

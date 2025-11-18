@@ -1,11 +1,10 @@
 #include "args.h"
+
 #include <iostream>
 
 namespace vxcore_cli {
 
-bool ArgsParser::isOption(const std::string &arg) {
-  return arg.size() >= 2 && arg[0] == '-';
-}
+bool ArgsParser::isOption(const std::string &arg) { return arg.size() >= 2 && arg[0] == '-'; }
 
 std::string ArgsParser::getOptionName(const std::string &arg) {
   if (arg.size() >= 2 && arg[0] == '-' && arg[1] == '-') {
@@ -66,6 +65,7 @@ void ArgsParser::showHelp() {
   std::cout << "Commands:\n";
   std::cout << "  version              Show version information\n";
   std::cout << "  notebook             Notebook management commands\n";
+  std::cout << "  config               Configuration management commands\n";
   std::cout << "  help                 Show this help message\n\n";
   std::cout << "Run 'vxcore <command> --help' for more information on a command.\n";
 }
@@ -109,4 +109,4 @@ void ArgsParser::showNotebookHelp() {
   std::cout << "  vxcore notebook get-props --id <uuid>\n";
 }
 
-} // namespace vxcore_cli
+}  // namespace vxcore_cli

@@ -14,6 +14,8 @@ VXCORE_API const char *vxcore_get_version_string(void);
 
 VXCORE_API const char *vxcore_error_message(VxCoreError error);
 
+VXCORE_API void vxcore_set_test_mode(int enabled);
+
 VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
                                              VxCoreContextHandle *out_context);
 
@@ -21,6 +23,16 @@ VXCORE_API void vxcore_context_destroy(VxCoreContextHandle context);
 
 VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context,
                                                      const char **out_message);
+
+VXCORE_API VxCoreError vxcore_context_get_config_path(VxCoreContextHandle context, char **out_path);
+
+VXCORE_API VxCoreError vxcore_context_get_session_config_path(VxCoreContextHandle context,
+                                                              char **out_path);
+
+VXCORE_API VxCoreError vxcore_context_get_config(VxCoreContextHandle context, char **out_json);
+
+VXCORE_API VxCoreError vxcore_context_get_session_config(VxCoreContextHandle context,
+                                                         char **out_json);
 
 VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const char *path,
                                               const char *properties_json, VxCoreNotebookType type,

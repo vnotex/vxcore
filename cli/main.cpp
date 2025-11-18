@@ -1,7 +1,9 @@
+#include <iostream>
+
 #include "args.h"
+#include "config_cmd.h"
 #include "notebook_cmd.h"
 #include "vxcore/vxcore.h"
-#include <iostream>
 
 int main(int argc, char *argv[]) {
   vxcore_cli::ParsedArgs args = vxcore_cli::ArgsParser::parse(argc, argv);
@@ -20,6 +22,10 @@ int main(int argc, char *argv[]) {
 
   if (args.command == "notebook") {
     return vxcore_cli::NotebookCommand::execute(args);
+  }
+
+  if (args.command == "config") {
+    return vxcore_cli::ConfigCommand::execute(args);
   }
 
   std::cerr << "Unknown command: " << args.command << std::endl;

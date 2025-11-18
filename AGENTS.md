@@ -11,6 +11,10 @@
 - Each module (core, notebook) has its own test executable
 - Individual test cases are tracked within each module's main()
 - Add new test cases to existing test_*.cpp files or create new modules as needed
+- **Test Mode**: All tests call `vxcore_set_test_mode(1)` to isolate test data
+  - Enabled: Uses `%TEMP%\vxcore_test` (Windows) or `/tmp/vxcore_test` (Unix)
+  - Disabled: Uses real AppData paths (`%APPDATA%\VNote`, `%LOCALAPPDATA%\VNote`)
+  - CLI tools do NOT enable test mode (use production paths)
 
 ## Code Style
 - **Language**: C++17 with C ABI for public API

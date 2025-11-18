@@ -6,14 +6,22 @@
 
 namespace vxcore {
 
+bool ConfigManager::test_mode_ = false;
+
 ConfigManager::ConfigManager() : config_(), session_config_() {
-  auto portable_config_path = PathProvider::GetExecutablePath() / "config";
-  if (std::filesystem::exists(portable_config_path)) {
-    app_data_path_ = portable_config_path;
-    local_data_path_ = portable_config_path;
+  if (test_mode_) {
+    auto temp_path = std::filesystem::temp_directory_path() / "vxcore_test";
+    app_data_path_ = temp_path;
+    local_data_path_ = temp_path;
   } else {
-    app_data_path_ = PathProvider::GetAppDataPath();
-    local_data_path_ = PathProvider::GetLocalDataPath();
+    auto portable_config_path = PathProvider::GetExecutablePath() / "config";
+    if (std::filesystem::exists(portable_config_path)) {
+      app_data_path_ = portable_config_path;
+      local_data_path_ = portable_config_path;
+    } else {
+      app_data_path_ = PathProvider::GetAppDataPath();
+      local_data_path_ = PathProvider::GetLocalDataPath();
+    }
   }
 }
 
@@ -114,5 +122,9 @@ VxCoreError ConfigManager::SaveSessionConfig() {
     return VXCORE_ERR_IO;
   }
 }
+
+void ConfigManager::SetTestMode(bool enabled) { test_mode_ = enabled; }
+
+bool ConfigManager::IsTestMode() { return test_mode_; }
 
 }  // namespace vxcore

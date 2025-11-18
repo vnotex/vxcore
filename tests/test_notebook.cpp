@@ -1,9 +1,8 @@
-#include "test_utils.h"
-
-#include "vxcore/vxcore.h"
-
 #include <iostream>
 #include <string>
+
+#include "test_utils.h"
+#include "vxcore/vxcore.h"
 
 int test_notebook_create_bundled() {
   std::cout << "  Running test_notebook_create_bundled..." << std::endl;
@@ -15,7 +14,7 @@ int test_notebook_create_bundled() {
 
   char *notebook_id = nullptr;
   err = vxcore_notebook_create(ctx, "test_nb_bundled", "{\"name\":\"Test Bundled\"}",
-                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
 
@@ -37,8 +36,8 @@ int test_notebook_create_raw() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_raw", "{\"name\":\"Test Raw\"}",
-                                VXCORE_NOTEBOOK_RAW, &notebook_id);
+  err = vxcore_notebook_create(ctx, "test_nb_raw", "{\"name\":\"Test Raw\"}", VXCORE_NOTEBOOK_RAW,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
 
@@ -61,7 +60,7 @@ int test_notebook_open_close() {
 
   char *notebook_id1 = nullptr;
   err = vxcore_notebook_create(ctx, "test_nb_open", "{\"name\":\"Test Open\"}",
-                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id1);
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id1);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_notebook_close(ctx, notebook_id1);
@@ -92,8 +91,8 @@ int test_notebook_get_properties() {
 
   char *notebook_id = nullptr;
   err = vxcore_notebook_create(ctx, "test_nb_props",
-                                "{\"name\":\"Test Props\",\"description\":\"Test Description\"}",
-                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+                               "{\"name\":\"Test Props\",\"description\":\"Test Description\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *properties = nullptr;
@@ -123,11 +122,11 @@ int test_notebook_set_properties() {
 
   char *notebook_id = nullptr;
   err = vxcore_notebook_create(ctx, "test_nb_set_props", "{\"name\":\"Original Name\"}",
-                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_notebook_set_properties(ctx, notebook_id,
-                                        "{\"name\":\"Updated Name\",\"description\":\"New Desc\"}");
+                                       "{\"name\":\"Updated Name\",\"description\":\"New Desc\"}");
   ASSERT_EQ(err, VXCORE_OK);
 
   char *properties = nullptr;
@@ -157,12 +156,12 @@ int test_notebook_list() {
 
   char *id1 = nullptr;
   err = vxcore_notebook_create(ctx, "test_nb_list1", "{\"name\":\"Notebook 1\"}",
-                                VXCORE_NOTEBOOK_BUNDLED, &id1);
+                               VXCORE_NOTEBOOK_BUNDLED, &id1);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *id2 = nullptr;
   err = vxcore_notebook_create(ctx, "test_nb_list2", "{\"name\":\"Notebook 2\"}",
-                                VXCORE_NOTEBOOK_BUNDLED, &id2);
+                               VXCORE_NOTEBOOK_BUNDLED, &id2);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebooks_json = nullptr;
@@ -194,7 +193,7 @@ int test_notebook_persistence() {
 
   char *notebook_id = nullptr;
   err = vxcore_notebook_create(ctx1, "test_nb_persist", "{\"name\":\"Persistent Notebook\"}",
-                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   std::string saved_id(notebook_id);
@@ -229,6 +228,8 @@ int test_notebook_persistence() {
 
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
+
+  vxcore_set_test_mode(1);
 
   RUN_TEST(test_notebook_create_bundled);
   RUN_TEST(test_notebook_create_raw);

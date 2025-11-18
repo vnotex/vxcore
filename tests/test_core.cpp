@@ -1,8 +1,7 @@
-#include "test_utils.h"
-
-#include "vxcore/vxcore.h"
-
 #include <iostream>
+
+#include "test_utils.h"
+#include "vxcore/vxcore.h"
 
 int test_version() {
   std::cout << "  Running test_version..." << std::endl;
@@ -36,6 +35,8 @@ int test_context_create_destroy() {
 
 int main() {
   std::cout << "Running core tests..." << std::endl;
+
+  vxcore_set_test_mode(1);
 
   RUN_TEST(test_version);
   RUN_TEST(test_error_message);

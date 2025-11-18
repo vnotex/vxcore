@@ -1,5 +1,6 @@
 #include <stdlib.h>
 
+#include "api_utils.h"
 #include "core/config_manager.h"
 #include "core/context.h"
 #include "core/notebook_manager.h"
@@ -11,6 +12,10 @@ VXCORE_API VxCoreVersion vxcore_get_version(void) {
 }
 
 VXCORE_API const char *vxcore_get_version_string(void) { return "0.1.0"; }
+
+VXCORE_API void vxcore_set_test_mode(int enabled) {
+  vxcore::ConfigManager::SetTestMode(enabled != 0);
+}
 
 VXCORE_API const char *vxcore_error_message(VxCoreError error) {
   switch (error) {
@@ -101,6 +106,91 @@ VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context
     *out_message = ctx->last_error.c_str();
   }
   return VXCORE_OK;
+}
+
+VXCORE_API VxCoreError vxcore_context_get_config_path(VxCoreContextHandle context,
+                                                      char **out_path) {
+  if (!context || !out_path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->config_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    std::string path = ctx->config_manager->GetConfigPath();
+    *out_path = vxcore_strdup(path.c_str());
+    return VXCORE_OK;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_context_get_session_config_path(VxCoreContextHandle context,
+                                                              char **out_path) {
+  if (!context || !out_path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->config_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    std::string path = ctx->config_manager->GetSessionConfigPath();
+    *out_path = vxcore_strdup(path.c_str());
+    return VXCORE_OK;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_context_get_config(VxCoreContextHandle context, char **out_json) {
+  if (!context || !out_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->config_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    nlohmann::json json = ctx->config_manager->GetConfig().ToJson();
+    std::string json_str = json.dump(2);
+    *out_json = vxcore_strdup(json_str.c_str());
+    return VXCORE_OK;
+  } catch (const nlohmann::json::exception &) {
+    return VXCORE_ERR_JSON_SERIALIZE;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_context_get_session_config(VxCoreContextHandle context,
+                                                         char **out_json) {
+  if (!context || !out_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->config_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    nlohmann::json json = ctx->config_manager->GetSessionConfig().ToJson();
+    std::string json_str = json.dump(2);
+    *out_json = vxcore_strdup(json_str.c_str());
+    return VXCORE_OK;
+  } catch (const nlohmann::json::exception &) {
+    return VXCORE_ERR_JSON_SERIALIZE;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
 }
 
 VXCORE_API void vxcore_string_free(char *str) {
