@@ -39,6 +39,7 @@ class NotebookManager {
   void SetSessionConfigUpdater(std::function<void()> updater);
 
  private:
+  void LoadOpenNotebooks();
   VxCoreError LoadNotebookRecord(const std::string &root_folder, NotebookRecord &record);
   VxCoreError SaveNotebookRecord(const NotebookRecord &record);
   NotebookRecord *FindNotebookRecord(const std::string &id);

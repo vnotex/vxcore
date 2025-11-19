@@ -10,9 +10,7 @@ FileRecord::FileRecord() : created_utc(0), modified_utc(0) {}
 
 FileRecord::FileRecord(const std::string &name)
     : id(GenerateUUID()), name(name), metadata(nlohmann::json::object()) {
-  auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                 std::chrono::system_clock::now().time_since_epoch())
-                 .count();
+  auto now = GetCurrentTimestampMillis();
   created_utc = now;
   modified_utc = now;
 }
@@ -57,9 +55,7 @@ FolderConfig::FolderConfig() : created_utc(0), modified_utc(0) {}
 
 FolderConfig::FolderConfig(const std::string &name)
     : id(GenerateUUID()), name(name), metadata(nlohmann::json::object()) {
-  auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                 std::chrono::system_clock::now().time_since_epoch())
-                 .count();
+  auto now = GetCurrentTimestampMillis();
   created_utc = now;
   modified_utc = now;
 }

@@ -17,7 +17,7 @@ target_link_libraries(vxcore-cli
 )
 
 set_target_properties(vxcore-cli PROPERTIES
-    OUTPUT_NAME vxcore
+    OUTPUT_NAME vxcli
 )
 
 if(MSVC)

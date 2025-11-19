@@ -1,7 +1,9 @@
 #include "notebook_cmd.h"
+
+#include <iostream>
+
 #include "json_helpers.h"
 #include "vxcore/vxcore.h"
-#include <iostream>
 
 namespace vxcore_cli {
 
@@ -172,8 +174,9 @@ int NotebookCommand::list(const ParsedArgs &args) {
       } else {
         std::cout << "Opened notebooks:" << std::endl;
         for (const auto &nb : notebooks) {
-          std::cout << "  " << nb["id"].get<std::string>() << " - " << nb["rootFolder"].get<std::string>()
-                    << " (" << nb["type"].get<std::string>() << ")" << std::endl;
+          std::cout << "  " << nb["id"].get<std::string>() << " - "
+                    << nb["rootFolder"].get<std::string>() << " (" << nb["type"].get<std::string>()
+                    << ")" << std::endl;
         }
       }
     } catch (const std::exception &e) {
@@ -200,7 +203,7 @@ int NotebookCommand::getProps(const ParsedArgs &args) {
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   if (err != VXCORE_OK) {
-    std::cerr << "Error: " << vxcore_error_message(err) << std::endl;
+    std::cerr << "Error: {" << id << "} " << vxcore_error_message(err) << std::endl;
     return 1;
   }
 
@@ -208,7 +211,7 @@ int NotebookCommand::getProps(const ParsedArgs &args) {
   err = vxcore_notebook_get_properties(ctx, id.c_str(), &properties);
 
   if (err != VXCORE_OK) {
-    std::cerr << "Error: " << vxcore_error_message(err) << std::endl;
+    std::cerr << "Error: {" << id << "} " << vxcore_error_message(err) << std::endl;
     vxcore_context_destroy(ctx);
     return 1;
   }
@@ -265,4 +268,4 @@ int NotebookCommand::setProps(const ParsedArgs &args) {
   }
 }
 
-} // namespace vxcore_cli
+}  // namespace vxcore_cli

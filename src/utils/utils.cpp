@@ -1,5 +1,6 @@
 #include "utils.h"
 
+#include <chrono>
 #include <random>
 #include <sstream>
 
@@ -34,6 +35,12 @@ std::string GenerateUUID() {
     ss << dis(gen);
   }
   return ss.str();
+}
+
+int64_t GetCurrentTimestampMillis() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
 }
 
 }  // namespace vxcore

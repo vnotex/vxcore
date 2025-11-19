@@ -1,17 +1,65 @@
 #include "notebook_manager.h"
 
 #include <algorithm>
-#include <chrono>
 #include <filesystem>
 #include <fstream>
+
+#include "utils/utils.h"
 
 namespace vxcore {
 
 NotebookManager::NotebookManager(const std::string &local_data_folder,
                                  VxCoreSessionConfig *session_config)
-    : local_data_folder_(local_data_folder), session_config_(session_config) {}
+    : local_data_folder_(local_data_folder), session_config_(session_config) {
+  LoadOpenNotebooks();
+}
 
 NotebookManager::~NotebookManager() {}
+
+void NotebookManager::LoadOpenNotebooks() {
+  if (!session_config_) {
+    return;
+  }
+
+  notebooks_.clear();
+
+  for (const auto &record : session_config_->notebooks) {
+    try {
+      std::filesystem::path rootPath(record.root_folder);
+      if (!std::filesystem::exists(rootPath)) {
+        continue;
+      }
+
+      NotebookType type = record.type;
+      NotebookConfig config;
+
+      if (type == NotebookType::Bundled) {
+        std::filesystem::path configPath(rootPath);
+        configPath /= "vx_notebook";
+        configPath /= "config.json";
+
+        if (!std::filesystem::exists(configPath)) {
+          continue;
+        }
+
+        std::ifstream file(configPath);
+        if (!file.is_open()) {
+          continue;
+        }
+
+        nlohmann::json json;
+        file >> json;
+        config = NotebookConfig::FromJson(json);
+      } else {
+        config = record.raw_config;
+      }
+
+      auto notebook = std::make_unique<Notebook>(record.root_folder, type, config);
+      notebooks_[notebook->GetId()] = std::move(notebook);
+    } catch (...) {
+    }
+  }
+}
 
 VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, NotebookType type,
                                             const std::string &properties_json,
@@ -43,8 +91,7 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
     record.id = notebook->GetId();
     record.root_folder = root_folder;
     record.type = type;
-    record.last_opened_timestamp =
-        std::chrono::system_clock::now().time_since_epoch().count() / 1000000;
+    record.last_opened_timestamp = GetCurrentTimestampMillis();
     if (type == NotebookType::Raw) {
       record.raw_config = config;
     }
@@ -118,8 +165,7 @@ VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
     auto notebook = std::make_unique<Notebook>(root_folder, type, config);
     out_notebook_id = notebook->GetId();
 
-    record.last_opened_timestamp =
-        std::chrono::system_clock::now().time_since_epoch().count() / 1000000;
+    record.last_opened_timestamp = GetCurrentTimestampMillis();
     err = SaveNotebookRecord(record);
     if (err != VXCORE_OK) {
       return err;
@@ -201,8 +247,7 @@ VxCoreError NotebookManager::SetNotebookProperties(const std::string &notebook_i
     record.id = notebook_id;
     record.root_folder = it->second->GetRootFolder();
     record.type = it->second->GetType();
-    record.last_opened_timestamp =
-        std::chrono::system_clock::now().time_since_epoch().count() / 1000000;
+    record.last_opened_timestamp = GetCurrentTimestampMillis();
     if (record.type == NotebookType::Raw) {
       record.raw_config = config;
     }

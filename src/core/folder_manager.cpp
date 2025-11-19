@@ -276,9 +276,7 @@ VxCoreError FolderManager::UpdateFolderMetadata(const std::string &folder_path,
     }
 
     config.metadata = metadata;
-    config.modified_utc = std::chrono::duration_cast<std::chrono::milliseconds>(
-                              std::chrono::system_clock::now().time_since_epoch())
-                              .count();
+    config.modified_utc = GetCurrentTimestampMillis();
 
     return SaveFolderConfig(folder_path, config);
   } catch (const std::exception &) {
@@ -328,9 +326,7 @@ VxCoreError FolderManager::TrackFile(const std::string &folder_path, const std::
   }
 
   config.files.push_back(new_file);
-  config.modified_utc = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::system_clock::now().time_since_epoch())
-                            .count();
+  config.modified_utc = GetCurrentTimestampMillis();
 
   error = SaveFolderConfig(folder_path, config);
   if (error != VXCORE_OK) {
@@ -363,9 +359,7 @@ VxCoreError FolderManager::UntrackFile(const std::string &folder_path,
   }
 
   config.files.erase(it);
-  config.modified_utc = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::system_clock::now().time_since_epoch())
-                            .count();
+  config.modified_utc = GetCurrentTimestampMillis();
 
   return SaveFolderConfig(folder_path, config);
 }
@@ -397,9 +391,7 @@ VxCoreError FolderManager::UpdateFileMetadata(const std::string &folder_path,
     }
 
     file->metadata = metadata;
-    file->modified_utc = std::chrono::duration_cast<std::chrono::milliseconds>(
-                             std::chrono::system_clock::now().time_since_epoch())
-                             .count();
+    file->modified_utc = GetCurrentTimestampMillis();
 
     config.modified_utc = file->modified_utc;
 
@@ -436,9 +428,7 @@ VxCoreError FolderManager::UpdateFileTags(const std::string &folder_path,
     }
 
     file->tags = tags.get<std::vector<std::string>>();
-    file->modified_utc = std::chrono::duration_cast<std::chrono::milliseconds>(
-                             std::chrono::system_clock::now().time_since_epoch())
-                             .count();
+    file->modified_utc = GetCurrentTimestampMillis();
 
     config.modified_utc = file->modified_utc;
 

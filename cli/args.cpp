@@ -61,18 +61,18 @@ ParsedArgs ArgsParser::parse(int argc, char *argv[]) {
 
 void ArgsParser::showHelp() {
   std::cout << "VxCore CLI - Core library for note-taking applications\n\n";
-  std::cout << "Usage: vxcore <command> [options]\n\n";
+  std::cout << "Usage: vxcli <command> [options]\n\n";
   std::cout << "Commands:\n";
   std::cout << "  version              Show version information\n";
   std::cout << "  notebook             Notebook management commands\n";
   std::cout << "  config               Configuration management commands\n";
   std::cout << "  help                 Show this help message\n\n";
-  std::cout << "Run 'vxcore <command> --help' for more information on a command.\n";
+  std::cout << "Run 'vxcli <command> --help' for more information on a command.\n";
 }
 
 void ArgsParser::showNotebookHelp() {
   std::cout << "VxCore Notebook Management\n\n";
-  std::cout << "Usage: vxcore notebook <subcommand> [options]\n\n";
+  std::cout << "Usage: vxcli notebook <subcommand> [options]\n\n";
   std::cout << "Subcommands:\n";
   std::cout << "  create               Create a new notebook\n";
   std::cout << "  open                 Open an existing notebook\n";
@@ -103,10 +103,10 @@ void ArgsParser::showNotebookHelp() {
   std::cout << "  --props-json JSON    Inline JSON string\n";
   std::cout << "  --prop key=value     Set a property (repeatable)\n\n";
   std::cout << "Examples:\n";
-  std::cout << "  vxcore notebook create --path ./notes --prop name=\"My Notes\"\n";
-  std::cout << "  vxcore notebook create --path ./notes --props @config.json\n";
-  std::cout << "  vxcore notebook list --json\n";
-  std::cout << "  vxcore notebook get-props --id <uuid>\n";
+  std::cout << "  vxcli notebook create --path ./notes --prop name=\"My Notes\"\n";
+  std::cout << "  vxcli notebook create --path ./notes --props @config.json\n";
+  std::cout << "  vxcli notebook list --json\n";
+  std::cout << "  vxcli notebook get-props --id <uuid>\n";
 }
 
 }  // namespace vxcore_cli
