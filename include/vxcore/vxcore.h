@@ -53,28 +53,6 @@ VXCORE_API VxCoreError vxcore_notebook_set_properties(VxCoreContextHandle contex
                                                       const char *notebook_id,
                                                       const char *properties_json);
 
-VXCORE_API VxCoreError vxcore_note_create(VxCoreContextHandle context,
-                                          VxCoreNotebookHandle notebook, const char *params_json,
-                                          VxCoreNoteHandle *out_note);
-
-VXCORE_API VxCoreError vxcore_note_open(VxCoreContextHandle context, VxCoreNotebookHandle notebook,
-                                        const char *note_id, VxCoreNoteHandle *out_note);
-
-VXCORE_API VxCoreError vxcore_note_get_info(VxCoreContextHandle context, VxCoreNoteHandle note,
-                                            char **out_info_json);
-
-VXCORE_API VxCoreError vxcore_note_update(VxCoreContextHandle context, VxCoreNoteHandle note,
-                                          const char *update_json);
-
-VXCORE_API VxCoreError vxcore_note_delete(VxCoreContextHandle context,
-                                          VxCoreNotebookHandle notebook, const char *note_id);
-
-VXCORE_API VxCoreError vxcore_note_move(VxCoreContextHandle context, VxCoreNotebookHandle notebook,
-                                        const char *note_id, const char *new_path);
-
-VXCORE_API VxCoreError vxcore_note_list(VxCoreContextHandle context, VxCoreNotebookHandle notebook,
-                                        const char *filter_json, char **out_notes_json);
-
 VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const char *notebook_id,
                                             const char *parent_path, const char *folder_name,
                                             char **out_folder_id);
@@ -91,15 +69,12 @@ VXCORE_API VxCoreError vxcore_folder_update_metadata(VxCoreContextHandle context
                                                      const char *folder_path,
                                                      const char *metadata_json);
 
-VXCORE_API VxCoreError vxcore_folder_list(VxCoreContextHandle context, const char *notebook_id,
-                                          const char *folder_path, char **out_contents_json);
+VXCORE_API VxCoreError vxcore_file_create(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *folder_path, const char *file_name,
+                                          char **out_file_id);
 
-VXCORE_API VxCoreError vxcore_file_track(VxCoreContextHandle context, const char *notebook_id,
-                                         const char *folder_path, const char *file_name,
-                                         char **out_file_id);
-
-VXCORE_API VxCoreError vxcore_file_untrack(VxCoreContextHandle context, const char *notebook_id,
-                                           const char *folder_path, const char *file_name);
+VXCORE_API VxCoreError vxcore_file_delete(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *folder_path, const char *file_name);
 
 VXCORE_API VxCoreError vxcore_file_update_metadata(VxCoreContextHandle context,
                                                    const char *notebook_id, const char *folder_path,

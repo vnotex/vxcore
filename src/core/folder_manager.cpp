@@ -9,9 +9,25 @@ namespace vxcore {
 
 namespace fs = std::filesystem;
 
-FolderManager::FolderManager(Notebook *notebook) : notebook_(notebook) {}
+FolderManager::FolderManager(Notebook *notebook) : notebook_(notebook) { EnsureRootFolder(); }
 
 FolderManager::~FolderManager() {}
+
+void FolderManager::EnsureRootFolder() {
+  if (notebook_->GetType() == NotebookType::Raw) {
+    return;
+  }
+
+  const std::string folder_path("");
+  std::unique_ptr<FolderConfig> root_config;
+  VxCoreError error = LoadFolderConfig(folder_path, root_config);
+  if (error != VXCORE_OK) {
+    root_config.reset(new FolderConfig(folder_path));
+    error = SaveFolderConfig(folder_path, *root_config);
+    // TODO: log error if saving fails
+  }
+  CacheConfig(folder_path, std::move(root_config));
+}
 
 std::string FolderManager::GetConfigPath(const std::string &folder_path) const {
   if (notebook_->GetType() == NotebookType::Raw) {
@@ -47,8 +63,9 @@ FolderConfig *FolderManager::GetCachedConfig(const std::string &folder_path) {
   return nullptr;
 }
 
-void FolderManager::CacheConfig(const std::string &folder_path, const FolderConfig &config) {
-  config_cache_[folder_path] = std::make_unique<FolderConfig>(config);
+void FolderManager::CacheConfig(const std::string &folder_path,
+                                std::unique_ptr<FolderConfig> config) {
+  config_cache_[folder_path] = std::move(config);
 }
 
 void FolderManager::InvalidateCache(const std::string &folder_path) {
@@ -64,7 +81,10 @@ FileRecord *FolderManager::FindFileRecord(FolderConfig &config, const std::strin
   return nullptr;
 }
 
-VxCoreError FolderManager::LoadFolderConfig(const std::string &folder_path, FolderConfig &config) {
+VxCoreError FolderManager::LoadFolderConfig(const std::string &folder_path,
+                                            std::unique_ptr<FolderConfig> &out_config) {
+  out_config.reset();
+
   if (notebook_->GetType() == NotebookType::Raw) {
     return VXCORE_ERR_UNSUPPORTED;
   }
@@ -86,7 +106,7 @@ VxCoreError FolderManager::LoadFolderConfig(const std::string &folder_path, Fold
   try {
     nlohmann::json json;
     file >> json;
-    config = FolderConfig::FromJson(json);
+    out_config = std::make_unique<FolderConfig>(FolderConfig::FromJson(json));
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
@@ -120,8 +140,6 @@ VxCoreError FolderManager::SaveFolderConfig(const std::string &folder_path,
     nlohmann::json json = config.ToJson();
     file << json.dump(2);
     file.close();
-
-    InvalidateCache(folder_path);
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
@@ -130,34 +148,43 @@ VxCoreError FolderManager::SaveFolderConfig(const std::string &folder_path,
 
 VxCoreError FolderManager::GetFolderConfig(const std::string &folder_path,
                                            std::string &out_config_json) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  out_config_json.clear();
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+  out_config_json = config->ToJson().dump();
+  return VXCORE_OK;
+}
 
+VxCoreError FolderManager::GetFolderConfig(const std::string &folder_path,
+                                           FolderConfig **out_config) {
+  *out_config = nullptr;
   if (notebook_->GetType() == NotebookType::Raw) {
     return VXCORE_ERR_UNSUPPORTED;
   }
 
   FolderConfig *cached = GetCachedConfig(folder_path);
   if (cached) {
-    out_config_json = cached->ToJson().dump();
+    *out_config = cached;
     return VXCORE_OK;
   }
 
-  FolderConfig config;
+  std::unique_ptr<FolderConfig> config;
   VxCoreError error = LoadFolderConfig(folder_path, config);
   if (error != VXCORE_OK) {
     return error;
   }
 
-  CacheConfig(folder_path, config);
-  out_config_json = config.ToJson().dump();
+  *out_config = config.get();
+  config_cache_[folder_path] = std::move(config);
   return VXCORE_OK;
 }
 
 VxCoreError FolderManager::CreateFolder(const std::string &parent_path,
                                         const std::string &folder_name,
                                         std::string &out_folder_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
   if (notebook_->GetType() == NotebookType::Raw) {
     return VXCORE_ERR_UNSUPPORTED;
   }
@@ -165,90 +192,81 @@ VxCoreError FolderManager::CreateFolder(const std::string &parent_path,
   std::string content_path = GetContentPath(parent_path);
   fs::path folder_path = fs::path(content_path) / folder_name;
 
+  if (fs::exists(folder_path)) {
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+
+  FolderConfig *parent_config = nullptr;
+  VxCoreError error = GetFolderConfig(parent_path, &parent_config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  auto it = std::find(parent_config->folders.begin(), parent_config->folders.end(), folder_name);
+  if (it != parent_config->folders.end()) {
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+
   try {
-    if (fs::exists(folder_path)) {
-      return VXCORE_ERR_ALREADY_EXISTS;
-    }
-
     fs::create_directories(folder_path);
-
-    FolderConfig parent_config;
-    VxCoreError error = LoadFolderConfig(parent_path, parent_config);
-    if (error != VXCORE_OK) {
-      parent_config = FolderConfig("");
-    }
-
-    auto it = std::find(parent_config.folders.begin(), parent_config.folders.end(), folder_name);
-    if (it == parent_config.folders.end()) {
-      parent_config.folders.push_back(folder_name);
-    }
-
-    error = SaveFolderConfig(parent_path, parent_config);
-    if (error != VXCORE_OK) {
-      return error;
-    }
-
-    std::string new_folder_path =
-        parent_path.empty() || parent_path == "." ? folder_name : parent_path + "/" + folder_name;
-    FolderConfig new_config(folder_name);
-    error = SaveFolderConfig(new_folder_path, new_config);
-    if (error != VXCORE_OK) {
-      return error;
-    }
-
-    out_folder_id = new_config.id;
-    return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
   }
+
+  parent_config->folders.push_back(folder_name);
+  parent_config->modified_utc = GetCurrentTimestampMillis();
+  error = SaveFolderConfig(parent_path, *parent_config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  const auto folder_relative_path = ConcatenatePaths(parent_path, folder_name);
+  std::unique_ptr<FolderConfig> new_config(new FolderConfig(folder_name));
+  error = SaveFolderConfig(folder_relative_path, *new_config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  out_folder_id = new_config->id;
+  CacheConfig(folder_relative_path, std::move(new_config));
+  return VXCORE_OK;
 }
 
 VxCoreError FolderManager::DeleteFolder(const std::string &folder_path) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
   if (notebook_->GetType() == NotebookType::Raw) {
     return VXCORE_ERR_UNSUPPORTED;
   }
 
-  std::string content_path = GetContentPath(folder_path);
+  const std::string content_path = GetContentPath(folder_path);
+  const std::string config_path = GetConfigPath(folder_path);
+
+  if (!fs::exists(content_path)) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  InvalidateCache(folder_path);
+
+  const auto [parent_path, folder_name] = SplitPath(folder_path);
+  FolderConfig *parent_config = nullptr;
+  VxCoreError error = GetFolderConfig(parent_path, &parent_config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+  auto it = std::find(parent_config->folders.begin(), parent_config->folders.end(), folder_name);
+  if (it != parent_config->folders.end()) {
+    parent_config->folders.erase(it);
+    parent_config->modified_utc = GetCurrentTimestampMillis();
+    error = SaveFolderConfig(parent_path, *parent_config);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+  }
 
   try {
-    if (!fs::exists(content_path)) {
-      return VXCORE_ERR_NOT_FOUND;
-    }
-
-    fs::remove_all(content_path);
-
-    size_t last_slash = folder_path.find_last_of("/\\");
-    std::string parent_path;
-    std::string folder_name;
-
-    if (last_slash == std::string::npos) {
-      parent_path = ".";
-      folder_name = folder_path;
-    } else {
-      parent_path = folder_path.substr(0, last_slash);
-      folder_name = folder_path.substr(last_slash + 1);
-    }
-
-    FolderConfig parent_config;
-    VxCoreError error = LoadFolderConfig(parent_path, parent_config);
-    if (error == VXCORE_OK) {
-      auto it = std::find(parent_config.folders.begin(), parent_config.folders.end(), folder_name);
-      if (it != parent_config.folders.end()) {
-        parent_config.folders.erase(it);
-        SaveFolderConfig(parent_path, parent_config);
-      }
-    }
-
-    std::string config_path = GetConfigPath(folder_path);
     if (fs::exists(config_path)) {
       fs::remove_all(fs::path(config_path).parent_path());
     }
-
-    InvalidateCache(folder_path);
-    InvalidateCache(parent_path);
-
+    fs::remove_all(content_path);
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
@@ -257,14 +275,12 @@ VxCoreError FolderManager::DeleteFolder(const std::string &folder_path) {
 
 VxCoreError FolderManager::UpdateFolderMetadata(const std::string &folder_path,
                                                 const std::string &metadata_json) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
   if (notebook_->GetType() == NotebookType::Raw) {
     return VXCORE_ERR_UNSUPPORTED;
   }
 
-  FolderConfig config;
-  VxCoreError error = LoadFolderConfig(folder_path, config);
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
     return error;
   }
@@ -275,19 +291,18 @@ VxCoreError FolderManager::UpdateFolderMetadata(const std::string &folder_path,
       return VXCORE_ERR_JSON_PARSE;
     }
 
-    config.metadata = metadata;
-    config.modified_utc = GetCurrentTimestampMillis();
+    config->metadata = metadata;
+    config->modified_utc = GetCurrentTimestampMillis();
 
-    return SaveFolderConfig(folder_path, config);
+    error = SaveFolderConfig(folder_path, *config);
+    return error;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
   }
 }
 
-VxCoreError FolderManager::TrackFile(const std::string &folder_path, const std::string &file_name,
-                                     std::string &out_file_id) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
+VxCoreError FolderManager::CreateFile(const std::string &folder_path, const std::string &file_name,
+                                      std::string &out_file_id) {
   if (notebook_->GetType() == NotebookType::Raw) {
     return VXCORE_ERR_UNSUPPORTED;
   }
@@ -295,91 +310,91 @@ VxCoreError FolderManager::TrackFile(const std::string &folder_path, const std::
   std::string content_path = GetContentPath(folder_path);
   fs::path file_path = fs::path(content_path) / file_name;
 
-  if (!fs::exists(file_path)) {
-    return VXCORE_ERR_NOT_FOUND;
+  if (fs::exists(file_path)) {
+    return VXCORE_ERR_ALREADY_EXISTS;
   }
 
-  FolderConfig config;
-  VxCoreError error = LoadFolderConfig(folder_path, config);
-  if (error != VXCORE_OK) {
-    config = FolderConfig("");
-  }
-
-  FileRecord *existing = FindFileRecord(config, file_name);
-  if (existing) {
-    out_file_id = existing->id;
-    return VXCORE_OK;
-  }
-
-  FileRecord new_file(file_name);
-
-  try {
-    auto file_time = fs::last_write_time(file_path);
-    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-        file_time - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
-    auto timestamp =
-        std::chrono::duration_cast<std::chrono::milliseconds>(sctp.time_since_epoch()).count();
-
-    new_file.created_utc = timestamp;
-    new_file.modified_utc = timestamp;
-  } catch (const std::exception &) {
-  }
-
-  config.files.push_back(new_file);
-  config.modified_utc = GetCurrentTimestampMillis();
-
-  error = SaveFolderConfig(folder_path, config);
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
     return error;
   }
 
-  out_file_id = new_file.id;
+  if (FindFileRecord(*config, file_name)) {
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+
+  try {
+    std::ofstream(file_path).close();
+  } catch (const std::exception &) {
+    return VXCORE_ERR_IO;
+  }
+
+  const auto ts = GetCurrentTimestampMillis();
+  config->files.emplace_back(file_name);
+  config->files.back().created_utc = ts;
+  config->files.back().modified_utc = ts;
+  config->modified_utc = ts;
+
+  error = SaveFolderConfig(folder_path, *config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  out_file_id = config->files.back().id;
   return VXCORE_OK;
 }
 
-VxCoreError FolderManager::UntrackFile(const std::string &folder_path,
-                                       const std::string &file_name) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
+VxCoreError FolderManager::DeleteFile(const std::string &folder_path,
+                                      const std::string &file_name) {
   if (notebook_->GetType() == NotebookType::Raw) {
     return VXCORE_ERR_UNSUPPORTED;
   }
 
-  FolderConfig config;
-  VxCoreError error = LoadFolderConfig(folder_path, config);
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
     return error;
   }
 
-  auto it = std::find_if(config.files.begin(), config.files.end(),
+  auto it = std::find_if(config->files.begin(), config->files.end(),
                          [&file_name](const FileRecord &file) { return file.name == file_name; });
 
-  if (it == config.files.end()) {
+  if (it == config->files.end()) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
-  config.files.erase(it);
-  config.modified_utc = GetCurrentTimestampMillis();
+  config->files.erase(it);
+  config->modified_utc = GetCurrentTimestampMillis();
+  error = SaveFolderConfig(folder_path, *config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
 
-  return SaveFolderConfig(folder_path, config);
+  try {
+    std::string content_path = GetContentPath(folder_path);
+    fs::path file_path = fs::path(content_path) / file_name;
+    fs::remove(file_path);
+    return VXCORE_OK;
+  } catch (const std::exception &) {
+    return VXCORE_ERR_IO;
+  }
 }
 
 VxCoreError FolderManager::UpdateFileMetadata(const std::string &folder_path,
                                               const std::string &file_name,
                                               const std::string &metadata_json) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
   if (notebook_->GetType() == NotebookType::Raw) {
     return VXCORE_ERR_UNSUPPORTED;
   }
 
-  FolderConfig config;
-  VxCoreError error = LoadFolderConfig(folder_path, config);
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
     return error;
   }
 
-  FileRecord *file = FindFileRecord(config, file_name);
+  FileRecord *file = FindFileRecord(*config, file_name);
   if (!file) {
     return VXCORE_ERR_NOT_FOUND;
   }
@@ -393,9 +408,10 @@ VxCoreError FolderManager::UpdateFileMetadata(const std::string &folder_path,
     file->metadata = metadata;
     file->modified_utc = GetCurrentTimestampMillis();
 
-    config.modified_utc = file->modified_utc;
+    config->modified_utc = file->modified_utc;
 
-    return SaveFolderConfig(folder_path, config);
+    error = SaveFolderConfig(folder_path, *config);
+    return error;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
   }
@@ -404,19 +420,17 @@ VxCoreError FolderManager::UpdateFileMetadata(const std::string &folder_path,
 VxCoreError FolderManager::UpdateFileTags(const std::string &folder_path,
                                           const std::string &file_name,
                                           const std::string &tags_json) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
   if (notebook_->GetType() == NotebookType::Raw) {
     return VXCORE_ERR_UNSUPPORTED;
   }
 
-  FolderConfig config;
-  VxCoreError error = LoadFolderConfig(folder_path, config);
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
     return error;
   }
 
-  FileRecord *file = FindFileRecord(config, file_name);
+  FileRecord *file = FindFileRecord(*config, file_name);
   if (!file) {
     return VXCORE_ERR_NOT_FOUND;
   }
@@ -430,79 +444,35 @@ VxCoreError FolderManager::UpdateFileTags(const std::string &folder_path,
     file->tags = tags.get<std::vector<std::string>>();
     file->modified_utc = GetCurrentTimestampMillis();
 
-    config.modified_utc = file->modified_utc;
+    config->modified_utc = file->modified_utc;
 
-    return SaveFolderConfig(folder_path, config);
+    error = SaveFolderConfig(folder_path, *config);
+    return error;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
   }
 }
 
-VxCoreError FolderManager::ListFolder(const std::string &folder_path,
-                                      std::string &out_contents_json) {
-  std::lock_guard<std::mutex> lock(mutex_);
+void FolderManager::ClearCache() { config_cache_.clear(); }
 
-  std::string content_path = GetContentPath(folder_path);
-
-  if (!fs::exists(content_path)) {
-    return VXCORE_ERR_NOT_FOUND;
-  }
-
-  if (!fs::is_directory(content_path)) {
-    return VXCORE_ERR_INVALID_PARAM;
-  }
-
-  try {
-    nlohmann::json result;
-    result["tracked_files"] = nlohmann::json::array();
-    result["tracked_folders"] = nlohmann::json::array();
-    result["all_files"] = nlohmann::json::array();
-    result["all_folders"] = nlohmann::json::array();
-
-    if (notebook_->GetType() == NotebookType::Bundled) {
-      FolderConfig config;
-      VxCoreError error = LoadFolderConfig(folder_path, config);
-      if (error == VXCORE_OK) {
-        for (const auto &file : config.files) {
-          result["tracked_files"].push_back(file.ToJson());
-        }
-        result["tracked_folders"] = config.folders;
-      }
-    }
-
-    for (const auto &entry : fs::directory_iterator(content_path)) {
-      std::string name = entry.path().filename().string();
-
-      if (entry.is_directory()) {
-        if (name != "vx_notebook") {
-          result["all_folders"].push_back(name);
-        }
-      } else if (entry.is_regular_file()) {
-        nlohmann::json file_info;
-        file_info["name"] = name;
-
-        auto file_time = fs::last_write_time(entry.path());
-        auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-            file_time - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
-        auto timestamp =
-            std::chrono::duration_cast<std::chrono::milliseconds>(sctp.time_since_epoch()).count();
-
-        file_info["modified_utc"] = timestamp;
-
-        result["all_files"].push_back(file_info);
-      }
-    }
-
-    out_contents_json = result.dump();
-    return VXCORE_OK;
-  } catch (const std::exception &) {
-    return VXCORE_ERR_IO;
+std::string FolderManager::ConcatenatePaths(const std::string &parent_path,
+                                            const std::string &child_name) const {
+  if (parent_path.empty() || parent_path == ".") {
+    return child_name;
+  } else {
+    return parent_path + "/" + child_name;
   }
 }
 
-void FolderManager::ClearCache() {
-  std::lock_guard<std::mutex> lock(mutex_);
-  config_cache_.clear();
+std::pair<std::string, std::string> FolderManager::SplitPath(const std::string &path) const {
+  size_t last_slash = path.find_last_of("/\\");
+  if (last_slash == std::string::npos) {
+    return {".", path};
+  } else {
+    std::string parent_path = path.substr(0, last_slash);
+    std::string child_name = path.substr(last_slash + 1);
+    return {parent_path, child_name};
+  }
 }
 
 }  // namespace vxcore

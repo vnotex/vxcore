@@ -3,7 +3,6 @@
 
 #include <map>
 #include <memory>
-#include <mutex>
 #include <string>
 
 #include "folder.h"
@@ -27,10 +26,10 @@ class FolderManager {
   VxCoreError UpdateFolderMetadata(const std::string &folder_path,
                                    const std::string &metadata_json);
 
-  VxCoreError TrackFile(const std::string &folder_path, const std::string &file_name,
-                        std::string &out_file_id);
+  VxCoreError CreateFile(const std::string &folder_path, const std::string &file_name,
+                         std::string &out_file_id);
 
-  VxCoreError UntrackFile(const std::string &folder_path, const std::string &file_name);
+  VxCoreError DeleteFile(const std::string &folder_path, const std::string &file_name);
 
   VxCoreError UpdateFileMetadata(const std::string &folder_path, const std::string &file_name,
                                  const std::string &metadata_json);
@@ -38,23 +37,30 @@ class FolderManager {
   VxCoreError UpdateFileTags(const std::string &folder_path, const std::string &file_name,
                              const std::string &tags_json);
 
-  VxCoreError ListFolder(const std::string &folder_path, std::string &out_contents_json);
-
   void ClearCache();
 
  private:
-  VxCoreError LoadFolderConfig(const std::string &folder_path, FolderConfig &config);
+  void EnsureRootFolder();
+  VxCoreError GetFolderConfig(const std::string &folder_path, FolderConfig **out_config);
+  VxCoreError LoadFolderConfig(const std::string &folder_path,
+                               std::unique_ptr<FolderConfig> &out_config);
   VxCoreError SaveFolderConfig(const std::string &folder_path, const FolderConfig &config);
+
   std::string GetConfigPath(const std::string &folder_path) const;
   std::string GetContentPath(const std::string &folder_path) const;
+
+  void CacheConfig(const std::string &folder_path, std::unique_ptr<FolderConfig> config);
   FolderConfig *GetCachedConfig(const std::string &folder_path);
-  void CacheConfig(const std::string &folder_path, const FolderConfig &config);
   void InvalidateCache(const std::string &folder_path);
+
   FileRecord *FindFileRecord(FolderConfig &config, const std::string &file_name);
+
+  std::string ConcatenatePaths(const std::string &parent_path, const std::string &child_name) const;
+
+  std::pair<std::string, std::string> SplitPath(const std::string &path) const;
 
   Notebook *notebook_;
   std::map<std::string, std::unique_ptr<FolderConfig>> config_cache_;
-  std::mutex mutex_;
 };
 
 }  // namespace vxcore

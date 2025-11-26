@@ -137,40 +137,9 @@ VXCORE_API VxCoreError vxcore_folder_update_metadata(VxCoreContextHandle context
   }
 }
 
-VXCORE_API VxCoreError vxcore_folder_list(VxCoreContextHandle context, const char *notebook_id,
-                                          const char *folder_path, char **out_contents_json) {
-  if (!context || !notebook_id || !folder_path || !out_contents_json) {
-    return VXCORE_ERR_INVALID_PARAM;
-  }
-
-  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
-
-  try {
-    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
-    if (!notebook) {
-      ctx->last_error = "Notebook not found";
-      return VXCORE_ERR_NOT_FOUND;
-    }
-
-    vxcore::FolderManager folder_manager(notebook);
-    std::string contents_json;
-
-    VxCoreError error = folder_manager.ListFolder(folder_path, contents_json);
-    if (error != VXCORE_OK) {
-      return error;
-    }
-
-    *out_contents_json = vxcore_strdup(contents_json.c_str());
-    return VXCORE_OK;
-  } catch (const std::exception &e) {
-    ctx->last_error = std::string("Exception: ") + e.what();
-    return VXCORE_ERR_UNKNOWN;
-  }
-}
-
-VXCORE_API VxCoreError vxcore_file_track(VxCoreContextHandle context, const char *notebook_id,
-                                         const char *folder_path, const char *file_name,
-                                         char **out_file_id) {
+VXCORE_API VxCoreError vxcore_file_create(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *folder_path, const char *file_name,
+                                          char **out_file_id) {
   if (!context || !notebook_id || !folder_path || !file_name || !out_file_id) {
     return VXCORE_ERR_INVALID_PARAM;
   }
@@ -192,7 +161,7 @@ VXCORE_API VxCoreError vxcore_file_track(VxCoreContextHandle context, const char
     vxcore::FolderManager folder_manager(notebook);
     std::string file_id;
 
-    VxCoreError error = folder_manager.TrackFile(folder_path, file_name, file_id);
+    VxCoreError error = folder_manager.CreateFile(folder_path, file_name, file_id);
     if (error != VXCORE_OK) {
       return error;
     }
@@ -205,8 +174,8 @@ VXCORE_API VxCoreError vxcore_file_track(VxCoreContextHandle context, const char
   }
 }
 
-VXCORE_API VxCoreError vxcore_file_untrack(VxCoreContextHandle context, const char *notebook_id,
-                                           const char *folder_path, const char *file_name) {
+VXCORE_API VxCoreError vxcore_file_delete(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *folder_path, const char *file_name) {
   if (!context || !notebook_id || !folder_path || !file_name) {
     return VXCORE_ERR_INVALID_PARAM;
   }
@@ -226,7 +195,7 @@ VXCORE_API VxCoreError vxcore_file_untrack(VxCoreContextHandle context, const ch
     }
 
     vxcore::FolderManager folder_manager(notebook);
-    return folder_manager.UntrackFile(folder_path, file_name);
+    return folder_manager.DeleteFile(folder_path, file_name);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
