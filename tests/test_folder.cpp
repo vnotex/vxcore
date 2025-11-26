@@ -1,13 +1,9 @@
-#include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
 
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
-
-namespace fs = std::filesystem;
 
 int test_folder_create() {
   std::cout << "  Running test_folder_create..." << std::endl;
@@ -148,6 +144,326 @@ int test_folder_delete() {
   return 0;
 }
 
+int test_folder_create_duplicate() {
+  std::cout << "  Running test_folder_create_duplicate..." << std::endl;
+  cleanup_test_dir("test_folder_dup_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_folder_dup_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "duplicate", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *folder_id2 = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "duplicate", &folder_id2);
+  ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
+  ASSERT_NULL(folder_id2);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_folder_dup_nb");
+  std::cout << "  ✓ test_folder_create_duplicate passed" << std::endl;
+  return 0;
+}
+
+int test_file_create_duplicate() {
+  std::cout << "  Running test_file_create_duplicate..." << std::endl;
+  cleanup_test_dir("test_file_dup_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_file_dup_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "duplicate.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  char *file_id2 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "duplicate.md", &file_id2);
+  ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
+  ASSERT_NULL(file_id2);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_file_dup_nb");
+  std::cout << "  ✓ test_file_create_duplicate passed" << std::endl;
+  return 0;
+}
+
+int test_folder_invalid_params() {
+  std::cout << "  Running test_folder_invalid_params..." << std::endl;
+  cleanup_test_dir("test_folder_invalid_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_folder_invalid_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(nullptr, notebook_id, ".", "test", &folder_id);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_folder_create(ctx, nullptr, ".", "test", &folder_id);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_folder_create(ctx, notebook_id, ".", nullptr, &folder_id);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_folder_create(ctx, notebook_id, ".", "test", nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_folder_invalid_nb");
+  std::cout << "  ✓ test_folder_invalid_params passed" << std::endl;
+  return 0;
+}
+
+int test_file_invalid_params() {
+  std::cout << "  Running test_file_invalid_params..." << std::endl;
+  cleanup_test_dir("test_file_invalid_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_file_invalid_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(nullptr, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_file_create(ctx, nullptr, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_file_create(ctx, notebook_id, nullptr, "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_file_create(ctx, notebook_id, ".", nullptr, &file_id);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_file_invalid_nb");
+  std::cout << "  ✓ test_file_invalid_params passed" << std::endl;
+  return 0;
+}
+
+int test_folder_not_found() {
+  std::cout << "  Running test_folder_not_found..." << std::endl;
+  cleanup_test_dir("test_folder_notfound_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_folder_notfound_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_folder_delete(ctx, notebook_id, "nonexistent");
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_folder_notfound_nb");
+  std::cout << "  ✓ test_folder_not_found passed" << std::endl;
+  return 0;
+}
+
+int test_file_not_found() {
+  std::cout << "  Running test_file_not_found..." << std::endl;
+  cleanup_test_dir("test_file_notfound_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_file_notfound_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_delete(ctx, notebook_id, ".", "nonexistent.md");
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  err = vxcore_file_update_metadata(ctx, notebook_id, ".", "nonexistent.md", "{}");
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  err = vxcore_file_update_tags(ctx, notebook_id, ".", "nonexistent.md", "[]");
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_file_notfound_nb");
+  std::cout << "  ✓ test_file_not_found passed" << std::endl;
+  return 0;
+}
+
+int test_invalid_json() {
+  std::cout << "  Running test_invalid_json..." << std::endl;
+  cleanup_test_dir("test_invalid_json_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_invalid_json_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_update_metadata(ctx, notebook_id, ".", "test.md", "invalid json");
+  ASSERT_EQ(err, VXCORE_ERR_JSON_PARSE);
+
+  err = vxcore_file_update_metadata(ctx, notebook_id, ".", "test.md", "[]");
+  ASSERT_EQ(err, VXCORE_ERR_JSON_PARSE);
+
+  err = vxcore_file_update_tags(ctx, notebook_id, ".", "test.md", "not an array");
+  ASSERT_EQ(err, VXCORE_ERR_JSON_PARSE);
+
+  err = vxcore_file_update_tags(ctx, notebook_id, ".", "test.md", "{}");
+  ASSERT_EQ(err, VXCORE_ERR_JSON_PARSE);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_invalid_json_nb");
+  std::cout << "  ✓ test_invalid_json passed" << std::endl;
+  return 0;
+}
+
+int test_notebook_not_found() {
+  std::cout << "  Running test_notebook_not_found..." << std::endl;
+  cleanup_test_dir("test_nb_notfound");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, "nonexistent_nb", ".", "test", &folder_id);
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, "nonexistent_nb", ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_notfound");
+  std::cout << "  ✓ test_notebook_not_found passed" << std::endl;
+  return 0;
+}
+
+int test_file_delete() {
+  std::cout << "  Running test_file_delete..." << std::endl;
+  cleanup_test_dir("test_file_delete_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_file_delete_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "to_delete.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  ASSERT(path_exists("test_file_delete_nb/to_delete.md"));
+
+  err = vxcore_file_delete(ctx, notebook_id, ".", "to_delete.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  ASSERT(!path_exists("test_file_delete_nb/to_delete.md"));
+
+  char *config_json = nullptr;
+  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"].size() == 0);
+
+  vxcore_string_free(config_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_file_delete_nb");
+  std::cout << "  ✓ test_file_delete passed" << std::endl;
+  return 0;
+}
+
+int test_nested_folder_operations() {
+  std::cout << "  Running test_nested_folder_operations..." << std::endl;
+  cleanup_test_dir("test_nested_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nested_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder1_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "parent", &folder1_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder1_id);
+
+  char *folder2_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, "parent", "child", &folder2_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder2_id);
+
+  ASSERT(path_exists("test_nested_nb/parent"));
+  ASSERT(path_exists("test_nested_nb/parent/child"));
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "parent/child", "nested.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  ASSERT(path_exists("test_nested_nb/parent/child/nested.md"));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nested_nb");
+  std::cout << "  ✓ test_nested_folder_operations passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -157,6 +473,16 @@ int main() {
   RUN_TEST(test_file_create);
   RUN_TEST(test_file_metadata_and_tags);
   RUN_TEST(test_folder_delete);
+  RUN_TEST(test_folder_create_duplicate);
+  RUN_TEST(test_file_create_duplicate);
+  RUN_TEST(test_folder_invalid_params);
+  RUN_TEST(test_file_invalid_params);
+  RUN_TEST(test_folder_not_found);
+  RUN_TEST(test_file_not_found);
+  RUN_TEST(test_invalid_json);
+  RUN_TEST(test_notebook_not_found);
+  RUN_TEST(test_file_delete);
+  RUN_TEST(test_nested_folder_operations);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;
