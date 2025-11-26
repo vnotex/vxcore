@@ -4,7 +4,9 @@
 #include "core/config_manager.h"
 #include "core/context.h"
 #include "core/notebook_manager.h"
+#include "utils/logger.h"
 #include "vxcore/vxcore.h"
+#include "vxcore/vxcore_log.h"
 
 VXCORE_API VxCoreVersion vxcore_get_version(void) {
   VxCoreVersion version = {0, 1, 0};
@@ -197,4 +199,52 @@ VXCORE_API void vxcore_string_free(char *str) {
   if (str) {
     free(str);
   }
+}
+
+VXCORE_API VxCoreError vxcore_log_set_level(VxCoreLogLevel level) {
+  vxcore::LogLevel cpp_level;
+  switch (level) {
+    case VXCORE_LOG_LEVEL_TRACE:
+      cpp_level = vxcore::LogLevel::kTrace;
+      break;
+    case VXCORE_LOG_LEVEL_DEBUG:
+      cpp_level = vxcore::LogLevel::kDebug;
+      break;
+    case VXCORE_LOG_LEVEL_INFO:
+      cpp_level = vxcore::LogLevel::kInfo;
+      break;
+    case VXCORE_LOG_LEVEL_WARN:
+      cpp_level = vxcore::LogLevel::kWarn;
+      break;
+    case VXCORE_LOG_LEVEL_ERROR:
+      cpp_level = vxcore::LogLevel::kError;
+      break;
+    case VXCORE_LOG_LEVEL_FATAL:
+      cpp_level = vxcore::LogLevel::kFatal;
+      break;
+    case VXCORE_LOG_LEVEL_OFF:
+      cpp_level = vxcore::LogLevel::kOff;
+      break;
+    default:
+      return VXCORE_ERR_INVALID_PARAM;
+  }
+  vxcore::Logger::GetInstance().SetLevel(cpp_level);
+  return VXCORE_OK;
+}
+
+VXCORE_API VxCoreError vxcore_log_set_file(const char *path) {
+  if (!path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  try {
+    vxcore::Logger::GetInstance().SetLogFile(path);
+    return VXCORE_OK;
+  } catch (...) {
+    return VXCORE_ERR_IO;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_log_enable_console(int enable) {
+  vxcore::Logger::GetInstance().EnableConsole(enable != 0);
+  return VXCORE_OK;
 }

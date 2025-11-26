@@ -2,6 +2,7 @@ set(VXCORE_PUBLIC_HEADERS
     ${CMAKE_SOURCE_DIR}/include/vxcore/vxcore.h
     ${CMAKE_SOURCE_DIR}/include/vxcore/vxcore_types.h
     ${CMAKE_SOURCE_DIR}/include/vxcore/vxcore_events.h
+    ${CMAKE_SOURCE_DIR}/include/vxcore/vxcore_log.h
 )
 
 set(VXCORE_SOURCES
@@ -22,6 +23,7 @@ set(VXCORE_SOURCES
     core/folder.cpp
     core/folder_manager.cpp
     utils/utils.cpp
+    utils/logger.cpp
     platform/path_provider.cpp
 )
 

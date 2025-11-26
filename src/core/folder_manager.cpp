@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 
+#include "utils/logger.h"
 #include "utils/utils.h"
 
 namespace vxcore {
@@ -189,27 +190,35 @@ VxCoreError FolderManager::CreateFolder(const std::string &parent_path,
     return VXCORE_ERR_UNSUPPORTED;
   }
 
+  VXCORE_LOG_INFO("Creating folder: parent=%s, name=%s", parent_path.c_str(), folder_name.c_str());
+
   std::string content_path = GetContentPath(parent_path);
   fs::path folder_path = fs::path(content_path) / folder_name;
 
   if (fs::exists(folder_path)) {
+    VXCORE_LOG_WARN("Folder already exists: %s", folder_path.string().c_str());
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
   FolderConfig *parent_config = nullptr;
   VxCoreError error = GetFolderConfig(parent_path, &parent_config);
   if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to get parent folder config: parent=%s, error=%d", parent_path.c_str(),
+                     error);
     return error;
   }
 
   auto it = std::find(parent_config->folders.begin(), parent_config->folders.end(), folder_name);
   if (it != parent_config->folders.end()) {
+    VXCORE_LOG_WARN("Folder already exists in config: %s", folder_name.c_str());
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
   try {
     fs::create_directories(folder_path);
-  } catch (const std::exception &) {
+    VXCORE_LOG_DEBUG("Created folder directory: %s", folder_path.string().c_str());
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("Failed to create folder directory: %s", e.what());
     return VXCORE_ERR_IO;
   }
 
@@ -217,6 +226,7 @@ VxCoreError FolderManager::CreateFolder(const std::string &parent_path,
   parent_config->modified_utc = GetCurrentTimestampMillis();
   error = SaveFolderConfig(parent_path, *parent_config);
   if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to save parent folder config: error=%d", error);
     return error;
   }
 
@@ -224,11 +234,13 @@ VxCoreError FolderManager::CreateFolder(const std::string &parent_path,
   std::unique_ptr<FolderConfig> new_config(new FolderConfig(folder_name));
   error = SaveFolderConfig(folder_relative_path, *new_config);
   if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to save new folder config: error=%d", error);
     return error;
   }
 
   out_folder_id = new_config->id;
   CacheConfig(folder_relative_path, std::move(new_config));
+  VXCORE_LOG_INFO("Folder created successfully: id=%s", out_folder_id.c_str());
   return VXCORE_OK;
 }
 
@@ -307,26 +319,34 @@ VxCoreError FolderManager::CreateFile(const std::string &folder_path, const std:
     return VXCORE_ERR_UNSUPPORTED;
   }
 
+  VXCORE_LOG_INFO("Creating file: folder=%s, name=%s", folder_path.c_str(), file_name.c_str());
+
   std::string content_path = GetContentPath(folder_path);
   fs::path file_path = fs::path(content_path) / file_name;
 
   if (fs::exists(file_path)) {
+    VXCORE_LOG_WARN("File already exists: %s", file_path.string().c_str());
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to get folder config: folder=%s, error=%d", folder_path.c_str(),
+                     error);
     return error;
   }
 
   if (FindFileRecord(*config, file_name)) {
+    VXCORE_LOG_WARN("File already exists in config: %s", file_name.c_str());
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
   try {
     std::ofstream(file_path).close();
-  } catch (const std::exception &) {
+    VXCORE_LOG_DEBUG("Created file: %s", file_path.string().c_str());
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("Failed to create file: %s", e.what());
     return VXCORE_ERR_IO;
   }
 

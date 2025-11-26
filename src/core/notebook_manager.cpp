@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 
+#include "utils/logger.h"
 #include "utils/utils.h"
 
 namespace vxcore {
@@ -66,10 +67,14 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
                                             std::string &out_notebook_id) {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  VXCORE_LOG_INFO("Creating notebook: root_folder=%s, type=%d", root_folder.c_str(),
+                  static_cast<int>(type));
+
   try {
     std::filesystem::path rootPath(root_folder);
     if (!std::filesystem::exists(rootPath)) {
       std::filesystem::create_directories(rootPath);
+      VXCORE_LOG_DEBUG("Created root directory: %s", root_folder.c_str());
     }
 
     NotebookConfig config;
@@ -82,6 +87,7 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
 
     VxCoreError err = notebook->SaveConfig();
     if (err != VXCORE_OK) {
+      VXCORE_LOG_ERROR("Failed to save notebook config: error=%d", err);
       return err;
     }
 
@@ -98,6 +104,8 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
 
     err = SaveNotebookRecord(record);
     if (err != VXCORE_OK) {
+      VXCORE_LOG_ERROR("Failed to save notebook record: id=%s, error=%d", out_notebook_id.c_str(),
+                       err);
       return err;
     }
 
@@ -105,12 +113,16 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
 
     UpdateSessionConfig();
 
+    VXCORE_LOG_INFO("Notebook created successfully: id=%s", out_notebook_id.c_str());
     return VXCORE_OK;
-  } catch (const nlohmann::json::exception &) {
+  } catch (const nlohmann::json::exception &e) {
+    VXCORE_LOG_ERROR("JSON parse error while creating notebook: %s", e.what());
     return VXCORE_ERR_JSON_PARSE;
-  } catch (const std::filesystem::filesystem_error &) {
+  } catch (const std::filesystem::filesystem_error &e) {
+    VXCORE_LOG_ERROR("Filesystem error while creating notebook: %s", e.what());
     return VXCORE_ERR_IO;
   } catch (...) {
+    VXCORE_LOG_ERROR("Unknown error while creating notebook");
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -119,21 +131,27 @@ VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
                                           std::string &out_notebook_id) {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  VXCORE_LOG_INFO("Opening notebook: root_folder=%s", root_folder.c_str());
+
   try {
     std::filesystem::path rootPath(root_folder);
     if (!std::filesystem::exists(rootPath)) {
+      VXCORE_LOG_WARN("Notebook root folder not found: %s", root_folder.c_str());
       return VXCORE_ERR_NOT_FOUND;
     }
 
     NotebookRecord record;
     VxCoreError err = LoadNotebookRecord(root_folder, record);
     if (err != VXCORE_OK) {
+      VXCORE_LOG_ERROR("Failed to load notebook record: root_folder=%s, error=%d",
+                       root_folder.c_str(), err);
       return err;
     }
 
     for (const auto &pair : notebooks_) {
       if (pair.second->GetRootFolder() == root_folder) {
         out_notebook_id = pair.first;
+        VXCORE_LOG_DEBUG("Notebook already open: id=%s", out_notebook_id.c_str());
         return VXCORE_OK;
       }
     }
@@ -147,11 +165,13 @@ VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
       configPath /= "config.json";
 
       if (!std::filesystem::exists(configPath)) {
+        VXCORE_LOG_ERROR("Bundled notebook config not found: %s", configPath.string().c_str());
         return VXCORE_ERR_NOT_FOUND;
       }
 
       std::ifstream file(configPath);
       if (!file.is_open()) {
+        VXCORE_LOG_ERROR("Failed to open notebook config file: %s", configPath.string().c_str());
         return VXCORE_ERR_IO;
       }
 
@@ -168,6 +188,8 @@ VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
     record.last_opened_timestamp = GetCurrentTimestampMillis();
     err = SaveNotebookRecord(record);
     if (err != VXCORE_OK) {
+      VXCORE_LOG_ERROR("Failed to save notebook record after opening: id=%s, error=%d",
+                       out_notebook_id.c_str(), err);
       return err;
     }
 
@@ -175,12 +197,16 @@ VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
 
     UpdateSessionConfig();
 
+    VXCORE_LOG_INFO("Notebook opened successfully: id=%s", out_notebook_id.c_str());
     return VXCORE_OK;
-  } catch (const nlohmann::json::exception &) {
+  } catch (const nlohmann::json::exception &e) {
+    VXCORE_LOG_ERROR("JSON parse error while opening notebook: %s", e.what());
     return VXCORE_ERR_JSON_PARSE;
-  } catch (const std::filesystem::filesystem_error &) {
+  } catch (const std::filesystem::filesystem_error &e) {
+    VXCORE_LOG_ERROR("Filesystem error while opening notebook: %s", e.what());
     return VXCORE_ERR_IO;
   } catch (...) {
+    VXCORE_LOG_ERROR("Unknown error while opening notebook");
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -188,8 +214,11 @@ VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
 VxCoreError NotebookManager::CloseNotebook(const std::string &notebook_id) {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  VXCORE_LOG_INFO("Closing notebook: id=%s", notebook_id.c_str());
+
   auto it = notebooks_.find(notebook_id);
   if (it == notebooks_.end()) {
+    VXCORE_LOG_WARN("Notebook not found for closing: id=%s", notebook_id.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
 
@@ -197,6 +226,7 @@ VxCoreError NotebookManager::CloseNotebook(const std::string &notebook_id) {
 
   UpdateSessionConfig();
 
+  VXCORE_LOG_INFO("Notebook closed successfully: id=%s", notebook_id.c_str());
   return VXCORE_OK;
 }
 
