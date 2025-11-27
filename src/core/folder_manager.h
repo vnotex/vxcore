@@ -26,6 +26,15 @@ class FolderManager {
   VxCoreError UpdateFolderMetadata(const std::string &folder_path,
                                    const std::string &metadata_json);
 
+  VxCoreError GetFolderMetadata(const std::string &folder_path, std::string &out_metadata_json);
+
+  VxCoreError RenameFolder(const std::string &folder_path, const std::string &new_name);
+
+  VxCoreError MoveFolder(const std::string &src_path, const std::string &dest_parent_path);
+
+  VxCoreError CopyFolder(const std::string &src_path, const std::string &dest_parent_path,
+                         const std::string &new_name, std::string &out_folder_id);
+
   VxCoreError CreateFile(const std::string &folder_path, const std::string &file_name,
                          std::string &out_file_id);
 
@@ -36,6 +45,22 @@ class FolderManager {
 
   VxCoreError UpdateFileTags(const std::string &folder_path, const std::string &file_name,
                              const std::string &tags_json);
+
+  VxCoreError GetFileInfo(const std::string &folder_path, const std::string &file_name,
+                          std::string &out_file_info_json);
+
+  VxCoreError GetFileMetadata(const std::string &folder_path, const std::string &file_name,
+                              std::string &out_metadata_json);
+
+  VxCoreError RenameFile(const std::string &folder_path, const std::string &old_name,
+                         const std::string &new_name);
+
+  VxCoreError MoveFile(const std::string &src_folder_path, const std::string &file_name,
+                       const std::string &dest_folder_path);
+
+  VxCoreError CopyFile(const std::string &src_folder_path, const std::string &file_name,
+                       const std::string &dest_folder_path, const std::string &new_name,
+                       std::string &out_file_id);
 
   void ClearCache();
 

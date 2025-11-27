@@ -69,6 +69,20 @@ VXCORE_API VxCoreError vxcore_folder_update_metadata(VxCoreContextHandle context
                                                      const char *folder_path,
                                                      const char *metadata_json);
 
+VXCORE_API VxCoreError vxcore_folder_get_metadata(VxCoreContextHandle context,
+                                                  const char *notebook_id, const char *folder_path,
+                                                  char **out_metadata_json);
+
+VXCORE_API VxCoreError vxcore_folder_rename(VxCoreContextHandle context, const char *notebook_id,
+                                            const char *folder_path, const char *new_name);
+
+VXCORE_API VxCoreError vxcore_folder_move(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *src_path, const char *dest_parent_path);
+
+VXCORE_API VxCoreError vxcore_folder_copy(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *src_path, const char *dest_parent_path,
+                                          const char *new_name, char **out_folder_id);
+
 VXCORE_API VxCoreError vxcore_file_create(VxCoreContextHandle context, const char *notebook_id,
                                           const char *folder_path, const char *file_name,
                                           char **out_file_id);
@@ -80,6 +94,27 @@ VXCORE_API VxCoreError vxcore_file_update_metadata(VxCoreContextHandle context,
                                                    const char *notebook_id, const char *folder_path,
                                                    const char *file_name,
                                                    const char *metadata_json);
+
+VXCORE_API VxCoreError vxcore_file_get_info(VxCoreContextHandle context, const char *notebook_id,
+                                            const char *folder_path, const char *file_name,
+                                            char **out_file_info_json);
+
+VXCORE_API VxCoreError vxcore_file_get_metadata(VxCoreContextHandle context,
+                                                const char *notebook_id, const char *folder_path,
+                                                const char *file_name, char **out_metadata_json);
+
+VXCORE_API VxCoreError vxcore_file_rename(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *folder_path, const char *old_name,
+                                          const char *new_name);
+
+VXCORE_API VxCoreError vxcore_file_move(VxCoreContextHandle context, const char *notebook_id,
+                                        const char *src_folder_path, const char *file_name,
+                                        const char *dest_folder_path);
+
+VXCORE_API VxCoreError vxcore_file_copy(VxCoreContextHandle context, const char *notebook_id,
+                                        const char *src_folder_path, const char *file_name,
+                                        const char *dest_folder_path, const char *new_name,
+                                        char **out_file_id);
 
 VXCORE_API VxCoreError vxcore_file_update_tags(VxCoreContextHandle context, const char *notebook_id,
                                                const char *folder_path, const char *file_name,
