@@ -49,11 +49,60 @@ class Logger {
   mutable std::mutex mutex_;
 };
 
+#if defined(__GNUC__) || defined(__clang__)
+#define VXCORE_LOG_TRACE(fmt, ...)                                                        \
+  do {                                                                                    \
+    if (::vxcore::Logger::GetInstance().GetLevel() <= ::vxcore::LogLevel::kTrace) {       \
+      ::vxcore::Logger::GetInstance().Log(::vxcore::LogLevel::kTrace, __FILE__, __LINE__, \
+                                          fmt __VA_OPT__(, ) __VA_ARGS__);                \
+    }                                                                                     \
+  } while (0)
+
+#define VXCORE_LOG_DEBUG(fmt, ...)                                                        \
+  do {                                                                                    \
+    if (::vxcore::Logger::GetInstance().GetLevel() <= ::vxcore::LogLevel::kDebug) {       \
+      ::vxcore::Logger::GetInstance().Log(::vxcore::LogLevel::kDebug, __FILE__, __LINE__, \
+                                          fmt __VA_OPT__(, ) __VA_ARGS__);                \
+    }                                                                                     \
+  } while (0)
+
+#define VXCORE_LOG_INFO(fmt, ...)                                                        \
+  do {                                                                                   \
+    if (::vxcore::Logger::GetInstance().GetLevel() <= ::vxcore::LogLevel::kInfo) {       \
+      ::vxcore::Logger::GetInstance().Log(::vxcore::LogLevel::kInfo, __FILE__, __LINE__, \
+                                          fmt __VA_OPT__(, ) __VA_ARGS__);               \
+    }                                                                                    \
+  } while (0)
+
+#define VXCORE_LOG_WARN(fmt, ...)                                                        \
+  do {                                                                                   \
+    if (::vxcore::Logger::GetInstance().GetLevel() <= ::vxcore::LogLevel::kWarn) {       \
+      ::vxcore::Logger::GetInstance().Log(::vxcore::LogLevel::kWarn, __FILE__, __LINE__, \
+                                          fmt __VA_OPT__(, ) __VA_ARGS__);               \
+    }                                                                                    \
+  } while (0)
+
+#define VXCORE_LOG_ERROR(fmt, ...)                                                        \
+  do {                                                                                    \
+    if (::vxcore::Logger::GetInstance().GetLevel() <= ::vxcore::LogLevel::kError) {       \
+      ::vxcore::Logger::GetInstance().Log(::vxcore::LogLevel::kError, __FILE__, __LINE__, \
+                                          fmt __VA_OPT__(, ) __VA_ARGS__);                \
+    }                                                                                     \
+  } while (0)
+
+#define VXCORE_LOG_FATAL(fmt, ...)                                                        \
+  do {                                                                                    \
+    if (::vxcore::Logger::GetInstance().GetLevel() <= ::vxcore::LogLevel::kFatal) {       \
+      ::vxcore::Logger::GetInstance().Log(::vxcore::LogLevel::kFatal, __FILE__, __LINE__, \
+                                          fmt __VA_OPT__(, ) __VA_ARGS__);                \
+    }                                                                                     \
+  } while (0)
+#else
 #define VXCORE_LOG_TRACE(fmt, ...)                                                             \
   do {                                                                                         \
     if (::vxcore::Logger::GetInstance().GetLevel() <= ::vxcore::LogLevel::kTrace) {            \
       ::vxcore::Logger::GetInstance().Log(::vxcore::LogLevel::kTrace, __FILE__, __LINE__, fmt, \
-                                          ##__VA_ARGS__);                                      \
+                                          __VA_ARGS__);                                        \
     }                                                                                          \
   } while (0)
 
@@ -61,7 +110,7 @@ class Logger {
   do {                                                                                         \
     if (::vxcore::Logger::GetInstance().GetLevel() <= ::vxcore::LogLevel::kDebug) {            \
       ::vxcore::Logger::GetInstance().Log(::vxcore::LogLevel::kDebug, __FILE__, __LINE__, fmt, \
-                                          ##__VA_ARGS__);                                      \
+                                          __VA_ARGS__);                                        \
     }                                                                                          \
   } while (0)
 
@@ -69,7 +118,7 @@ class Logger {
   do {                                                                                        \
     if (::vxcore::Logger::GetInstance().GetLevel() <= ::vxcore::LogLevel::kInfo) {            \
       ::vxcore::Logger::GetInstance().Log(::vxcore::LogLevel::kInfo, __FILE__, __LINE__, fmt, \
-                                          ##__VA_ARGS__);                                     \
+                                          __VA_ARGS__);                                       \
     }                                                                                         \
   } while (0)
 
@@ -77,7 +126,7 @@ class Logger {
   do {                                                                                        \
     if (::vxcore::Logger::GetInstance().GetLevel() <= ::vxcore::LogLevel::kWarn) {            \
       ::vxcore::Logger::GetInstance().Log(::vxcore::LogLevel::kWarn, __FILE__, __LINE__, fmt, \
-                                          ##__VA_ARGS__);                                     \
+                                          __VA_ARGS__);                                       \
     }                                                                                         \
   } while (0)
 
@@ -85,7 +134,7 @@ class Logger {
   do {                                                                                         \
     if (::vxcore::Logger::GetInstance().GetLevel() <= ::vxcore::LogLevel::kError) {            \
       ::vxcore::Logger::GetInstance().Log(::vxcore::LogLevel::kError, __FILE__, __LINE__, fmt, \
-                                          ##__VA_ARGS__);                                      \
+                                          __VA_ARGS__);                                        \
     }                                                                                          \
   } while (0)
 
@@ -93,9 +142,10 @@ class Logger {
   do {                                                                                         \
     if (::vxcore::Logger::GetInstance().GetLevel() <= ::vxcore::LogLevel::kFatal) {            \
       ::vxcore::Logger::GetInstance().Log(::vxcore::LogLevel::kFatal, __FILE__, __LINE__, fmt, \
-                                          ##__VA_ARGS__);                                      \
+                                          __VA_ARGS__);                                        \
     }                                                                                          \
   } while (0)
+#endif
 
 }  // namespace vxcore
 

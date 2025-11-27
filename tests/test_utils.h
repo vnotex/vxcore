@@ -1,13 +1,14 @@
 #ifndef VXCORE_TEST_UTILS_H_
 #define VXCORE_TEST_UTILS_H_
 
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 
 #ifdef _WIN32
-#include <windows.h>
 #include <shlwapi.h>
+#include <windows.h>
 #pragma comment(lib, "shlwapi.lib")
 #else
 #include <dirent.h>
@@ -15,13 +16,13 @@
 #include <unistd.h>
 #endif
 
-#define ASSERT(condition)                                                                          \
-  do {                                                                                             \
-    if (!(condition)) {                                                                            \
-      std::cerr << "✗ Assertion failed: " << #condition << " at " << __FILE__ << ":"             \
-                << __LINE__ << std::endl;                                                          \
-      return 1;                                                                                    \
-    }                                                                                              \
+#define ASSERT(condition)                                                                        \
+  do {                                                                                           \
+    if (!(condition)) {                                                                          \
+      std::cerr << "✗ Assertion failed: " << #condition << " at " << __FILE__ << ":" << __LINE__ \
+                << std::endl;                                                                    \
+      return 1;                                                                                  \
+    }                                                                                            \
   } while (0)
 
 #define ASSERT_EQ(a, b) ASSERT((a) == (b))
@@ -29,14 +30,14 @@
 #define ASSERT_NULL(ptr) ASSERT((ptr) == nullptr)
 #define ASSERT_NOT_NULL(ptr) ASSERT((ptr) != nullptr)
 
-#define RUN_TEST(test_func)                                                                        \
-  do {                                                                                             \
-    int result = test_func();                                                                      \
-    if (result != 0) {                                                                             \
-      std::cerr << "✗ Test " << #test_func << " failed at " << __FILE__ << ":" << __LINE__       \
-                << std::endl;                                                                      \
-      return result;                                                                               \
-    }                                                                                              \
+#define RUN_TEST(test_func)                                                                \
+  do {                                                                                     \
+    int result = test_func();                                                              \
+    if (result != 0) {                                                                     \
+      std::cerr << "✗ Test " << #test_func << " failed at " << __FILE__ << ":" << __LINE__ \
+                << std::endl;                                                              \
+      return result;                                                                       \
+    }                                                                                      \
   } while (0)
 
 inline bool path_exists(const std::string &path) {
