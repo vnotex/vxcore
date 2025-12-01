@@ -35,7 +35,7 @@ VXCORE_API VxCoreError vxcore_context_get_session_config(VxCoreContextHandle con
                                                          char **out_json);
 
 VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const char *path,
-                                              const char *properties_json, VxCoreNotebookType type,
+                                              const char *config_json, VxCoreNotebookType type,
                                               char **out_notebook_id);
 
 VXCORE_API VxCoreError vxcore_notebook_open(VxCoreContextHandle context, const char *path,
@@ -45,13 +45,12 @@ VXCORE_API VxCoreError vxcore_notebook_close(VxCoreContextHandle context, const 
 
 VXCORE_API VxCoreError vxcore_notebook_list(VxCoreContextHandle context, char **out_notebooks_json);
 
-VXCORE_API VxCoreError vxcore_notebook_get_properties(VxCoreContextHandle context,
-                                                      const char *notebook_id,
-                                                      char **out_properties_json);
+VXCORE_API VxCoreError vxcore_notebook_get_config(VxCoreContextHandle context,
+                                                  const char *notebook_id, char **out_config_json);
 
-VXCORE_API VxCoreError vxcore_notebook_set_properties(VxCoreContextHandle context,
-                                                      const char *notebook_id,
-                                                      const char *properties_json);
+VXCORE_API VxCoreError vxcore_notebook_update_config(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     const char *config_json);
 
 VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const char *notebook_id,
                                             const char *parent_path, const char *folder_name,

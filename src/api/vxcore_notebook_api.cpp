@@ -7,7 +7,7 @@
 #include "vxcore/vxcore.h"
 
 VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const char *path,
-                                              const char *properties_json, VxCoreNotebookType type,
+                                              const char *config_json, VxCoreNotebookType type,
                                               char **out_notebook_id) {
   if (!context || !path || !out_notebook_id) {
     return VXCORE_ERR_NULL_POINTER;
@@ -19,11 +19,11 @@ VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const
     vxcore::NotebookType notebook_type =
         (type == VXCORE_NOTEBOOK_RAW) ? vxcore::NotebookType::Raw : vxcore::NotebookType::Bundled;
 
-    std::string properties_str = properties_json ? properties_json : "";
+    std::string config_str = config_json ? config_json : "";
     std::string notebook_id;
 
     VxCoreError err =
-        ctx->notebook_manager->CreateNotebook(path, notebook_type, properties_str, notebook_id);
+        ctx->notebook_manager->CreateNotebook(path, notebook_type, config_str, notebook_id);
 
     if (err != VXCORE_OK) {
       ctx->last_error = "Failed to create notebook";
@@ -122,55 +122,54 @@ VXCORE_API VxCoreError vxcore_notebook_list(VxCoreContextHandle context,
   }
 }
 
-VXCORE_API VxCoreError vxcore_notebook_get_properties(VxCoreContextHandle context,
-                                                      const char *notebook_id,
-                                                      char **out_properties_json) {
-  if (!context || !notebook_id || !out_properties_json) {
+VXCORE_API VxCoreError vxcore_notebook_get_config(VxCoreContextHandle context,
+                                                  const char *notebook_id, char **out_config_json) {
+  if (!context || !notebook_id || !out_config_json) {
     return VXCORE_ERR_NULL_POINTER;
   }
 
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
 
   try {
-    std::string properties_json;
-    VxCoreError err = ctx->notebook_manager->GetNotebookProperties(notebook_id, properties_json);
+    std::string config_json;
+    VxCoreError err = ctx->notebook_manager->GetNotebookConfig(notebook_id, config_json);
 
     if (err != VXCORE_OK) {
-      ctx->last_error = "Failed to get notebook properties";
+      ctx->last_error = "Failed to get notebook config";
       return err;
     }
 
-    char *json_copy = vxcore_strdup(properties_json.c_str());
+    char *json_copy = vxcore_strdup(config_json.c_str());
     if (!json_copy) {
       return VXCORE_ERR_OUT_OF_MEMORY;
     }
 
-    *out_properties_json = json_copy;
+    *out_config_json = json_copy;
     return VXCORE_OK;
   } catch (...) {
-    ctx->last_error = "Unknown error getting notebook properties";
+    ctx->last_error = "Unknown error getting notebook config";
     return VXCORE_ERR_UNKNOWN;
   }
 }
 
-VXCORE_API VxCoreError vxcore_notebook_set_properties(VxCoreContextHandle context,
-                                                      const char *notebook_id,
-                                                      const char *properties_json) {
-  if (!context || !notebook_id || !properties_json) {
+VXCORE_API VxCoreError vxcore_notebook_update_config(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     const char *config_json) {
+  if (!context || !notebook_id || !config_json) {
     return VXCORE_ERR_NULL_POINTER;
   }
 
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
 
   try {
-    VxCoreError err = ctx->notebook_manager->SetNotebookProperties(notebook_id, properties_json);
+    VxCoreError err = ctx->notebook_manager->UpdateNotebookConfig(notebook_id, config_json);
 
     if (err != VXCORE_OK) {
-      ctx->last_error = "Failed to set notebook properties";
+      ctx->last_error = "Failed to set notebook config";
     }
     return err;
   } catch (...) {
-    ctx->last_error = "Unknown error setting notebook properties";
+    ctx->last_error = "Unknown error setting notebook config";
     return VXCORE_ERR_UNKNOWN;
   }
 }

@@ -35,6 +35,8 @@ class ConfigManager {
   VxCoreError EnsureDataFolders();
   VxCoreError CheckAndMigrateVersion();
 
+  static std::string GetDataPathInTestMode();
+
   VxCoreConfig config_;
   VxCoreSessionConfig session_config_;
   std::filesystem::path app_data_path_;

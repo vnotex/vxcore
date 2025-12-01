@@ -11,7 +11,14 @@ bool ConfigManager::test_mode_ = false;
 
 ConfigManager::ConfigManager() : config_(), session_config_() {
   if (test_mode_) {
-    auto temp_path = std::filesystem::temp_directory_path() / "vxcore_test";
+    std::filesystem::path temp_path(GetDataPathInTestMode());
+
+    std::error_code ec;
+    std::filesystem::remove_all(temp_path, ec);
+    if (ec) {
+      VXCORE_LOG_WARN("Failed to clear test data path: %s", ec.message().c_str());
+    }
+
     app_data_path_ = temp_path;
     local_data_path_ = temp_path;
   } else {
@@ -24,6 +31,10 @@ ConfigManager::ConfigManager() : config_(), session_config_() {
       local_data_path_ = PathProvider::GetLocalDataPath();
     }
   }
+}
+
+std::string ConfigManager::GetDataPathInTestMode() {
+  return (std::filesystem::temp_directory_path() / "vxcore_test").string();
 }
 
 VxCoreError ConfigManager::LoadConfigs() {

@@ -208,7 +208,7 @@ int NotebookCommand::getProps(const ParsedArgs &args) {
   }
 
   char *properties = nullptr;
-  err = vxcore_notebook_get_properties(ctx, id.c_str(), &properties);
+  err = vxcore_notebook_get_config(ctx, id.c_str(), &properties);
 
   if (err != VXCORE_OK) {
     std::cerr << "Error: {" << id << "} " << vxcore_error_message(err) << std::endl;
@@ -250,7 +250,7 @@ int NotebookCommand::setProps(const ParsedArgs &args) {
       return 1;
     }
 
-    err = vxcore_notebook_set_properties(ctx, id.c_str(), propertiesJson.c_str());
+    err = vxcore_notebook_update_config(ctx, id.c_str(), propertiesJson.c_str());
 
     if (err != VXCORE_OK) {
       std::cerr << "Error: " << vxcore_error_message(err) << std::endl;

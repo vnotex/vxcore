@@ -39,23 +39,36 @@ struct NotebookRecord {
 
 class Notebook {
  public:
-  Notebook(const std::string &root_folder, NotebookType type, const NotebookConfig &config);
-
   const std::string &GetId() const { return config_.id; }
   const std::string &GetRootFolder() const { return root_folder_; }
   NotebookType GetType() const { return type_; }
+  std::string GetTypeStr() const { return type_ == NotebookType::Raw ? "raw" : "bundled"; }
   const NotebookConfig &GetConfig() const { return config_; }
 
-  void SetConfig(const NotebookConfig &config);
+  VxCoreError UpdateConfig(const NotebookConfig &config);
 
   std::string GetDbPath(const std::string &local_data_folder) const;
   std::string GetMetadataFolder() const;
   std::string GetConfigPath() const;
 
-  VxCoreError LoadConfig();
-  VxCoreError SaveConfig();
+  static VxCoreError CreateBundledNotebook(const std::string &root_folder,
+                                           const NotebookConfig *overridden_config,
+                                           std::unique_ptr<Notebook> &out_notebook);
+
+  static VxCoreError CreateRawNotebook(const std::string &root_folder, const NotebookConfig &config,
+                                       std::unique_ptr<Notebook> &out_notebook);
+
+  static VxCoreError FromBundledNotebook(const std::string &root_folder,
+                                         std::unique_ptr<Notebook> &out_notebook);
+
+ protected:
+  Notebook(const std::string &root_folder, NotebookType type);
 
  private:
+  VxCoreError LoadConfig();
+
+  void EnsureId();
+
   std::string root_folder_;
   NotebookType type_;
   NotebookConfig config_;

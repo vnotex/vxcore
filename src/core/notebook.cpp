@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 
+#include "utils/logger.h"
 #include "utils/utils.h"
 
 namespace vxcore {
@@ -84,14 +85,62 @@ nlohmann::json NotebookRecord::ToJson() const {
   return json;
 }
 
-Notebook::Notebook(const std::string &root_folder, NotebookType type, const NotebookConfig &config)
-    : root_folder_(root_folder), type_(type), config_(config) {
+Notebook::Notebook(const std::string &root_folder, NotebookType type)
+    : root_folder_(root_folder), type_(type) {}
+
+VxCoreError Notebook::CreateBundledNotebook(const std::string &root_folder,
+                                            const NotebookConfig *overridden_config,
+                                            std::unique_ptr<Notebook> &out_notebook) {
+  out_notebook.reset(new Notebook(root_folder, NotebookType::Bundled));
+  if (overridden_config) {
+    out_notebook->config_ = *overridden_config;
+  }
+  out_notebook->EnsureId();
+  auto error = out_notebook->UpdateConfig(out_notebook->config_);
+  if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to save bundled notebook config: root=%s, error=%d",
+                     root_folder.c_str(), error);
+    out_notebook.reset();
+    return error;
+  }
+  return VXCORE_OK;
+}
+
+VxCoreError Notebook::CreateRawNotebook(const std::string &root_folder,
+                                        const NotebookConfig &config,
+                                        std::unique_ptr<Notebook> &out_notebook) {
+  out_notebook.reset();
+  std::filesystem::path rootPath(root_folder);
+  if (!std::filesystem::exists(rootPath)) {
+    VXCORE_LOG_ERROR("Failed to create raw notebook: root=%s, error=%d", root_folder.c_str(),
+                     VXCORE_ERR_NOT_FOUND);
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  out_notebook.reset(new Notebook(root_folder, NotebookType::Raw));
+  out_notebook->config_ = config;
+  out_notebook->EnsureId();
+  return VXCORE_OK;
+}
+
+VxCoreError Notebook::FromBundledNotebook(const std::string &root_folder,
+                                          std::unique_ptr<Notebook> &out_notebook) {
+  out_notebook.reset(new Notebook(root_folder, NotebookType::Bundled));
+  auto err = out_notebook->LoadConfig();
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to load bundled notebook config: root=%s, error=%d",
+                     root_folder.c_str(), err);
+    out_notebook.reset();
+    return err;
+  }
+  return VXCORE_OK;
+}
+
+void Notebook::EnsureId() {
   if (config_.id.empty()) {
     config_.id = GenerateUUID();
   }
 }
-
-void Notebook::SetConfig(const NotebookConfig &config) { config_ = config; }
 
 std::string Notebook::GetDbPath(const std::string &local_data_folder) const {
   std::filesystem::path dbPath(local_data_folder);
@@ -126,7 +175,11 @@ VxCoreError Notebook::LoadConfig() {
   try {
     nlohmann::json json;
     file >> json;
-    config_ = NotebookConfig::FromJson(json);
+    auto config = NotebookConfig::FromJson(json);
+    if (config.id.empty()) {
+      return VXCORE_ERR_INVALID_STATE;
+    }
+    config_ = config;
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &) {
     return VXCORE_ERR_JSON_PARSE;
@@ -135,7 +188,11 @@ VxCoreError Notebook::LoadConfig() {
   }
 }
 
-VxCoreError Notebook::SaveConfig() {
+VxCoreError Notebook::UpdateConfig(const NotebookConfig &config) {
+  assert(config_.id == config_.id);
+
+  config_ = config;
+
   if (type_ == NotebookType::Raw) {
     return VXCORE_OK;
   }

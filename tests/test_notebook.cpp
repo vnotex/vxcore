@@ -96,7 +96,7 @@ int test_notebook_get_properties() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *properties = nullptr;
-  err = vxcore_notebook_get_properties(ctx, notebook_id, &properties);
+  err = vxcore_notebook_get_config(ctx, notebook_id, &properties);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(properties);
 
@@ -125,12 +125,12 @@ int test_notebook_set_properties() {
                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  err = vxcore_notebook_set_properties(ctx, notebook_id,
-                                       "{\"name\":\"Updated Name\",\"description\":\"New Desc\"}");
+  err = vxcore_notebook_update_config(ctx, notebook_id,
+                                      "{\"name\":\"Updated Name\",\"description\":\"New Desc\"}");
   ASSERT_EQ(err, VXCORE_OK);
 
   char *properties = nullptr;
-  err = vxcore_notebook_get_properties(ctx, notebook_id, &properties);
+  err = vxcore_notebook_get_config(ctx, notebook_id, &properties);
   ASSERT_EQ(err, VXCORE_OK);
 
   std::string props_str(properties);
@@ -212,7 +212,7 @@ int test_notebook_persistence() {
   ASSERT_EQ(std::string(reopened_id), saved_id);
 
   char *properties = nullptr;
-  err = vxcore_notebook_get_properties(ctx2, reopened_id, &properties);
+  err = vxcore_notebook_get_config(ctx2, reopened_id, &properties);
   ASSERT_EQ(err, VXCORE_OK);
 
   std::string props_str(properties);
