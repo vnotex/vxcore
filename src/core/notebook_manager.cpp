@@ -2,8 +2,9 @@
 
 #include <algorithm>
 #include <filesystem>
-#include <fstream>
 
+#include "bundled_notebook.h"
+#include "raw_notebook.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
 
@@ -27,15 +28,16 @@ void NotebookManager::LoadOpenNotebooks() {
     std::unique_ptr<Notebook> notebook;
     switch (record.type) {
       case NotebookType::Bundled: {
-        auto error = Notebook::CreateBundledNotebook(record.root_folder, nullptr, notebook);
+        auto error = BundledNotebook::Create(record.root_folder, nullptr, notebook);
         if (error != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to load bundled notebook: root_folder=%s, error=%d",
                            record.root_folder.c_str(), error);
           continue;
         }
+        break;
       }
       case NotebookType::Raw: {
-        auto error = Notebook::CreateRawNotebook(record.root_folder, record.raw_config, notebook);
+        auto error = RawNotebook::Create(record.root_folder, record.raw_config, notebook);
         if (error != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to load raw notebook: root_folder=%s, error=%d",
                            record.root_folder.c_str(), error);
@@ -80,7 +82,7 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
     std::unique_ptr<Notebook> notebook;
     switch (type) {
       case NotebookType::Bundled: {
-        auto err = Notebook::CreateBundledNotebook(root_folder, &config, notebook);
+        auto err = BundledNotebook::Create(root_folder, &config, notebook);
         if (err != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to create bundled notebook: root_folder=%s, error=%d",
                            root_folder.c_str(), err);
@@ -89,7 +91,7 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
         break;
       }
       case NotebookType::Raw: {
-        auto err = Notebook::CreateRawNotebook(root_folder, config, notebook);
+        auto err = RawNotebook::Create(root_folder, config, notebook);
         if (err != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to create raw notebook: root_folder=%s, error=%d",
                            root_folder.c_str(), err);
@@ -142,9 +144,8 @@ VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
     return VXCORE_ERR_NOT_FOUND;
   }
 
-  // Load a bundled notebook
   std::unique_ptr<Notebook> notebook;
-  auto err = Notebook::FromBundledNotebook(root_folder, notebook);
+  auto err = BundledNotebook::Open(root_folder, notebook);
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to load bundled notebook: root_folder=%s, error=%d",
                      root_folder.c_str(), err);

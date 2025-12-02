@@ -6,86 +6,67 @@
 #include <string>
 
 #include "folder.h"
-#include "notebook.h"
 #include "vxcore/vxcore_types.h"
 
 namespace vxcore {
 
+class Notebook;
+
 class FolderManager {
  public:
-  FolderManager(Notebook *notebook);
-  ~FolderManager();
+  virtual ~FolderManager() = default;
 
-  VxCoreError GetFolderConfig(const std::string &folder_path, std::string &out_config_json);
+  virtual VxCoreError GetFolderConfig(const std::string &folder_path,
+                                      std::string &out_config_json) = 0;
 
-  VxCoreError CreateFolder(const std::string &parent_path, const std::string &folder_name,
-                           std::string &out_folder_id);
+  virtual VxCoreError CreateFolder(const std::string &parent_path, const std::string &folder_name,
+                                   std::string &out_folder_id) = 0;
 
-  VxCoreError DeleteFolder(const std::string &folder_path);
+  virtual VxCoreError DeleteFolder(const std::string &folder_path) = 0;
 
-  VxCoreError UpdateFolderMetadata(const std::string &folder_path,
-                                   const std::string &metadata_json);
+  virtual VxCoreError UpdateFolderMetadata(const std::string &folder_path,
+                                           const std::string &metadata_json) = 0;
 
-  VxCoreError GetFolderMetadata(const std::string &folder_path, std::string &out_metadata_json);
+  virtual VxCoreError GetFolderMetadata(const std::string &folder_path,
+                                        std::string &out_metadata_json) = 0;
 
-  VxCoreError RenameFolder(const std::string &folder_path, const std::string &new_name);
+  virtual VxCoreError RenameFolder(const std::string &folder_path, const std::string &new_name) = 0;
 
-  VxCoreError MoveFolder(const std::string &src_path, const std::string &dest_parent_path);
+  virtual VxCoreError MoveFolder(const std::string &src_path,
+                                 const std::string &dest_parent_path) = 0;
 
-  VxCoreError CopyFolder(const std::string &src_path, const std::string &dest_parent_path,
-                         const std::string &new_name, std::string &out_folder_id);
+  virtual VxCoreError CopyFolder(const std::string &src_path, const std::string &dest_parent_path,
+                                 const std::string &new_name, std::string &out_folder_id) = 0;
 
-  VxCoreError CreateFile(const std::string &folder_path, const std::string &file_name,
-                         std::string &out_file_id);
+  virtual VxCoreError CreateFile(const std::string &folder_path, const std::string &file_name,
+                                 std::string &out_file_id) = 0;
 
-  VxCoreError DeleteFile(const std::string &folder_path, const std::string &file_name);
+  virtual VxCoreError DeleteFile(const std::string &folder_path, const std::string &file_name) = 0;
 
-  VxCoreError UpdateFileMetadata(const std::string &folder_path, const std::string &file_name,
-                                 const std::string &metadata_json);
+  virtual VxCoreError UpdateFileMetadata(const std::string &folder_path,
+                                         const std::string &file_name,
+                                         const std::string &metadata_json) = 0;
 
-  VxCoreError UpdateFileTags(const std::string &folder_path, const std::string &file_name,
-                             const std::string &tags_json);
+  virtual VxCoreError UpdateFileTags(const std::string &folder_path, const std::string &file_name,
+                                     const std::string &tags_json) = 0;
 
-  VxCoreError GetFileInfo(const std::string &folder_path, const std::string &file_name,
-                          std::string &out_file_info_json);
+  virtual VxCoreError GetFileInfo(const std::string &folder_path, const std::string &file_name,
+                                  std::string &out_file_info_json) = 0;
 
-  VxCoreError GetFileMetadata(const std::string &folder_path, const std::string &file_name,
-                              std::string &out_metadata_json);
+  virtual VxCoreError GetFileMetadata(const std::string &folder_path, const std::string &file_name,
+                                      std::string &out_metadata_json) = 0;
 
-  VxCoreError RenameFile(const std::string &folder_path, const std::string &old_name,
-                         const std::string &new_name);
+  virtual VxCoreError RenameFile(const std::string &folder_path, const std::string &old_name,
+                                 const std::string &new_name) = 0;
 
-  VxCoreError MoveFile(const std::string &src_folder_path, const std::string &file_name,
-                       const std::string &dest_folder_path);
+  virtual VxCoreError MoveFile(const std::string &src_folder_path, const std::string &file_name,
+                               const std::string &dest_folder_path) = 0;
 
-  VxCoreError CopyFile(const std::string &src_folder_path, const std::string &file_name,
-                       const std::string &dest_folder_path, const std::string &new_name,
-                       std::string &out_file_id);
+  virtual VxCoreError CopyFile(const std::string &src_folder_path, const std::string &file_name,
+                               const std::string &dest_folder_path, const std::string &new_name,
+                               std::string &out_file_id) = 0;
 
-  void ClearCache();
-
- private:
-  void EnsureRootFolder();
-  VxCoreError GetFolderConfig(const std::string &folder_path, FolderConfig **out_config);
-  VxCoreError LoadFolderConfig(const std::string &folder_path,
-                               std::unique_ptr<FolderConfig> &out_config);
-  VxCoreError SaveFolderConfig(const std::string &folder_path, const FolderConfig &config);
-
-  std::string GetConfigPath(const std::string &folder_path) const;
-  std::string GetContentPath(const std::string &folder_path) const;
-
-  void CacheConfig(const std::string &folder_path, std::unique_ptr<FolderConfig> config);
-  FolderConfig *GetCachedConfig(const std::string &folder_path);
-  void InvalidateCache(const std::string &folder_path);
-
-  FileRecord *FindFileRecord(FolderConfig &config, const std::string &file_name);
-
-  std::string ConcatenatePaths(const std::string &parent_path, const std::string &child_name) const;
-
-  std::pair<std::string, std::string> SplitPath(const std::string &path) const;
-
-  Notebook *notebook_;
-  std::map<std::string, std::unique_ptr<FolderConfig>> config_cache_;
+  virtual void ClearCache() = 0;
 };
 
 }  // namespace vxcore

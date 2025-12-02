@@ -4,9 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <vector>
 
 #include "notebook.h"
 #include "vxcore/vxcore_types.h"

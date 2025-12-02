@@ -20,16 +20,16 @@ VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const c
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
 
-    vxcore::FolderManager folder_manager(notebook);
     std::string folder_id;
     std::string parent = parent_path ? parent_path : ".";
 
-    VxCoreError error = folder_manager.CreateFolder(parent, folder_name, folder_id);
+    VxCoreError error = folder_manager->CreateFolder(parent, folder_name, folder_id);
     if (error != VXCORE_OK) {
       return error;
     }
@@ -57,13 +57,12 @@ VXCORE_API VxCoreError vxcore_folder_delete(VxCoreContextHandle context, const c
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
-    return folder_manager.DeleteFolder(folder_path);
+    return folder_manager->DeleteFolder(folder_path);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -86,15 +85,14 @@ VXCORE_API VxCoreError vxcore_folder_get_config(VxCoreContextHandle context,
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
     std::string config_json;
 
-    VxCoreError error = folder_manager.GetFolderConfig(folder_path, config_json);
+    VxCoreError error = folder_manager->GetFolderConfig(folder_path, config_json);
     if (error != VXCORE_OK) {
       return error;
     }
@@ -124,13 +122,12 @@ VXCORE_API VxCoreError vxcore_folder_update_metadata(VxCoreContextHandle context
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
-    return folder_manager.UpdateFolderMetadata(folder_path, metadata_json);
+    return folder_manager->UpdateFolderMetadata(folder_path, metadata_json);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -153,15 +150,14 @@ VXCORE_API VxCoreError vxcore_file_create(VxCoreContextHandle context, const cha
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
     std::string file_id;
 
-    VxCoreError error = folder_manager.CreateFile(folder_path, file_name, file_id);
+    VxCoreError error = folder_manager->CreateFile(folder_path, file_name, file_id);
     if (error != VXCORE_OK) {
       return error;
     }
@@ -189,13 +185,12 @@ VXCORE_API VxCoreError vxcore_file_delete(VxCoreContextHandle context, const cha
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
-    return folder_manager.DeleteFile(folder_path, file_name);
+    return folder_manager->DeleteFile(folder_path, file_name);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -219,13 +214,12 @@ VXCORE_API VxCoreError vxcore_file_update_metadata(VxCoreContextHandle context,
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
-    return folder_manager.UpdateFileMetadata(folder_path, file_name, metadata_json);
+    return folder_manager->UpdateFileMetadata(folder_path, file_name, metadata_json);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -248,13 +242,12 @@ VXCORE_API VxCoreError vxcore_file_update_tags(VxCoreContextHandle context, cons
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
-    return folder_manager.UpdateFileTags(folder_path, file_name, tags_json);
+    return folder_manager->UpdateFileTags(folder_path, file_name, tags_json);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -277,15 +270,14 @@ VXCORE_API VxCoreError vxcore_folder_get_metadata(VxCoreContextHandle context,
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
     std::string metadata_json;
 
-    VxCoreError error = folder_manager.GetFolderMetadata(folder_path, metadata_json);
+    VxCoreError error = folder_manager->GetFolderMetadata(folder_path, metadata_json);
     if (error != VXCORE_OK) {
       return error;
     }
@@ -313,13 +305,12 @@ VXCORE_API VxCoreError vxcore_folder_rename(VxCoreContextHandle context, const c
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
-    return folder_manager.RenameFolder(folder_path, new_name);
+    return folder_manager->RenameFolder(folder_path, new_name);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -341,13 +332,12 @@ VXCORE_API VxCoreError vxcore_folder_move(VxCoreContextHandle context, const cha
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
-    return folder_manager.MoveFolder(src_path, dest_parent_path);
+    return folder_manager->MoveFolder(src_path, dest_parent_path);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -370,17 +360,16 @@ VXCORE_API VxCoreError vxcore_folder_copy(VxCoreContextHandle context, const cha
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
     std::string target_name = new_name ? new_name : "";
     std::string folder_id;
 
     VxCoreError error =
-        folder_manager.CopyFolder(src_path, dest_parent_path, target_name, folder_id);
+        folder_manager->CopyFolder(src_path, dest_parent_path, target_name, folder_id);
     if (error != VXCORE_OK) {
       return error;
     }
@@ -409,15 +398,14 @@ VXCORE_API VxCoreError vxcore_file_get_info(VxCoreContextHandle context, const c
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
     std::string file_info_json;
 
-    VxCoreError error = folder_manager.GetFileInfo(folder_path, file_name, file_info_json);
+    VxCoreError error = folder_manager->GetFileInfo(folder_path, file_name, file_info_json);
     if (error != VXCORE_OK) {
       return error;
     }
@@ -446,15 +434,14 @@ VXCORE_API VxCoreError vxcore_file_get_metadata(VxCoreContextHandle context,
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
     std::string metadata_json;
 
-    VxCoreError error = folder_manager.GetFileMetadata(folder_path, file_name, metadata_json);
+    VxCoreError error = folder_manager->GetFileMetadata(folder_path, file_name, metadata_json);
     if (error != VXCORE_OK) {
       return error;
     }
@@ -483,13 +470,12 @@ VXCORE_API VxCoreError vxcore_file_rename(VxCoreContextHandle context, const cha
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
-    return folder_manager.RenameFile(folder_path, old_name, new_name);
+    return folder_manager->RenameFile(folder_path, old_name, new_name);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -512,13 +498,12 @@ VXCORE_API VxCoreError vxcore_file_move(VxCoreContextHandle context, const char 
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
-    return folder_manager.MoveFile(src_folder_path, file_name, dest_folder_path);
+    return folder_manager->MoveFile(src_folder_path, file_name, dest_folder_path);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -543,17 +528,16 @@ VXCORE_API VxCoreError vxcore_file_copy(VxCoreContextHandle context, const char 
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
-      ctx->last_error = "Operation not supported for raw notebooks";
-      return VXCORE_ERR_UNSUPPORTED;
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
     }
-
-    vxcore::FolderManager folder_manager(notebook);
     std::string target_name = new_name ? new_name : "";
     std::string file_id;
 
-    VxCoreError error =
-        folder_manager.CopyFile(src_folder_path, file_name, dest_folder_path, target_name, file_id);
+    VxCoreError error = folder_manager->CopyFile(src_folder_path, file_name, dest_folder_path,
+                                                 target_name, file_id);
     if (error != VXCORE_OK) {
       return error;
     }

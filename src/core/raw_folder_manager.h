@@ -1,0 +1,56 @@
+#ifndef VXCORE_RAW_FOLDER_MANAGER_H_
+#define VXCORE_RAW_FOLDER_MANAGER_H_
+
+#include "folder_manager.h"
+
+namespace vxcore {
+
+class Notebook;
+
+class RawFolderManager : public FolderManager {
+ public:
+  explicit RawFolderManager(Notebook *notebook);
+  ~RawFolderManager() override;
+
+  VxCoreError GetFolderConfig(const std::string &folder_path,
+                              std::string &out_config_json) override;
+  VxCoreError CreateFolder(const std::string &parent_path, const std::string &folder_name,
+                           std::string &out_folder_id) override;
+  VxCoreError DeleteFolder(const std::string &folder_path) override;
+  VxCoreError UpdateFolderMetadata(const std::string &folder_path,
+                                   const std::string &metadata_json) override;
+  VxCoreError GetFolderMetadata(const std::string &folder_path,
+                                std::string &out_metadata_json) override;
+  VxCoreError RenameFolder(const std::string &folder_path, const std::string &new_name) override;
+  VxCoreError MoveFolder(const std::string &src_path, const std::string &dest_parent_path) override;
+  VxCoreError CopyFolder(const std::string &src_path, const std::string &dest_parent_path,
+                         const std::string &new_name, std::string &out_folder_id) override;
+
+  VxCoreError CreateFile(const std::string &folder_path, const std::string &file_name,
+                         std::string &out_file_id) override;
+  VxCoreError DeleteFile(const std::string &folder_path, const std::string &file_name) override;
+  VxCoreError UpdateFileMetadata(const std::string &folder_path, const std::string &file_name,
+                                 const std::string &metadata_json) override;
+  VxCoreError UpdateFileTags(const std::string &folder_path, const std::string &file_name,
+                             const std::string &tags_json) override;
+  VxCoreError GetFileInfo(const std::string &folder_path, const std::string &file_name,
+                          std::string &out_file_info_json) override;
+  VxCoreError GetFileMetadata(const std::string &folder_path, const std::string &file_name,
+                              std::string &out_metadata_json) override;
+  VxCoreError RenameFile(const std::string &folder_path, const std::string &old_name,
+                         const std::string &new_name) override;
+  VxCoreError MoveFile(const std::string &src_folder_path, const std::string &file_name,
+                       const std::string &dest_folder_path) override;
+  VxCoreError CopyFile(const std::string &src_folder_path, const std::string &file_name,
+                       const std::string &dest_folder_path, const std::string &new_name,
+                       std::string &out_file_id) override;
+
+  void ClearCache() override;
+
+ private:
+  Notebook *notebook_;
+};
+
+}  // namespace vxcore
+
+#endif  // VXCORE_RAW_FOLDER_MANAGER_H_

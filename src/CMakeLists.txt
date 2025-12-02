@@ -19,11 +19,15 @@ set(VXCORE_SOURCES
     core/vxcore_config.cpp
     core/vxcore_session_config.cpp
     core/notebook.cpp
+    core/bundled_notebook.cpp
+    core/raw_notebook.cpp
     core/notebook_manager.cpp
     core/folder.cpp
-    core/folder_manager.cpp
+    core/bundled_folder_manager.cpp
+    core/raw_folder_manager.cpp
     utils/utils.cpp
     utils/logger.cpp
+    utils/file_utils.cpp
     platform/path_provider.cpp
 )
 

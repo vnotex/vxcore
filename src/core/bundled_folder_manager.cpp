@@ -1,8 +1,10 @@
-#include "folder_manager.h"
+#include "bundled_folder_manager.h"
 
 #include <filesystem>
 #include <fstream>
 
+#include "notebook.h"
+#include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
 
@@ -10,31 +12,29 @@ namespace vxcore {
 
 namespace fs = std::filesystem;
 
-FolderManager::FolderManager(Notebook *notebook) : notebook_(notebook) { EnsureRootFolder(); }
+BundledFolderManager::BundledFolderManager(Notebook *notebook) : notebook_(notebook) {
+  assert(notebook && notebook->GetType() == NotebookType::Bundled);
+  EnsureRootFolder();
+}
 
-FolderManager::~FolderManager() {}
+BundledFolderManager::~BundledFolderManager() {}
 
-void FolderManager::EnsureRootFolder() {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return;
-  }
-
+void BundledFolderManager::EnsureRootFolder() {
   const std::string folder_path("");
   std::unique_ptr<FolderConfig> root_config;
   VxCoreError error = LoadFolderConfig(folder_path, root_config);
   if (error != VXCORE_OK) {
     root_config.reset(new FolderConfig(folder_path));
     error = SaveFolderConfig(folder_path, *root_config);
-    // TODO: log error if saving fails
+    if (error != VXCORE_OK) {
+      VXCORE_LOG_ERROR("Failed to create root folder config: error=%d", error);
+      return;
+    }
   }
   CacheConfig(folder_path, std::move(root_config));
 }
 
-std::string FolderManager::GetConfigPath(const std::string &folder_path) const {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return "";
-  }
-
+std::string BundledFolderManager::GetConfigPath(const std::string &folder_path) const {
   fs::path metadata_folder = notebook_->GetMetadataFolder();
   fs::path config_path = metadata_folder / "contents";
 
@@ -46,7 +46,7 @@ std::string FolderManager::GetConfigPath(const std::string &folder_path) const {
   return config_path.string();
 }
 
-std::string FolderManager::GetContentPath(const std::string &folder_path) const {
+std::string BundledFolderManager::GetContentPath(const std::string &folder_path) const {
   fs::path content_path = notebook_->GetRootFolder();
 
   if (!folder_path.empty() && folder_path != ".") {
@@ -56,7 +56,7 @@ std::string FolderManager::GetContentPath(const std::string &folder_path) const 
   return content_path.string();
 }
 
-FolderConfig *FolderManager::GetCachedConfig(const std::string &folder_path) {
+FolderConfig *BundledFolderManager::GetCachedConfig(const std::string &folder_path) {
   auto it = config_cache_.find(folder_path);
   if (it != config_cache_.end()) {
     return it->second.get();
@@ -64,16 +64,17 @@ FolderConfig *FolderManager::GetCachedConfig(const std::string &folder_path) {
   return nullptr;
 }
 
-void FolderManager::CacheConfig(const std::string &folder_path,
-                                std::unique_ptr<FolderConfig> config) {
+void BundledFolderManager::CacheConfig(const std::string &folder_path,
+                                       std::unique_ptr<FolderConfig> config) {
   config_cache_[folder_path] = std::move(config);
 }
 
-void FolderManager::InvalidateCache(const std::string &folder_path) {
+void BundledFolderManager::InvalidateCache(const std::string &folder_path) {
   config_cache_.erase(folder_path);
 }
 
-FileRecord *FolderManager::FindFileRecord(FolderConfig &config, const std::string &file_name) {
+FileRecord *BundledFolderManager::FindFileRecord(FolderConfig &config,
+                                                 const std::string &file_name) {
   for (auto &file : config.files) {
     if (file.name == file_name) {
       return &file;
@@ -82,18 +83,11 @@ FileRecord *FolderManager::FindFileRecord(FolderConfig &config, const std::strin
   return nullptr;
 }
 
-VxCoreError FolderManager::LoadFolderConfig(const std::string &folder_path,
-                                            std::unique_ptr<FolderConfig> &out_config) {
+VxCoreError BundledFolderManager::LoadFolderConfig(const std::string &folder_path,
+                                                   std::unique_ptr<FolderConfig> &out_config) {
   out_config.reset();
 
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
-
   std::string config_path = GetConfigPath(folder_path);
-  if (config_path.empty()) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
 
   if (!fs::exists(config_path)) {
     return VXCORE_ERR_NOT_FOUND;
@@ -114,16 +108,9 @@ VxCoreError FolderManager::LoadFolderConfig(const std::string &folder_path,
   }
 }
 
-VxCoreError FolderManager::SaveFolderConfig(const std::string &folder_path,
-                                            const FolderConfig &config) {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
-
+VxCoreError BundledFolderManager::SaveFolderConfig(const std::string &folder_path,
+                                                   const FolderConfig &config) {
   std::string config_path = GetConfigPath(folder_path);
-  if (config_path.empty()) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
 
   fs::path config_file_path(config_path);
   fs::path config_dir = config_file_path.parent_path();
@@ -147,8 +134,8 @@ VxCoreError FolderManager::SaveFolderConfig(const std::string &folder_path,
   }
 }
 
-VxCoreError FolderManager::GetFolderConfig(const std::string &folder_path,
-                                           std::string &out_config_json) {
+VxCoreError BundledFolderManager::GetFolderConfig(const std::string &folder_path,
+                                                  std::string &out_config_json) {
   out_config_json.clear();
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
@@ -159,12 +146,9 @@ VxCoreError FolderManager::GetFolderConfig(const std::string &folder_path,
   return VXCORE_OK;
 }
 
-VxCoreError FolderManager::GetFolderConfig(const std::string &folder_path,
-                                           FolderConfig **out_config) {
+VxCoreError BundledFolderManager::GetFolderConfig(const std::string &folder_path,
+                                                  FolderConfig **out_config) {
   *out_config = nullptr;
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
 
   FolderConfig *cached = GetCachedConfig(folder_path);
   if (cached) {
@@ -183,13 +167,9 @@ VxCoreError FolderManager::GetFolderConfig(const std::string &folder_path,
   return VXCORE_OK;
 }
 
-VxCoreError FolderManager::CreateFolder(const std::string &parent_path,
-                                        const std::string &folder_name,
-                                        std::string &out_folder_id) {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
-
+VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
+                                               const std::string &folder_name,
+                                               std::string &out_folder_id) {
   VXCORE_LOG_INFO("Creating folder: parent=%s, name=%s", parent_path.c_str(), folder_name.c_str());
 
   std::string content_path = GetContentPath(parent_path);
@@ -244,11 +224,7 @@ VxCoreError FolderManager::CreateFolder(const std::string &parent_path,
   return VXCORE_OK;
 }
 
-VxCoreError FolderManager::DeleteFolder(const std::string &folder_path) {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
-
+VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
   VXCORE_LOG_INFO("Deleting folder: path=%s", folder_path.c_str());
 
   const std::string content_path = GetContentPath(folder_path);
@@ -288,12 +264,8 @@ VxCoreError FolderManager::DeleteFolder(const std::string &folder_path) {
   }
 }
 
-VxCoreError FolderManager::UpdateFolderMetadata(const std::string &folder_path,
-                                                const std::string &metadata_json) {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
-
+VxCoreError BundledFolderManager::UpdateFolderMetadata(const std::string &folder_path,
+                                                       const std::string &metadata_json) {
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
@@ -316,12 +288,8 @@ VxCoreError FolderManager::UpdateFolderMetadata(const std::string &folder_path,
   }
 }
 
-VxCoreError FolderManager::GetFolderMetadata(const std::string &folder_path,
-                                             std::string &out_metadata_json) {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
-
+VxCoreError BundledFolderManager::GetFolderMetadata(const std::string &folder_path,
+                                                    std::string &out_metadata_json) {
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
@@ -332,14 +300,10 @@ VxCoreError FolderManager::GetFolderMetadata(const std::string &folder_path,
   return VXCORE_OK;
 }
 
-VxCoreError FolderManager::RenameFolder(const std::string &folder_path,
-                                        const std::string &new_name) {
+VxCoreError BundledFolderManager::RenameFolder(const std::string &folder_path,
+                                               const std::string &new_name) {
   VXCORE_LOG_INFO("RenameFolder: folder_path=%s, new_name=%s", folder_path.c_str(),
                   new_name.c_str());
-
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
 
   const auto [parent_path, old_name] = SplitPath(folder_path);
   const std::string old_content_path = GetContentPath(folder_path);
@@ -408,14 +372,10 @@ VxCoreError FolderManager::RenameFolder(const std::string &folder_path,
   return VXCORE_OK;
 }
 
-VxCoreError FolderManager::MoveFolder(const std::string &src_path,
-                                      const std::string &dest_parent_path) {
+VxCoreError BundledFolderManager::MoveFolder(const std::string &src_path,
+                                             const std::string &dest_parent_path) {
   VXCORE_LOG_INFO("MoveFolder: src_path=%s, dest_parent_path=%s", src_path.c_str(),
                   dest_parent_path.c_str());
-
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
 
   const auto [src_parent_path, folder_name] = SplitPath(src_path);
   const std::string src_content_path = GetContentPath(src_path);
@@ -493,13 +453,10 @@ VxCoreError FolderManager::MoveFolder(const std::string &src_path,
   return VXCORE_OK;
 }
 
-VxCoreError FolderManager::CopyFolder(const std::string &src_path,
-                                      const std::string &dest_parent_path,
-                                      const std::string &new_name, std::string &out_folder_id) {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
-
+VxCoreError BundledFolderManager::CopyFolder(const std::string &src_path,
+                                             const std::string &dest_parent_path,
+                                             const std::string &new_name,
+                                             std::string &out_folder_id) {
   const auto [src_parent_path, src_folder_name] = SplitPath(src_path);
   const std::string src_content_path = GetContentPath(src_path);
   const std::string folder_name = new_name.empty() ? src_folder_name : new_name;
@@ -574,12 +531,9 @@ VxCoreError FolderManager::CopyFolder(const std::string &src_path,
   return VXCORE_OK;
 }
 
-VxCoreError FolderManager::CreateFile(const std::string &folder_path, const std::string &file_name,
-                                      std::string &out_file_id) {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
-
+VxCoreError BundledFolderManager::CreateFile(const std::string &folder_path,
+                                             const std::string &file_name,
+                                             std::string &out_file_id) {
   VXCORE_LOG_INFO("Creating file: folder=%s, name=%s", folder_path.c_str(), file_name.c_str());
 
   std::string content_path = GetContentPath(folder_path);
@@ -626,14 +580,10 @@ VxCoreError FolderManager::CreateFile(const std::string &folder_path, const std:
   return VXCORE_OK;
 }
 
-VxCoreError FolderManager::DeleteFile(const std::string &folder_path,
-                                      const std::string &file_name) {
+VxCoreError BundledFolderManager::DeleteFile(const std::string &folder_path,
+                                             const std::string &file_name) {
   VXCORE_LOG_INFO("DeleteFile: folder_path=%s, file_name=%s", folder_path.c_str(),
                   file_name.c_str());
-
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
 
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
@@ -667,13 +617,9 @@ VxCoreError FolderManager::DeleteFile(const std::string &folder_path,
   }
 }
 
-VxCoreError FolderManager::UpdateFileMetadata(const std::string &folder_path,
-                                              const std::string &file_name,
-                                              const std::string &metadata_json) {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
-
+VxCoreError BundledFolderManager::UpdateFileMetadata(const std::string &folder_path,
+                                                     const std::string &file_name,
+                                                     const std::string &metadata_json) {
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
@@ -703,13 +649,9 @@ VxCoreError FolderManager::UpdateFileMetadata(const std::string &folder_path,
   }
 }
 
-VxCoreError FolderManager::UpdateFileTags(const std::string &folder_path,
-                                          const std::string &file_name,
-                                          const std::string &tags_json) {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
-
+VxCoreError BundledFolderManager::UpdateFileTags(const std::string &folder_path,
+                                                 const std::string &file_name,
+                                                 const std::string &tags_json) {
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
@@ -739,12 +681,9 @@ VxCoreError FolderManager::UpdateFileTags(const std::string &folder_path,
   }
 }
 
-VxCoreError FolderManager::GetFileInfo(const std::string &folder_path, const std::string &file_name,
-                                       std::string &out_file_info_json) {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
-
+VxCoreError BundledFolderManager::GetFileInfo(const std::string &folder_path,
+                                              const std::string &file_name,
+                                              std::string &out_file_info_json) {
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
@@ -760,13 +699,9 @@ VxCoreError FolderManager::GetFileInfo(const std::string &folder_path, const std
   return VXCORE_OK;
 }
 
-VxCoreError FolderManager::GetFileMetadata(const std::string &folder_path,
-                                           const std::string &file_name,
-                                           std::string &out_metadata_json) {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
-
+VxCoreError BundledFolderManager::GetFileMetadata(const std::string &folder_path,
+                                                  const std::string &file_name,
+                                                  std::string &out_metadata_json) {
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
@@ -782,14 +717,11 @@ VxCoreError FolderManager::GetFileMetadata(const std::string &folder_path,
   return VXCORE_OK;
 }
 
-VxCoreError FolderManager::RenameFile(const std::string &folder_path, const std::string &old_name,
-                                      const std::string &new_name) {
+VxCoreError BundledFolderManager::RenameFile(const std::string &folder_path,
+                                             const std::string &old_name,
+                                             const std::string &new_name) {
   VXCORE_LOG_INFO("RenameFile: folder_path=%s, old_name=%s, new_name=%s", folder_path.c_str(),
                   old_name.c_str(), new_name.c_str());
-
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
 
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
@@ -837,15 +769,11 @@ VxCoreError FolderManager::RenameFile(const std::string &folder_path, const std:
   return error;
 }
 
-VxCoreError FolderManager::MoveFile(const std::string &src_folder_path,
-                                    const std::string &file_name,
-                                    const std::string &dest_folder_path) {
+VxCoreError BundledFolderManager::MoveFile(const std::string &src_folder_path,
+                                           const std::string &file_name,
+                                           const std::string &dest_folder_path) {
   VXCORE_LOG_INFO("MoveFile: src_folder_path=%s, file_name=%s, dest_folder_path=%s",
                   src_folder_path.c_str(), file_name.c_str(), dest_folder_path.c_str());
-
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
 
   FolderConfig *src_config = nullptr;
   VxCoreError error = GetFolderConfig(src_folder_path, &src_config);
@@ -910,14 +838,10 @@ VxCoreError FolderManager::MoveFile(const std::string &src_folder_path,
   return error;
 }
 
-VxCoreError FolderManager::CopyFile(const std::string &src_folder_path,
-                                    const std::string &file_name,
-                                    const std::string &dest_folder_path,
-                                    const std::string &new_name, std::string &out_file_id) {
-  if (notebook_->GetType() == NotebookType::Raw) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
-
+VxCoreError BundledFolderManager::CopyFile(const std::string &src_folder_path,
+                                           const std::string &file_name,
+                                           const std::string &dest_folder_path,
+                                           const std::string &new_name, std::string &out_file_id) {
   const std::string target_name = new_name.empty() ? file_name : new_name;
   VXCORE_LOG_INFO("Copying file: src=%s, file=%s, dest=%s, new_name=%s", src_folder_path.c_str(),
                   file_name.c_str(), dest_folder_path.c_str(), target_name.c_str());
@@ -980,26 +904,6 @@ VxCoreError FolderManager::CopyFile(const std::string &src_folder_path,
   return error;
 }
 
-void FolderManager::ClearCache() { config_cache_.clear(); }
-
-std::string FolderManager::ConcatenatePaths(const std::string &parent_path,
-                                            const std::string &child_name) const {
-  if (parent_path.empty() || parent_path == ".") {
-    return child_name;
-  } else {
-    return parent_path + "/" + child_name;
-  }
-}
-
-std::pair<std::string, std::string> FolderManager::SplitPath(const std::string &path) const {
-  size_t last_slash = path.find_last_of("/\\");
-  if (last_slash == std::string::npos) {
-    return {".", path};
-  } else {
-    std::string parent_path = path.substr(0, last_slash);
-    std::string child_name = path.substr(last_slash + 1);
-    return {parent_path, child_name};
-  }
-}
+void BundledFolderManager::ClearCache() { config_cache_.clear(); }
 
 }  // namespace vxcore
