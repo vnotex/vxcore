@@ -171,8 +171,8 @@ VXCORE_API VxCoreError vxcore_file_create(VxCoreContextHandle context, const cha
 }
 
 VXCORE_API VxCoreError vxcore_file_delete(VxCoreContextHandle context, const char *notebook_id,
-                                          const char *folder_path, const char *file_name) {
-  if (!context || !notebook_id || !folder_path || !file_name) {
+                                          const char *file_path) {
+  if (!context || !notebook_id || !file_path) {
     return VXCORE_ERR_INVALID_PARAM;
   }
 
@@ -190,7 +190,7 @@ VXCORE_API VxCoreError vxcore_file_delete(VxCoreContextHandle context, const cha
       ctx->last_error = "FolderManager not available";
       return VXCORE_ERR_INVALID_STATE;
     }
-    return folder_manager->DeleteFile(folder_path, file_name);
+    return folder_manager->DeleteFile(file_path);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -198,10 +198,9 @@ VXCORE_API VxCoreError vxcore_file_delete(VxCoreContextHandle context, const cha
 }
 
 VXCORE_API VxCoreError vxcore_file_update_metadata(VxCoreContextHandle context,
-                                                   const char *notebook_id, const char *folder_path,
-                                                   const char *file_name,
+                                                   const char *notebook_id, const char *file_path,
                                                    const char *metadata_json) {
-  if (!context || !notebook_id || !folder_path || !file_name || !metadata_json) {
+  if (!context || !notebook_id || !file_path || !metadata_json) {
     return VXCORE_ERR_INVALID_PARAM;
   }
 
@@ -219,7 +218,7 @@ VXCORE_API VxCoreError vxcore_file_update_metadata(VxCoreContextHandle context,
       ctx->last_error = "FolderManager not available";
       return VXCORE_ERR_INVALID_STATE;
     }
-    return folder_manager->UpdateFileMetadata(folder_path, file_name, metadata_json);
+    return folder_manager->UpdateFileMetadata(file_path, metadata_json);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -227,9 +226,8 @@ VXCORE_API VxCoreError vxcore_file_update_metadata(VxCoreContextHandle context,
 }
 
 VXCORE_API VxCoreError vxcore_file_update_tags(VxCoreContextHandle context, const char *notebook_id,
-                                               const char *folder_path, const char *file_name,
-                                               const char *tags_json) {
-  if (!context || !notebook_id || !folder_path || !file_name || !tags_json) {
+                                               const char *file_path, const char *tags_json) {
+  if (!context || !notebook_id || !file_path || !tags_json) {
     return VXCORE_ERR_INVALID_PARAM;
   }
 
@@ -247,7 +245,7 @@ VXCORE_API VxCoreError vxcore_file_update_tags(VxCoreContextHandle context, cons
       ctx->last_error = "FolderManager not available";
       return VXCORE_ERR_INVALID_STATE;
     }
-    return folder_manager->UpdateFileTags(folder_path, file_name, tags_json);
+    return folder_manager->UpdateFileTags(file_path, tags_json);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -383,9 +381,8 @@ VXCORE_API VxCoreError vxcore_folder_copy(VxCoreContextHandle context, const cha
 }
 
 VXCORE_API VxCoreError vxcore_file_get_info(VxCoreContextHandle context, const char *notebook_id,
-                                            const char *folder_path, const char *file_name,
-                                            char **out_file_info_json) {
-  if (!context || !notebook_id || !folder_path || !file_name || !out_file_info_json) {
+                                            const char *file_path, char **out_file_info_json) {
+  if (!context || !notebook_id || !file_path || !out_file_info_json) {
     return VXCORE_ERR_INVALID_PARAM;
   }
 
@@ -405,7 +402,7 @@ VXCORE_API VxCoreError vxcore_file_get_info(VxCoreContextHandle context, const c
     }
     std::string file_info_json;
 
-    VxCoreError error = folder_manager->GetFileInfo(folder_path, file_name, file_info_json);
+    VxCoreError error = folder_manager->GetFileInfo(file_path, file_info_json);
     if (error != VXCORE_OK) {
       return error;
     }
@@ -419,9 +416,9 @@ VXCORE_API VxCoreError vxcore_file_get_info(VxCoreContextHandle context, const c
 }
 
 VXCORE_API VxCoreError vxcore_file_get_metadata(VxCoreContextHandle context,
-                                                const char *notebook_id, const char *folder_path,
-                                                const char *file_name, char **out_metadata_json) {
-  if (!context || !notebook_id || !folder_path || !file_name || !out_metadata_json) {
+                                                const char *notebook_id, const char *file_path,
+                                                char **out_metadata_json) {
+  if (!context || !notebook_id || !file_path || !out_metadata_json) {
     return VXCORE_ERR_INVALID_PARAM;
   }
 
@@ -441,7 +438,7 @@ VXCORE_API VxCoreError vxcore_file_get_metadata(VxCoreContextHandle context,
     }
     std::string metadata_json;
 
-    VxCoreError error = folder_manager->GetFileMetadata(folder_path, file_name, metadata_json);
+    VxCoreError error = folder_manager->GetFileMetadata(file_path, metadata_json);
     if (error != VXCORE_OK) {
       return error;
     }
@@ -455,9 +452,8 @@ VXCORE_API VxCoreError vxcore_file_get_metadata(VxCoreContextHandle context,
 }
 
 VXCORE_API VxCoreError vxcore_file_rename(VxCoreContextHandle context, const char *notebook_id,
-                                          const char *folder_path, const char *old_name,
-                                          const char *new_name) {
-  if (!context || !notebook_id || !folder_path || !old_name || !new_name) {
+                                          const char *file_path, const char *new_name) {
+  if (!context || !notebook_id || !file_path || !new_name) {
     return VXCORE_ERR_INVALID_PARAM;
   }
 
@@ -475,7 +471,7 @@ VXCORE_API VxCoreError vxcore_file_rename(VxCoreContextHandle context, const cha
       ctx->last_error = "FolderManager not available";
       return VXCORE_ERR_INVALID_STATE;
     }
-    return folder_manager->RenameFile(folder_path, old_name, new_name);
+    return folder_manager->RenameFile(file_path, new_name);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -483,9 +479,8 @@ VXCORE_API VxCoreError vxcore_file_rename(VxCoreContextHandle context, const cha
 }
 
 VXCORE_API VxCoreError vxcore_file_move(VxCoreContextHandle context, const char *notebook_id,
-                                        const char *src_folder_path, const char *file_name,
-                                        const char *dest_folder_path) {
-  if (!context || !notebook_id || !src_folder_path || !file_name || !dest_folder_path) {
+                                        const char *file_path, const char *dest_folder_path) {
+  if (!context || !notebook_id || !file_path || !dest_folder_path) {
     return VXCORE_ERR_INVALID_PARAM;
   }
 
@@ -503,7 +498,7 @@ VXCORE_API VxCoreError vxcore_file_move(VxCoreContextHandle context, const char 
       ctx->last_error = "FolderManager not available";
       return VXCORE_ERR_INVALID_STATE;
     }
-    return folder_manager->MoveFile(src_folder_path, file_name, dest_folder_path);
+    return folder_manager->MoveFile(file_path, dest_folder_path);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -511,11 +506,9 @@ VXCORE_API VxCoreError vxcore_file_move(VxCoreContextHandle context, const char 
 }
 
 VXCORE_API VxCoreError vxcore_file_copy(VxCoreContextHandle context, const char *notebook_id,
-                                        const char *src_folder_path, const char *file_name,
-                                        const char *dest_folder_path, const char *new_name,
-                                        char **out_file_id) {
-  if (!context || !notebook_id || !src_folder_path || !file_name || !dest_folder_path ||
-      !out_file_id) {
+                                        const char *file_path, const char *dest_folder_path,
+                                        const char *new_name, char **out_file_id) {
+  if (!context || !notebook_id || !file_path || !dest_folder_path || !out_file_id) {
     return VXCORE_ERR_INVALID_PARAM;
   }
 
@@ -536,14 +529,67 @@ VXCORE_API VxCoreError vxcore_file_copy(VxCoreContextHandle context, const char 
     std::string target_name = new_name ? new_name : "";
     std::string file_id;
 
-    VxCoreError error = folder_manager->CopyFile(src_folder_path, file_name, dest_folder_path,
-                                                 target_name, file_id);
+    VxCoreError error = folder_manager->CopyFile(file_path, dest_folder_path, target_name, file_id);
     if (error != VXCORE_OK) {
       return error;
     }
 
     *out_file_id = vxcore_strdup(file_id.c_str());
     return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_file_tag(VxCoreContextHandle context, const char *notebook_id,
+                                       const char *file_path, const char *tag_name) {
+  if (!context || !notebook_id || !file_path || !tag_name) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+    return folder_manager->TagFile(file_path, tag_name);
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_file_untag(VxCoreContextHandle context, const char *notebook_id,
+                                         const char *file_path, const char *tag_name) {
+  if (!context || !notebook_id || !file_path || !tag_name) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+    return folder_manager->UntagFile(file_path, tag_name);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;

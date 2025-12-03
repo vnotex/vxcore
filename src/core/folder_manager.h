@@ -41,28 +41,30 @@ class FolderManager {
   virtual VxCoreError CreateFile(const std::string &folder_path, const std::string &file_name,
                                  std::string &out_file_id) = 0;
 
-  virtual VxCoreError DeleteFile(const std::string &folder_path, const std::string &file_name) = 0;
+  virtual VxCoreError DeleteFile(const std::string &file_path) = 0;
 
-  virtual VxCoreError UpdateFileMetadata(const std::string &folder_path,
-                                         const std::string &file_name,
+  virtual VxCoreError UpdateFileMetadata(const std::string &file_path,
                                          const std::string &metadata_json) = 0;
 
-  virtual VxCoreError UpdateFileTags(const std::string &folder_path, const std::string &file_name,
+  virtual VxCoreError UpdateFileTags(const std::string &file_path,
                                      const std::string &tags_json) = 0;
 
-  virtual VxCoreError GetFileInfo(const std::string &folder_path, const std::string &file_name,
+  virtual VxCoreError TagFile(const std::string &file_path, const std::string &tag_name) = 0;
+
+  virtual VxCoreError UntagFile(const std::string &file_path, const std::string &tag_name) = 0;
+
+  virtual VxCoreError GetFileInfo(const std::string &file_path,
                                   std::string &out_file_info_json) = 0;
 
-  virtual VxCoreError GetFileMetadata(const std::string &folder_path, const std::string &file_name,
+  virtual VxCoreError GetFileMetadata(const std::string &file_path,
                                       std::string &out_metadata_json) = 0;
 
-  virtual VxCoreError RenameFile(const std::string &folder_path, const std::string &old_name,
-                                 const std::string &new_name) = 0;
+  virtual VxCoreError RenameFile(const std::string &file_path, const std::string &new_name) = 0;
 
-  virtual VxCoreError MoveFile(const std::string &src_folder_path, const std::string &file_name,
+  virtual VxCoreError MoveFile(const std::string &src_file_path,
                                const std::string &dest_folder_path) = 0;
 
-  virtual VxCoreError CopyFile(const std::string &src_folder_path, const std::string &file_name,
+  virtual VxCoreError CopyFile(const std::string &src_file_path,
                                const std::string &dest_folder_path, const std::string &new_name,
                                std::string &out_file_id) = 0;
 

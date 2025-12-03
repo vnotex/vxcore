@@ -87,37 +87,37 @@ VXCORE_API VxCoreError vxcore_file_create(VxCoreContextHandle context, const cha
                                           char **out_file_id);
 
 VXCORE_API VxCoreError vxcore_file_delete(VxCoreContextHandle context, const char *notebook_id,
-                                          const char *folder_path, const char *file_name);
-
-VXCORE_API VxCoreError vxcore_file_update_metadata(VxCoreContextHandle context,
-                                                   const char *notebook_id, const char *folder_path,
-                                                   const char *file_name,
-                                                   const char *metadata_json);
+                                          const char *file_path);
 
 VXCORE_API VxCoreError vxcore_file_get_info(VxCoreContextHandle context, const char *notebook_id,
-                                            const char *folder_path, const char *file_name,
-                                            char **out_file_info_json);
+                                            const char *file_path, char **out_file_info_json);
 
 VXCORE_API VxCoreError vxcore_file_get_metadata(VxCoreContextHandle context,
-                                                const char *notebook_id, const char *folder_path,
-                                                const char *file_name, char **out_metadata_json);
+                                                const char *notebook_id, const char *file_path,
+                                                char **out_metadata_json);
+
+VXCORE_API VxCoreError vxcore_file_update_metadata(VxCoreContextHandle context,
+                                                   const char *notebook_id, const char *file_path,
+                                                   const char *metadata_json);
 
 VXCORE_API VxCoreError vxcore_file_rename(VxCoreContextHandle context, const char *notebook_id,
-                                          const char *folder_path, const char *old_name,
-                                          const char *new_name);
+                                          const char *file_path, const char *new_name);
 
 VXCORE_API VxCoreError vxcore_file_move(VxCoreContextHandle context, const char *notebook_id,
-                                        const char *src_folder_path, const char *file_name,
-                                        const char *dest_folder_path);
+                                        const char *src_file_path, const char *dest_folder_path);
 
 VXCORE_API VxCoreError vxcore_file_copy(VxCoreContextHandle context, const char *notebook_id,
-                                        const char *src_folder_path, const char *file_name,
-                                        const char *dest_folder_path, const char *new_name,
-                                        char **out_file_id);
+                                        const char *src_file_path, const char *dest_folder_path,
+                                        const char *new_name, char **out_file_id);
 
 VXCORE_API VxCoreError vxcore_file_update_tags(VxCoreContextHandle context, const char *notebook_id,
-                                               const char *folder_path, const char *file_name,
-                                               const char *tags_json);
+                                               const char *file_path, const char *tags_json);
+
+VXCORE_API VxCoreError vxcore_file_tag(VxCoreContextHandle context, const char *notebook_id,
+                                       const char *file_path, const char *tag_name);
+
+VXCORE_API VxCoreError vxcore_file_untag(VxCoreContextHandle context, const char *notebook_id,
+                                         const char *file_path, const char *tag_name);
 
 VXCORE_API VxCoreError vxcore_tag_create(VxCoreContextHandle context, VxCoreNotebookHandle notebook,
                                          const char *tag_name, VxCoreTagHandle *out_tag);
@@ -127,12 +127,6 @@ VXCORE_API VxCoreError vxcore_tag_delete(VxCoreContextHandle context, VxCoreNote
 
 VXCORE_API VxCoreError vxcore_tag_list(VxCoreContextHandle context, VxCoreNotebookHandle notebook,
                                        char **out_tags_json);
-
-VXCORE_API VxCoreError vxcore_note_add_tag(VxCoreContextHandle context, VxCoreNoteHandle note,
-                                           const char *tag_name);
-
-VXCORE_API VxCoreError vxcore_note_remove_tag(VxCoreContextHandle context, VxCoreNoteHandle note,
-                                              const char *tag_name);
 
 VXCORE_API VxCoreError vxcore_search(VxCoreContextHandle context, VxCoreNotebookHandle notebook,
                                      const char *query_json, VxCoreSearchResultHandle *out_result);

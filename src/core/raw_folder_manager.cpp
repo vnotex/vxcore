@@ -77,72 +77,69 @@ VxCoreError RawFolderManager::CreateFile(const std::string &folder_path,
   return VXCORE_ERR_UNSUPPORTED;
 }
 
-VxCoreError RawFolderManager::DeleteFile(const std::string &folder_path,
-                                         const std::string &file_name) {
-  (void)folder_path;
-  (void)file_name;
+VxCoreError RawFolderManager::DeleteFile(const std::string &file_path) {
+  (void)file_path;
   return VXCORE_ERR_UNSUPPORTED;
 }
 
-VxCoreError RawFolderManager::UpdateFileMetadata(const std::string &folder_path,
-                                                 const std::string &file_name,
+VxCoreError RawFolderManager::UpdateFileMetadata(const std::string &file_path,
                                                  const std::string &metadata_json) {
-  (void)folder_path;
-  (void)file_name;
+  (void)file_path;
   (void)metadata_json;
   return VXCORE_ERR_UNSUPPORTED;
 }
 
-VxCoreError RawFolderManager::UpdateFileTags(const std::string &folder_path,
-                                             const std::string &file_name,
+VxCoreError RawFolderManager::UpdateFileTags(const std::string &file_path,
                                              const std::string &tags_json) {
-  (void)folder_path;
-  (void)file_name;
+  (void)file_path;
   (void)tags_json;
   return VXCORE_ERR_UNSUPPORTED;
 }
 
-VxCoreError RawFolderManager::GetFileInfo(const std::string &folder_path,
-                                          const std::string &file_name,
+VxCoreError RawFolderManager::TagFile(const std::string &file_path, const std::string &tag_name) {
+  (void)file_path;
+  (void)tag_name;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VxCoreError RawFolderManager::UntagFile(const std::string &file_path, const std::string &tag_name) {
+  (void)file_path;
+  (void)tag_name;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VxCoreError RawFolderManager::GetFileInfo(const std::string &file_path,
                                           std::string &out_file_info_json) {
-  (void)folder_path;
-  (void)file_name;
+  (void)file_path;
   (void)out_file_info_json;
   return VXCORE_ERR_UNSUPPORTED;
 }
 
-VxCoreError RawFolderManager::GetFileMetadata(const std::string &folder_path,
-                                              const std::string &file_name,
+VxCoreError RawFolderManager::GetFileMetadata(const std::string &file_path,
                                               std::string &out_metadata_json) {
-  (void)folder_path;
-  (void)file_name;
+  (void)file_path;
   (void)out_metadata_json;
   return VXCORE_ERR_UNSUPPORTED;
 }
 
-VxCoreError RawFolderManager::RenameFile(const std::string &folder_path,
-                                         const std::string &old_name, const std::string &new_name) {
-  (void)folder_path;
-  (void)old_name;
+VxCoreError RawFolderManager::RenameFile(const std::string &file_path,
+                                         const std::string &new_name) {
+  (void)file_path;
   (void)new_name;
   return VXCORE_ERR_UNSUPPORTED;
 }
 
-VxCoreError RawFolderManager::MoveFile(const std::string &src_folder_path,
-                                       const std::string &file_name,
+VxCoreError RawFolderManager::MoveFile(const std::string &file_path,
                                        const std::string &dest_folder_path) {
-  (void)src_folder_path;
-  (void)file_name;
+  (void)file_path;
   (void)dest_folder_path;
   return VXCORE_ERR_UNSUPPORTED;
 }
 
-VxCoreError RawFolderManager::CopyFile(const std::string &src_folder_path,
-                                       const std::string &file_name,
+VxCoreError RawFolderManager::CopyFile(const std::string &file_path,
                                        const std::string &dest_folder_path,
                                        const std::string &new_name, std::string &out_file_id) {
-  (void)src_folder_path;
-  (void)file_name;
+  (void)file_path;
   (void)dest_folder_path;
   (void)new_name;
   (void)out_file_id;

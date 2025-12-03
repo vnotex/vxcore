@@ -89,11 +89,11 @@ int test_file_metadata_and_tags() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
 
-  err = vxcore_file_update_metadata(ctx, notebook_id, ".", "note.md",
+  err = vxcore_file_update_metadata(ctx, notebook_id, "note.md",
                                     R"({"author": "John Doe", "priority": "high"})");
   ASSERT_EQ(err, VXCORE_OK);
 
-  err = vxcore_file_update_tags(ctx, notebook_id, ".", "note.md", R"(["work", "urgent"])");
+  err = vxcore_file_update_tags(ctx, notebook_id, "note.md", R"(["work", "urgent"])");
   ASSERT_EQ(err, VXCORE_OK);
 
   char *config_json = nullptr;
@@ -309,13 +309,13 @@ int test_file_not_found() {
                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  err = vxcore_file_delete(ctx, notebook_id, ".", "nonexistent.md");
+  err = vxcore_file_delete(ctx, notebook_id, "nonexistent.md");
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
 
-  err = vxcore_file_update_metadata(ctx, notebook_id, ".", "nonexistent.md", "{}");
+  err = vxcore_file_update_metadata(ctx, notebook_id, "nonexistent.md", "{}");
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
 
-  err = vxcore_file_update_tags(ctx, notebook_id, ".", "nonexistent.md", "[]");
+  err = vxcore_file_update_tags(ctx, notebook_id, "nonexistent.md", "[]");
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
 
   vxcore_string_free(notebook_id);
@@ -343,16 +343,16 @@ int test_invalid_json() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
 
-  err = vxcore_file_update_metadata(ctx, notebook_id, ".", "test.md", "invalid json");
+  err = vxcore_file_update_metadata(ctx, notebook_id, "test.md", "invalid json");
   ASSERT_EQ(err, VXCORE_ERR_JSON_PARSE);
 
-  err = vxcore_file_update_metadata(ctx, notebook_id, ".", "test.md", "[]");
+  err = vxcore_file_update_metadata(ctx, notebook_id, "test.md", "[]");
   ASSERT_EQ(err, VXCORE_ERR_JSON_PARSE);
 
-  err = vxcore_file_update_tags(ctx, notebook_id, ".", "test.md", "not an array");
+  err = vxcore_file_update_tags(ctx, notebook_id, "test.md", "not an array");
   ASSERT_EQ(err, VXCORE_ERR_JSON_PARSE);
 
-  err = vxcore_file_update_tags(ctx, notebook_id, ".", "test.md", "{}");
+  err = vxcore_file_update_tags(ctx, notebook_id, "test.md", "{}");
   ASSERT_EQ(err, VXCORE_ERR_JSON_PARSE);
 
   vxcore_string_free(notebook_id);
@@ -404,7 +404,7 @@ int test_file_delete() {
 
   ASSERT(path_exists("test_file_delete_nb/to_delete.md"));
 
-  err = vxcore_file_delete(ctx, notebook_id, ".", "to_delete.md");
+  err = vxcore_file_delete(ctx, notebook_id, "to_delete.md");
   ASSERT_EQ(err, VXCORE_OK);
 
   ASSERT(!path_exists("test_file_delete_nb/to_delete.md"));
@@ -590,7 +590,7 @@ int test_file_rename() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
 
-  err = vxcore_file_rename(ctx, notebook_id, ".", "old.md", "new.md");
+  err = vxcore_file_rename(ctx, notebook_id, "old.md", "new.md");
   ASSERT_EQ(err, VXCORE_OK);
 
   ASSERT(!path_exists("test_file_rename_nb/old.md"));
@@ -626,7 +626,7 @@ int test_file_move() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(folder_id);
 
-  err = vxcore_file_move(ctx, notebook_id, ".", "file.md", "dest");
+  err = vxcore_file_move(ctx, notebook_id, "file.md", "dest");
   ASSERT_EQ(err, VXCORE_OK);
 
   ASSERT(!path_exists("test_file_move_nb/file.md"));
@@ -658,7 +658,7 @@ int test_file_copy() {
   vxcore_string_free(file_id);
 
   char *copied_file_id = nullptr;
-  err = vxcore_file_copy(ctx, notebook_id, ".", "original.md", ".", "copy.md", &copied_file_id);
+  err = vxcore_file_copy(ctx, notebook_id, "original.md", ".", "copy.md", &copied_file_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT(copied_file_id != nullptr);
   vxcore_string_free(copied_file_id);
@@ -691,11 +691,11 @@ int test_file_get_info() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
 
-  err = vxcore_file_update_metadata(ctx, notebook_id, ".", "test.md", R"({"key": "value"})");
+  err = vxcore_file_update_metadata(ctx, notebook_id, "test.md", R"({"key": "value"})");
   ASSERT_EQ(err, VXCORE_OK);
 
   char *info_json = nullptr;
-  err = vxcore_file_get_info(ctx, notebook_id, ".", "test.md", &info_json);
+  err = vxcore_file_get_info(ctx, notebook_id, "test.md", &info_json);
   ASSERT_EQ(err, VXCORE_OK);
 
   nlohmann::json info = nlohmann::json::parse(info_json);
@@ -851,7 +851,7 @@ int test_file_copy_invalid_params() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
 
-  err = vxcore_file_copy(ctx, notebook_id, ".", "original.md", ".", "copy.md", nullptr);
+  err = vxcore_file_copy(ctx, notebook_id, "original.md", ".", "copy.md", nullptr);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
 
   vxcore_string_free(notebook_id);
@@ -875,7 +875,7 @@ int test_file_copy_not_found() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *copied_file_id = nullptr;
-  err = vxcore_file_copy(ctx, notebook_id, ".", "nonexistent.md", ".", "copy.md", &copied_file_id);
+  err = vxcore_file_copy(ctx, notebook_id, "nonexistent.md", ".", "copy.md", &copied_file_id);
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
   ASSERT(copied_file_id == nullptr);
 
@@ -909,7 +909,7 @@ int test_file_copy_already_exists() {
   vxcore_string_free(file_id);
 
   char *copied_file_id = nullptr;
-  err = vxcore_file_copy(ctx, notebook_id, ".", "original.md", ".", "existing.md", &copied_file_id);
+  err = vxcore_file_copy(ctx, notebook_id, "original.md", ".", "existing.md", &copied_file_id);
   ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
   ASSERT(copied_file_id == nullptr);
 
@@ -917,6 +917,197 @@ int test_file_copy_already_exists() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir("test_filecopy_exists_nb");
   std::cout << "  ✓ test_file_copy_already_exists passed" << std::endl;
+  return 0;
+}
+
+int test_file_tag() {
+  std::cout << "  Running test_file_tag..." << std::endl;
+  cleanup_test_dir("test_file_tag_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_file_tag_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_tag(ctx, notebook_id, "note.md", "work");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "note.md", "urgent");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *config_json = nullptr;
+  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"][0]["tags"].size() == 2);
+  ASSERT(config["files"][0]["tags"][0] == "work");
+  ASSERT(config["files"][0]["tags"][1] == "urgent");
+
+  vxcore_string_free(config_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_file_tag_nb");
+  std::cout << "  ✓ test_file_tag passed" << std::endl;
+  return 0;
+}
+
+int test_file_untag() {
+  std::cout << "  Running test_file_untag..." << std::endl;
+  cleanup_test_dir("test_file_untag_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_file_untag_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_tag(ctx, notebook_id, "note.md", "work");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "note.md", "urgent");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "note.md", "personal");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_untag(ctx, notebook_id, "note.md", "urgent");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *config_json = nullptr;
+  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"][0]["tags"].size() == 2);
+  ASSERT(config["files"][0]["tags"][0] == "work");
+  ASSERT(config["files"][0]["tags"][1] == "personal");
+
+  vxcore_string_free(config_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_file_untag_nb");
+  std::cout << "  ✓ test_file_untag passed" << std::endl;
+  return 0;
+}
+
+int test_file_tag_duplicate() {
+  std::cout << "  Running test_file_tag_duplicate..." << std::endl;
+  cleanup_test_dir("test_file_tag_dup_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_file_tag_dup_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_tag(ctx, notebook_id, "note.md", "work");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "note.md", "work");
+  ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_file_tag_dup_nb");
+  std::cout << "  ✓ test_file_tag_duplicate passed" << std::endl;
+  return 0;
+}
+
+int test_file_untag_not_found() {
+  std::cout << "  Running test_file_untag_not_found..." << std::endl;
+  cleanup_test_dir("test_file_untag_nf_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_file_untag_nf_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_untag(ctx, notebook_id, "note.md", "nonexistent");
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_file_untag_nf_nb");
+  std::cout << "  ✓ test_file_untag_not_found passed" << std::endl;
+  return 0;
+}
+
+int test_file_tag_invalid_params() {
+  std::cout << "  Running test_file_tag_invalid_params..." << std::endl;
+  cleanup_test_dir("test_file_tag_inv_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_file_tag_inv_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(nullptr, notebook_id, "note.md", "work");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_file_tag(ctx, nullptr, "note.md", "work");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_file_tag(ctx, notebook_id, nullptr, "work");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_file_tag(ctx, notebook_id, "note.md", nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_file_untag(nullptr, notebook_id, "note.md", "work");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_file_untag(ctx, nullptr, "note.md", "work");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_file_untag(ctx, notebook_id, nullptr, "work");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_file_untag(ctx, notebook_id, "note.md", nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_file_tag_inv_nb");
+  std::cout << "  ✓ test_file_tag_invalid_params passed" << std::endl;
   return 0;
 }
 
@@ -953,6 +1144,11 @@ int main() {
   RUN_TEST(test_file_copy_invalid_params);
   RUN_TEST(test_file_copy_not_found);
   RUN_TEST(test_file_copy_already_exists);
+  RUN_TEST(test_file_tag);
+  RUN_TEST(test_file_untag);
+  RUN_TEST(test_file_tag_duplicate);
+  RUN_TEST(test_file_untag_not_found);
+  RUN_TEST(test_file_tag_invalid_params);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;

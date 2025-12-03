@@ -281,8 +281,7 @@ VxCoreError BundledFolderManager::UpdateFolderMetadata(const std::string &folder
     config->metadata = metadata;
     config->modified_utc = GetCurrentTimestampMillis();
 
-    error = SaveFolderConfig(folder_path, *config);
-    return error;
+    return SaveFolderConfig(folder_path, *config);
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
   }
@@ -580,10 +579,9 @@ VxCoreError BundledFolderManager::CreateFile(const std::string &folder_path,
   return VXCORE_OK;
 }
 
-VxCoreError BundledFolderManager::DeleteFile(const std::string &folder_path,
-                                             const std::string &file_name) {
-  VXCORE_LOG_INFO("DeleteFile: folder_path=%s, file_name=%s", folder_path.c_str(),
-                  file_name.c_str());
+VxCoreError BundledFolderManager::DeleteFile(const std::string &file_path) {
+  const auto [folder_path, file_name] = SplitPath(file_path);
+  VXCORE_LOG_INFO("DeleteFile: file_path=%s", file_path.c_str());
 
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
@@ -607,19 +605,18 @@ VxCoreError BundledFolderManager::DeleteFile(const std::string &folder_path,
 
   try {
     std::string content_path = GetContentPath(folder_path);
-    fs::path file_path = fs::path(content_path) / file_name;
-    fs::remove(file_path);
-    VXCORE_LOG_INFO("DeleteFile successful: file %s deleted from folder %s", file_name.c_str(),
-                    folder_path.c_str());
+    fs::path fs_file_path = fs::path(content_path) / file_name;
+    fs::remove(fs_file_path);
+    VXCORE_LOG_INFO("DeleteFile successful: file %s deleted", file_path.c_str());
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
   }
 }
 
-VxCoreError BundledFolderManager::UpdateFileMetadata(const std::string &folder_path,
-                                                     const std::string &file_name,
+VxCoreError BundledFolderManager::UpdateFileMetadata(const std::string &file_path,
                                                      const std::string &metadata_json) {
+  const auto [folder_path, file_name] = SplitPath(file_path);
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
@@ -642,16 +639,15 @@ VxCoreError BundledFolderManager::UpdateFileMetadata(const std::string &folder_p
 
     config->modified_utc = file->modified_utc;
 
-    error = SaveFolderConfig(folder_path, *config);
-    return error;
+    return SaveFolderConfig(folder_path, *config);
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
   }
 }
 
-VxCoreError BundledFolderManager::UpdateFileTags(const std::string &folder_path,
-                                                 const std::string &file_name,
+VxCoreError BundledFolderManager::UpdateFileTags(const std::string &file_path,
                                                  const std::string &tags_json) {
+  const auto [folder_path, file_name] = SplitPath(file_path);
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
@@ -674,16 +670,67 @@ VxCoreError BundledFolderManager::UpdateFileTags(const std::string &folder_path,
 
     config->modified_utc = file->modified_utc;
 
-    error = SaveFolderConfig(folder_path, *config);
-    return error;
+    return SaveFolderConfig(folder_path, *config);
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
   }
 }
 
-VxCoreError BundledFolderManager::GetFileInfo(const std::string &folder_path,
-                                              const std::string &file_name,
+VxCoreError BundledFolderManager::TagFile(const std::string &file_path,
+                                          const std::string &tag_name) {
+  const auto [folder_path, file_name] = SplitPath(file_path);
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  FileRecord *file = FindFileRecord(*config, file_name);
+  if (!file) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  auto it = std::find(file->tags.begin(), file->tags.end(), tag_name);
+  if (it != file->tags.end()) {
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+
+  file->tags.push_back(tag_name);
+  file->modified_utc = GetCurrentTimestampMillis();
+  config->modified_utc = file->modified_utc;
+
+  return SaveFolderConfig(folder_path, *config);
+}
+
+VxCoreError BundledFolderManager::UntagFile(const std::string &file_path,
+                                            const std::string &tag_name) {
+  const auto [folder_path, file_name] = SplitPath(file_path);
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  FileRecord *file = FindFileRecord(*config, file_name);
+  if (!file) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  auto it = std::find(file->tags.begin(), file->tags.end(), tag_name);
+  if (it == file->tags.end()) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  file->tags.erase(it);
+  file->modified_utc = GetCurrentTimestampMillis();
+  config->modified_utc = file->modified_utc;
+
+  return SaveFolderConfig(folder_path, *config);
+}
+
+VxCoreError BundledFolderManager::GetFileInfo(const std::string &file_path,
                                               std::string &out_file_info_json) {
+  const auto [folder_path, file_name] = SplitPath(file_path);
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
@@ -699,9 +746,9 @@ VxCoreError BundledFolderManager::GetFileInfo(const std::string &folder_path,
   return VXCORE_OK;
 }
 
-VxCoreError BundledFolderManager::GetFileMetadata(const std::string &folder_path,
-                                                  const std::string &file_name,
+VxCoreError BundledFolderManager::GetFileMetadata(const std::string &file_path,
                                                   std::string &out_metadata_json) {
+  const auto [folder_path, file_name] = SplitPath(file_path);
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
@@ -717,11 +764,10 @@ VxCoreError BundledFolderManager::GetFileMetadata(const std::string &folder_path
   return VXCORE_OK;
 }
 
-VxCoreError BundledFolderManager::RenameFile(const std::string &folder_path,
-                                             const std::string &old_name,
+VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
                                              const std::string &new_name) {
-  VXCORE_LOG_INFO("RenameFile: folder_path=%s, old_name=%s, new_name=%s", folder_path.c_str(),
-                  old_name.c_str(), new_name.c_str());
+  const auto [folder_path, old_name] = SplitPath(file_path);
+  VXCORE_LOG_INFO("RenameFile: file_path=%s, new_name=%s", file_path.c_str(), new_name.c_str());
 
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
@@ -763,17 +809,17 @@ VxCoreError BundledFolderManager::RenameFile(const std::string &folder_path,
 
   error = SaveFolderConfig(folder_path, *config);
   if (error == VXCORE_OK) {
-    VXCORE_LOG_INFO("RenameFile successful: file renamed from %s to %s in folder %s",
-                    old_name.c_str(), new_name.c_str(), folder_path.c_str());
+    VXCORE_LOG_INFO("RenameFile successful: file renamed from %s to %s", file_path.c_str(),
+                    ConcatenatePaths(folder_path, new_name).c_str());
   }
   return error;
 }
 
-VxCoreError BundledFolderManager::MoveFile(const std::string &src_folder_path,
-                                           const std::string &file_name,
+VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
                                            const std::string &dest_folder_path) {
-  VXCORE_LOG_INFO("MoveFile: src_folder_path=%s, file_name=%s, dest_folder_path=%s",
-                  src_folder_path.c_str(), file_name.c_str(), dest_folder_path.c_str());
+  const auto [src_folder_path, file_name] = SplitPath(src_file_path);
+  VXCORE_LOG_INFO("MoveFile: src_file_path=%s, dest_folder_path=%s", src_file_path.c_str(),
+                  dest_folder_path.c_str());
 
   FolderConfig *src_config = nullptr;
   VxCoreError error = GetFolderConfig(src_folder_path, &src_config);
@@ -799,19 +845,19 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_folder_path,
 
   const std::string src_content_path = GetContentPath(src_folder_path);
   const std::string dest_content_path = GetContentPath(dest_folder_path);
-  fs::path src_file_path = fs::path(src_content_path) / file_name;
-  fs::path dest_file_path = fs::path(dest_content_path) / file_name;
+  fs::path src_fs_path = fs::path(src_content_path) / file_name;
+  fs::path dest_fs_path = fs::path(dest_content_path) / file_name;
 
-  if (!fs::exists(src_file_path)) {
+  if (!fs::exists(src_fs_path)) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
-  if (fs::exists(dest_file_path)) {
+  if (fs::exists(dest_fs_path)) {
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
   try {
-    fs::rename(src_file_path, dest_file_path);
+    fs::rename(src_fs_path, dest_fs_path);
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
   }
@@ -832,19 +878,19 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_folder_path,
   dest_config->modified_utc = file_copy.modified_utc;
   error = SaveFolderConfig(dest_folder_path, *dest_config);
   if (error == VXCORE_OK) {
-    VXCORE_LOG_INFO("MoveFile successful: file %s moved from %s to %s", file_name.c_str(),
-                    src_folder_path.c_str(), dest_folder_path.c_str());
+    VXCORE_LOG_INFO("MoveFile successful: file moved from %s to %s", src_file_path.c_str(),
+                    ConcatenatePaths(dest_folder_path, file_name).c_str());
   }
   return error;
 }
 
-VxCoreError BundledFolderManager::CopyFile(const std::string &src_folder_path,
-                                           const std::string &file_name,
+VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
                                            const std::string &dest_folder_path,
                                            const std::string &new_name, std::string &out_file_id) {
+  const auto [src_folder_path, file_name] = SplitPath(src_file_path);
   const std::string target_name = new_name.empty() ? file_name : new_name;
-  VXCORE_LOG_INFO("Copying file: src=%s, file=%s, dest=%s, new_name=%s", src_folder_path.c_str(),
-                  file_name.c_str(), dest_folder_path.c_str(), target_name.c_str());
+  VXCORE_LOG_INFO("Copying file: src=%s, dest=%s, new_name=%s", src_file_path.c_str(),
+                  dest_folder_path.c_str(), target_name.c_str());
 
   FolderConfig *src_config = nullptr;
   VxCoreError error = GetFolderConfig(src_folder_path, &src_config);
@@ -870,19 +916,19 @@ VxCoreError BundledFolderManager::CopyFile(const std::string &src_folder_path,
 
   const std::string src_content_path = GetContentPath(src_folder_path);
   const std::string dest_content_path = GetContentPath(dest_folder_path);
-  fs::path src_file_path = fs::path(src_content_path) / file_name;
-  fs::path dest_file_path = fs::path(dest_content_path) / target_name;
+  fs::path src_fs_path = fs::path(src_content_path) / file_name;
+  fs::path dest_fs_path = fs::path(dest_content_path) / target_name;
 
-  if (!fs::exists(src_file_path)) {
+  if (!fs::exists(src_fs_path)) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
-  if (fs::exists(dest_file_path)) {
+  if (fs::exists(dest_fs_path)) {
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
   try {
-    fs::copy_file(src_file_path, dest_file_path);
+    fs::copy_file(src_fs_path, dest_fs_path);
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
   }
