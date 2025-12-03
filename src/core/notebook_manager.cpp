@@ -5,6 +5,7 @@
 
 #include "bundled_notebook.h"
 #include "raw_notebook.h"
+#include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
 
@@ -26,9 +27,10 @@ void NotebookManager::LoadOpenNotebooks() {
 
   for (const auto &record : session_config_->notebooks) {
     std::unique_ptr<Notebook> notebook;
+    const std::string root_folder = CleanPath(record.root_folder);
     switch (record.type) {
       case NotebookType::Bundled: {
-        auto error = BundledNotebook::Create(record.root_folder, nullptr, notebook);
+        auto error = BundledNotebook::Create(root_folder, nullptr, notebook);
         if (error != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to load bundled notebook: root_folder=%s, error=%d",
                            record.root_folder.c_str(), error);
@@ -37,7 +39,7 @@ void NotebookManager::LoadOpenNotebooks() {
         break;
       }
       case NotebookType::Raw: {
-        auto error = RawNotebook::Create(record.root_folder, record.raw_config, notebook);
+        auto error = RawNotebook::Create(root_folder, record.raw_config, notebook);
         if (error != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to load raw notebook: root_folder=%s, error=%d",
                            record.root_folder.c_str(), error);
@@ -64,11 +66,13 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
   VXCORE_LOG_INFO("Creating notebook: root_folder=%s, type=%d", root_folder.c_str(),
                   static_cast<int>(type));
 
+  const auto root_folder_clean = CleanPath(root_folder);
+
   try {
-    std::filesystem::path rootPath(root_folder);
+    std::filesystem::path rootPath(root_folder_clean);
     if (!std::filesystem::exists(rootPath)) {
       std::filesystem::create_directories(rootPath);
-      VXCORE_LOG_DEBUG("Created root directory: %s", root_folder.c_str());
+      VXCORE_LOG_DEBUG("Created root directory: %s", root_folder_clean.c_str());
     } else {
       // TODO: check if @root_folder already has a notebook.
     }
@@ -82,19 +86,19 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
     std::unique_ptr<Notebook> notebook;
     switch (type) {
       case NotebookType::Bundled: {
-        auto err = BundledNotebook::Create(root_folder, &config, notebook);
+        auto err = BundledNotebook::Create(root_folder_clean, &config, notebook);
         if (err != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to create bundled notebook: root_folder=%s, error=%d",
-                           root_folder.c_str(), err);
+                           root_folder_clean.c_str(), err);
           return err;
         }
         break;
       }
       case NotebookType::Raw: {
-        auto err = RawNotebook::Create(root_folder, config, notebook);
+        auto err = RawNotebook::Create(root_folder_clean, config, notebook);
         if (err != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to create raw notebook: root_folder=%s, error=%d",
-                           root_folder.c_str(), err);
+                           root_folder_clean.c_str(), err);
           return err;
         }
         break;
@@ -131,24 +135,24 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
 VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
                                           std::string &out_notebook_id) {
   VXCORE_LOG_INFO("Opening notebook: root_folder=%s", root_folder.c_str());
-
-  if (auto *notebook = FindNotebookByRootFolder(root_folder)) {
+  const auto root_folder_clean = CleanPath(root_folder);
+  if (auto *notebook = FindNotebookByRootFolder(root_folder_clean)) {
     out_notebook_id = notebook->GetId();
     VXCORE_LOG_DEBUG("Notebook already open: id=%s", out_notebook_id.c_str());
     return VXCORE_OK;
   }
 
-  std::filesystem::path rootPath(root_folder);
+  std::filesystem::path rootPath(root_folder_clean);
   if (!std::filesystem::exists(rootPath)) {
-    VXCORE_LOG_WARN("Notebook root folder not found: %s", root_folder.c_str());
+    VXCORE_LOG_WARN("Notebook root folder not found: %s", root_folder_clean.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
 
   std::unique_ptr<Notebook> notebook;
-  auto err = BundledNotebook::Open(root_folder, notebook);
+  auto err = BundledNotebook::Open(root_folder_clean, notebook);
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to load bundled notebook: root_folder=%s, error=%d",
-                     root_folder.c_str(), err);
+                     root_folder_clean.c_str(), err);
     return err;
   }
 

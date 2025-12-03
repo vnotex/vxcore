@@ -25,8 +25,24 @@
     }                                                                                            \
   } while (0)
 
-#define ASSERT_EQ(a, b) ASSERT((a) == (b))
-#define ASSERT_NE(a, b) ASSERT((a) != (b))
+#define ASSERT_EQ(a, b)                                                                      \
+  do {                                                                                       \
+    if ((a) != (b)) {                                                                        \
+      std::cerr << "✗ Assertion failed: " << #a << " == " << #b << " at " << __FILE__ << ":" \
+                << __LINE__ << " (" << (a) << " != " << (b) << ")" << std::endl;             \
+      return 1;                                                                              \
+    }                                                                                        \
+  } while (0)
+
+#define ASSERT_NE(a, b)                                                                      \
+  do {                                                                                       \
+    if ((a) == (b)) {                                                                        \
+      std::cerr << "✗ Assertion failed: " << #a << " != " << #b << " at " << __FILE__ << ":" \
+                << __LINE__ << " (" << (a) << " == " << (b) << ")" << std::endl;             \
+      return 1;                                                                              \
+    }                                                                                        \
+  } while (0)
+
 #define ASSERT_NULL(ptr) ASSERT((ptr) == nullptr)
 #define ASSERT_NOT_NULL(ptr) ASSERT((ptr) != nullptr)
 
