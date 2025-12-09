@@ -25,6 +25,8 @@ std::pair<std::string, std::string> SplitPath(const std::string &path) {
   }
 }
 
+bool IsRelativePath(const std::string &path) { return std::filesystem::path(path).is_relative(); }
+
 std::string RelativePath(const std::string &base, const std::string &path) {
   if (base.empty()) {
     return std::string();

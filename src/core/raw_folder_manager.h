@@ -42,11 +42,11 @@ class RawFolderManager : public FolderManager {
                        const std::string &dest_folder_path) override;
   VxCoreError CopyFile(const std::string &src_file_path, const std::string &dest_folder_path,
                        const std::string &new_name, std::string &out_file_id) override;
+  void IterateAllFiles(
+      std::function<bool(const std::string &, const FileRecord &)> callback) override;
+  VxCoreError FindFilesByTag(const std::string &tag_name, std::string &out_files_json) override;
 
   void ClearCache() override;
-
- private:
-  Notebook *notebook_;
 };
 
 }  // namespace vxcore

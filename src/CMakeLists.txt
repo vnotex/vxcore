@@ -9,7 +9,6 @@ set(VXCORE_SOURCES
     api/vxcore_api.cpp
     api/vxcore_notebook_api.cpp
     api/vxcore_tag_api.cpp
-    api/vxcore_search_api.cpp
     api/vxcore_folder_api.cpp
     api/vxcore_events.cpp
     api/handle_manager.cpp

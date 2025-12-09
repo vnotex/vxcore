@@ -8,18 +8,22 @@
 
 namespace vxcore_cli {
 
+static void showConfigHelp() {
+  std::cout << "VxCore Configuration Management\n\n";
+  std::cout << "Usage: vxcore config <subcommand> [options]\n\n";
+  std::cout << "Subcommands:\n";
+  std::cout << "  dump                 Dump all config information\n\n";
+  std::cout << "Dump options:\n";
+  std::cout << "  --show-contents      Show file contents (default: true)\n";
+  std::cout << "  --paths-only         Show only file paths\n\n";
+  std::cout << "Examples:\n";
+  std::cout << "  vxcore config dump\n";
+  std::cout << "  vxcore config dump --paths-only\n";
+}
+
 int ConfigCommand::execute(const ParsedArgs &args) {
   if (args.subcommand.empty() || args.options.count("help")) {
-    std::cout << "VxCore Configuration Management\n\n";
-    std::cout << "Usage: vxcore config <subcommand> [options]\n\n";
-    std::cout << "Subcommands:\n";
-    std::cout << "  dump                 Dump all config information\n\n";
-    std::cout << "Dump options:\n";
-    std::cout << "  --show-contents      Show file contents (default: true)\n";
-    std::cout << "  --paths-only         Show only file paths\n\n";
-    std::cout << "Examples:\n";
-    std::cout << "  vxcore config dump\n";
-    std::cout << "  vxcore config dump --paths-only\n";
+    showConfigHelp();
     return 0;
   }
 

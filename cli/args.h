@@ -16,16 +16,15 @@ struct ParsedArgs {
 };
 
 class ArgsParser {
-public:
+ public:
   static ParsedArgs parse(int argc, char *argv[]);
   static void showHelp();
-  static void showNotebookHelp();
 
-private:
+ private:
   static bool isOption(const std::string &arg);
   static std::string getOptionName(const std::string &arg);
 };
 
-} // namespace vxcore_cli
+}  // namespace vxcore_cli
 
 #endif

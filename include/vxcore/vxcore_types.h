@@ -47,12 +47,6 @@ typedef enum {
 typedef enum { VXCORE_NOTEBOOK_BUNDLED = 0, VXCORE_NOTEBOOK_RAW = 1 } VxCoreNotebookType;
 
 typedef struct VxCoreContext *VxCoreContextHandle;
-typedef struct VxCoreNotebook *VxCoreNotebookHandle;
-typedef struct VxCoreNote *VxCoreNoteHandle;
-typedef struct VxCoreTag *VxCoreTagHandle;
-typedef struct VxCoreSnippet *VxCoreSnippetHandle;
-typedef struct VxCoreAttachment *VxCoreAttachmentHandle;
-typedef struct VxCoreSearchResult *VxCoreSearchResultHandle;
 
 typedef struct {
   uint32_t major;

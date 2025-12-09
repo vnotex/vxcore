@@ -1,11 +1,12 @@
 #ifndef VXCORE_FOLDER_MANAGER_H
 #define VXCORE_FOLDER_MANAGER_H
 
-#include <map>
-#include <memory>
+#include <functional>
 #include <string>
 
 #include "folder.h"
+#include "notebook.h"
+#include "utils/file_utils.h"
 #include "vxcore/vxcore_types.h"
 
 namespace vxcore {
@@ -14,7 +15,11 @@ class Notebook;
 
 class FolderManager {
  public:
+  explicit FolderManager(Notebook *notebook) : notebook_(notebook) {}
+
   virtual ~FolderManager() = default;
+
+  virtual VxCoreError InitOnCreation() { return VXCORE_OK; }
 
   virtual VxCoreError GetFolderConfig(const std::string &folder_path,
                                       std::string &out_config_json) = 0;
@@ -68,7 +73,25 @@ class FolderManager {
                                const std::string &dest_folder_path, const std::string &new_name,
                                std::string &out_file_id) = 0;
 
+  virtual void IterateAllFiles(
+      std::function<bool(const std::string &, const FileRecord &)> callback) = 0;
+
+  virtual VxCoreError FindFilesByTag(const std::string &tag_name, std::string &out_files_json) = 0;
+
   virtual void ClearCache() = 0;
+
+ protected:
+  // Clean and get path related to notebook root folder.
+  // Returns null string if |path| is not under notebook root folder.
+  inline std::string GetCleanRelativePath(const std::string &path) const {
+    const auto clean_path = CleanPath(path);
+    if (IsRelativePath(clean_path)) {
+      return clean_path;
+    }
+    return RelativePath(notebook_->GetRootFolder(), clean_path);
+  }
+
+  Notebook *notebook_ = nullptr;
 };
 
 }  // namespace vxcore

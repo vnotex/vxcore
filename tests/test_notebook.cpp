@@ -226,6 +226,316 @@ int test_notebook_persistence() {
   return 0;
 }
 
+int test_tag_create_list() {
+  std::cout << "  Running test_tag_create_list..." << std::endl;
+  cleanup_test_dir("test_nb_tags");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tags", "{\"name\":\"Tag Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "work");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "personal");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *tags_json = nullptr;
+  err = vxcore_tag_list(ctx, notebook_id, &tags_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(tags_json);
+
+  std::string tags_str(tags_json);
+  ASSERT_NE(tags_str.find("\"work\""), std::string::npos);
+  ASSERT_NE(tags_str.find("\"personal\""), std::string::npos);
+
+  vxcore_string_free(tags_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tags");
+  std::cout << "  ✓ test_tag_create_list passed" << std::endl;
+  return 0;
+}
+
+int test_tag_duplicate_create() {
+  std::cout << "  Running test_tag_duplicate_create..." << std::endl;
+  cleanup_test_dir("test_nb_dup_tag");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_dup_tag", "{\"name\":\"Dup Tag Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "important");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "important");
+  ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_dup_tag");
+  std::cout << "  ✓ test_tag_duplicate_create passed" << std::endl;
+  return 0;
+}
+
+int test_tag_delete() {
+  std::cout << "  Running test_tag_delete..." << std::endl;
+  cleanup_test_dir("test_nb_del_tag");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_del_tag", "{\"name\":\"Del Tag Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "temp");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_delete(ctx, notebook_id, "temp");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *tags_json = nullptr;
+  err = vxcore_tag_list(ctx, notebook_id, &tags_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string tags_str(tags_json);
+  ASSERT_EQ(tags_str.find("\"temp\""), std::string::npos);
+
+  vxcore_string_free(tags_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_del_tag");
+  std::cout << "  ✓ test_tag_delete passed" << std::endl;
+  return 0;
+}
+
+int test_file_tag_operations() {
+  std::cout << "  Running test_file_tag_operations..." << std::endl;
+  cleanup_test_dir("test_nb_file_tag");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_file_tag", "{\"name\":\"File Tag Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "urgent");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "test.md", "urgent");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_info = nullptr;
+  err = vxcore_file_get_info(ctx, notebook_id, "test.md", &file_info);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string info_str(file_info);
+  ASSERT_NE(info_str.find("\"urgent\""), std::string::npos);
+
+  err = vxcore_file_untag(ctx, notebook_id, "test.md", "urgent");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  vxcore_string_free(file_info);
+  err = vxcore_file_get_info(ctx, notebook_id, "test.md", &file_info);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  info_str = std::string(file_info);
+  ASSERT_EQ(info_str.find("\"urgent\""), std::string::npos);
+
+  vxcore_string_free(file_info);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_file_tag");
+  std::cout << "  ✓ test_file_tag_operations passed" << std::endl;
+  return 0;
+}
+
+int test_tag_validation() {
+  std::cout << "  Running test_tag_validation..." << std::endl;
+  cleanup_test_dir("test_nb_tag_val");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_val", "{\"name\":\"Tag Validation Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "valid");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "", "doc.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "doc.md", "nonexistent");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_file_tag(ctx, notebook_id, "doc.md", "valid");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_val");
+  std::cout << "  ✓ test_tag_validation passed" << std::endl;
+  return 0;
+}
+
+int test_tag_delete_with_files() {
+  std::cout << "  Running test_tag_delete_with_files..." << std::endl;
+  cleanup_test_dir("test_nb_tag_del_files");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_del_files", "{\"name\":\"Tag Delete Files Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "active");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "note.md", "active");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_delete(ctx, notebook_id, "active");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_info = nullptr;
+  err = vxcore_file_get_info(ctx, notebook_id, "note.md", &file_info);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string info_str(file_info);
+  ASSERT_EQ(info_str.find("\"active\""), std::string::npos);
+
+  vxcore_string_free(file_info);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_del_files");
+  std::cout << "  ✓ test_tag_delete_with_files passed" << std::endl;
+  return 0;
+}
+
+int test_tag_delete_children() {
+  std::cout << "  Running test_tag_delete_children..." << std::endl;
+  cleanup_test_dir("test_nb_tag_del_children");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_del_children",
+                               "{\"name\":\"Tag Delete Children Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "root");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "root/child1");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "root/child2");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "root/child1/grandchild");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_delete(ctx, notebook_id, "root");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *tags_json = nullptr;
+  err = vxcore_tag_list(ctx, notebook_id, &tags_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string tags_str(tags_json);
+  ASSERT_EQ(tags_str.find("\"root\""), std::string::npos);
+  ASSERT_EQ(tags_str.find("\"child1\""), std::string::npos);
+  ASSERT_EQ(tags_str.find("\"child2\""), std::string::npos);
+  ASSERT_EQ(tags_str.find("\"grandchild\""), std::string::npos);
+
+  vxcore_string_free(tags_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_del_children");
+  std::cout << "  ✓ test_tag_delete_children passed" << std::endl;
+  return 0;
+}
+
+int test_file_update_tags() {
+  std::cout << "  Running test_file_update_tags..." << std::endl;
+  cleanup_test_dir("test_nb_update_tags");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_update_tags", "{\"name\":\"Update Tags Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "tag1");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "tag2");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "", "multi.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_update_tags(ctx, notebook_id, "multi.md", "[\"tag1\",\"tag2\"]");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_info = nullptr;
+  err = vxcore_file_get_info(ctx, notebook_id, "multi.md", &file_info);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string info_str(file_info);
+  ASSERT_NE(info_str.find("\"tag1\""), std::string::npos);
+  ASSERT_NE(info_str.find("\"tag2\""), std::string::npos);
+
+  err = vxcore_file_update_tags(ctx, notebook_id, "multi.md", "[\"invalid\"]");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  vxcore_string_free(file_info);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_update_tags");
+  std::cout << "  ✓ test_file_update_tags passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
 
@@ -238,6 +548,14 @@ int main() {
   RUN_TEST(test_notebook_set_properties);
   RUN_TEST(test_notebook_list);
   RUN_TEST(test_notebook_persistence);
+  RUN_TEST(test_tag_create_list);
+  RUN_TEST(test_tag_duplicate_create);
+  RUN_TEST(test_tag_delete);
+  RUN_TEST(test_file_tag_operations);
+  RUN_TEST(test_tag_validation);
+  RUN_TEST(test_tag_delete_with_files);
+  RUN_TEST(test_tag_delete_children);
+  RUN_TEST(test_file_update_tags);
 
   std::cout << "✓ All notebook tests passed" << std::endl;
   return 0;

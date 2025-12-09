@@ -3,6 +3,7 @@
 #include "args.h"
 #include "config_cmd.h"
 #include "notebook_cmd.h"
+#include "tag_cmd.h"
 #include "vxcore/vxcore.h"
 
 int main(int argc, char *argv[]) {
@@ -22,6 +23,10 @@ int main(int argc, char *argv[]) {
 
   if (args.command == "notebook") {
     return vxcore_cli::NotebookCommand::execute(args);
+  }
+
+  if (args.command == "tag") {
+    return vxcore_cli::TagCommand::execute(args);
   }
 
   if (args.command == "config") {

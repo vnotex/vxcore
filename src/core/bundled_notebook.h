@@ -16,7 +16,9 @@ class BundledNotebook : public Notebook {
 
  private:
   BundledNotebook(const std::string &root_folder);
+
   VxCoreError LoadConfig();
+  VxCoreError InitOnCreation();
 };
 
 }  // namespace vxcore

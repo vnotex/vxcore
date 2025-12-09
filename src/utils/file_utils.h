@@ -21,6 +21,8 @@ inline std::string CleanPath(const std::string &path) {
   return CleanFsPath(std::filesystem::path(path));
 }
 
+bool IsRelativePath(const std::string &path);
+
 // Assuming that all paths here are already cleaned using |CleanPath|.
 
 std::string ConcatenatePaths(const std::string &parent_path, const std::string &child_name);

@@ -4,7 +4,7 @@
 
 namespace vxcore {
 
-RawFolderManager::RawFolderManager(Notebook *notebook) : notebook_(notebook) {
+RawFolderManager::RawFolderManager(Notebook *notebook) : FolderManager(notebook) {
   assert(notebook && notebook->GetType() == NotebookType::Raw);
 }
 
@@ -143,6 +143,18 @@ VxCoreError RawFolderManager::CopyFile(const std::string &file_path,
   (void)dest_folder_path;
   (void)new_name;
   (void)out_file_id;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+void RawFolderManager::IterateAllFiles(
+    std::function<bool(const std::string &, const FileRecord &)> callback) {
+  (void)callback;
+}
+
+VxCoreError RawFolderManager::FindFilesByTag(const std::string &tag_name,
+                                             std::string &out_files_json) {
+  (void)tag_name;
+  (void)out_files_json;
   return VXCORE_ERR_UNSUPPORTED;
 }
 

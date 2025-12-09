@@ -2,12 +2,42 @@
 
 #include <vxcore/vxcore_types.h>
 
+#include <algorithm>
 #include <filesystem>
 
 #include "folder_manager.h"
+#include "utils/file_utils.h"
+#include "utils/logger.h"
 #include "utils/utils.h"
 
 namespace vxcore {
+
+TagNode::TagNode() : metadata(nlohmann::json::object()) {}
+
+TagNode::TagNode(const std::string &name, const std::string &parent)
+    : name(name), parent(parent), metadata(nlohmann::json::object()) {}
+
+TagNode TagNode::FromJson(const nlohmann::json &json) {
+  TagNode tag;
+  if (json.contains("name") && json["name"].is_string()) {
+    tag.name = json["name"].get<std::string>();
+  }
+  if (json.contains("parent") && json["parent"].is_string()) {
+    tag.parent = json["parent"].get<std::string>();
+  }
+  if (json.contains("metadata") && json["metadata"].is_object()) {
+    tag.metadata = json["metadata"];
+  }
+  return tag;
+}
+
+nlohmann::json TagNode::ToJson() const {
+  nlohmann::json json = nlohmann::json::object();
+  json["name"] = name;
+  json["parent"] = parent;
+  json["metadata"] = metadata;
+  return json;
+}
 
 NotebookConfig::NotebookConfig()
     : assets_folder("vx_assets"),
@@ -34,6 +64,11 @@ NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
   if (json.contains("metadata") && json["metadata"].is_object()) {
     config.metadata = json["metadata"];
   }
+  if (json.contains("tags") && json["tags"].is_array()) {
+    for (const auto &tag_json : json["tags"]) {
+      config.tags.push_back(TagNode::FromJson(tag_json));
+    }
+  }
   return config;
 }
 
@@ -45,6 +80,11 @@ nlohmann::json NotebookConfig::ToJson() const {
   json["assetsFolder"] = assets_folder;
   json["attachmentsFolder"] = attachments_folder;
   json["metadata"] = metadata;
+  nlohmann::json tags_array = nlohmann::json::array();
+  for (const auto &tag : tags) {
+    tags_array.push_back(tag.ToJson());
+  }
+  json["tags"] = std::move(tags_array);
   return json;
 }
 
@@ -109,6 +149,120 @@ std::string Notebook::GetConfigPath() const {
   std::filesystem::path configPath(GetMetadataFolder());
   configPath /= "config.json";
   return configPath.string();
+}
+
+TagNode *Notebook::FindTag(const std::string &tag_name) {
+  for (auto &tag : config_.tags) {
+    if (tag.name == tag_name) {
+      return &tag;
+    }
+  }
+  return nullptr;
+}
+
+VxCoreError Notebook::CreateTag(const std::string &tag_name, const std::string &parent_tag) {
+  if (tag_name.empty()) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  if (FindTag(tag_name)) {
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+
+  if (!parent_tag.empty() && !FindTag(parent_tag)) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  config_.tags.emplace_back(tag_name, parent_tag);
+
+  auto err = UpdateConfig(config_);
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_ERROR(
+        "Failed to update notebook config after creating tag: notebook_id=%s, tag_name=%s, "
+        "error=%d",
+        config_.id.c_str(), tag_name.c_str(), err);
+    return err;
+  }
+
+  return VXCORE_OK;
+}
+
+VxCoreError Notebook::DeleteTag(const std::string &tag_name) {
+  if (tag_name.empty()) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  if (!FindTag(tag_name)) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  std::vector<std::string> tags_to_delete;
+  tags_to_delete.push_back(tag_name);
+
+  std::vector<std::string> to_process = {tag_name};
+  while (!to_process.empty()) {
+    std::string current = to_process.back();
+    to_process.pop_back();
+
+    for (const auto &tag : config_.tags) {
+      if (tag.parent == current) {
+        tags_to_delete.push_back(tag.name);
+        to_process.push_back(tag.name);
+      }
+    }
+  }
+
+  if (folder_manager_) {
+    folder_manager_->IterateAllFiles(
+        [this, &tags_to_delete](const std::string &folder_path, const FileRecord &file) {
+          auto tags = file.tags;
+          bool modified = false;
+
+          for (const auto &tag_to_delete : tags_to_delete) {
+            auto tag_it = std::find(tags.begin(), tags.end(), tag_to_delete);
+            if (tag_it != tags.end()) {
+              tags.erase(tag_it);
+              modified = true;
+            }
+          }
+
+          if (modified) {
+            nlohmann::json tags_json = nlohmann::json(tags);
+            std::string tags_str = tags_json.dump();
+            folder_manager_->UpdateFileTags(ConcatenatePaths(folder_path, file.name), tags_str);
+          }
+          return true;
+        });
+  }
+
+  for (const auto &tag_to_delete : tags_to_delete) {
+    auto tag_it =
+        std::find_if(config_.tags.begin(), config_.tags.end(),
+                     [&tag_to_delete](const TagNode &tag) { return tag.name == tag_to_delete; });
+    if (tag_it != config_.tags.end()) {
+      config_.tags.erase(tag_it);
+    }
+  }
+
+  auto err = UpdateConfig(config_);
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_ERROR(
+        "Failed to update notebook config after deleting tag: notebook_id=%s, tag_name=%s, "
+        "error=%d",
+        config_.id.c_str(), tag_name.c_str(), err);
+    return err;
+  }
+
+  return VXCORE_OK;
+}
+
+VxCoreError Notebook::GetTags(std::string &out_tags_json) const {
+  nlohmann::json tags_array = nlohmann::json::array();
+  for (const auto &tag : config_.tags) {
+    tags_array.push_back(tag.ToJson());
+  }
+  out_tags_json = tags_array.dump();
+  return VXCORE_OK;
 }
 
 }  // namespace vxcore

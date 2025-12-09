@@ -93,6 +93,12 @@ int test_file_metadata_and_tags() {
                                     R"({"author": "John Doe", "priority": "high"})");
   ASSERT_EQ(err, VXCORE_OK);
 
+  err = vxcore_tag_create(ctx, notebook_id, "work");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "urgent");
+  ASSERT_EQ(err, VXCORE_OK);
+
   err = vxcore_file_update_tags(ctx, notebook_id, "note.md", R"(["work", "urgent"])");
   ASSERT_EQ(err, VXCORE_OK);
 
@@ -938,6 +944,12 @@ int test_file_tag() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
 
+  err = vxcore_tag_create(ctx, notebook_id, "work");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "urgent");
+  ASSERT_EQ(err, VXCORE_OK);
+
   err = vxcore_file_tag(ctx, notebook_id, "note.md", "work");
   ASSERT_EQ(err, VXCORE_OK);
 
@@ -978,6 +990,15 @@ int test_file_untag() {
   err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
+
+  err = vxcore_tag_create(ctx, notebook_id, "work");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "urgent");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "personal");
+  ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_file_tag(ctx, notebook_id, "note.md", "work");
   ASSERT_EQ(err, VXCORE_OK);
@@ -1025,6 +1046,9 @@ int test_file_tag_duplicate() {
   err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
+
+  err = vxcore_tag_create(ctx, notebook_id, "work");
+  ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_file_tag(ctx, notebook_id, "note.md", "work");
   ASSERT_EQ(err, VXCORE_OK);

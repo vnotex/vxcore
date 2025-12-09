@@ -4,6 +4,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
 
 #include "vxcore/vxcore_types.h"
 
@@ -13,6 +14,18 @@ class FolderManager;
 
 enum class NotebookType { Bundled, Raw };
 
+struct TagNode {
+  std::string name;
+  std::string parent;
+  nlohmann::json metadata;
+
+  TagNode();
+  TagNode(const std::string &name, const std::string &parent = std::string());
+
+  static TagNode FromJson(const nlohmann::json &json);
+  nlohmann::json ToJson() const;
+};
+
 struct NotebookConfig {
   std::string id;
   std::string name;
@@ -20,6 +33,7 @@ struct NotebookConfig {
   std::string assets_folder;
   std::string attachments_folder;
   nlohmann::json metadata;
+  std::vector<TagNode> tags;
 
   NotebookConfig();
 
@@ -57,6 +71,11 @@ class Notebook {
   std::string GetConfigPath() const;
 
   FolderManager *GetFolderManager() { return folder_manager_.get(); }
+
+  VxCoreError CreateTag(const std::string &tag_name, const std::string &parent_tag = "");
+  VxCoreError DeleteTag(const std::string &tag_name);
+  VxCoreError GetTags(std::string &out_tags_json) const;
+  TagNode *FindTag(const std::string &tag_name);
 
  protected:
   Notebook(const std::string &root_folder, NotebookType type);

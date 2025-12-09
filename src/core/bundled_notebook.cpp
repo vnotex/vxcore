@@ -20,15 +20,30 @@ VxCoreError BundledNotebook::Create(const std::string &root_folder,
   if (overridden_config) {
     notebook->config_ = *overridden_config;
   }
-  notebook->EnsureId();
-  auto error = notebook->UpdateConfig(notebook->config_);
+  auto error = notebook->InitOnCreation();
   if (error != VXCORE_OK) {
-    VXCORE_LOG_ERROR("Failed to save bundled notebook config: root=%s, error=%d",
+    VXCORE_LOG_ERROR("Failed to init bundled notebook on creation: root=%s, error=%d",
                      root_folder.c_str(), error);
     return error;
   }
   out_notebook = std::move(notebook);
   return VXCORE_OK;
+}
+
+VxCoreError BundledNotebook::InitOnCreation() {
+  EnsureId();
+  auto err = UpdateConfig(config_);
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to save bundled notebook config: root=%s, error=%d",
+                     root_folder_.c_str(), err);
+    return err;
+  }
+  err = folder_manager_->InitOnCreation();
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to initialize bundled notebook folder manager: root=%s, error=%d",
+                     root_folder_.c_str(), err);
+  }
+  return err;
 }
 
 VxCoreError BundledNotebook::Open(const std::string &root_folder,

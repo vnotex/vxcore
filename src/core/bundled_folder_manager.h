@@ -18,6 +18,8 @@ class BundledFolderManager : public FolderManager {
   explicit BundledFolderManager(Notebook *notebook);
   ~BundledFolderManager() override;
 
+  VxCoreError InitOnCreation() override;
+
   VxCoreError GetFolderConfig(const std::string &folder_path,
                               std::string &out_config_json) override;
 
@@ -66,10 +68,14 @@ class BundledFolderManager : public FolderManager {
   VxCoreError CopyFile(const std::string &src_file_path, const std::string &dest_folder_path,
                        const std::string &new_name, std::string &out_file_id) override;
 
+  void IterateAllFiles(
+      std::function<bool(const std::string &, const FileRecord &)> callback) override;
+
+  VxCoreError FindFilesByTag(const std::string &tag_name, std::string &out_files_json) override;
+
   void ClearCache() override;
 
  private:
-  void EnsureRootFolder();
   VxCoreError GetFolderConfig(const std::string &folder_path, FolderConfig **out_config);
   VxCoreError LoadFolderConfig(const std::string &folder_path,
                                std::unique_ptr<FolderConfig> &out_config);
@@ -84,7 +90,6 @@ class BundledFolderManager : public FolderManager {
 
   FileRecord *FindFileRecord(FolderConfig &config, const std::string &file_name);
 
-  Notebook *notebook_;
   std::map<std::string, std::unique_ptr<FolderConfig>> config_cache_;
 };
 

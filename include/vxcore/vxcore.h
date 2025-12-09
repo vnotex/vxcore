@@ -119,23 +119,14 @@ VXCORE_API VxCoreError vxcore_file_tag(VxCoreContextHandle context, const char *
 VXCORE_API VxCoreError vxcore_file_untag(VxCoreContextHandle context, const char *notebook_id,
                                          const char *file_path, const char *tag_name);
 
-VXCORE_API VxCoreError vxcore_tag_create(VxCoreContextHandle context, VxCoreNotebookHandle notebook,
-                                         const char *tag_name, VxCoreTagHandle *out_tag);
-
-VXCORE_API VxCoreError vxcore_tag_delete(VxCoreContextHandle context, VxCoreNotebookHandle notebook,
+VXCORE_API VxCoreError vxcore_tag_create(VxCoreContextHandle context, const char *notebook_id,
                                          const char *tag_name);
 
-VXCORE_API VxCoreError vxcore_tag_list(VxCoreContextHandle context, VxCoreNotebookHandle notebook,
+VXCORE_API VxCoreError vxcore_tag_delete(VxCoreContextHandle context, const char *notebook_id,
+                                         const char *tag_name);
+
+VXCORE_API VxCoreError vxcore_tag_list(VxCoreContextHandle context, const char *notebook_id,
                                        char **out_tags_json);
-
-VXCORE_API VxCoreError vxcore_search(VxCoreContextHandle context, VxCoreNotebookHandle notebook,
-                                     const char *query_json, VxCoreSearchResultHandle *out_result);
-
-VXCORE_API VxCoreError vxcore_search_get_results(VxCoreContextHandle context,
-                                                 VxCoreSearchResultHandle result,
-                                                 char **out_results_json);
-
-VXCORE_API void vxcore_search_result_destroy(VxCoreSearchResultHandle result);
 
 VXCORE_API void vxcore_string_free(char *str);
 

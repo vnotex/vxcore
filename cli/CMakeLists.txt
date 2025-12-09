@@ -3,6 +3,7 @@ add_executable(vxcore-cli
     args.cpp
     json_helpers.cpp
     notebook_cmd.cpp
+    tag_cmd.cpp
     config_cmd.cpp
 )
 
