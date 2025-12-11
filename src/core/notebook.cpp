@@ -3,7 +3,6 @@
 #include <vxcore/vxcore_types.h>
 
 #include <algorithm>
-#include <filesystem>
 
 #include "folder_manager.h"
 #include "utils/file_utils.h"
@@ -11,6 +10,8 @@
 #include "utils/utils.h"
 
 namespace vxcore {
+
+const char *Notebook::kConfigFileName = "config.json";
 
 TagNode::TagNode() : metadata(nlohmann::json::object()) {}
 
@@ -88,7 +89,7 @@ nlohmann::json NotebookConfig::ToJson() const {
   return json;
 }
 
-NotebookRecord::NotebookRecord() : type(NotebookType::Bundled), last_opened_timestamp(0) {}
+NotebookRecord::NotebookRecord() : type(NotebookType::Bundled) {}
 
 NotebookRecord NotebookRecord::FromJson(const nlohmann::json &json) {
   NotebookRecord record;
@@ -102,12 +103,6 @@ NotebookRecord NotebookRecord::FromJson(const nlohmann::json &json) {
     std::string typeStr = json["type"].get<std::string>();
     record.type = (typeStr == "raw") ? NotebookType::Raw : NotebookType::Bundled;
   }
-  if (json.contains("lastOpenedTimestamp") && json["lastOpenedTimestamp"].is_number()) {
-    record.last_opened_timestamp = json["lastOpenedTimestamp"].get<int64_t>();
-  }
-  if (json.contains("rawConfig") && json["rawConfig"].is_object()) {
-    record.raw_config = NotebookConfig::FromJson(json["rawConfig"]);
-  }
   return record;
 }
 
@@ -116,15 +111,12 @@ nlohmann::json NotebookRecord::ToJson() const {
   json["id"] = id;
   json["rootFolder"] = root_folder;
   json["type"] = (type == NotebookType::Raw) ? "raw" : "bundled";
-  json["lastOpenedTimestamp"] = last_opened_timestamp;
-  if (type == NotebookType::Raw) {
-    json["rawConfig"] = raw_config.ToJson();
-  }
   return json;
 }
 
-Notebook::Notebook(const std::string &root_folder, NotebookType type)
-    : root_folder_(root_folder), type_(type) {}
+Notebook::Notebook(const std::string &local_data_folder, const std::string &root_folder,
+                   NotebookType type)
+    : local_data_folder_(local_data_folder), root_folder_(root_folder), type_(type) {}
 
 void Notebook::EnsureId() {
   if (config_.id.empty()) {
@@ -132,23 +124,13 @@ void Notebook::EnsureId() {
   }
 }
 
-std::string Notebook::GetDbPath(const std::string &local_data_folder) const {
-  std::filesystem::path dbPath(local_data_folder);
-  dbPath /= "notebooks";
-  dbPath /= (config_.id + ".db");
-  return dbPath.string();
+std::string Notebook::GetLocalDataFolder() const {
+  auto notebooks = ConcatenatePaths(local_data_folder_, "notebooks");
+  return ConcatenatePaths(notebooks, config_.id);
 }
 
-std::string Notebook::GetMetadataFolder() const {
-  std::filesystem::path metaPath(root_folder_);
-  metaPath /= "vx_notebook";
-  return metaPath.string();
-}
-
-std::string Notebook::GetConfigPath() const {
-  std::filesystem::path configPath(GetMetadataFolder());
-  configPath /= "config.json";
-  return configPath.string();
+std::string Notebook::GetDbPath() const {
+  return ConcatenatePaths(GetLocalDataFolder(), "notebook.db");
 }
 
 TagNode *Notebook::FindTag(const std::string &tag_name) {

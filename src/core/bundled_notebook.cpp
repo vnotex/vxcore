@@ -8,15 +8,18 @@
 
 namespace vxcore {
 
-BundledNotebook::BundledNotebook(const std::string &root_folder)
-    : Notebook(root_folder, NotebookType::Bundled) {
+BundledNotebook::BundledNotebook(const std::string &local_data_folder,
+                                 const std::string &root_folder)
+    : Notebook(local_data_folder, root_folder, NotebookType::Bundled) {
   folder_manager_ = std::make_unique<BundledFolderManager>(this);
 }
 
-VxCoreError BundledNotebook::Create(const std::string &root_folder,
+VxCoreError BundledNotebook::Create(const std::string &local_data_folder,
+                                    const std::string &root_folder,
                                     const NotebookConfig *overridden_config,
                                     std::unique_ptr<Notebook> &out_notebook) {
-  auto notebook = std::unique_ptr<BundledNotebook>(new BundledNotebook(root_folder));
+  auto notebook =
+      std::unique_ptr<BundledNotebook>(new BundledNotebook(local_data_folder, root_folder));
   if (overridden_config) {
     notebook->config_ = *overridden_config;
   }
@@ -32,6 +35,19 @@ VxCoreError BundledNotebook::Create(const std::string &root_folder,
 
 VxCoreError BundledNotebook::InitOnCreation() {
   EnsureId();
+
+  try {
+    std::filesystem::path localDataPath(GetLocalDataFolder());
+    std::filesystem::create_directories(localDataPath);
+
+    std::filesystem::path metadataPath(GetMetadataFolder());
+    std::filesystem::create_directories(metadataPath);
+  } catch (const std::filesystem::filesystem_error &) {
+    VXCORE_LOG_ERROR("Failed to create bundled notebook meta folders: root=%s",
+                     root_folder_.c_str());
+    return VXCORE_ERR_IO;
+  }
+
   auto err = UpdateConfig(config_);
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to save bundled notebook config: root=%s, error=%d",
@@ -46,22 +62,41 @@ VxCoreError BundledNotebook::InitOnCreation() {
   return err;
 }
 
-VxCoreError BundledNotebook::Open(const std::string &root_folder,
+VxCoreError BundledNotebook::Open(const std::string &local_data_folder,
+                                  const std::string &root_folder,
                                   std::unique_ptr<Notebook> &out_notebook) {
-  auto notebook = std::unique_ptr<BundledNotebook>(new BundledNotebook(root_folder));
+  auto notebook =
+      std::unique_ptr<BundledNotebook>(new BundledNotebook(local_data_folder, root_folder));
   auto err = notebook->LoadConfig();
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to load bundled notebook config: root=%s, error=%d",
                      root_folder.c_str(), err);
     return err;
   }
+
+  try {
+    std::filesystem::path localDataPath(notebook->GetLocalDataFolder());
+    std::filesystem::create_directories(localDataPath);
+  } catch (const std::filesystem::filesystem_error &) {
+    VXCORE_LOG_ERROR("Failed to create bundled notebook meta folders: root=%s",
+                     notebook->root_folder_.c_str());
+    return VXCORE_ERR_IO;
+  }
+
   out_notebook = std::move(notebook);
   return VXCORE_OK;
 }
 
+std::string BundledNotebook::GetMetadataFolder() const {
+  return ConcatenatePaths(root_folder_, "vx_notebook");
+}
+
+std::string BundledNotebook::GetConfigPath() const {
+  return ConcatenatePaths(GetMetadataFolder(), kConfigFileName);
+}
+
 VxCoreError BundledNotebook::LoadConfig() {
-  std::string configPath = GetConfigPath();
-  std::ifstream file(configPath);
+  std::ifstream file(GetConfigPath());
   if (!file.is_open()) {
     return VXCORE_ERR_IO;
   }
@@ -88,11 +123,7 @@ VxCoreError BundledNotebook::UpdateConfig(const NotebookConfig &config) {
   config_ = config;
 
   try {
-    std::filesystem::path metaPath(GetMetadataFolder());
-    std::filesystem::create_directories(metaPath);
-
-    std::string configPath = GetConfigPath();
-    std::ofstream file(configPath);
+    std::ofstream file(GetConfigPath());
     if (!file.is_open()) {
       return VXCORE_ERR_IO;
     }
@@ -102,8 +133,6 @@ VxCoreError BundledNotebook::UpdateConfig(const NotebookConfig &config) {
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &) {
     return VXCORE_ERR_JSON_SERIALIZE;
-  } catch (const std::filesystem::filesystem_error &) {
-    return VXCORE_ERR_IO;
   } catch (...) {
     return VXCORE_ERR_UNKNOWN;
   }

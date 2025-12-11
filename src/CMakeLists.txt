@@ -13,7 +13,6 @@ set(VXCORE_SOURCES
     api/vxcore_events.cpp
     api/handle_manager.cpp
     api/error_handler.cpp
-    core/context.cpp
     core/config_manager.cpp
     core/vxcore_config.cpp
     core/vxcore_session_config.cpp

@@ -4,6 +4,7 @@
 #include <filesystem>
 
 #include "bundled_notebook.h"
+#include "config_manager.h"
 #include "raw_notebook.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
@@ -11,26 +12,23 @@
 
 namespace vxcore {
 
-NotebookManager::NotebookManager(VxCoreSessionConfig *session_config)
-    : session_config_(session_config) {
+NotebookManager::NotebookManager(ConfigManager *config_manager) : config_manager_(config_manager) {
   LoadOpenNotebooks();
 }
 
 NotebookManager::~NotebookManager() {}
 
 void NotebookManager::LoadOpenNotebooks() {
-  if (!session_config_) {
-    return;
-  }
-
+  auto &session_config = config_manager_->GetSessionConfig();
+  const auto local_data_folder = config_manager_->GetLocalDataPath();
   notebooks_.clear();
 
-  for (const auto &record : session_config_->notebooks) {
+  for (const auto &record : session_config.notebooks) {
     std::unique_ptr<Notebook> notebook;
     const std::string root_folder = CleanPath(record.root_folder);
     switch (record.type) {
       case NotebookType::Bundled: {
-        auto error = BundledNotebook::Create(root_folder, nullptr, notebook);
+        auto error = BundledNotebook::Open(local_data_folder, root_folder, notebook);
         if (error != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to load bundled notebook: root_folder=%s, error=%d",
                            record.root_folder.c_str(), error);
@@ -39,7 +37,7 @@ void NotebookManager::LoadOpenNotebooks() {
         break;
       }
       case NotebookType::Raw: {
-        auto error = RawNotebook::Create(root_folder, record.raw_config, notebook);
+        auto error = RawNotebook::Open(local_data_folder, root_folder, record.id, notebook);
         if (error != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to load raw notebook: root_folder=%s, error=%d",
                            record.root_folder.c_str(), error);
@@ -77,6 +75,8 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
       // TODO: check if @root_folder already has a notebook.
     }
 
+    const auto local_data_folder = config_manager_->GetLocalDataPath();
+
     // At least there should be name.
     assert(!config_json.empty());
     nlohmann::json json = nlohmann::json::parse(config_json);
@@ -86,7 +86,7 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
     std::unique_ptr<Notebook> notebook;
     switch (type) {
       case NotebookType::Bundled: {
-        auto err = BundledNotebook::Create(root_folder_clean, &config, notebook);
+        auto err = BundledNotebook::Create(local_data_folder, root_folder_clean, &config, notebook);
         if (err != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to create bundled notebook: root_folder=%s, error=%d",
                            root_folder_clean.c_str(), err);
@@ -95,7 +95,7 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
         break;
       }
       case NotebookType::Raw: {
-        auto err = RawNotebook::Create(root_folder_clean, config, notebook);
+        auto err = RawNotebook::Create(local_data_folder, root_folder_clean, &config, notebook);
         if (err != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to create raw notebook: root_folder=%s, error=%d",
                            root_folder_clean.c_str(), err);
@@ -149,7 +149,8 @@ VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
   }
 
   std::unique_ptr<Notebook> notebook;
-  auto err = BundledNotebook::Open(root_folder_clean, notebook);
+  auto err =
+      BundledNotebook::Open(config_manager_->GetLocalDataPath(), root_folder_clean, notebook);
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to load bundled notebook: root_folder=%s, error=%d",
                      root_folder_clean.c_str(), err);
@@ -179,14 +180,32 @@ VxCoreError NotebookManager::CloseNotebook(const std::string &notebook_id) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
+  DeleteNotebookLocalData(*it->second);
+
   notebooks_.erase(it);
 
-  if (session_config_updater_) {
-    session_config_updater_();
-  }
+  config_manager_->SaveSessionConfig();
 
   VXCORE_LOG_INFO("Notebook closed successfully: id=%s", notebook_id.c_str());
   return VXCORE_OK;
+}
+
+void NotebookManager::DeleteNotebookLocalData(const Notebook &notebook) {
+  const auto local_data_folder = notebook.GetLocalDataFolder();
+
+  if (std::filesystem::exists(local_data_folder)) {
+    VXCORE_LOG_INFO("Deleting notebook local data: id=%s, path=%s", notebook.GetId().c_str(),
+                    local_data_folder.c_str());
+    std::error_code ec;
+    std::filesystem::remove_all(local_data_folder, ec);
+    if (ec) {
+      VXCORE_LOG_ERROR("Failed to delete notebook local data: id=%s, path=%s, error=%s",
+                       notebook.GetId().c_str(), local_data_folder.c_str(), ec.message().c_str());
+    } else {
+      VXCORE_LOG_DEBUG("Notebook local data deleted: id=%s, path=%s", notebook.GetId().c_str(),
+                       local_data_folder.c_str());
+    }
+  }
 }
 
 VxCoreError NotebookManager::GetNotebookConfig(const std::string &notebook_id,
@@ -274,39 +293,27 @@ Notebook *NotebookManager::GetNotebook(const std::string &notebook_id) {
   return it->second.get();
 }
 
-void NotebookManager::SetSessionConfigUpdater(std::function<void()> updater) {
-  session_config_updater_ = std::move(updater);
-}
-
 VxCoreError NotebookManager::UpdateNotebookRecord(const Notebook &notebook) {
+  auto &session_config = config_manager_->GetSessionConfig();
   NotebookRecord *record = FindNotebookRecord(notebook.GetId());
   if (!record) {
-    session_config_->notebooks.emplace_back();
-    record = &session_config_->notebooks.back();
+    session_config.notebooks.emplace_back();
+    record = &session_config.notebooks.back();
   }
   record->id = notebook.GetId();
   record->root_folder = notebook.GetRootFolder();
   record->type = notebook.GetType();
-  record->last_opened_timestamp = GetCurrentTimestampMillis();
-  if (record->type == NotebookType::Raw) {
-    record->raw_config = notebook.GetConfig();
-  }
 
-  if (session_config_updater_) {
-    session_config_updater_();
-  }
+  config_manager_->SaveSessionConfig();
   return VXCORE_OK;
 }
 
 NotebookRecord *NotebookManager::FindNotebookRecord(const std::string &id) {
-  if (!session_config_) {
-    return nullptr;
-  }
-
-  auto it = std::find_if(session_config_->notebooks.begin(), session_config_->notebooks.end(),
+  auto &session_config = config_manager_->GetSessionConfig();
+  auto it = std::find_if(session_config.notebooks.begin(), session_config.notebooks.end(),
                          [&id](const NotebookRecord &r) { return r.id == id; });
 
-  if (it != session_config_->notebooks.end()) {
+  if (it != session_config.notebooks.end()) {
     return &(*it);
   }
 

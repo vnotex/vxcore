@@ -4,8 +4,6 @@
 #include <memory>
 #include <string>
 
-#include "vxcore/vxcore_types.h"
-
 namespace vxcore {
 
 class ConfigManager;

@@ -48,7 +48,7 @@
 - **`src/core/`**: Core C++ logic (`context.h`, `config_manager.h`, `notebook_manager.h`, `notebook.h`)
   - **Notebook Implementation**: `notebook.h` contains `NotebookConfig`, `NotebookRecord`, and `Notebook` class
     - `NotebookConfig`: Persistent configuration (id, name, description, folders, metadata)
-    - `NotebookRecord`: Session metadata (id, root_folder, type, last_opened_timestamp, raw_config)
+    - `NotebookRecord`: Session metadata (id, root_folder, type)
     - `Notebook`: Represents a single notebook instance (bundled or raw type)
   - **NotebookManager**: Thread-safe manager for notebook lifecycle (create, open, close, list)
     - Uses `std::mutex` for thread-safety across all public methods

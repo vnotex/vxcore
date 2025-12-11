@@ -45,8 +45,6 @@ struct NotebookRecord {
   std::string id;
   std::string root_folder;
   NotebookType type;
-  int64_t last_opened_timestamp;
-  NotebookConfig raw_config;
 
   NotebookRecord();
 
@@ -63,12 +61,9 @@ class Notebook {
   NotebookType GetType() const { return type_; }
   std::string GetTypeStr() const { return type_ == NotebookType::Raw ? "raw" : "bundled"; }
   const NotebookConfig &GetConfig() const { return config_; }
-
   virtual VxCoreError UpdateConfig(const NotebookConfig &config) = 0;
-
-  std::string GetDbPath(const std::string &local_data_folder) const;
-  std::string GetMetadataFolder() const;
-  std::string GetConfigPath() const;
+  std::string GetLocalDataFolder() const;
+  virtual std::string GetMetadataFolder() const = 0;
 
   FolderManager *GetFolderManager() { return folder_manager_.get(); }
 
@@ -78,14 +73,21 @@ class Notebook {
   TagNode *FindTag(const std::string &tag_name);
 
  protected:
-  Notebook(const std::string &root_folder, NotebookType type);
+  Notebook(const std::string &local_data_folder, const std::string &root_folder, NotebookType type);
 
   void EnsureId();
 
-  std::string root_folder_;
-  NotebookType type_;
+  std::string GetDbPath() const;
+  virtual std::string GetConfigPath() const = 0;
+
+  const std::string local_data_folder_;
+  const std::string root_folder_;
+  const NotebookType type_;
+
   NotebookConfig config_;
   std::unique_ptr<FolderManager> folder_manager_;
+
+  static const char *kConfigFileName;
 };
 
 }  // namespace vxcore

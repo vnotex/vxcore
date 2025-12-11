@@ -73,14 +73,7 @@ VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
       return err;
     }
 
-    ctx->notebook_manager =
-        std::make_unique<vxcore::NotebookManager>(&ctx->config_manager->GetSessionConfig());
-
-    ctx->notebook_manager->SetSessionConfigUpdater([ctx]() {
-      if (ctx && ctx->config_manager) {
-        ctx->config_manager->SaveSessionConfig();
-      }
-    });
+    ctx->notebook_manager = std::make_unique<vxcore::NotebookManager>(ctx->config_manager.get());
 
     *out_context = reinterpret_cast<VxCoreContextHandle>(ctx);
     return VXCORE_OK;

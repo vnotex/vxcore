@@ -8,13 +8,14 @@
 
 #include "notebook.h"
 #include "vxcore/vxcore_types.h"
-#include "vxcore_session_config.h"
 
 namespace vxcore {
 
+class ConfigManager;
+
 class NotebookManager {
  public:
-  NotebookManager(VxCoreSessionConfig *session_config);
+  NotebookManager(ConfigManager *config_manager);
   ~NotebookManager();
 
   VxCoreError CreateNotebook(const std::string &root_folder, NotebookType type,
@@ -32,8 +33,6 @@ class NotebookManager {
 
   Notebook *GetNotebook(const std::string &notebook_id);
 
-  void SetSessionConfigUpdater(std::function<void()> updater);
-
  private:
   void LoadOpenNotebooks();
   Notebook *FindNotebookByRootFolder(const std::string &root_folder);
@@ -43,9 +42,10 @@ class NotebookManager {
 
   nlohmann::json ToNotebookConfig(const Notebook &notebook) const;
 
-  VxCoreSessionConfig *session_config_;
+  void DeleteNotebookLocalData(const Notebook &notebook);
+
+  ConfigManager *config_manager_ = nullptr;
   std::map<std::string, std::unique_ptr<Notebook>> notebooks_;
-  std::function<void()> session_config_updater_;
 };
 
 }  // namespace vxcore
