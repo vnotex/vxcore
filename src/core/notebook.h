@@ -69,6 +69,7 @@ class Notebook {
 
   VxCoreError CreateTag(const std::string &tag_name, const std::string &parent_tag = "");
   VxCoreError DeleteTag(const std::string &tag_name);
+  VxCoreError MoveTag(const std::string &tag_name, const std::string &parent_tag);
   VxCoreError GetTags(std::string &out_tags_json) const;
   TagNode *FindTag(const std::string &tag_name);
 

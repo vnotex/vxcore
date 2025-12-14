@@ -536,6 +536,232 @@ int test_file_update_tags() {
   return 0;
 }
 
+int test_tag_move_basic() {
+  std::cout << "  Running test_tag_move_basic..." << std::endl;
+  cleanup_test_dir("test_nb_tag_move");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_move", "{\"name\":\"Tag Move Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "parent");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "child");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_move(ctx, notebook_id, "child", "parent");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *tags_json = nullptr;
+  err = vxcore_tag_list(ctx, notebook_id, &tags_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string tags_str(tags_json);
+  ASSERT_NE(tags_str.find("\"name\":\"child\""), std::string::npos);
+  ASSERT_NE(tags_str.find("\"parent\":\"parent\""), std::string::npos);
+
+  vxcore_string_free(tags_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_move");
+  std::cout << "  ✓ test_tag_move_basic passed" << std::endl;
+  return 0;
+}
+
+int test_tag_move_to_root() {
+  std::cout << "  Running test_tag_move_to_root..." << std::endl;
+  cleanup_test_dir("test_nb_tag_move_root");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_move_root", "{\"name\":\"Tag Move Root Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "parent");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "parent/child");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_move(ctx, notebook_id, "parent/child", "");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *tags_json = nullptr;
+  err = vxcore_tag_list(ctx, notebook_id, &tags_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string tags_str(tags_json);
+  ASSERT_NE(tags_str.find("\"name\":\"parent/child\""), std::string::npos);
+  ASSERT_NE(tags_str.find("\"parent\":\"\""), std::string::npos);
+
+  vxcore_string_free(tags_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_move_root");
+  std::cout << "  ✓ test_tag_move_to_root passed" << std::endl;
+  return 0;
+}
+
+int test_tag_move_nonexistent_tag() {
+  std::cout << "  Running test_tag_move_nonexistent_tag..." << std::endl;
+  cleanup_test_dir("test_nb_tag_move_noexist");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_move_noexist", "{\"name\":\"Tag Move Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "parent");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_move(ctx, notebook_id, "nonexistent", "parent");
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_move_noexist");
+  std::cout << "  ✓ test_tag_move_nonexistent_tag passed" << std::endl;
+  return 0;
+}
+
+int test_tag_move_nonexistent_parent() {
+  std::cout << "  Running test_tag_move_nonexistent_parent..." << std::endl;
+  cleanup_test_dir("test_nb_tag_move_noparent");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_move_noparent", "{\"name\":\"Tag Move Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "child");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_move(ctx, notebook_id, "child", "nonexistent");
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_move_noparent");
+  std::cout << "  ✓ test_tag_move_nonexistent_parent passed" << std::endl;
+  return 0;
+}
+
+int test_tag_move_self_parent() {
+  std::cout << "  Running test_tag_move_self_parent..." << std::endl;
+  cleanup_test_dir("test_nb_tag_move_self");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_move_self", "{\"name\":\"Tag Move Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "tag");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_move(ctx, notebook_id, "tag", "tag");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_move_self");
+  std::cout << "  ✓ test_tag_move_self_parent passed" << std::endl;
+  return 0;
+}
+
+int test_tag_move_circular_dependency() {
+  std::cout << "  Running test_tag_move_circular_dependency..." << std::endl;
+  cleanup_test_dir("test_nb_tag_move_circular");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_move_circular", "{\"name\":\"Tag Move Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "parent");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "child");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "grandchild");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_move(ctx, notebook_id, "child", "parent");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_move(ctx, notebook_id, "grandchild", "child");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_move(ctx, notebook_id, "parent", "grandchild");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_move_circular");
+  std::cout << "  ✓ test_tag_move_circular_dependency passed" << std::endl;
+  return 0;
+}
+
+int test_tag_move_reparent() {
+  std::cout << "  Running test_tag_move_reparent..." << std::endl;
+  cleanup_test_dir("test_nb_tag_move_reparent");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_move_reparent", "{\"name\":\"Tag Move Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "oldparent");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "oldparent/child");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "newparent");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_move(ctx, notebook_id, "oldparent/child", "newparent");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *tags_json = nullptr;
+  err = vxcore_tag_list(ctx, notebook_id, &tags_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string tags_str(tags_json);
+  ASSERT_NE(tags_str.find("\"name\":\"oldparent/child\""), std::string::npos);
+  ASSERT_NE(tags_str.find("\"parent\":\"newparent\""), std::string::npos);
+
+  vxcore_string_free(tags_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_move_reparent");
+  std::cout << "  ✓ test_tag_move_reparent passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
 
@@ -556,6 +782,13 @@ int main() {
   RUN_TEST(test_tag_delete_with_files);
   RUN_TEST(test_tag_delete_children);
   RUN_TEST(test_file_update_tags);
+  RUN_TEST(test_tag_move_basic);
+  RUN_TEST(test_tag_move_to_root);
+  RUN_TEST(test_tag_move_nonexistent_tag);
+  RUN_TEST(test_tag_move_nonexistent_parent);
+  RUN_TEST(test_tag_move_self_parent);
+  RUN_TEST(test_tag_move_circular_dependency);
+  RUN_TEST(test_tag_move_reparent);
 
   std::cout << "✓ All notebook tests passed" << std::endl;
   return 0;

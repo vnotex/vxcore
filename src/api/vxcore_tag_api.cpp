@@ -93,3 +93,31 @@ VXCORE_API VxCoreError vxcore_tag_list(VxCoreContextHandle context, const char *
     return VXCORE_ERR_UNKNOWN;
   }
 }
+
+VXCORE_API VxCoreError vxcore_tag_move(VxCoreContextHandle context, const char *notebook_id,
+                                       const char *tag_name, const char *parent_tag) {
+  if (!context || !notebook_id || !tag_name || !parent_tag) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    VxCoreError err = notebook->MoveTag(tag_name, parent_tag);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to move tag";
+      return err;
+    }
+
+    return VXCORE_OK;
+  } catch (...) {
+    ctx->last_error = "Unknown error moving tag";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}

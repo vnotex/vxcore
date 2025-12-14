@@ -238,6 +238,50 @@ VxCoreError Notebook::DeleteTag(const std::string &tag_name) {
   return VXCORE_OK;
 }
 
+VxCoreError Notebook::MoveTag(const std::string &tag_name, const std::string &parent_tag) {
+  if (tag_name.empty()) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  if (parent_tag == tag_name) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  TagNode *tag = FindTag(tag_name);
+  if (!tag) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  if (!parent_tag.empty() && !FindTag(parent_tag)) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  std::string current_parent = parent_tag;
+  while (!current_parent.empty()) {
+    if (current_parent == tag_name) {
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+    TagNode *parent_node = FindTag(current_parent);
+    if (!parent_node) {
+      break;
+    }
+    current_parent = parent_node->parent;
+  }
+
+  tag->parent = parent_tag;
+
+  auto err = UpdateConfig(config_);
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_ERROR(
+        "Failed to update notebook config after moving tag: notebook_id=%s, tag_name=%s, "
+        "error=%d",
+        config_.id.c_str(), tag_name.c_str(), err);
+    return err;
+  }
+
+  return VXCORE_OK;
+}
+
 VxCoreError Notebook::GetTags(std::string &out_tags_json) const {
   nlohmann::json tags_array = nlohmann::json::array();
   for (const auto &tag : config_.tags) {

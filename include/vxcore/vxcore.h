@@ -128,6 +128,9 @@ VXCORE_API VxCoreError vxcore_tag_delete(VxCoreContextHandle context, const char
 VXCORE_API VxCoreError vxcore_tag_list(VxCoreContextHandle context, const char *notebook_id,
                                        char **out_tags_json);
 
+VXCORE_API VxCoreError vxcore_tag_move(VxCoreContextHandle context, const char *notebook_id,
+                                       const char *tag_name, const char *parent_tag);
+
 VXCORE_API void vxcore_string_free(char *str);
 
 #ifdef __cplusplus
