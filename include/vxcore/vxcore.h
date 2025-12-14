@@ -56,6 +56,10 @@ VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const c
                                             const char *parent_path, const char *folder_name,
                                             char **out_folder_id);
 
+VXCORE_API VxCoreError vxcore_folder_create_path(VxCoreContextHandle context,
+                                                 const char *notebook_id, const char *folder_path,
+                                                 char **out_folder_id);
+
 VXCORE_API VxCoreError vxcore_folder_delete(VxCoreContextHandle context, const char *notebook_id,
                                             const char *folder_path);
 

@@ -169,6 +169,41 @@ VxCoreError Notebook::CreateTag(const std::string &tag_name, const std::string &
   return VXCORE_OK;
 }
 
+VxCoreError Notebook::CreateFolderPath(const std::string &folder_path, std::string &out_folder_id) {
+  if (folder_path.empty()) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  if (!folder_manager_) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  std::vector<std::string> path_components = SplitPathComponents(folder_path);
+  if (path_components.empty()) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  std::string current_parent = ".";
+  std::string folder_id;
+
+  for (size_t i = 0; i < path_components.size(); ++i) {
+    const std::string &folder_name = path_components[i];
+    if (folder_name.empty()) {
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+
+    VxCoreError create_err = folder_manager_->CreateFolder(current_parent, folder_name, folder_id);
+    if (create_err != VXCORE_OK && create_err != VXCORE_ERR_ALREADY_EXISTS) {
+      return create_err;
+    }
+
+    current_parent = ConcatenatePaths(current_parent, folder_name);
+  }
+
+  out_folder_id = folder_id;
+  return VXCORE_OK;
+}
+
 VxCoreError Notebook::CreateTagPath(const std::string &tag_path) {
   if (tag_path.empty()) {
     return VXCORE_ERR_INVALID_PARAM;

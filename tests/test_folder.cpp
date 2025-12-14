@@ -1135,6 +1135,152 @@ int test_file_tag_invalid_params() {
   return 0;
 }
 
+int test_folder_create_path_basic() {
+  std::cout << "  Running test_folder_create_path_basic..." << std::endl;
+  cleanup_test_dir("test_folder_path_basic_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_folder_path_basic_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create_path(ctx, notebook_id, "level1/level2/level3", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id);
+
+  ASSERT(path_exists("test_folder_path_basic_nb/level1"));
+  ASSERT(path_exists("test_folder_path_basic_nb/level1/level2"));
+  ASSERT(path_exists("test_folder_path_basic_nb/level1/level2/level3"));
+
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_folder_path_basic_nb");
+  std::cout << "  ✓ test_folder_create_path_basic passed" << std::endl;
+  return 0;
+}
+
+int test_folder_create_path_single() {
+  std::cout << "  Running test_folder_create_path_single..." << std::endl;
+  cleanup_test_dir("test_folder_path_single_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_folder_path_single_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create_path(ctx, notebook_id, "single_folder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id);
+
+  ASSERT(path_exists("test_folder_path_single_nb/single_folder"));
+
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_folder_path_single_nb");
+  std::cout << "  ✓ test_folder_create_path_single passed" << std::endl;
+  return 0;
+}
+
+int test_folder_create_path_partial_exists() {
+  std::cout << "  Running test_folder_create_path_partial_exists..." << std::endl;
+  cleanup_test_dir("test_folder_path_partial_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_folder_path_partial_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "existing", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  err = vxcore_folder_create_path(ctx, notebook_id, "existing/new1/new2", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id);
+
+  ASSERT(path_exists("test_folder_path_partial_nb/existing"));
+  ASSERT(path_exists("test_folder_path_partial_nb/existing/new1"));
+  ASSERT(path_exists("test_folder_path_partial_nb/existing/new1/new2"));
+
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_folder_path_partial_nb");
+  std::cout << "  ✓ test_folder_create_path_partial_exists passed" << std::endl;
+  return 0;
+}
+
+int test_folder_create_path_empty() {
+  std::cout << "  Running test_folder_create_path_empty..." << std::endl;
+  cleanup_test_dir("test_folder_path_empty_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_folder_path_empty_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create_path(ctx, notebook_id, "", &folder_id);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+  ASSERT_NULL(folder_id);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_folder_path_empty_nb");
+  std::cout << "  ✓ test_folder_create_path_empty passed" << std::endl;
+  return 0;
+}
+
+int test_folder_create_path_trailing_slash() {
+  std::cout << "  Running test_folder_create_path_trailing_slash..." << std::endl;
+  cleanup_test_dir("test_folder_path_slash_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_folder_path_slash_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create_path(ctx, notebook_id, "path1/path2/", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id);
+
+  ASSERT(path_exists("test_folder_path_slash_nb/path1"));
+  ASSERT(path_exists("test_folder_path_slash_nb/path1/path2"));
+
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_folder_path_slash_nb");
+  std::cout << "  ✓ test_folder_create_path_trailing_slash passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -1173,6 +1319,11 @@ int main() {
   RUN_TEST(test_file_tag_duplicate);
   RUN_TEST(test_file_untag_not_found);
   RUN_TEST(test_file_tag_invalid_params);
+  RUN_TEST(test_folder_create_path_basic);
+  RUN_TEST(test_folder_create_path_single);
+  RUN_TEST(test_folder_create_path_partial_exists);
+  RUN_TEST(test_folder_create_path_empty);
+  RUN_TEST(test_folder_create_path_trailing_slash);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;

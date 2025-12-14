@@ -42,6 +42,36 @@ VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const c
   }
 }
 
+VXCORE_API VxCoreError vxcore_folder_create_path(VxCoreContextHandle context,
+                                                 const char *notebook_id, const char *folder_path,
+                                                 char **out_folder_id) {
+  if (!context || !notebook_id || !folder_path || !out_folder_id) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    std::string folder_id;
+    VxCoreError error = notebook->CreateFolderPath(folder_path, folder_id);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+
+    *out_folder_id = vxcore_strdup(folder_id.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_folder_delete(VxCoreContextHandle context, const char *notebook_id,
                                             const char *folder_path) {
   if (!context || !notebook_id || !folder_path) {

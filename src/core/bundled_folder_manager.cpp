@@ -1020,7 +1020,7 @@ void BundledFolderManager::IterateAllFiles(
     }
 
     for (const auto &folder_name : config->folders) {
-      std::string child_path = fp.empty() ? folder_name : fp + "/" + folder_name;
+      std::string child_path = ConcatenatePaths(fp, folder_name);
       if (!iterate_folder(child_path)) {
         return false;
       }
