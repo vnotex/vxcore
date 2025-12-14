@@ -1006,38 +1006,30 @@ VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
 
 void BundledFolderManager::IterateAllFiles(
     std::function<bool(const std::string &, const FileRecord &)> callback) {
-  std::vector<std::string> folder_paths;
-
-  std::function<void(const std::string &)> collect_folders = [&](const std::string &fp) {
-    folder_paths.push_back(fp);
-
+  std::function<bool(const std::string &)> iterate_folder = [&](const std::string &fp) {
     FolderConfig *config = nullptr;
     VxCoreError error = GetFolderConfig(fp, &config);
     if (error != VXCORE_OK) {
-      return;
-    }
-
-    for (const auto &folder_name : config->folders) {
-      std::string child_path = fp.empty() ? folder_name : fp + "/" + folder_name;
-      collect_folders(child_path);
-    }
-  };
-
-  collect_folders("");
-
-  for (const auto &fp : folder_paths) {
-    FolderConfig *config = nullptr;
-    VxCoreError error = GetFolderConfig(fp, &config);
-    if (error != VXCORE_OK) {
-      continue;
+      return true;
     }
 
     for (const auto &file : config->files) {
       if (!callback(fp, file)) {
-        return;
+        return false;
       }
     }
-  }
+
+    for (const auto &folder_name : config->folders) {
+      std::string child_path = fp.empty() ? folder_name : fp + "/" + folder_name;
+      if (!iterate_folder(child_path)) {
+        return false;
+      }
+    }
+
+    return true;
+  };
+
+  iterate_folder(".");
 }
 
 VxCoreError BundledFolderManager::FindFilesByTag(const std::string &tag_name,
