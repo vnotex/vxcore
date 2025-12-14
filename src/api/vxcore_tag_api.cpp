@@ -31,6 +31,34 @@ VXCORE_API VxCoreError vxcore_tag_create(VxCoreContextHandle context, const char
   }
 }
 
+VXCORE_API VxCoreError vxcore_tag_create_path(VxCoreContextHandle context, const char *notebook_id,
+                                              const char *tag_path) {
+  if (!context || !notebook_id || !tag_path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    VxCoreError err = notebook->CreateTagPath(tag_path);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to create tag path";
+      return err;
+    }
+
+    return VXCORE_OK;
+  } catch (...) {
+    ctx->last_error = "Unknown error creating tag path";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_tag_delete(VxCoreContextHandle context, const char *notebook_id,
                                          const char *tag_name) {
   if (!context || !notebook_id || !tag_name) {

@@ -23,8 +23,9 @@ int test_split_path() {
   ASSERT_EQ(child1, "child");
 
   auto [parent2, child2] = vxcore::SplitPath("parent\\child");
-  ASSERT_EQ(parent2, "parent");
-  ASSERT_EQ(child2, "child");
+  ASSERT_EQ(parent2, ".");
+  // Do not support `\`.
+  ASSERT_EQ(child2, "parent\\child");
 
   auto [parent3, child3] = vxcore::SplitPath("child");
   ASSERT_EQ(parent3, ".");

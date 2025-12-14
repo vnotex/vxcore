@@ -29,6 +29,8 @@ std::string ConcatenatePaths(const std::string &parent_path, const std::string &
 
 std::pair<std::string, std::string> SplitPath(const std::string &path);
 
+std::vector<std::string> SplitPathComponents(const std::string &path);
+
 std::string RelativePath(const std::string &base, const std::string &path);
 
 }  // namespace vxcore

@@ -68,6 +68,7 @@ class Notebook {
   FolderManager *GetFolderManager() { return folder_manager_.get(); }
 
   VxCoreError CreateTag(const std::string &tag_name, const std::string &parent_tag = "");
+  VxCoreError CreateTagPath(const std::string &tag_path);
   VxCoreError DeleteTag(const std::string &tag_name);
   VxCoreError MoveTag(const std::string &tag_name, const std::string &parent_tag);
   VxCoreError GetTags(std::string &out_tags_json) const;

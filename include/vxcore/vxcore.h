@@ -122,6 +122,9 @@ VXCORE_API VxCoreError vxcore_file_untag(VxCoreContextHandle context, const char
 VXCORE_API VxCoreError vxcore_tag_create(VxCoreContextHandle context, const char *notebook_id,
                                          const char *tag_name);
 
+VXCORE_API VxCoreError vxcore_tag_create_path(VxCoreContextHandle context, const char *notebook_id,
+                                              const char *tag_path);
+
 VXCORE_API VxCoreError vxcore_tag_delete(VxCoreContextHandle context, const char *notebook_id,
                                          const char *tag_name);
 

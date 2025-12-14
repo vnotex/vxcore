@@ -762,6 +762,165 @@ int test_tag_move_reparent() {
   return 0;
 }
 
+int test_tag_create_path_basic() {
+  std::cout << "  Running test_tag_create_path_basic..." << std::endl;
+  cleanup_test_dir("test_nb_tag_path_basic");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_path_basic", "{\"name\":\"Tag Path Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create_path(ctx, notebook_id, "category/subcategory/item");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *tags_json = nullptr;
+  err = vxcore_tag_list(ctx, notebook_id, &tags_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string tags_str(tags_json);
+  ASSERT_NE(tags_str.find("\"name\":\"category\""), std::string::npos);
+  ASSERT_NE(tags_str.find("\"name\":\"subcategory\""), std::string::npos);
+  ASSERT_NE(tags_str.find("\"name\":\"item\""), std::string::npos);
+  ASSERT_NE(tags_str.find("\"parent\":\"category\""), std::string::npos);
+  ASSERT_NE(tags_str.find("\"parent\":\"subcategory\""), std::string::npos);
+
+  vxcore_string_free(tags_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_path_basic");
+  std::cout << "  ✓ test_tag_create_path_basic passed" << std::endl;
+  return 0;
+}
+
+int test_tag_create_path_single() {
+  std::cout << "  Running test_tag_create_path_single..." << std::endl;
+  cleanup_test_dir("test_nb_tag_path_single");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_path_single", "{\"name\":\"Tag Path Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create_path(ctx, notebook_id, "singletag");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *tags_json = nullptr;
+  err = vxcore_tag_list(ctx, notebook_id, &tags_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string tags_str(tags_json);
+  ASSERT_NE(tags_str.find("\"name\":\"singletag\""), std::string::npos);
+
+  vxcore_string_free(tags_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_path_single");
+  std::cout << "  ✓ test_tag_create_path_single passed" << std::endl;
+  return 0;
+}
+
+int test_tag_create_path_partial_exists() {
+  std::cout << "  Running test_tag_create_path_partial_exists..." << std::endl;
+  cleanup_test_dir("test_nb_tag_path_partial");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_path_partial", "{\"name\":\"Tag Path Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "existing");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create_path(ctx, notebook_id, "existing/new1/new2");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *tags_json = nullptr;
+  err = vxcore_tag_list(ctx, notebook_id, &tags_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string tags_str(tags_json);
+  ASSERT_NE(tags_str.find("\"name\":\"existing\""), std::string::npos);
+  ASSERT_NE(tags_str.find("\"name\":\"new1\""), std::string::npos);
+  ASSERT_NE(tags_str.find("\"name\":\"new2\""), std::string::npos);
+  ASSERT_NE(tags_str.find("\"parent\":\"existing\""), std::string::npos);
+  ASSERT_NE(tags_str.find("\"parent\":\"new1\""), std::string::npos);
+
+  vxcore_string_free(tags_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_path_partial");
+  std::cout << "  ✓ test_tag_create_path_partial_exists passed" << std::endl;
+  return 0;
+}
+
+int test_tag_create_path_empty() {
+  std::cout << "  Running test_tag_create_path_empty..." << std::endl;
+  cleanup_test_dir("test_nb_tag_path_empty");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_path_empty", "{\"name\":\"Tag Path Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create_path(ctx, notebook_id, "");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_path_empty");
+  std::cout << "  ✓ test_tag_create_path_empty passed" << std::endl;
+  return 0;
+}
+
+int test_tag_create_path_trailing_slash() {
+  std::cout << "  Running test_tag_create_path_trailing_slash..." << std::endl;
+  cleanup_test_dir("test_nb_tag_path_trailing");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_tag_path_trailing", "{\"name\":\"Tag Path Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create_path(ctx, notebook_id, "tag1/tag2/");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *tags_json = nullptr;
+  err = vxcore_tag_list(ctx, notebook_id, &tags_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string tags_str(tags_json);
+  ASSERT_NE(tags_str.find("\"name\":\"tag1\""), std::string::npos);
+  ASSERT_NE(tags_str.find("\"name\":\"tag2\""), std::string::npos);
+
+  vxcore_string_free(tags_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_tag_path_trailing");
+  std::cout << "  ✓ test_tag_create_path_trailing_slash passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
 
@@ -789,6 +948,11 @@ int main() {
   RUN_TEST(test_tag_move_self_parent);
   RUN_TEST(test_tag_move_circular_dependency);
   RUN_TEST(test_tag_move_reparent);
+  RUN_TEST(test_tag_create_path_basic);
+  RUN_TEST(test_tag_create_path_single);
+  RUN_TEST(test_tag_create_path_partial_exists);
+  RUN_TEST(test_tag_create_path_empty);
+  RUN_TEST(test_tag_create_path_trailing_slash);
 
   std::cout << "✓ All notebook tests passed" << std::endl;
   return 0;

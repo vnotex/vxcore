@@ -169,6 +169,33 @@ VxCoreError Notebook::CreateTag(const std::string &tag_name, const std::string &
   return VXCORE_OK;
 }
 
+VxCoreError Notebook::CreateTagPath(const std::string &tag_path) {
+  if (tag_path.empty()) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  std::vector<std::string> path_components = SplitPathComponents(tag_path);
+  if (path_components.empty()) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  for (size_t i = 0; i < path_components.size(); ++i) {
+    const std::string &tag_name = path_components[i];
+    if (tag_name.empty()) {
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+
+    if (!FindTag(tag_name)) {
+      VxCoreError err = CreateTag(tag_name, (i > 0) ? path_components[i - 1] : "");
+      if (err != VXCORE_OK && err != VXCORE_ERR_ALREADY_EXISTS) {
+        return err;
+      }
+    }
+  }
+
+  return VXCORE_OK;
+}
+
 VxCoreError Notebook::DeleteTag(const std::string &tag_name) {
   if (tag_name.empty()) {
     return VXCORE_ERR_INVALID_PARAM;

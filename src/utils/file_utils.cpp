@@ -15,7 +15,7 @@ std::string ConcatenatePaths(const std::string &parent_path, const std::string &
 }
 
 std::pair<std::string, std::string> SplitPath(const std::string &path) {
-  size_t last_slash = path.find_last_of("/\\");
+  size_t last_slash = path.find_last_of(kPathSeparator);
   if (last_slash == std::string::npos) {
     return {".", path};
   } else {
@@ -23,6 +23,23 @@ std::pair<std::string, std::string> SplitPath(const std::string &path) {
     std::string child_name = path.substr(last_slash + 1);
     return {parent_path, child_name};
   }
+}
+
+std::vector<std::string> SplitPathComponents(const std::string &path) {
+  std::vector<std::string> components;
+  size_t start = 0;
+  size_t end = path.find(kPathSeparator);
+  while (end != std::string::npos) {
+    if (end != start) {
+      components.push_back(path.substr(start, end - start));
+    }
+    start = end + 1;
+    end = path.find(kPathSeparator, start);
+  }
+  if (start < path.size()) {
+    components.push_back(path.substr(start));
+  }
+  return components;
 }
 
 bool IsRelativePath(const std::string &path) { return std::filesystem::path(path).is_relative(); }
