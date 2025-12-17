@@ -18,20 +18,26 @@ SearchScope SearchScope::FromJson(const Notebook *notebook, const nlohmann::json
     scope.recursive = json["recursive"].get<bool>();
   }
   if (json.contains("filePatterns") && json["filePatterns"].is_array()) {
-    scope.file_patterns.reserve(json["filePatterns"].size());
+    scope.path_patterns.reserve(json["filePatterns"].size());
     for (const auto &pattern : json["filePatterns"]) {
-      scope.file_patterns.push_back(pattern.get<std::string>());
+      scope.path_patterns.push_back(pattern.get<std::string>());
     }
   }
   if (json.contains("excludePatterns") && json["excludePatterns"].is_array()) {
     for (const auto &pattern : json["excludePatterns"]) {
-      scope.exclude_patterns.push_back(pattern.get<std::string>());
+      scope.exclude_path_patterns.push_back(pattern.get<std::string>());
     }
   }
   if (json.contains("tags") && json["tags"].is_array()) {
     scope.tags.reserve(json["tags"].size());
     for (const auto &tag : json["tags"]) {
       scope.tags.push_back(tag.get<std::string>());
+    }
+  }
+  if (json.contains("excludeTags") && json["excludeTags"].is_array()) {
+    scope.exclude_tags.reserve(json["excludeTags"].size());
+    for (const auto &tag : json["excludeTags"]) {
+      scope.exclude_tags.push_back(tag.get<std::string>());
     }
   }
   if (json.contains("tagOperator")) {
@@ -121,6 +127,13 @@ SearchContentQuery SearchContentQuery::FromJson(const Notebook *notebook,
 
   if (json.contains("pattern")) {
     query.pattern = json["pattern"].get<std::string>();
+  }
+
+  if (json.contains("excludePatterns") && json["excludePatterns"].is_array()) {
+    query.exclude_patterns.reserve(json["excludePatterns"].size());
+    for (const auto &pattern : json["excludePatterns"]) {
+      query.exclude_patterns.push_back(pattern.get<std::string>());
+    }
   }
 
   query.case_sensitive = json.value("caseSensitive", false);

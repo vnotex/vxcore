@@ -1,8 +1,10 @@
 #include "rg_search_backend.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <regex>
 #include <sstream>
 
 #include "utils/logger.h"
@@ -37,8 +39,9 @@ bool RgSearchBackend::IsAvailable() {
 
 bool RgSearchBackend::Search(const std::string &root_path, const std::string &pattern,
                              bool case_sensitive, bool whole_word, bool regex,
-                             const std::vector<std::string> &file_patterns,
-                             const std::vector<std::string> &exclude_patterns,
+                             const std::vector<std::string> &path_patterns,
+                             const std::vector<std::string> &exclude_path_patterns,
+                             const std::vector<std::string> &content_exclude_patterns,
                              std::vector<ContentSearchResult> &out_results) {
   if (!IsAvailable()) {
     VXCORE_LOG_WARN("ripgrep (rg) is not available");
@@ -46,7 +49,7 @@ bool RgSearchBackend::Search(const std::string &root_path, const std::string &pa
   }
 
   std::string command = BuildCommand(root_path, pattern, case_sensitive, whole_word, regex,
-                                     file_patterns, exclude_patterns);
+                                     path_patterns, exclude_path_patterns);
 
   VXCORE_LOG_DEBUG("Executing search command: %s", command.c_str());
 
@@ -78,14 +81,61 @@ bool RgSearchBackend::Search(const std::string &root_path, const std::string &pa
     return false;
   }
 
-  ParseOutput(output, out_results);
+  std::vector<ContentSearchResult> raw_results;
+  ParseOutput(output, raw_results);
+
+  if (content_exclude_patterns.empty()) {
+    out_results = std::move(raw_results);
+    return true;
+  }
+
+  for (auto &result : raw_results) {
+    ContentSearchResult filtered_result;
+    filtered_result.file_path = result.file_path;
+
+    for (auto &match : result.matches) {
+      bool excluded = false;
+      for (const auto &exclude_pattern : content_exclude_patterns) {
+        if (regex) {
+          std::regex exclude_regex(exclude_pattern,
+                                   case_sensitive ? std::regex::ECMAScript : std::regex::icase);
+          if (std::regex_search(match.line_text, exclude_regex)) {
+            excluded = true;
+            break;
+          }
+        } else {
+          std::string line_to_search = match.line_text;
+          std::string pattern_to_search = exclude_pattern;
+          if (!case_sensitive) {
+            std::transform(line_to_search.begin(), line_to_search.end(), line_to_search.begin(),
+                           ::tolower);
+            std::transform(pattern_to_search.begin(), pattern_to_search.end(),
+                           pattern_to_search.begin(), ::tolower);
+          }
+          if (line_to_search.find(pattern_to_search) != std::string::npos) {
+            excluded = true;
+            break;
+          }
+        }
+      }
+
+      if (!excluded) {
+        filtered_result.matches.push_back(match);
+      }
+    }
+
+    if (!filtered_result.matches.empty()) {
+      out_results.push_back(filtered_result);
+    }
+  }
+
   return true;
 }
 
 std::string RgSearchBackend::BuildCommand(const std::string &root_path, const std::string &pattern,
                                           bool case_sensitive, bool whole_word, bool regex,
-                                          const std::vector<std::string> &file_patterns,
-                                          const std::vector<std::string> &exclude_patterns) {
+                                          const std::vector<std::string> &path_patterns,
+                                          const std::vector<std::string> &exclude_path_patterns) {
   std::ostringstream cmd;
   cmd << "rg --json --no-heading --with-filename --line-number --column";
 
@@ -101,12 +151,12 @@ std::string RgSearchBackend::BuildCommand(const std::string &root_path, const st
     cmd << " --fixed-strings";
   }
 
-  for (const auto &exclude : exclude_patterns) {
+  for (const auto &exclude : exclude_path_patterns) {
     cmd << " --glob \"!" << exclude << "\"";
   }
 
-  for (const auto &file_pattern : file_patterns) {
-    cmd << " --glob \"" << file_pattern << "\"";
+  for (const auto &path_pattern : path_patterns) {
+    cmd << " --glob \"" << path_pattern << "\"";
   }
 
   cmd << " -- \"" << pattern << "\" \"" << root_path << "\"";

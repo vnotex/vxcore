@@ -1204,6 +1204,134 @@ int test_search_file_and_exclude_patterns() {
   return 0;
 }
 
+int test_search_content_exclude_patterns() {
+  std::cout << "  Running test_search_content_exclude_patterns..." << std::endl;
+  cleanup_test_dir("test_content_exclude");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_content_exclude", "{\"name\":\"Test Content Exclude\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file1_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "compiler.md", &file1_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file1_id);
+
+  char *file2_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "tutorial.md", &file2_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file2_id);
+
+  const char *query_json = R"({
+    "pattern": "compiler",
+    "excludePatterns": ["gcc"],
+    "caseSensitive": false,
+    "regex": false,
+    "maxResults": 100,
+    "scope": {
+      "folderPath": ".",
+      "recursive": false
+    }
+  })";
+
+  char *results = nullptr;
+  err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  vxcore_string_free(results);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_content_exclude");
+  std::cout << "  ✓ test_search_content_exclude_patterns passed" << std::endl;
+  return 0;
+}
+
+int test_search_by_tags_with_exclude_tags() {
+  std::cout << "  Running test_search_by_tags_with_exclude_tags..." << std::endl;
+  cleanup_test_dir("test_tags_exclude");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_tags_exclude", "{\"name\":\"Test Tags Exclude\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file1_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "file1.md", &file1_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file1_id);
+
+  char *file2_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "file2.md", &file2_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file2_id);
+
+  char *file3_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "file3.md", &file3_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file3_id);
+
+  err = vxcore_tag_create(ctx, notebook_id, "lang");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "php");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "python");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "file1.md", "lang");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_file_tag(ctx, notebook_id, "file1.md", "php");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "file2.md", "lang");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_file_tag(ctx, notebook_id, "file2.md", "python");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "file3.md", "python");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *query_json = R"({
+    "tags": ["lang"],
+    "operator": "AND",
+    "maxResults": 100,
+    "scope": {
+      "folderPath": ".",
+      "recursive": false,
+      "excludeTags": ["php"]
+    }
+  })";
+
+  char *results = nullptr;
+  err = vxcore_search_by_tags(ctx, notebook_id, query_json, nullptr, &results);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+
+  auto json_results = nlohmann::json::parse(results);
+  ASSERT(json_results["totalResults"].get<int>() == 1);
+  ASSERT(json_results["results"].size() == 1);
+
+  std::string path = json_results["results"][0]["path"].get<std::string>();
+  ASSERT(path.find("file2.md") != std::string::npos);
+
+  vxcore_string_free(results);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_tags_exclude");
+  std::cout << "  ✓ test_search_by_tags_with_exclude_tags passed" << std::endl;
+  return 0;
+}
+
 int main() {
   vxcore_set_test_mode(1);
 
@@ -1227,6 +1355,9 @@ int main() {
   RUN_TEST(test_search_by_tags_empty_results);
   RUN_TEST(test_search_by_tags_with_file_patterns);
   RUN_TEST(test_search_file_and_exclude_patterns);
+
+  RUN_TEST(test_search_content_exclude_patterns);
+  RUN_TEST(test_search_by_tags_with_exclude_tags);
 
   std::cout << "All search tests passed!" << std::endl;
   return 0;

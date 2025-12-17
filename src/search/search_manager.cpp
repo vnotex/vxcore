@@ -54,8 +54,9 @@ VxCoreError SearchManager::SearchContent(const std::string &query_json,
       std::string root = notebook_->GetRootFolder();
 
       if (search_backend_->Search(root, query.pattern, query.case_sensitive, query.whole_word,
-                                  query.regex, query.scope.file_patterns,
-                                  query.scope.exclude_patterns, search_results)) {
+                                  query.regex, query.scope.path_patterns,
+                                  query.scope.exclude_path_patterns, query.exclude_patterns,
+                                  search_results)) {
         for (const auto &sr : search_results) {
           nlohmann::json item;
           item["filePath"] = sr.file_path;
@@ -271,13 +272,13 @@ std::vector<SearchManager::FileInfo> SearchManager::GetAllFiles(const SearchScop
     }
 
     for (const auto &folder_path : input_files->folders) {
-      CollectFilesInFolder(folder_path, scope.recursive, scope.file_patterns,
-                           scope.exclude_patterns, include_folders, result);
+      CollectFilesInFolder(folder_path, scope.recursive, scope.path_patterns,
+                           scope.exclude_path_patterns, include_folders, result);
     }
   } else {
     const std::string start_path = scope.folder_path.empty() ? "." : scope.folder_path;
-    CollectFilesInFolder(start_path, scope.recursive, scope.file_patterns, scope.exclude_patterns,
-                         include_folders, result);
+    CollectFilesInFolder(start_path, scope.recursive, scope.path_patterns,
+                         scope.exclude_path_patterns, include_folders, result);
   }
 
   return result;
@@ -294,6 +295,15 @@ std::vector<SearchManager::FileInfo> SearchManager::FilterFilesByTagsAndDate(
     if (!scope.tags.empty() && !file.is_folder) {
       if (!MatchesTags(file.tags, scope.tags, scope.tag_operator)) {
         matches = false;
+      }
+    }
+
+    if (matches && !scope.exclude_tags.empty() && !file.is_folder) {
+      for (const auto &exclude_tag : scope.exclude_tags) {
+        if (std::find(file.tags.begin(), file.tags.end(), exclude_tag) != file.tags.end()) {
+          matches = false;
+          break;
+        }
       }
     }
 
@@ -317,10 +327,10 @@ std::vector<SearchManager::FileInfo> SearchManager::FilterFilesByTagsAndDate(
 }
 
 void SearchManager::CollectFilesInFolder(const std::string &folder_path, bool recursive,
-                                         const std::vector<std::string> &file_patterns,
-                                         const std::vector<std::string> &exclude_patterns,
+                                         const std::vector<std::string> &path_patterns,
+                                         const std::vector<std::string> &exclude_path_patterns,
                                          bool include_folders, std::vector<FileInfo> &out_files) {
-  if (MatchesPatterns(folder_path, exclude_patterns)) {
+  if (MatchesPatterns(folder_path, exclude_path_patterns)) {
     return;
   }
 
@@ -332,10 +342,10 @@ void SearchManager::CollectFilesInFolder(const std::string &folder_path, bool re
 
   for (const auto &file : contents.files) {
     const auto file_path = ConcatenatePaths(folder_path, file.name);
-    if (MatchesPatterns(file_path, exclude_patterns)) {
+    if (MatchesPatterns(file_path, exclude_path_patterns)) {
       continue;
     }
-    if (!file_patterns.empty() && !MatchesPatterns(file_path, file_patterns)) {
+    if (!path_patterns.empty() && !MatchesPatterns(file_path, path_patterns)) {
       continue;
     }
     out_files.push_back(ToFileInfo(file_path, file));
@@ -344,7 +354,7 @@ void SearchManager::CollectFilesInFolder(const std::string &folder_path, bool re
   for (const auto &folder : contents.folders) {
     std::string subfolder_path = ConcatenatePaths(folder_path, folder.name);
 
-    if (MatchesPatterns(subfolder_path, exclude_patterns)) {
+    if (MatchesPatterns(subfolder_path, exclude_path_patterns)) {
       continue;
     }
 
@@ -353,7 +363,7 @@ void SearchManager::CollectFilesInFolder(const std::string &folder_path, bool re
     }
 
     if (recursive) {
-      CollectFilesInFolder(subfolder_path, recursive, file_patterns, exclude_patterns,
+      CollectFilesInFolder(subfolder_path, recursive, path_patterns, exclude_path_patterns,
                            include_folders, out_files);
     }
   }

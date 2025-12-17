@@ -62,9 +62,9 @@ class SearchManager {
   std::string SerializeFileResults(const std::vector<FileInfo> &matched_files, int max_results);
 
   void CollectFilesInFolder(const std::string &folder_path, bool recursive,
-                            const std::vector<std::string> &file_patterns,
-                            const std::vector<std::string> &exclude_patterns, bool include_folders,
-                            std::vector<FileInfo> &out_files);
+                            const std::vector<std::string> &path_patterns,
+                            const std::vector<std::string> &exclude_path_patterns,
+                            bool include_folders, std::vector<FileInfo> &out_files);
 
   bool MatchesPattern(const std::string &text, const std::string &pattern) const;
 

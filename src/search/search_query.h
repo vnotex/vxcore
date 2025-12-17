@@ -13,9 +13,10 @@ class Notebook;
 struct SearchScope {
   std::string folder_path;
   bool recursive = true;
-  std::vector<std::string> file_patterns;
-  std::vector<std::string> exclude_patterns;
+  std::vector<std::string> path_patterns;
+  std::vector<std::string> exclude_path_patterns;
   std::vector<std::string> tags;
+  std::vector<std::string> exclude_tags;
   std::string tag_operator = "AND";
   std::string date_filter_field;
   int64_t date_filter_from = 0;
@@ -46,6 +47,7 @@ struct SearchFilesQuery {
 
 struct SearchContentQuery {
   std::string pattern;
+  std::vector<std::string> exclude_patterns;
   bool case_sensitive = false;
   bool whole_word = false;
   bool regex = false;
