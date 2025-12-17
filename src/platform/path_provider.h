@@ -2,7 +2,6 @@
 #define VXCORE_PATH_PROVIDER_H
 
 #include <filesystem>
-#include <string>
 
 namespace vxcore {
 

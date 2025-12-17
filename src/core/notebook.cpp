@@ -353,4 +353,12 @@ VxCoreError Notebook::GetTags(std::string &out_tags_json) const {
   return VXCORE_OK;
 }
 
+std::string Notebook::GetCleanRelativePath(const std::string &path) const {
+  const auto clean_path = CleanPath(path);
+  if (IsRelativePath(clean_path)) {
+    return clean_path;
+  }
+  return RelativePath(root_folder_, clean_path);
+}
+
 }  // namespace vxcore

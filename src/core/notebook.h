@@ -76,6 +76,10 @@ class Notebook {
   VxCoreError GetTags(std::string &out_tags_json) const;
   TagNode *FindTag(const std::string &tag_name);
 
+  // Clean and get path related to notebook root folder.
+  // Returns null string if |path| is not under notebook root folder.
+  std::string GetCleanRelativePath(const std::string &path) const;
+
  protected:
   Notebook(const std::string &local_data_folder, const std::string &root_folder, NotebookType type);
 

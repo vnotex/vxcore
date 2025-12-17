@@ -771,9 +771,22 @@ VxCoreError BundledFolderManager::UntagFile(const std::string &file_path,
 
 VxCoreError BundledFolderManager::GetFileInfo(const std::string &file_path,
                                               std::string &out_file_info_json) {
-  const auto clean_file_path = GetCleanRelativePath(file_path);
+  const FileRecord *record = nullptr;
+  VxCoreError error = GetFileInfo(file_path, &record);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+  out_file_info_json = record->ToJson().dump();
+  return VXCORE_OK;
+}
 
+VxCoreError BundledFolderManager::GetFileInfo(const std::string &file_path,
+                                              const FileRecord **out_record) {
+  *out_record = nullptr;
+
+  const auto clean_file_path = GetCleanRelativePath(file_path);
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
+
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) {
@@ -785,7 +798,7 @@ VxCoreError BundledFolderManager::GetFileInfo(const std::string &file_path,
     return VXCORE_ERR_NOT_FOUND;
   }
 
-  out_file_info_json = file->ToJson().dump();
+  *out_record = file;
   return VXCORE_OK;
 }
 
@@ -1046,6 +1059,36 @@ VxCoreError BundledFolderManager::FindFilesByTag(const std::string &tag_name,
       });
 
   out_files_json = files_array.dump();
+  return VXCORE_OK;
+}
+
+VxCoreError BundledFolderManager::ListFolderContents(const std::string &folder_path,
+                                                     bool include_folders_info,
+                                                     FolderContents &out_contents) {
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  out_contents.files = config->files;
+  out_contents.folders.clear();
+  out_contents.folders.reserve(config->folders.size());
+  for (const auto &subfolder_name : config->folders) {
+    if (include_folders_info == false) {
+      out_contents.folders.emplace_back(subfolder_name);
+      continue;
+    }
+    std::string subfolder_path = ConcatenatePaths(folder_path, subfolder_name);
+    FolderConfig *subfolder_config = nullptr;
+    error = GetFolderConfig(subfolder_path, &subfolder_config);
+    if (error == VXCORE_OK && subfolder_config) {
+      out_contents.folders.emplace_back(subfolder_config->id, subfolder_config->name,
+                                        subfolder_config->created_utc,
+                                        subfolder_config->modified_utc, subfolder_config->metadata);
+    }
+  }
+
   return VXCORE_OK;
 }
 

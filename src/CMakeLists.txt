@@ -10,6 +10,7 @@ set(VXCORE_SOURCES
     api/vxcore_notebook_api.cpp
     api/vxcore_tag_api.cpp
     api/vxcore_folder_api.cpp
+    api/vxcore_search_api.cpp
     api/vxcore_events.cpp
     api/handle_manager.cpp
     api/error_handler.cpp
@@ -23,6 +24,9 @@ set(VXCORE_SOURCES
     core/folder.cpp
     core/bundled_folder_manager.cpp
     core/raw_folder_manager.cpp
+    search/search_manager.cpp
+    search/search_query.cpp
+    search/rg_search_backend.cpp
     utils/utils.cpp
     utils/logger.cpp
     utils/file_utils.cpp

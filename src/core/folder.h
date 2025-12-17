@@ -22,6 +22,19 @@ struct FileRecord {
   nlohmann::json ToJson() const;
 };
 
+struct FolderRecord {
+  std::string id;
+  std::string name;
+  int64_t created_utc;
+  int64_t modified_utc;
+  nlohmann::json metadata;
+
+  FolderRecord();
+  FolderRecord(const std::string &name);
+  FolderRecord(const std::string &id, const std::string &name, int64_t created_utc,
+               int64_t modified_utc, const nlohmann::json &metadata);
+};
+
 struct FolderConfig {
   std::string id;
   std::string name;

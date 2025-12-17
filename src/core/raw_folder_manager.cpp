@@ -115,6 +115,13 @@ VxCoreError RawFolderManager::GetFileInfo(const std::string &file_path,
   return VXCORE_ERR_UNSUPPORTED;
 }
 
+VxCoreError RawFolderManager::GetFileInfo(const std::string &file_path,
+                                          const FileRecord **out_record) {
+  (void)file_path;
+  (void)out_record;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
 VxCoreError RawFolderManager::GetFileMetadata(const std::string &file_path,
                                               std::string &out_metadata_json) {
   (void)file_path;
@@ -155,6 +162,15 @@ VxCoreError RawFolderManager::FindFilesByTag(const std::string &tag_name,
                                              std::string &out_files_json) {
   (void)tag_name;
   (void)out_files_json;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VxCoreError RawFolderManager::ListFolderContents(const std::string &folder_path,
+                                                 bool include_folders_info,
+                                                 FolderContents &out_contents) {
+  (void)folder_path;
+  (void)include_folders_info;
+  (void)out_contents;
   return VXCORE_ERR_UNSUPPORTED;
 }
 

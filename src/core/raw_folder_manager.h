@@ -35,6 +35,7 @@ class RawFolderManager : public FolderManager {
   VxCoreError TagFile(const std::string &file_path, const std::string &tag_name) override;
   VxCoreError UntagFile(const std::string &file_path, const std::string &tag_name) override;
   VxCoreError GetFileInfo(const std::string &file_path, std::string &out_file_info_json) override;
+  VxCoreError GetFileInfo(const std::string &file_path, const FileRecord **out_record) override;
   VxCoreError GetFileMetadata(const std::string &file_path,
                               std::string &out_metadata_json) override;
   VxCoreError RenameFile(const std::string &file_path, const std::string &new_name) override;
@@ -45,6 +46,8 @@ class RawFolderManager : public FolderManager {
   void IterateAllFiles(
       std::function<bool(const std::string &, const FileRecord &)> callback) override;
   VxCoreError FindFilesByTag(const std::string &tag_name, std::string &out_files_json) override;
+  VxCoreError ListFolderContents(const std::string &folder_path, bool include_folders_info,
+                                 FolderContents &out_contents) override;
 
   void ClearCache() override;
 };

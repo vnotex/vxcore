@@ -138,6 +138,18 @@ VXCORE_API VxCoreError vxcore_tag_list(VxCoreContextHandle context, const char *
 VXCORE_API VxCoreError vxcore_tag_move(VxCoreContextHandle context, const char *notebook_id,
                                        const char *tag_name, const char *parent_tag);
 
+VXCORE_API VxCoreError vxcore_search_files(VxCoreContextHandle context, const char *notebook_id,
+                                           const char *query_json, const char *input_files_json,
+                                           char **out_results_json);
+
+VXCORE_API VxCoreError vxcore_search_content(VxCoreContextHandle context, const char *notebook_id,
+                                             const char *query_json, const char *input_files_json,
+                                             char **out_results_json);
+
+VXCORE_API VxCoreError vxcore_search_by_tags(VxCoreContextHandle context, const char *notebook_id,
+                                             const char *query_json, const char *input_files_json,
+                                             char **out_results_json);
+
 VXCORE_API void vxcore_string_free(char *str);
 
 #ifdef __cplusplus

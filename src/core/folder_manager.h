@@ -61,6 +61,8 @@ class FolderManager {
   virtual VxCoreError GetFileInfo(const std::string &file_path,
                                   std::string &out_file_info_json) = 0;
 
+  virtual VxCoreError GetFileInfo(const std::string &file_path, const FileRecord **out_record) = 0;
+
   virtual VxCoreError GetFileMetadata(const std::string &file_path,
                                       std::string &out_metadata_json) = 0;
 
@@ -78,17 +80,19 @@ class FolderManager {
 
   virtual VxCoreError FindFilesByTag(const std::string &tag_name, std::string &out_files_json) = 0;
 
+  struct FolderContents {
+    std::vector<FileRecord> files;
+    std::vector<FolderRecord> folders;
+  };
+
+  virtual VxCoreError ListFolderContents(const std::string &folder_path, bool include_folders_info,
+                                         FolderContents &out_contents) = 0;
+
   virtual void ClearCache() = 0;
 
  protected:
-  // Clean and get path related to notebook root folder.
-  // Returns null string if |path| is not under notebook root folder.
   inline std::string GetCleanRelativePath(const std::string &path) const {
-    const auto clean_path = CleanPath(path);
-    if (IsRelativePath(clean_path)) {
-      return clean_path;
-    }
-    return RelativePath(notebook_->GetRootFolder(), clean_path);
+    return notebook_->GetCleanRelativePath(path);
   }
 
   Notebook *notebook_ = nullptr;

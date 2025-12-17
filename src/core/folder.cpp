@@ -51,6 +51,20 @@ nlohmann::json FileRecord::ToJson() const {
   return json;
 }
 
+FolderRecord::FolderRecord()
+    : created_utc(0), modified_utc(0), metadata(nlohmann::json::object()) {}
+
+FolderRecord::FolderRecord(const std::string &name)
+    : name(name), created_utc(0), modified_utc(0), metadata(nlohmann::json::object()) {}
+
+FolderRecord::FolderRecord(const std::string &id, const std::string &name, int64_t created_utc,
+                           int64_t modified_utc, const nlohmann::json &metadata)
+    : id(id),
+      name(name),
+      created_utc(created_utc),
+      modified_utc(modified_utc),
+      metadata(metadata) {}
+
 FolderConfig::FolderConfig() : created_utc(0), modified_utc(0) {}
 
 FolderConfig::FolderConfig(const std::string &name)
