@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "search_backend.h"
+#include "search_file_info.h"
 #include "search_query.h"
 #include "vxcore/vxcore_types.h"
 
@@ -18,7 +19,7 @@ struct FolderRecord;
 
 class SearchManager {
  public:
-  explicit SearchManager(Notebook *notebook);
+  explicit SearchManager(Notebook *notebook, const std::string &search_backend);
   ~SearchManager();
 
   VxCoreError SearchFiles(const std::string &query_json, const std::string &input_files_json,
@@ -31,44 +32,34 @@ class SearchManager {
                            std::string &out_results_json);
 
  private:
-  struct FileInfo {
-    std::string path;
-    std::string name;
-    std::string id;
-    std::vector<std::string> tags;
-    int64_t created_utc;
-    int64_t modified_utc;
-    bool is_folder;
+  std::vector<SearchFileInfo> GetAllFiles(const SearchScope &scope,
+                                          const SearchInputFiles *input_files,
+                                          bool include_folders);
 
-    nlohmann::json ToJson() const;
-  };
+  std::vector<SearchFileInfo> FilterFilesByTagsAndDate(std::vector<SearchFileInfo> files,
+                                                       const SearchScope &scope);
 
-  std::vector<FileInfo> GetAllFiles(const SearchScope &scope, const SearchInputFiles *input_files,
-                                    bool include_folders);
+  std::vector<SearchFileInfo> FetchFilesToSearch(const SearchScope &scope,
+                                                 const std::string &input_files_json,
+                                                 bool include_folders);
 
-  std::vector<FileInfo> FilterFilesByTagsAndDate(std::vector<FileInfo> files,
-                                                 const SearchScope &scope);
+  std::vector<SearchFileInfo> GetMatchedFilesByPattern(std::vector<SearchFileInfo> filtered_files,
+                                                       const std::string &pattern,
+                                                       bool include_files, bool include_folders,
+                                                       int max_results);
 
-  std::vector<FileInfo> GetMatchedFilesByPattern(std::vector<FileInfo> filtered_files,
-                                                 const std::string &pattern, bool include_files,
-                                                 bool include_folders, int max_results);
+  std::vector<SearchFileInfo> GetMatchedFilesByTags(std::vector<SearchFileInfo> filtered_files,
+                                                    const std::vector<std::string> &tags,
+                                                    const std::string &tag_operator,
+                                                    int max_results);
 
-  std::vector<FileInfo> GetMatchedFilesByTags(std::vector<FileInfo> filtered_files,
-                                              const std::vector<std::string> &tags,
-                                              const std::string &tag_operator, int max_results);
-
-  SearchInputFiles ParseInputFiles(const std::string &input_files_json);
-
-  std::string SerializeFileResults(const std::vector<FileInfo> &matched_files, int max_results);
+  std::string SerializeFileResults(const std::vector<SearchFileInfo> &matched_files,
+                                   int max_results);
 
   void CollectFilesInFolder(const std::string &folder_path, bool recursive,
                             const std::vector<std::string> &path_patterns,
                             const std::vector<std::string> &exclude_path_patterns,
-                            bool include_folders, std::vector<FileInfo> &out_files);
-
-  bool MatchesPattern(const std::string &text, const std::string &pattern) const;
-
-  bool MatchesPatterns(const std::string &text, const std::vector<std::string> &patterns) const;
+                            bool include_folders, std::vector<SearchFileInfo> &out_files);
 
   bool MatchesTags(const std::vector<std::string> &file_tags,
                    const std::vector<std::string> &search_tags,
@@ -76,9 +67,7 @@ class SearchManager {
 
   bool MatchesDateFilter(int64_t timestamp, const SearchScope &scope) const;
 
-  static FileInfo ToFileInfo(const std::string &file_path, const FileRecord &record);
-
-  static FileInfo ToFileInfo(const std::string &file_path, const FolderRecord &record);
+  void CalculateAbsolutePaths(std::vector<SearchFileInfo> &files) const;
 
   Notebook *notebook_;
   std::unique_ptr<ISearchBackend> search_backend_;

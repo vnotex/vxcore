@@ -361,4 +361,8 @@ std::string Notebook::GetCleanRelativePath(const std::string &path) const {
   return RelativePath(root_folder_, clean_path);
 }
 
+std::string Notebook::GetAbsolutePath(const std::string &relative_path) const {
+  return ConcatenatePaths(root_folder_, relative_path);
+}
+
 }  // namespace vxcore

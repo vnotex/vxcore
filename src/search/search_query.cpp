@@ -136,9 +136,16 @@ SearchContentQuery SearchContentQuery::FromJson(const Notebook *notebook,
     }
   }
 
-  query.case_sensitive = json.value("caseSensitive", false);
-  query.whole_word = json.value("wholeWord", false);
-  query.regex = json.value("regex", false);
+  query.options = SearchOption::kNone;
+  if (json.value("caseSensitive", false)) {
+    query.options |= SearchOption::kCaseSensitive;
+  }
+  if (json.value("wholeWord", false)) {
+    query.options |= SearchOption::kWholeWord;
+  }
+  if (json.value("regex", false)) {
+    query.options |= SearchOption::kRegex;
+  }
 
   if (json.contains("scope")) {
     query.scope = SearchScope::FromJson(notebook, json["scope"]);

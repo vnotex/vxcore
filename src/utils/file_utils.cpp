@@ -1,6 +1,7 @@
 #include "file_utils.h"
 
 #include <filesystem>
+#include <fstream>
 
 namespace vxcore {
 
@@ -61,6 +62,21 @@ std::string RelativePath(const std::string &base, const std::string &path) {
     return path.substr(base.size() + 1);
   } else {
     return path.substr(base.size());
+  }
+}
+
+VxCoreError LoadJsonFile(const std::filesystem::path &path, nlohmann::json &out_json) {
+  try {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+      return VXCORE_ERR_IO;
+    }
+    file >> out_json;
+    return VXCORE_OK;
+  } catch (const nlohmann::json::exception &) {
+    return VXCORE_ERR_JSON_PARSE;
+  } catch (...) {
+    return VXCORE_ERR_IO;
   }
 }
 

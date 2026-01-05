@@ -2,8 +2,11 @@
 #define VXCORE_FILE_UTILS_H
 
 #include <filesystem>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
+
+#include "vxcore/vxcore_types.h"
 
 namespace vxcore {
 
@@ -22,6 +25,8 @@ inline std::string CleanPath(const std::string &path) {
 }
 
 bool IsRelativePath(const std::string &path);
+
+VxCoreError LoadJsonFile(const std::filesystem::path &path, nlohmann::json &out_json);
 
 // Assuming that all paths here are already cleaned using |CleanPath|.
 

@@ -80,6 +80,8 @@ class Notebook {
   // Returns null string if |path| is not under notebook root folder.
   std::string GetCleanRelativePath(const std::string &path) const;
 
+  std::string GetAbsolutePath(const std::string &relative_path) const;
+
  protected:
   Notebook(const std::string &local_data_folder, const std::string &root_folder, NotebookType type);
 

@@ -10,6 +10,26 @@ namespace vxcore {
 
 class Notebook;
 
+enum class SearchOption : uint32_t {
+  kNone = 0,
+  kCaseSensitive = 1 << 0,
+  kWholeWord = 1 << 1,
+  kRegex = 1 << 2
+};
+
+inline SearchOption operator|(SearchOption lhs, SearchOption rhs) {
+  return static_cast<SearchOption>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+}
+
+inline SearchOption operator&(SearchOption lhs, SearchOption rhs) {
+  return static_cast<SearchOption>(static_cast<uint32_t>(lhs) & static_cast<uint32_t>(rhs));
+}
+
+inline SearchOption &operator|=(SearchOption &lhs, SearchOption rhs) {
+  lhs = lhs | rhs;
+  return lhs;
+}
+
 struct SearchScope {
   std::string folder_path;
   bool recursive = true;
@@ -48,9 +68,7 @@ struct SearchFilesQuery {
 struct SearchContentQuery {
   std::string pattern;
   std::vector<std::string> exclude_patterns;
-  bool case_sensitive = false;
-  bool whole_word = false;
-  bool regex = false;
+  SearchOption options = SearchOption::kNone;
   SearchScope scope;
   int max_results = 100;
 

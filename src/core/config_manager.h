@@ -31,9 +31,7 @@ class ConfigManager {
   static bool IsTestMode();
 
  private:
-  VxCoreError LoadJsonFile(const std::filesystem::path &path, nlohmann::json &out_json);
   VxCoreError EnsureDataFolders();
-  VxCoreError CheckAndMigrateVersion();
 
   static std::string GetDataPathInTestMode();
 

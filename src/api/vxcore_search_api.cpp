@@ -1,8 +1,28 @@
 #include "api/api_utils.h"
+#include "core/config_manager.h"
 #include "core/context.h"
 #include "core/notebook_manager.h"
+#include "search/rg_search_backend.h"
 #include "search/search_manager.h"
 #include "vxcore/vxcore.h"
+
+std::unique_ptr<vxcore::SearchManager> CreateSearchManager(vxcore::VxCoreContext *ctx,
+                                                           vxcore::Notebook *notebook) {
+  std::string backend = "simple";
+  if (ctx && ctx->config_manager) {
+    const auto &backends = ctx->config_manager->GetConfig().search.backends;
+    for (const auto &b : backends) {
+      if (b == "rg" && vxcore::RgSearchBackend::IsAvailable()) {
+        backend = "rg";
+        break;
+      } else if (b == "simple") {
+        backend = "simple";
+        break;
+      }
+    }
+  }
+  return std::make_unique<vxcore::SearchManager>(notebook, backend);
+}
 
 VXCORE_API VxCoreError vxcore_search_files(VxCoreContextHandle context, const char *notebook_id,
                                            const char *query_json, const char *input_files_json,
@@ -20,7 +40,7 @@ VXCORE_API VxCoreError vxcore_search_files(VxCoreContextHandle context, const ch
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    auto search_manager = std::make_unique<vxcore::SearchManager>(notebook);
+    auto search_manager = CreateSearchManager(ctx, notebook);
 
     std::string results_json;
     std::string input_files_str = input_files_json ? input_files_json : "";
@@ -62,7 +82,7 @@ VXCORE_API VxCoreError vxcore_search_content(VxCoreContextHandle context, const 
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    auto search_manager = std::make_unique<vxcore::SearchManager>(notebook);
+    auto search_manager = CreateSearchManager(ctx, notebook);
 
     std::string results_json;
     std::string input_files_str = input_files_json ? input_files_json : "";
@@ -104,7 +124,7 @@ VXCORE_API VxCoreError vxcore_search_by_tags(VxCoreContextHandle context, const 
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    auto search_manager = std::make_unique<vxcore::SearchManager>(notebook);
+    auto search_manager = CreateSearchManager(ctx, notebook);
 
     std::string results_json;
     std::string input_files_str = input_files_json ? input_files_json : "";

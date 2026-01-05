@@ -4,30 +4,39 @@
 #include <string>
 #include <vector>
 
+#include "search_query.h"
+#include "vxcore/vxcore_types.h"
+
 namespace vxcore {
 
+struct SearchFileInfo;
+
 struct SearchMatch {
-  int line_number;
-  int column_start;
-  int column_end;
+  int line_number = -1;
+  int column_start = 0;
+  int column_end = 0;
   std::string line_text;
-  std::string match_text;
+};
+
+struct ContentSearchMatchedFile {
+  std::string path;
+  std::string id;
+  std::vector<SearchMatch> matches;
 };
 
 struct ContentSearchResult {
-  std::string file_path;
-  std::vector<SearchMatch> matches;
+  std::vector<ContentSearchMatchedFile> matched_files;
+  bool truncated = false;
 };
 
 class ISearchBackend {
  public:
   virtual ~ISearchBackend() = default;
 
-  virtual bool Search(const std::string &root_path, const std::string &pattern, bool case_sensitive,
-                      bool whole_word, bool regex, const std::vector<std::string> &path_patterns,
-                      const std::vector<std::string> &exclude_path_patterns,
-                      const std::vector<std::string> &content_exclude_patterns,
-                      std::vector<ContentSearchResult> &out_results) = 0;
+  virtual VxCoreError Search(const std::vector<SearchFileInfo> &files, const std::string &pattern,
+                             SearchOption options,
+                             const std::vector<std::string> &content_exclude_patterns,
+                             int max_results, ContentSearchResult &out_result) = 0;
 };
 
 }  // namespace vxcore

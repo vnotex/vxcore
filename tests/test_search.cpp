@@ -55,9 +55,9 @@ int test_search_files_basic() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 2);
-  ASSERT(json_results["results"].is_array());
-  ASSERT(json_results["results"].size() == 2);
+  ASSERT(json_results["matchCount"].get<int>() == 2);
+  ASSERT(json_results["matches"].is_array());
+  ASSERT(json_results["matches"].size() == 2);
 
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
@@ -112,11 +112,11 @@ int test_search_files_include_folders() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 3);
+  ASSERT(json_results["matchCount"].get<int>() == 3);
 
   int file_count = 0;
   int folder_count = 0;
-  for (const auto &item : json_results["results"]) {
+  for (const auto &item : json_results["matches"]) {
     if (item["type"].get<std::string>() == "folder") {
       folder_count++;
     } else {
@@ -189,11 +189,11 @@ int test_search_files_pattern_matching() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 2);
+  ASSERT(json_results["matchCount"].get<int>() == 2);
 
   bool found_readme = false;
   bool found_deep_readme = false;
-  for (const auto &item : json_results["results"]) {
+  for (const auto &item : json_results["matches"]) {
     std::string path = item["path"].get<std::string>();
     if (path.find("readme.md") != std::string::npos) {
       found_readme = true;
@@ -263,13 +263,13 @@ int test_search_files_name_vs_path_ranking() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() >= 2);
+  ASSERT(json_results["matchCount"].get<int>() >= 2);
 
   int first_name_match_index = -1;
   int first_path_match_index = -1;
 
-  for (size_t i = 0; i < json_results["results"].size(); i++) {
-    std::string path = json_results["results"][i]["path"].get<std::string>();
+  for (size_t i = 0; i < json_results["matches"].size(); i++) {
+    std::string path = json_results["matches"][i]["path"].get<std::string>();
     size_t last_slash = path.find_last_of('/');
     std::string name = (last_slash == std::string::npos) ? path : path.substr(last_slash + 1);
 
@@ -347,9 +347,9 @@ int test_search_files_exclude_patterns() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 2);
+  ASSERT(json_results["matchCount"].get<int>() == 2);
 
-  for (const auto &item : json_results["results"]) {
+  for (const auto &item : json_results["matches"]) {
     std::string path = item["path"].get<std::string>();
     ASSERT(path.find("node_modules") == std::string::npos);
   }
@@ -400,8 +400,8 @@ int test_search_files_max_results() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 5);
-  ASSERT(json_results["results"].size() == 5);
+  ASSERT(json_results["matchCount"].get<int>() == 5);
+  ASSERT(json_results["matches"].size() == 5);
   ASSERT(json_results["truncated"].get<bool>() == true);
 
   vxcore_string_free(results);
@@ -472,10 +472,10 @@ int test_search_by_tags_single_tag() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 2);
-  ASSERT(json_results["results"].size() == 2);
+  ASSERT(json_results["matchCount"].get<int>() == 2);
+  ASSERT(json_results["matches"].size() == 2);
 
-  for (const auto &item : json_results["results"]) {
+  for (const auto &item : json_results["matches"]) {
     ASSERT(item["type"].get<std::string>() == "file");
     auto tags = item["tags"];
     ASSERT(tags.is_array());
@@ -551,10 +551,10 @@ int test_search_by_tags_and_operator() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 1);
-  ASSERT(json_results["results"].size() == 1);
+  ASSERT(json_results["matchCount"].get<int>() == 1);
+  ASSERT(json_results["matches"].size() == 1);
 
-  auto &item = json_results["results"][0];
+  auto &item = json_results["matches"][0];
   std::string path = item["path"].get<std::string>();
   ASSERT(path.find("file1.md") != std::string::npos);
 
@@ -632,12 +632,12 @@ int test_search_by_tags_or_operator() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 2);
-  ASSERT(json_results["results"].size() == 2);
+  ASSERT(json_results["matchCount"].get<int>() == 2);
+  ASSERT(json_results["matches"].size() == 2);
 
   bool found_file1 = false;
   bool found_file2 = false;
-  for (const auto &item : json_results["results"]) {
+  for (const auto &item : json_results["matches"]) {
     std::string path = item["path"].get<std::string>();
     if (path.find("file1.md") != std::string::npos) {
       found_file1 = true;
@@ -711,7 +711,7 @@ int test_search_by_tags_recursive() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 2);
+  ASSERT(json_results["matchCount"].get<int>() == 2);
 
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
@@ -776,9 +776,9 @@ int test_search_by_tags_with_exclude_patterns() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 1);
+  ASSERT(json_results["matchCount"].get<int>() == 1);
 
-  auto &item = json_results["results"][0];
+  auto &item = json_results["matches"][0];
   std::string path = item["path"].get<std::string>();
   ASSERT(path.find("file1.md") != std::string::npos);
   ASSERT(path.find("archive") == std::string::npos);
@@ -834,8 +834,8 @@ int test_search_by_tags_max_results() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 5);
-  ASSERT(json_results["results"].size() == 5);
+  ASSERT(json_results["matchCount"].get<int>() == 5);
+  ASSERT(json_results["matches"].size() == 5);
   ASSERT(json_results["truncated"].get<bool>() == true);
 
   vxcore_string_free(results);
@@ -887,8 +887,8 @@ int test_search_by_tags_empty_results() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 0);
-  ASSERT(json_results["results"].size() == 0);
+  ASSERT(json_results["matchCount"].get<int>() == 0);
+  ASSERT(json_results["matches"].size() == 0);
   ASSERT(json_results["truncated"].get<bool>() == false);
 
   vxcore_string_free(results);
@@ -951,9 +951,9 @@ int test_search_files_with_file_patterns() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 2);
+  ASSERT(json_results["matchCount"].get<int>() == 2);
 
-  for (const auto &item : json_results["results"]) {
+  for (const auto &item : json_results["matches"]) {
     std::string path = item["path"].get<std::string>();
     ASSERT(path.find(".md") != std::string::npos);
   }
@@ -1033,9 +1033,9 @@ int test_search_files_file_patterns_recursive() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 4);
+  ASSERT(json_results["matchCount"].get<int>() == 4);
 
-  for (const auto &item : json_results["results"]) {
+  for (const auto &item : json_results["matches"]) {
     std::string path = item["path"].get<std::string>();
     bool is_cpp = path.find(".cpp") != std::string::npos;
     bool is_h = path.find(".h") != std::string::npos;
@@ -1108,9 +1108,9 @@ int test_search_by_tags_with_file_patterns() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 2);
+  ASSERT(json_results["matchCount"].get<int>() == 2);
 
-  for (const auto &item : json_results["results"]) {
+  for (const auto &item : json_results["matches"]) {
     std::string path = item["path"].get<std::string>();
     ASSERT(path.find(".md") != std::string::npos);
     auto tags = item["tags"];
@@ -1178,11 +1178,11 @@ int test_search_file_and_exclude_patterns() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 2);
+  ASSERT(json_results["matchCount"].get<int>() == 2);
 
   bool found_main = false;
   bool found_utils = false;
-  for (const auto &item : json_results["results"]) {
+  for (const auto &item : json_results["matches"]) {
     std::string path = item["path"].get<std::string>();
     ASSERT(path.find("test.cpp") == std::string::npos);
     ASSERT(path.find("readme.md") == std::string::npos);
@@ -1318,10 +1318,10 @@ int test_search_by_tags_with_exclude_tags() {
   ASSERT_NOT_NULL(results);
 
   auto json_results = nlohmann::json::parse(results);
-  ASSERT(json_results["totalResults"].get<int>() == 1);
-  ASSERT(json_results["results"].size() == 1);
+  ASSERT(json_results["matchCount"].get<int>() == 1);
+  ASSERT(json_results["matches"].size() == 1);
 
-  std::string path = json_results["results"][0]["path"].get<std::string>();
+  std::string path = json_results["matches"][0]["path"].get<std::string>();
   ASSERT(path.find("file2.md") != std::string::npos);
 
   vxcore_string_free(results);

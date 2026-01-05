@@ -1,13 +1,18 @@
 #include "rg_search_backend.h"
 
 #include <algorithm>
-#include <cstdio>
-#include <memory>
+#include <filesystem>
 #include <nlohmann/json.hpp>
 #include <regex>
 #include <sstream>
+#include <thread>
+#include <unordered_map>
 
+#include "platform/process_utils.h"
+#include "search_file_info.h"
+#include "utils/file_utils.h"
 #include "utils/logger.h"
+#include "utils/utils.h"
 
 namespace vxcore {
 
@@ -15,161 +20,128 @@ RgSearchBackend::RgSearchBackend() {}
 
 RgSearchBackend::~RgSearchBackend() = default;
 
-bool RgSearchBackend::IsAvailable() {
-#ifdef _WIN32
-  FILE *pipe = _popen("where rg", "r");
-#else
-  FILE *pipe = popen("which rg", "r");
-#endif
-  if (!pipe) {
-    return false;
+bool RgSearchBackend::IsAvailable() { return ProcessUtils::IsCommandAvailable("rg"); }
+
+VxCoreError RgSearchBackend::Search(const std::vector<SearchFileInfo> &files,
+                                    const std::string &pattern, SearchOption options,
+                                    const std::vector<std::string> &content_exclude_patterns,
+                                    int max_results, ContentSearchResult &out_result) {
+  out_result.matched_files.clear();
+  out_result.truncated = false;
+
+  if (files.empty()) {
+    return VXCORE_OK;
   }
 
-  char buffer[128];
-  bool found = fgets(buffer, sizeof(buffer), pipe) != nullptr;
-
-#ifdef _WIN32
-  _pclose(pipe);
-#else
-  pclose(pipe);
-#endif
-
-  return found;
-}
-
-bool RgSearchBackend::Search(const std::string &root_path, const std::string &pattern,
-                             bool case_sensitive, bool whole_word, bool regex,
-                             const std::vector<std::string> &path_patterns,
-                             const std::vector<std::string> &exclude_path_patterns,
-                             const std::vector<std::string> &content_exclude_patterns,
-                             std::vector<ContentSearchResult> &out_results) {
-  if (!IsAvailable()) {
-    VXCORE_LOG_WARN("ripgrep (rg) is not available");
-    return false;
+  std::unordered_map<std::string, const SearchFileInfo *> abs_to_file_info;
+  for (const auto &file_info : files) {
+    // |file_info.absolute_path| is assumed to be already cleaned.
+    abs_to_file_info[file_info.absolute_path] = &file_info;
   }
 
-  std::string command = BuildCommand(root_path, pattern, case_sensitive, whole_word, regex,
-                                     path_patterns, exclude_path_patterns);
+  std::string command =
+      BuildCommand(files, pattern, options, content_exclude_patterns, max_results);
 
   VXCORE_LOG_DEBUG("Executing search command: %s", command.c_str());
 
-#ifdef _WIN32
-  FILE *pipe = _popen(command.c_str(), "r");
-#else
-  FILE *pipe = popen(command.c_str(), "r");
-#endif
-
-  if (!pipe) {
+  ProcessUtils::ProcessResult proc_result;
+  if (!ProcessUtils::ExecuteCommand(command, proc_result)) {
     VXCORE_LOG_ERROR("Failed to execute search command");
-    return false;
+    return VXCORE_ERR_IO;
   }
 
-  std::string output;
-  char buffer[4096];
-  while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-    output += buffer;
+  if (proc_result.exit_code != 0 && proc_result.exit_code != 1) {
+    VXCORE_LOG_ERROR("Search command failed with exit code: %d", proc_result.exit_code);
+    return VXCORE_ERR_IO;
   }
 
-#ifdef _WIN32
-  int exit_code = _pclose(pipe);
-#else
-  int exit_code = pclose(pipe);
-#endif
+  std::vector<ContentSearchMatchedFile> raw_results;
+  ParseOutput(proc_result.output, abs_to_file_info, raw_results);
 
-  if (exit_code != 0 && exit_code != 1) {
-    VXCORE_LOG_ERROR("Search command failed with exit code: %d", exit_code);
-    return false;
-  }
-
-  std::vector<ContentSearchResult> raw_results;
-  ParseOutput(output, raw_results);
-
-  if (content_exclude_patterns.empty()) {
-    out_results = std::move(raw_results);
-    return true;
-  }
-
-  for (auto &result : raw_results) {
-    ContentSearchResult filtered_result;
-    filtered_result.file_path = result.file_path;
-
-    for (auto &match : result.matches) {
-      bool excluded = false;
-      for (const auto &exclude_pattern : content_exclude_patterns) {
-        if (regex) {
-          std::regex exclude_regex(exclude_pattern,
-                                   case_sensitive ? std::regex::ECMAScript : std::regex::icase);
-          if (std::regex_search(match.line_text, exclude_regex)) {
-            excluded = true;
-            break;
-          }
-        } else {
-          std::string line_to_search = match.line_text;
-          std::string pattern_to_search = exclude_pattern;
-          if (!case_sensitive) {
-            std::transform(line_to_search.begin(), line_to_search.end(), line_to_search.begin(),
-                           ::tolower);
-            std::transform(pattern_to_search.begin(), pattern_to_search.end(),
-                           pattern_to_search.begin(), ::tolower);
-          }
-          if (line_to_search.find(pattern_to_search) != std::string::npos) {
-            excluded = true;
-            break;
-          }
-        }
+  // Apply max_results limit (counts total matches across all files)
+  if (max_results > 0) {
+    int total_matches = 0;
+    for (auto &matched_file : raw_results) {
+      if (total_matches >= max_results) {
+        out_result.truncated = true;
+        break;
       }
 
-      if (!excluded) {
-        filtered_result.matches.push_back(match);
+      int remaining = max_results - total_matches;
+      if (static_cast<int>(matched_file.matches.size()) > remaining) {
+        matched_file.matches.resize(remaining);
+        out_result.truncated = true;
       }
-    }
 
-    if (!filtered_result.matches.empty()) {
-      out_results.push_back(filtered_result);
+      total_matches += static_cast<int>(matched_file.matches.size());
+      out_result.matched_files.push_back(std::move(matched_file));
     }
+  } else {
+    out_result.matched_files = std::move(raw_results);
   }
 
-  return true;
+  return VXCORE_OK;
 }
 
-std::string RgSearchBackend::BuildCommand(const std::string &root_path, const std::string &pattern,
-                                          bool case_sensitive, bool whole_word, bool regex,
-                                          const std::vector<std::string> &path_patterns,
-                                          const std::vector<std::string> &exclude_path_patterns) {
+std::string RgSearchBackend::BuildCommand(const std::vector<SearchFileInfo> &files,
+                                          const std::string &pattern, SearchOption options,
+                                          const std::vector<std::string> &content_exclude_patterns,
+                                          int max_results) {
   std::ostringstream cmd;
   cmd << "rg --json --no-heading --with-filename --line-number --column";
 
-  if (!case_sensitive) {
+  if (!HasFlag(options, SearchOption::kCaseSensitive)) {
     cmd << " --ignore-case";
   }
 
-  if (whole_word) {
+  if (HasFlag(options, SearchOption::kWholeWord)) {
     cmd << " --word-regexp";
   }
 
-  if (!regex) {
+  if (!HasFlag(options, SearchOption::kRegex)) {
     cmd << " --fixed-strings";
   }
 
-  for (const auto &exclude : exclude_path_patterns) {
-    cmd << " --glob \"!" << exclude << "\"";
+  unsigned int thread_count = std::thread::hardware_concurrency();
+  if (thread_count > 1) {
+    cmd << " --threads " << thread_count;
   }
 
-  for (const auto &path_pattern : path_patterns) {
-    cmd << " --glob \"" << path_pattern << "\"";
+  cmd << " --max-filesize 50M";
+
+  if (max_results > 0) {
+    cmd << " --max-count " << (max_results * 2);
   }
 
-  cmd << " -- \"" << pattern << "\" \"" << root_path << "\"";
+  if (!content_exclude_patterns.empty()) {
+    cmd << " --invert-match";
+    for (const auto &exclude_pattern : content_exclude_patterns) {
+      if (HasFlag(options, SearchOption::kRegex)) {
+        cmd << " -e ";
+      }
+      cmd << ProcessUtils::EscapeShellArg(exclude_pattern);
+    }
+  }
+
+  cmd << " -- " << ProcessUtils::EscapeShellArg(pattern);
+
+  for (const auto &finfo : files) {
+    cmd << " " << ProcessUtils::EscapeShellArg(finfo.absolute_path);
+  }
+
+  VXCORE_LOG_DEBUG("Constructed rg command: %s", cmd.str().c_str());
 
   return cmd.str();
 }
 
-void RgSearchBackend::ParseOutput(const std::string &output,
-                                  std::vector<ContentSearchResult> &out_results) {
+void RgSearchBackend::ParseOutput(
+    const std::string &output,
+    const std::unordered_map<std::string, const SearchFileInfo *> &abs_to_file_info,
+    std::vector<ContentSearchMatchedFile> &out_results) {
   std::istringstream stream(output);
   std::string line;
 
-  ContentSearchResult current_result;
+  ContentSearchMatchedFile current_result;
   std::string current_file;
 
   while (std::getline(stream, line)) {
@@ -187,15 +159,23 @@ void RgSearchBackend::ParseOutput(const std::string &output,
       std::string type = json["type"].get<std::string>();
 
       if (type == "match") {
-        std::string file_path = json["data"]["path"]["text"].get<std::string>();
+        std::string absolute_file_path = json["data"]["path"]["text"].get<std::string>();
 
-        if (file_path != current_file) {
-          if (!current_result.file_path.empty()) {
-            out_results.push_back(current_result);
+        if (absolute_file_path != current_file) {
+          if (!current_result.path.empty()) {
+            out_results.push_back(std::move(current_result));
           }
-          current_result = ContentSearchResult();
-          current_result.file_path = file_path;
-          current_file = file_path;
+          current_result = ContentSearchMatchedFile();
+
+          std::string normalized_path = CleanPath(absolute_file_path);
+          auto it = abs_to_file_info.find(normalized_path);
+          if (it != abs_to_file_info.end()) {
+            current_result.path = it->second->path;
+            current_result.id = it->second->id;
+          } else {
+            current_result.path = absolute_file_path;
+          }
+          current_file = absolute_file_path;
         }
 
         SearchMatch match;
@@ -206,7 +186,6 @@ void RgSearchBackend::ParseOutput(const std::string &output,
           auto &submatch = submatches[0];
           match.column_start = submatch["start"].get<int>() + 1;
           match.column_end = submatch["end"].get<int>() + 1;
-          match.match_text = submatch["match"]["text"].get<std::string>();
         }
 
         if (json["data"]["lines"].contains("text")) {
@@ -223,7 +202,7 @@ void RgSearchBackend::ParseOutput(const std::string &output,
     }
   }
 
-  if (!current_result.file_path.empty()) {
+  if (!current_result.path.empty()) {
     out_results.push_back(current_result);
   }
 }

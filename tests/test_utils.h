@@ -39,6 +39,8 @@
     }                                                                                        \
   } while (0)
 
+#define ASSERT_TRUE(condition) ASSERT(condition)
+#define ASSERT_FALSE(condition) ASSERT(!(condition))
 #define ASSERT_NULL(ptr) ASSERT((ptr) == nullptr)
 #define ASSERT_NOT_NULL(ptr) ASSERT((ptr) != nullptr)
 

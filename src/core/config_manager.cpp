@@ -3,9 +3,15 @@
 #include <fstream>
 
 #include "platform/path_provider.h"
+#include "utils/file_utils.h"
 #include "utils/logger.h"
 
 namespace vxcore {
+
+const char *kCoreConfigFileName = "vxcore.json";
+const char *kSessionConfigFileName = "session.json";
+const char *kPortableConfigFolderName = "config";
+const char *kTestConfigFolderName = "vxcore_test_config";
 
 bool ConfigManager::test_mode_ = false;
 
@@ -22,7 +28,7 @@ ConfigManager::ConfigManager() : config_(), session_config_() {
     app_data_path_ = temp_path;
     local_data_path_ = temp_path;
   } else {
-    auto portable_config_path = PathProvider::GetExecutablePath() / "config";
+    auto portable_config_path = PathProvider::GetExecutablePath() / kPortableConfigFolderName;
     if (std::filesystem::exists(portable_config_path)) {
       app_data_path_ = portable_config_path;
       local_data_path_ = portable_config_path;
@@ -34,7 +40,7 @@ ConfigManager::ConfigManager() : config_(), session_config_() {
 }
 
 std::string ConfigManager::GetDataPathInTestMode() {
-  return (std::filesystem::temp_directory_path() / "vxcore_test").string();
+  return (std::filesystem::temp_directory_path() / kTestConfigFolderName).string();
 }
 
 VxCoreError ConfigManager::LoadConfigs() {
@@ -46,25 +52,10 @@ VxCoreError ConfigManager::LoadConfigs() {
     return err;
   }
 
-  err = CheckAndMigrateVersion();
-  if (err != VXCORE_OK) {
-    VXCORE_LOG_ERROR("Failed to check/migrate version: error=%d", err);
-    return err;
-  }
-
-  nlohmann::json default_json = nlohmann::json::object();
-  auto default_config_path = PathProvider::GetExecutablePath() / "data" / "vxcore.json";
-  if (std::filesystem::exists(default_config_path)) {
-    VXCORE_LOG_DEBUG("Loading default config: %s", default_config_path.string().c_str());
-    err = LoadJsonFile(default_config_path, default_json);
-    if (err != VXCORE_OK) {
-      VXCORE_LOG_ERROR("Failed to load default config: error=%d", err);
-      return err;
-    }
-  }
-
+  // We do not have a built-in default config file
+  auto default_json = config_.ToJson();
   nlohmann::json user_json = nlohmann::json::object();
-  auto user_config_path = app_data_path_ / "vxcore.json";
+  auto user_config_path = app_data_path_ / kCoreConfigFileName;
   if (std::filesystem::exists(user_config_path)) {
     VXCORE_LOG_DEBUG("Loading user config: %s", user_config_path.string().c_str());
     err = LoadJsonFile(user_config_path, user_json);
@@ -75,7 +66,7 @@ VxCoreError ConfigManager::LoadConfigs() {
   }
 
   nlohmann::json session_json = nlohmann::json::object();
-  auto session_config_path = local_data_path_ / "session.json";
+  auto session_config_path = local_data_path_ / kSessionConfigFileName;
   if (std::filesystem::exists(session_config_path)) {
     VXCORE_LOG_DEBUG("Loading session config: %s", session_config_path.string().c_str());
     err = LoadJsonFile(session_config_path, session_json);
@@ -93,22 +84,6 @@ VxCoreError ConfigManager::LoadConfigs() {
   return VXCORE_OK;
 }
 
-VxCoreError ConfigManager::LoadJsonFile(const std::filesystem::path &path,
-                                        nlohmann::json &out_json) {
-  try {
-    std::ifstream file(path);
-    if (!file.is_open()) {
-      return VXCORE_ERR_IO;
-    }
-    file >> out_json;
-    return VXCORE_OK;
-  } catch (const nlohmann::json::exception &) {
-    return VXCORE_ERR_JSON_PARSE;
-  } catch (...) {
-    return VXCORE_ERR_IO;
-  }
-}
-
 VxCoreError ConfigManager::EnsureDataFolders() {
   try {
     if (!app_data_path_.empty()) {
@@ -122,8 +97,6 @@ VxCoreError ConfigManager::EnsureDataFolders() {
     return VXCORE_ERR_IO;
   }
 }
-
-VxCoreError ConfigManager::CheckAndMigrateVersion() { return VXCORE_OK; }
 
 VxCoreError ConfigManager::SaveSessionConfig() {
   if (local_data_path_.empty()) {
