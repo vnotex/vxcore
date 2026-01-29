@@ -54,7 +54,10 @@ target_include_directories(vxcore
         ${CMAKE_SOURCE_DIR}/src
 )
 
-target_link_libraries(vxcore PRIVATE nlohmann_json)
+# Build database layer
+add_subdirectory(db)
+
+target_link_libraries(vxcore PRIVATE nlohmann_json vxcore_db)
 
 if(WIN32)
     target_link_libraries(vxcore PRIVATE shell32)
