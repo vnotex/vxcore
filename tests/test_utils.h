@@ -7,11 +7,6 @@
 #include <iostream>
 #include <string>
 
-#ifdef _WIN32
-#include <shlwapi.h>
-#pragma comment(lib, "shlwapi.lib")
-#endif
-
 #define ASSERT(condition)                                                                        \
   do {                                                                                           \
     if (!(condition)) {                                                                          \

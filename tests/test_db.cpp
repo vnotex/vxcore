@@ -8,17 +8,6 @@
 #include "db/tag_db.h"
 #include "test_utils.h"
 
-// Undefine Windows macros that conflict with our method names
-#ifdef CreateFile
-#undef CreateFile
-#endif
-#ifdef DeleteFile
-#undef DeleteFile
-#endif
-#ifdef MoveFile
-#undef MoveFile
-#endif
-
 using namespace vxcore::db;
 
 // Test database path
