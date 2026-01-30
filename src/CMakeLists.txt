@@ -24,6 +24,11 @@ set(VXCORE_SOURCES
     core/folder.cpp
     core/bundled_folder_manager.cpp
     core/raw_folder_manager.cpp
+    db/db_manager.cpp
+    db/file_db.cpp
+    db/tag_db.cpp
+    db/sync_manager.cpp
+    db/sqlite_metadata_store.cpp
     search/search_manager.cpp
     search/search_query.cpp
     search/search_file_info.cpp
@@ -54,10 +59,7 @@ target_include_directories(vxcore
         ${CMAKE_SOURCE_DIR}/src
 )
 
-# Build database layer
-add_subdirectory(db)
-
-target_link_libraries(vxcore PRIVATE nlohmann_json vxcore_db)
+target_link_libraries(vxcore PRIVATE nlohmann_json sqlite3)
 
 if(WIN32)
     target_link_libraries(vxcore PRIVATE shell32)

@@ -36,13 +36,27 @@ target_include_directories(test_simple_search_backend PRIVATE ${CMAKE_SOURCE_DIR
 target_link_libraries(test_simple_search_backend PRIVATE nlohmann_json)
 add_test(NAME test_simple_search_backend COMMAND test_simple_search_backend)
 
-add_executable(test_db test_db.cpp ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp)
+add_executable(test_db test_db.cpp
+    ${CMAKE_SOURCE_DIR}/src/db/db_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/db/file_db.cpp
+    ${CMAKE_SOURCE_DIR}/src/db/tag_db.cpp
+    ${CMAKE_SOURCE_DIR}/src/db/sync_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/folder.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp)
 target_include_directories(test_db PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
-target_link_libraries(test_db PRIVATE vxcore vxcore_db sqlite3)
+target_link_libraries(test_db PRIVATE sqlite3 nlohmann_json)
 add_test(NAME test_db COMMAND test_db)
 
-add_executable(test_metadata_store test_metadata_store.cpp ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp)
+add_executable(test_metadata_store test_metadata_store.cpp
+    ${CMAKE_SOURCE_DIR}/src/db/db_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/db/file_db.cpp
+    ${CMAKE_SOURCE_DIR}/src/db/tag_db.cpp
+    ${CMAKE_SOURCE_DIR}/src/db/sqlite_metadata_store.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_include_directories(test_metadata_store PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
-target_link_libraries(test_metadata_store PRIVATE vxcore vxcore_db sqlite3)
+target_link_libraries(test_metadata_store PRIVATE sqlite3 nlohmann_json)
 add_test(NAME test_metadata_store COMMAND test_metadata_store)
 
