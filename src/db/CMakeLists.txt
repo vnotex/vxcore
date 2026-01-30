@@ -9,6 +9,8 @@ add_library(vxcore_db STATIC
   tag_db.h
   sync_manager.cpp
   sync_manager.h
+  sqlite_metadata_store.cpp
+  sqlite_metadata_store.h
 )
 
 target_link_libraries(vxcore_db
