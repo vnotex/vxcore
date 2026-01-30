@@ -1281,6 +1281,273 @@ int test_folder_create_path_trailing_slash() {
   return 0;
 }
 
+// ============================================================================
+// MetadataStore Sync Integration Tests
+// ============================================================================
+
+// Test that metadata store syncs correctly when notebook is reopened
+int test_metadata_store_sync_on_reopen() {
+  std::cout << "  Running test_metadata_store_sync_on_reopen..." << std::endl;
+  cleanup_test_dir("test_ms_sync_reopen_nb");
+
+  // Create notebook with folders and files
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_ms_sync_reopen_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create folder hierarchy
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  err = vxcore_folder_create(ctx, notebook_id, "docs", "guides", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Create files with tags
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "readme.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_create(ctx, notebook_id, "docs", "intro.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_create(ctx, notebook_id, "docs/guides", "setup.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Add tags
+  err = vxcore_tag_create(ctx, notebook_id, "important");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "readme.md", "important");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "docs/intro.md", "important");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Close notebook
+  err = vxcore_notebook_close(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  notebook_id = nullptr;
+
+  // Reopen notebook - this should trigger SyncMetadataStoreFromConfigs
+  err = vxcore_notebook_open(ctx, "test_ms_sync_reopen_nb", &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Verify all data is accessible (indirectly tests that sync worked)
+  char *config_json = nullptr;
+
+  // Check root folder config
+  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json root_config = nlohmann::json::parse(config_json);
+  ASSERT(root_config["folders"].size() == 1);  // docs
+  ASSERT(root_config["files"].size() == 1);    // readme.md
+  vxcore_string_free(config_json);
+
+  // Check nested folder config
+  err = vxcore_folder_get_config(ctx, notebook_id, "docs", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json docs_config = nlohmann::json::parse(config_json);
+  ASSERT(docs_config["folders"].size() == 1);  // guides
+  ASSERT(docs_config["files"].size() == 1);    // intro.md
+  vxcore_string_free(config_json);
+
+  // Check deeply nested folder config
+  err = vxcore_folder_get_config(ctx, notebook_id, "docs/guides", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json guides_config = nlohmann::json::parse(config_json);
+  ASSERT(guides_config["files"].size() == 1);  // setup.md
+  vxcore_string_free(config_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_ms_sync_reopen_nb");
+  std::cout << "  ✓ test_metadata_store_sync_on_reopen passed" << std::endl;
+  return 0;
+}
+
+// Test write-through behavior: operations update both config files and metadata store
+int test_metadata_store_write_through() {
+  std::cout << "  Running test_metadata_store_write_through..." << std::endl;
+  cleanup_test_dir("test_ms_write_through_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_ms_write_through_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create folder
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "notes", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Create file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "notes", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Update file metadata
+  err = vxcore_file_update_metadata(ctx, notebook_id, "notes/test.md",
+                                    R"({"author": "test", "version": 1})");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create and apply tag
+  err = vxcore_tag_create(ctx, notebook_id, "work");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "notes/test.md", "work");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Rename file
+  err = vxcore_file_rename(ctx, notebook_id, "notes/test.md", "renamed.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Move file to root
+  err = vxcore_file_move(ctx, notebook_id, "notes/renamed.md", ".");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify file in root with all its attributes
+  char *info_json = nullptr;
+  err = vxcore_file_get_info(ctx, notebook_id, "renamed.md", &info_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  nlohmann::json info = nlohmann::json::parse(info_json);
+  ASSERT(info["name"] == "renamed.md");
+  ASSERT(info["metadata"]["author"] == "test");
+  ASSERT(info["tags"].size() == 1);
+  ASSERT(info["tags"][0] == "work");
+  vxcore_string_free(info_json);
+
+  // Rename folder
+  err = vxcore_folder_rename(ctx, notebook_id, "notes", "documents");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify folder exists with new name
+  ASSERT(!path_exists("test_ms_write_through_nb/notes"));
+  ASSERT(path_exists("test_ms_write_through_nb/documents"));
+
+  // Delete file
+  err = vxcore_file_delete(ctx, notebook_id, "renamed.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Delete folder
+  err = vxcore_folder_delete(ctx, notebook_id, "documents");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify root is empty (except for vx_notebook metadata folder)
+  char *config_json = nullptr;
+  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["folders"].empty());
+  ASSERT(config["files"].empty());
+  vxcore_string_free(config_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_ms_write_through_nb");
+  std::cout << "  ✓ test_metadata_store_write_through passed" << std::endl;
+  return 0;
+}
+
+// Test that tags are properly synced through copy operations
+int test_metadata_store_copy_preserves_data() {
+  std::cout << "  Running test_metadata_store_copy_preserves_data..." << std::endl;
+  cleanup_test_dir("test_ms_copy_nb");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_ms_copy_nb", "{\"name\":\"Test Notebook\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source folder with file
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "source", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "source", "original.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Set metadata and tags on original file
+  err = vxcore_file_update_metadata(ctx, notebook_id, "source/original.md",
+                                    R"({"priority": "high"})");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "important");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "source/original.md", "important");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Copy file
+  char *copied_file_id = nullptr;
+  err = vxcore_file_copy(ctx, notebook_id, "source/original.md", ".", "copy.md", &copied_file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(copied_file_id);
+  vxcore_string_free(copied_file_id);
+
+  // Verify copied file has same metadata and tags
+  char *info_json = nullptr;
+  err = vxcore_file_get_info(ctx, notebook_id, "copy.md", &info_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  nlohmann::json info = nlohmann::json::parse(info_json);
+  ASSERT(info["name"] == "copy.md");
+  ASSERT(info["metadata"]["priority"] == "high");
+  ASSERT(info["tags"].size() == 1);
+  ASSERT(info["tags"][0] == "important");
+  vxcore_string_free(info_json);
+
+  // Copy folder
+  char *copied_folder_id = nullptr;
+  err = vxcore_folder_copy(ctx, notebook_id, "source", ".", "source_copy", &copied_folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(copied_folder_id);
+  vxcore_string_free(copied_folder_id);
+
+  // Verify copied folder's file has metadata and tags
+  err = vxcore_file_get_info(ctx, notebook_id, "source_copy/original.md", &info_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  info = nlohmann::json::parse(info_json);
+  ASSERT(info["metadata"]["priority"] == "high");
+  ASSERT(info["tags"].size() == 1);
+  ASSERT(info["tags"][0] == "important");
+  vxcore_string_free(info_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_ms_copy_nb");
+  std::cout << "  ✓ test_metadata_store_copy_preserves_data passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -1324,6 +1591,11 @@ int main() {
   RUN_TEST(test_folder_create_path_partial_exists);
   RUN_TEST(test_folder_create_path_empty);
   RUN_TEST(test_folder_create_path_trailing_slash);
+
+  // MetadataStore sync integration tests
+  RUN_TEST(test_metadata_store_sync_on_reopen);
+  RUN_TEST(test_metadata_store_write_through);
+  RUN_TEST(test_metadata_store_copy_preserves_data);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;
