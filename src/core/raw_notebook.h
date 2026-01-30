@@ -15,6 +15,7 @@ class RawNotebook : public Notebook {
                           const std::string &id, std::unique_ptr<Notebook> &out_notebook);
 
   VxCoreError UpdateConfig(const NotebookConfig &config) override;
+  VxCoreError RebuildCache() override;
 
  private:
   RawNotebook(const std::string &local_data_folder, const std::string &root_folder);

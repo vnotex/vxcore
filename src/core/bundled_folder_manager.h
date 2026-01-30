@@ -100,6 +100,14 @@ class BundledFolderManager : public FolderManager {
 
   FileRecord *FindFileRecord(FolderConfig &config, const std::string &file_name);
 
+  // Sync a single folder's data to MetadataStore after loading from vx.json
+  // This is the lazy sync implementation - called when a folder is accessed
+  void SyncFolderToStore(const std::string &folder_path, const FolderConfig &config,
+                         const std::string &parent_folder_id);
+
+  // Get the parent folder's ID (UUID) for a given folder path
+  std::string GetParentFolderId(const std::string &folder_path);
+
   std::map<std::string, std::unique_ptr<FolderConfig>> config_cache_;
 };
 

@@ -104,16 +104,9 @@ VxCoreError BundledNotebook::Open(const std::string &local_data_folder,
     return err;
   }
 
-  // Sync MetadataStore from config files (vx.json)
-  // This rebuilds the cache from ground truth on every open
-  auto *bundled_folder_manager =
-      static_cast<BundledFolderManager *>(notebook->folder_manager_.get());
-  err = bundled_folder_manager->SyncMetadataStoreFromConfigs();
-  if (err != VXCORE_OK) {
-    VXCORE_LOG_ERROR("Failed to sync MetadataStore from configs: root=%s, error=%d",
-                     root_folder.c_str(), err);
-    return err;
-  }
+  // Note: We do NOT sync MetadataStore from config files here.
+  // The cache uses lazy sync - data is loaded on demand when accessed.
+  // Users can call RebuildCache() if they need a full refresh.
 
   out_notebook = std::move(notebook);
   return VXCORE_OK;
@@ -168,6 +161,15 @@ VxCoreError BundledNotebook::UpdateConfig(const NotebookConfig &config) {
   } catch (...) {
     return VXCORE_ERR_UNKNOWN;
   }
+}
+
+VxCoreError BundledNotebook::RebuildCache() {
+  auto *bundled_folder_manager = dynamic_cast<BundledFolderManager *>(folder_manager_.get());
+  if (!bundled_folder_manager) {
+    VXCORE_LOG_ERROR("RebuildCache: folder_manager is not BundledFolderManager");
+    return VXCORE_ERR_INVALID_STATE;
+  }
+  return bundled_folder_manager->SyncMetadataStoreFromConfigs();
 }
 
 }  // namespace vxcore

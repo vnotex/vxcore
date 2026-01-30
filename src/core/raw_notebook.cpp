@@ -133,4 +133,10 @@ VxCoreError RawNotebook::UpdateConfig(const NotebookConfig &config) {
   }
 }
 
+VxCoreError RawNotebook::RebuildCache() {
+  // Raw notebooks don't have vx.json config files to sync from.
+  // Metadata is stored only in the database.
+  return VXCORE_OK;
+}
+
 }  // namespace vxcore

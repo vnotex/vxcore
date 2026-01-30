@@ -226,6 +226,52 @@ int test_notebook_persistence() {
   return 0;
 }
 
+int test_notebook_rebuild_cache() {
+  std::cout << "  Running test_notebook_rebuild_cache..." << std::endl;
+  cleanup_test_dir("test_nb_rebuild");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create notebook with some content
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_rebuild", "{\"name\":\"Rebuild Cache Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a folder and file
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "docs", "readme.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Call rebuild cache - should succeed
+  err = vxcore_notebook_rebuild_cache(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify data is still accessible after rebuild
+  char *folder_config = nullptr;
+  err = vxcore_folder_get_config(ctx, notebook_id, "docs", &folder_config);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_config);
+
+  std::string config_str(folder_config);
+  ASSERT_NE(config_str.find("\"readme.md\""), std::string::npos);
+
+  vxcore_string_free(folder_config);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_rebuild");
+  std::cout << "  ✓ test_notebook_rebuild_cache passed" << std::endl;
+  return 0;
+}
+
 int test_tag_create_list() {
   std::cout << "  Running test_tag_create_list..." << std::endl;
   cleanup_test_dir("test_nb_tags");
@@ -933,6 +979,7 @@ int main() {
   RUN_TEST(test_notebook_set_properties);
   RUN_TEST(test_notebook_list);
   RUN_TEST(test_notebook_persistence);
+  RUN_TEST(test_notebook_rebuild_cache);
   RUN_TEST(test_tag_create_list);
   RUN_TEST(test_tag_duplicate_create);
   RUN_TEST(test_tag_delete);

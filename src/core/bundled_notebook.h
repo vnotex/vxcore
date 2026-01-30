@@ -17,6 +17,7 @@ class BundledNotebook : public Notebook {
                           std::unique_ptr<Notebook> &out_notebook);
 
   VxCoreError UpdateConfig(const NotebookConfig &config) override;
+  VxCoreError RebuildCache() override;
 
  private:
   BundledNotebook(const std::string &local_data_folder, const std::string &root_folder);

@@ -78,6 +78,10 @@ class Notebook {
   VxCoreError GetTags(std::string &out_tags_json) const;
   TagNode *FindTag(const std::string &tag_name);
 
+  // Rebuild the metadata cache from ground truth (config files).
+  // Returns VXCORE_OK on success.
+  virtual VxCoreError RebuildCache() = 0;
+
   // Clean and get path related to notebook root folder.
   // Returns null string if |path| is not under notebook root folder.
   std::string GetCleanRelativePath(const std::string &path) const;

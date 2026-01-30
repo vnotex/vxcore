@@ -52,6 +52,12 @@ VXCORE_API VxCoreError vxcore_notebook_update_config(VxCoreContextHandle context
                                                      const char *notebook_id,
                                                      const char *config_json);
 
+// Rebuilds the metadata cache for the notebook from ground truth (vx.json files).
+// Use this when the cache seems out of sync or corrupted.
+// The cache uses lazy sync by default - this forces a full rebuild.
+VXCORE_API VxCoreError vxcore_notebook_rebuild_cache(VxCoreContextHandle context,
+                                                     const char *notebook_id);
+
 VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const char *notebook_id,
                                             const char *parent_path, const char *folder_name,
                                             char **out_folder_id);

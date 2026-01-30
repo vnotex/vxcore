@@ -1285,7 +1285,9 @@ int test_folder_create_path_trailing_slash() {
 // MetadataStore Sync Integration Tests
 // ============================================================================
 
-// Test that metadata store syncs correctly when notebook is reopened
+// Test that metadata store syncs correctly when notebook is reopened.
+// Note: With lazy sync architecture, data is synced to MetadataStore on-demand
+// when folders/files are accessed, not eagerly on notebook open.
 int test_metadata_store_sync_on_reopen() {
   std::cout << "  Running test_metadata_store_sync_on_reopen..." << std::endl;
   cleanup_test_dir("test_ms_sync_reopen_nb");
@@ -1340,7 +1342,7 @@ int test_metadata_store_sync_on_reopen() {
   vxcore_string_free(notebook_id);
   notebook_id = nullptr;
 
-  // Reopen notebook - this should trigger SyncMetadataStoreFromConfigs
+  // Reopen notebook - lazy sync will populate MetadataStore when folders are accessed
   err = vxcore_notebook_open(ctx, "test_ms_sync_reopen_nb", &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);

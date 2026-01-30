@@ -173,3 +173,29 @@ VXCORE_API VxCoreError vxcore_notebook_update_config(VxCoreContextHandle context
     return VXCORE_ERR_UNKNOWN;
   }
 }
+
+VXCORE_API VxCoreError vxcore_notebook_rebuild_cache(VxCoreContextHandle context,
+                                                     const char *notebook_id) {
+  if (!context || !notebook_id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    VxCoreError err = notebook->RebuildCache();
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to rebuild notebook cache";
+    }
+    return err;
+  } catch (...) {
+    ctx->last_error = "Unknown error rebuilding notebook cache";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}

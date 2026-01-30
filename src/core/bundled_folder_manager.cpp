@@ -204,6 +204,10 @@ VxCoreError BundledFolderManager::GetFolderConfig(const std::string &folder_path
     return error;
   }
 
+  // Lazy sync: populate MetadataStore with this folder's data
+  std::string parent_id = GetParentFolderId(folder_path);
+  SyncFolderToStore(folder_path, *config, parent_id);
+
   *out_config = config.get();
   config_cache_[folder_path] = std::move(config);
   return VXCORE_OK;
@@ -1389,6 +1393,71 @@ VxCoreError BundledFolderManager::SyncMetadataStoreFromConfigs() {
     VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Sync completed with warnings");
     return VXCORE_OK;  // Return OK since we did best-effort sync
   }
+}
+
+std::string BundledFolderManager::GetParentFolderId(const std::string &folder_path) {
+  if (folder_path.empty() || folder_path == ".") {
+    return "";  // Root folder has no parent
+  }
+
+  const auto [parent_path, folder_name] = SplitPath(folder_path);
+  (void)folder_name;  // Unused
+
+  FolderConfig *parent_config = GetCachedConfig(parent_path);
+  if (parent_config) {
+    return parent_config->id;
+  }
+
+  // Parent not in cache - try to load it (which will also trigger lazy sync for parent)
+  VxCoreError error = GetFolderConfig(parent_path, &parent_config);
+  if (error == VXCORE_OK && parent_config) {
+    return parent_config->id;
+  }
+
+  return "";  // Parent not found
+}
+
+void BundledFolderManager::SyncFolderToStore(const std::string &folder_path,
+                                             const FolderConfig &config,
+                                             const std::string &parent_folder_id) {
+  auto *store = notebook_->GetMetadataStore();
+  if (!store) {
+    return;  // No store available
+  }
+
+  // Check if folder already exists in store
+  auto existing_folder = store->GetFolder(config.id);
+  if (existing_folder.has_value()) {
+    // Folder exists - check if we need to update sync state
+    // For now, we assume the store is up-to-date if folder exists
+    // (write-through cache should keep it in sync)
+    VXCORE_LOG_DEBUG("SyncFolderToStore: Folder already in store: id=%s, path=%s",
+                     config.id.c_str(), folder_path.c_str());
+    return;
+  }
+
+  VXCORE_LOG_INFO("SyncFolderToStore: Adding folder to store: id=%s, path=%s", config.id.c_str(),
+                  folder_path.c_str());
+
+  // Create folder record in store
+  StoreFolderRecord folder_record = ToStoreFolderRecord(config, parent_folder_id);
+  if (!store->CreateFolder(folder_record)) {
+    VXCORE_LOG_WARN("SyncFolderToStore: Failed to create folder in store: id=%s",
+                    config.id.c_str());
+    return;
+  }
+
+  // Create file records in store
+  for (const auto &file : config.files) {
+    StoreFileRecord file_record = ToStoreFileRecord(file, config.id);
+    if (!store->CreateFile(file_record)) {
+      VXCORE_LOG_WARN("SyncFolderToStore: Failed to create file in store: id=%s", file.id.c_str());
+      // Continue anyway - best effort
+    }
+  }
+
+  VXCORE_LOG_DEBUG("SyncFolderToStore: Synced folder with %zu files: path=%s", config.files.size(),
+                   folder_path.c_str());
 }
 
 }  // namespace vxcore
