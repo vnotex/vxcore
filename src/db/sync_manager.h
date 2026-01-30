@@ -17,7 +17,7 @@ class FileDb;
 
 // Folder sync state
 struct FolderSyncState {
-  std::string folder_uuid;
+  int64_t folder_id;
   int64_t last_sync_utc;
   int64_t metadata_file_modified_utc;
 };
@@ -33,6 +33,7 @@ enum class SyncResult {
 };
 
 // Database sync manager - handles JSON ↔ DB synchronization
+// Uses folder path for lookup (traverses parent-child chain in DB)
 // NOT thread-safe: caller must ensure synchronization
 class DbSyncManager {
  public:
@@ -44,33 +45,34 @@ class DbSyncManager {
   DbSyncManager& operator=(const DbSyncManager&) = delete;
 
   // Checks if folder needs sync (compares JSON timestamp vs DB state)
-  // Returns true if sync is needed
-  // folder_uuid: UUID of folder in database, filesystem_path: path to folder on disk
-  bool NeedsSynchronization(const std::string& folder_uuid, const std::string& filesystem_path);
+  // Returns true if sync is needed (folder not in DB, never synced, or JSON changed)
+  // folder_path: relative path to folder (e.g., "notes/subfolder")
+  // filesystem_root: root path on disk where vx.json files are located
+  bool NeedsSynchronization(const std::string& folder_path, const std::string& filesystem_root);
 
   // Synchronizes folder from JSON to database
-  // Reads vx.json from filesystem_path and updates database
+  // Reads vx.json from filesystem and updates database
   // Returns SyncResult indicating success/failure
-  SyncResult SynchronizeFolder(const std::string& folder_uuid, const std::string& filesystem_path);
+  SyncResult SynchronizeFolder(const std::string& folder_path, const std::string& filesystem_root);
 
   // Forces a full rebuild of folder in database (delete + re-import)
-  SyncResult RebuildFolder(const std::string& folder_uuid, const std::string& filesystem_path);
+  SyncResult RebuildFolder(const std::string& folder_path, const std::string& filesystem_root);
 
-  // Gets sync state for a folder by UUID, returns nullopt if never synced
-  std::optional<FolderSyncState> GetSyncState(const std::string& folder_uuid);
+  // Gets sync state for a folder by path, returns nullopt if folder not found or never synced
+  std::optional<FolderSyncState> GetSyncState(const std::string& folder_path);
 
   // Clears sync state for a folder (e.g., when folder is removed)
-  bool ClearSyncState(const std::string& folder_uuid);
+  bool ClearSyncState(const std::string& folder_path);
 
   // Returns the last error message
   std::string GetLastError() const;
 
  private:
   // Internal helpers
-  int64_t GetJsonModifiedTime(const std::string& filesystem_path);
-  bool LoadFolderFromJson(const std::string& filesystem_path, int64_t parent_id);
-  bool UpdateSyncState(const std::string& folder_uuid, int64_t sync_time,
-                       int64_t json_modified_time);
+  int64_t GetJsonModifiedTime(const std::string& filesystem_root, const std::string& folder_path);
+  bool LoadFolderFromJson(const std::string& filesystem_root, const std::string& folder_path,
+                          int64_t parent_id);
+  bool UpdateSyncState(int64_t folder_id, int64_t sync_time, int64_t json_modified_time);
 
   sqlite3* db_;
   FileDb* file_db_;

@@ -9,6 +9,29 @@
 namespace vxcore {
 namespace db {
 
+namespace {
+
+// Split path into components by '/' separator
+// Note: Paths should be cleaned (normalized to '/') before calling this function
+std::vector<std::string> SplitPath(const std::string& path) {
+  std::vector<std::string> components;
+  size_t start = 0;
+  size_t end = path.find('/');
+  while (end != std::string::npos) {
+    if (end != start) {
+      components.push_back(path.substr(start, end - start));
+    }
+    start = end + 1;
+    end = path.find('/', start);
+  }
+  if (start < path.size()) {
+    components.push_back(path.substr(start));
+  }
+  return components;
+}
+
+}  // namespace
+
 FileDb::FileDb(sqlite3* db) : db_(db) {}
 
 std::string FileDb::GetLastError() const { return sqlite3_errmsg(db_); }
@@ -228,6 +251,33 @@ std::optional<DbFolderRecord> FileDb::GetFolderByName(int64_t parent_id, const s
   return folder;
 }
 
+std::optional<DbFolderRecord> FileDb::GetFolderByPath(const std::string& path) {
+  // Handle empty path or root
+  if (path.empty() || path == ".") {
+    return std::nullopt;  // Root has no folder record
+  }
+
+  // Split path into components (expects cleaned path with "/" separator)
+  std::vector<std::string> parts = SplitPath(path);
+  if (parts.empty()) {
+    return std::nullopt;
+  }
+
+  // Traverse path from root
+  int64_t parent_id = -1;  // Start from root
+  std::optional<DbFolderRecord> folder;
+
+  for (const auto& part : parts) {
+    folder = GetFolderByName(parent_id, part);
+    if (!folder.has_value()) {
+      return std::nullopt;  // Path component not found
+    }
+    parent_id = folder->id;
+  }
+
+  return folder;
+}
+
 bool FileDb::UpdateFolder(int64_t folder_id, const std::string& name, int64_t modified_utc) {
   const char* sql = "UPDATE folders SET name = ?, modified_utc = ? WHERE id = ?;";
 
@@ -344,12 +394,12 @@ bool FileDb::MoveFolder(int64_t folder_id, int64_t new_parent_id) {
   // Check if new_parent_id is a descendant of folder_id
   int64_t current = new_parent_id;
   while (current != -1) {
+    if (current == folder_id) {
+      return false;  // Would create cycle
+    }
     auto parent = GetFolder(current);
     if (!parent.has_value()) {
       break;
-    }
-    if (parent->parent_id == folder_id) {
-      return false;  // Would create cycle
     }
     current = parent->parent_id;
   }

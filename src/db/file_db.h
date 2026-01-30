@@ -69,6 +69,12 @@ class FileDb {
   // Gets folder by parent_id and name, returns nullopt if not found
   std::optional<DbFolderRecord> GetFolderByName(int64_t parent_id, const std::string& name);
 
+  // Gets folder by traversing path from root (e.g., "notes/subfolder/deep")
+  // Path should be cleaned (use CleanPath) with "/" separator
+  // Empty path or "." returns nullopt (represents root, which has no folder record)
+  // Returns nullopt if any path component is not found
+  std::optional<DbFolderRecord> GetFolderByPath(const std::string& path);
+
   // Updates folder metadata, returns true on success
   bool UpdateFolder(int64_t folder_id, const std::string& name, int64_t modified_utc);
 

@@ -38,6 +38,6 @@ add_test(NAME test_simple_search_backend COMMAND test_simple_search_backend)
 
 add_executable(test_db test_db.cpp ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp)
 target_include_directories(test_db PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
-target_link_libraries(test_db PRIVATE vxcore_db sqlite3)
+target_link_libraries(test_db PRIVATE vxcore vxcore_db sqlite3)
 add_test(NAME test_db COMMAND test_db)
 
