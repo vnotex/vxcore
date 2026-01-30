@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 
+#include "metadata_store.h"
 #include "raw_folder_manager.h"
 #include "utils/logger.h"
 
@@ -68,8 +69,18 @@ VxCoreError RawNotebook::InitOnCreation() {
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to save raw notebook config: root=%s, error=%d", root_folder_.c_str(),
                      err);
+    return err;
   }
-  return err;
+
+  // Initialize MetadataStore
+  err = InitMetadataStore();
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to initialize MetadataStore: root=%s, error=%d", root_folder_.c_str(),
+                     err);
+    return err;
+  }
+
+  return VXCORE_OK;
 }
 
 VxCoreError RawNotebook::Open(const std::string &local_data_folder, const std::string &root_folder,
@@ -82,6 +93,15 @@ VxCoreError RawNotebook::Open(const std::string &local_data_folder, const std::s
                      root_folder.c_str(), id.c_str(), err);
     return err;
   }
+
+  // Initialize MetadataStore
+  err = notebook->InitMetadataStore();
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to initialize MetadataStore on open: root=%s, id=%s, error=%d",
+                     root_folder.c_str(), id.c_str(), err);
+    return err;
+  }
+
   out_notebook = std::move(notebook);
   return VXCORE_OK;
 }

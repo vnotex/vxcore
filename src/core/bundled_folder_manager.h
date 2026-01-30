@@ -80,6 +80,11 @@ class BundledFolderManager : public FolderManager {
 
   void ClearCache() override;
 
+  // Syncs the MetadataStore from config files (vx.json)
+  // Called on notebook open to rebuild cache from ground truth
+  // Returns VXCORE_OK on success
+  VxCoreError SyncMetadataStoreFromConfigs();
+
  private:
   VxCoreError GetFolderConfig(const std::string &folder_path, FolderConfig **out_config);
   VxCoreError LoadFolderConfig(const std::string &folder_path,

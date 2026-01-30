@@ -4,6 +4,7 @@
 #include <fstream>
 
 #include "bundled_folder_manager.h"
+#include "metadata_store.h"
 #include "utils/logger.h"
 
 namespace vxcore {
@@ -54,6 +55,15 @@ VxCoreError BundledNotebook::InitOnCreation() {
                      root_folder_.c_str(), err);
     return err;
   }
+
+  // Initialize MetadataStore
+  err = InitMetadataStore();
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to initialize MetadataStore: root=%s, error=%d", root_folder_.c_str(),
+                     err);
+    return err;
+  }
+
   err = folder_manager_->InitOnCreation();
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to initialize bundled notebook folder manager: root=%s, error=%d",
@@ -77,10 +87,32 @@ VxCoreError BundledNotebook::Open(const std::string &local_data_folder,
   try {
     std::filesystem::path localDataPath(notebook->GetLocalDataFolder());
     std::filesystem::create_directories(localDataPath);
+
+    std::filesystem::path metadataPath(notebook->GetMetadataFolder());
+    std::filesystem::create_directories(metadataPath);
   } catch (const std::filesystem::filesystem_error &) {
     VXCORE_LOG_ERROR("Failed to create bundled notebook meta folders: root=%s",
                      notebook->root_folder_.c_str());
     return VXCORE_ERR_IO;
+  }
+
+  // Initialize MetadataStore
+  err = notebook->InitMetadataStore();
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to initialize MetadataStore on open: root=%s, error=%d",
+                     root_folder.c_str(), err);
+    return err;
+  }
+
+  // Sync MetadataStore from config files (vx.json)
+  // This rebuilds the cache from ground truth on every open
+  auto *bundled_folder_manager =
+      static_cast<BundledFolderManager *>(notebook->folder_manager_.get());
+  err = bundled_folder_manager->SyncMetadataStoreFromConfigs();
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to sync MetadataStore from configs: root=%s, error=%d",
+                     root_folder.c_str(), err);
+    return err;
   }
 
   out_notebook = std::move(notebook);

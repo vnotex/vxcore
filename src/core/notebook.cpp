@@ -4,7 +4,9 @@
 
 #include <algorithm>
 
+#include "db/sqlite_metadata_store.h"
 #include "folder_manager.h"
+#include "metadata_store.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -130,7 +132,27 @@ std::string Notebook::GetLocalDataFolder() const {
 }
 
 std::string Notebook::GetDbPath() const {
-  return ConcatenatePaths(GetLocalDataFolder(), "notebook.db");
+  return ConcatenatePaths(GetMetadataFolder(), "metadata.db");
+}
+
+VxCoreError Notebook::InitMetadataStore() {
+  if (metadata_store_ && metadata_store_->IsOpen()) {
+    return VXCORE_OK;  // Already initialized
+  }
+
+  auto store = std::make_unique<db::SqliteMetadataStore>();
+  std::string db_path = GetDbPath();
+
+  VXCORE_LOG_INFO("Initializing MetadataStore: notebook_id=%s, db_path=%s", config_.id.c_str(),
+                  db_path.c_str());
+
+  if (!store->Open(db_path)) {
+    VXCORE_LOG_ERROR("Failed to open MetadataStore: %s", store->GetLastError().c_str());
+    return VXCORE_ERR_IO;
+  }
+
+  metadata_store_ = std::move(store);
+  return VXCORE_OK;
 }
 
 TagNode *Notebook::FindTag(const std::string &tag_name) {

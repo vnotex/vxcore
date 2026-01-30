@@ -11,6 +11,7 @@
 namespace vxcore {
 
 class FolderManager;
+class MetadataStore;
 
 enum class NotebookType { Bundled, Raw };
 
@@ -66,6 +67,7 @@ class Notebook {
   virtual std::string GetMetadataFolder() const = 0;
 
   FolderManager *GetFolderManager() { return folder_manager_.get(); }
+  MetadataStore *GetMetadataStore() { return metadata_store_.get(); }
 
   VxCoreError CreateFolderPath(const std::string &folder_path, std::string &out_folder_id);
 
@@ -87,6 +89,10 @@ class Notebook {
 
   void EnsureId();
 
+  // Initialize and open the MetadataStore for this notebook
+  // Returns VXCORE_OK on success, or error code on failure
+  VxCoreError InitMetadataStore();
+
   std::string GetDbPath() const;
   virtual std::string GetConfigPath() const = 0;
 
@@ -96,6 +102,7 @@ class Notebook {
 
   NotebookConfig config_;
   std::unique_ptr<FolderManager> folder_manager_;
+  std::unique_ptr<MetadataStore> metadata_store_;
 
   static const char *kConfigFileName;
 };

@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 
+#include "metadata_store.h"
 #include "notebook.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
@@ -11,6 +12,35 @@
 namespace vxcore {
 
 namespace fs = std::filesystem;
+
+namespace {
+
+// Helper to convert FolderConfig to StoreFolderRecord
+StoreFolderRecord ToStoreFolderRecord(const FolderConfig &config, const std::string &parent_id) {
+  StoreFolderRecord record;
+  record.id = config.id;
+  record.parent_id = parent_id;
+  record.name = config.name;
+  record.created_utc = config.created_utc;
+  record.modified_utc = config.modified_utc;
+  record.metadata = config.metadata.dump();
+  return record;
+}
+
+// Helper to convert FileRecord to StoreFileRecord
+StoreFileRecord ToStoreFileRecord(const FileRecord &file, const std::string &folder_id) {
+  StoreFileRecord record;
+  record.id = file.id;
+  record.folder_id = folder_id;
+  record.name = file.name;
+  record.created_utc = file.created_utc;
+  record.modified_utc = file.modified_utc;
+  record.metadata = file.metadata.dump();
+  record.tags = file.tags;
+  return record;
+}
+
+}  // namespace
 
 BundledFolderManager::BundledFolderManager(Notebook *notebook) : FolderManager(notebook) {
   assert(notebook && notebook->GetType() == NotebookType::Bundled);
@@ -30,6 +60,17 @@ VxCoreError BundledFolderManager::InitOnCreation() {
     VXCORE_LOG_ERROR("Failed to create root folder config: error=%d", err);
     return err;
   }
+
+  // Write-through to MetadataStore: create root folder record
+  // Root folder has empty parent_id
+  if (auto *store = notebook_->GetMetadataStore()) {
+    StoreFolderRecord root_record = ToStoreFolderRecord(*root_config, "");
+    if (!store->CreateFolder(root_record)) {
+      VXCORE_LOG_WARN("Failed to create root folder in MetadataStore: id=%s",
+                      root_config->id.c_str());
+    }
+  }
+
   CacheConfig(folder_path, std::move(root_config));
   return VXCORE_OK;
 }
@@ -222,6 +263,16 @@ VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
   }
 
   out_folder_id = new_config->id;
+
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    // Use parent folder's ID (root folder also has an ID now)
+    StoreFolderRecord store_record = ToStoreFolderRecord(*new_config, parent_config->id);
+    if (!store->CreateFolder(store_record)) {
+      VXCORE_LOG_WARN("Failed to write folder to MetadataStore: id=%s", out_folder_id.c_str());
+    }
+  }
+
   CacheConfig(folder_relative_path, std::move(new_config));
   VXCORE_LOG_INFO("Folder created successfully: id=%s", out_folder_id.c_str());
   return VXCORE_OK;
@@ -237,6 +288,13 @@ VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
 
   if (!fs::exists(content_path)) {
     return VXCORE_ERR_NOT_FOUND;
+  }
+
+  // Get the folder ID before we invalidate cache and delete
+  std::string folder_id;
+  FolderConfig *folder_config = nullptr;
+  if (GetFolderConfig(clean_folder_path, &folder_config) == VXCORE_OK && folder_config) {
+    folder_id = folder_config->id;
   }
 
   InvalidateCache(clean_folder_path);
@@ -262,6 +320,14 @@ VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
       fs::remove_all(fs::path(config_path).parent_path());
     }
     fs::remove_all(content_path);
+
+    // Write-through to MetadataStore
+    if (auto *store = notebook_->GetMetadataStore(); store && !folder_id.empty()) {
+      if (!store->DeleteFolder(folder_id)) {
+        VXCORE_LOG_WARN("Failed to delete folder from MetadataStore: id=%s", folder_id.c_str());
+      }
+    }
+
     VXCORE_LOG_INFO("Folder deleted successfully: path=%s", clean_folder_path.c_str());
     return VXCORE_OK;
   } catch (const std::exception &) {
@@ -288,7 +354,20 @@ VxCoreError BundledFolderManager::UpdateFolderMetadata(const std::string &folder
     config->metadata = metadata;
     config->modified_utc = GetCurrentTimestampMillis();
 
-    return SaveFolderConfig(clean_folder_path, *config);
+    error = SaveFolderConfig(clean_folder_path, *config);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+
+    // Write-through to MetadataStore
+    if (auto *store = notebook_->GetMetadataStore()) {
+      if (!store->UpdateFolder(config->id, config->name, config->modified_utc,
+                               config->metadata.dump())) {
+        VXCORE_LOG_WARN("Failed to update folder in MetadataStore: id=%s", config->id.c_str());
+      }
+    }
+
+    return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
   }
@@ -374,6 +453,14 @@ VxCoreError BundledFolderManager::RenameFolder(const std::string &folder_path,
     return error;
   }
 
+  // Write-through to MetadataStore (before cache invalidation to avoid dangling pointer)
+  if (auto *store = notebook_->GetMetadataStore()) {
+    if (!store->UpdateFolder(folder_config->id, folder_config->name, folder_config->modified_utc,
+                             folder_config->metadata.dump())) {
+      VXCORE_LOG_WARN("Failed to update folder in MetadataStore: id=%s", folder_config->id.c_str());
+    }
+  }
+
   InvalidateCache(clean_folder_path);
   InvalidateCache(new_folder_path);
 
@@ -418,6 +505,13 @@ VxCoreError BundledFolderManager::MoveFolder(const std::string &src_path,
     return error;
   }
 
+  // Get folder config for its ID (needed for MetadataStore)
+  FolderConfig *folder_config = nullptr;
+  error = GetFolderConfig(clean_src_path, &folder_config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
   auto it =
       std::find(src_parent_config->folders.begin(), src_parent_config->folders.end(), folder_name);
   if (it == src_parent_config->folders.end()) {
@@ -456,6 +550,14 @@ VxCoreError BundledFolderManager::MoveFolder(const std::string &src_path,
   error = SaveFolderConfig(clean_dest_parent_path, *dest_parent_config);
   if (error != VXCORE_OK) {
     return error;
+  }
+
+  // Write-through to MetadataStore (before cache invalidation to avoid dangling pointer)
+  if (auto *store = notebook_->GetMetadataStore()) {
+    // Use dest parent's ID (root folder also has an ID now)
+    if (!store->MoveFolder(folder_config->id, dest_parent_config->id)) {
+      VXCORE_LOG_WARN("Failed to move folder in MetadataStore: id=%s", folder_config->id.c_str());
+    }
   }
 
   InvalidateCache(clean_src_path);
@@ -541,6 +643,23 @@ VxCoreError BundledFolderManager::CopyFolder(const std::string &src_path,
     return error;
   }
 
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    // Use dest parent's ID (root folder also has an ID now)
+    StoreFolderRecord folder_record = ToStoreFolderRecord(*dest_config, dest_parent_config->id);
+    if (!store->CreateFolder(folder_record)) {
+      VXCORE_LOG_WARN("Failed to create folder in MetadataStore: id=%s", out_folder_id.c_str());
+    }
+
+    // Create all files in the folder
+    for (const auto &file : dest_config->files) {
+      StoreFileRecord file_record = ToStoreFileRecord(file, dest_config->id);
+      if (!store->CreateFile(file_record)) {
+        VXCORE_LOG_WARN("Failed to create file in MetadataStore: id=%s", file.id.c_str());
+      }
+    }
+  }
+
   CacheConfig(dest_path, std::move(dest_config));
 
   VXCORE_LOG_INFO("Folder copied successfully: id=%s", out_folder_id.c_str());
@@ -595,6 +714,15 @@ VxCoreError BundledFolderManager::CreateFile(const std::string &folder_path,
   }
 
   out_file_id = config->files.back().id;
+
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    StoreFileRecord file_record = ToStoreFileRecord(config->files.back(), config->id);
+    if (!store->CreateFile(file_record)) {
+      VXCORE_LOG_WARN("Failed to create file in MetadataStore: id=%s", out_file_id.c_str());
+    }
+  }
+
   return VXCORE_OK;
 }
 
@@ -617,6 +745,9 @@ VxCoreError BundledFolderManager::DeleteFile(const std::string &file_path) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
+  // Save the file ID before erasing
+  std::string file_id = it->id;
+
   config->files.erase(it);
   config->modified_utc = GetCurrentTimestampMillis();
   error = SaveFolderConfig(folder_path, *config);
@@ -628,6 +759,14 @@ VxCoreError BundledFolderManager::DeleteFile(const std::string &file_path) {
     std::string content_path = GetContentPath(folder_path);
     fs::path fs_file_path = fs::path(content_path) / file_name;
     fs::remove(fs_file_path);
+
+    // Write-through to MetadataStore
+    if (auto *store = notebook_->GetMetadataStore(); !file_id.empty()) {
+      if (!store->DeleteFile(file_id)) {
+        VXCORE_LOG_WARN("Failed to delete file from MetadataStore: id=%s", file_id.c_str());
+      }
+    }
+
     VXCORE_LOG_INFO("DeleteFile successful: file %s deleted", clean_file_path.c_str());
     return VXCORE_OK;
   } catch (const std::exception &) {
@@ -662,7 +801,19 @@ VxCoreError BundledFolderManager::UpdateFileMetadata(const std::string &file_pat
 
     config->modified_utc = file->modified_utc;
 
-    return SaveFolderConfig(folder_path, *config);
+    error = SaveFolderConfig(folder_path, *config);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+
+    // Write-through to MetadataStore
+    if (auto *store = notebook_->GetMetadataStore()) {
+      if (!store->UpdateFile(file->id, file->name, file->modified_utc, file->metadata.dump())) {
+        VXCORE_LOG_WARN("Failed to update file in MetadataStore: id=%s", file->id.c_str());
+      }
+    }
+
+    return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
   }
@@ -703,7 +854,19 @@ VxCoreError BundledFolderManager::UpdateFileTags(const std::string &file_path,
 
     config->modified_utc = file->modified_utc;
 
-    return SaveFolderConfig(folder_path, *config);
+    error = SaveFolderConfig(folder_path, *config);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+
+    // Write-through to MetadataStore
+    if (auto *store = notebook_->GetMetadataStore()) {
+      if (!store->SetFileTags(file->id, file->tags)) {
+        VXCORE_LOG_WARN("Failed to set file tags in MetadataStore: id=%s", file->id.c_str());
+      }
+    }
+
+    return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
   }
@@ -738,7 +901,20 @@ VxCoreError BundledFolderManager::TagFile(const std::string &file_path,
   file->modified_utc = GetCurrentTimestampMillis();
   config->modified_utc = file->modified_utc;
 
-  return SaveFolderConfig(folder_path, *config);
+  error = SaveFolderConfig(folder_path, *config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    if (!store->AddTagToFile(file->id, tag_name)) {
+      VXCORE_LOG_WARN("Failed to add tag to file in MetadataStore: id=%s, tag=%s", file->id.c_str(),
+                      tag_name.c_str());
+    }
+  }
+
+  return VXCORE_OK;
 }
 
 VxCoreError BundledFolderManager::UntagFile(const std::string &file_path,
@@ -766,7 +942,20 @@ VxCoreError BundledFolderManager::UntagFile(const std::string &file_path,
   file->modified_utc = GetCurrentTimestampMillis();
   config->modified_utc = file->modified_utc;
 
-  return SaveFolderConfig(folder_path, *config);
+  error = SaveFolderConfig(folder_path, *config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    if (!store->RemoveTagFromFile(file->id, tag_name)) {
+      VXCORE_LOG_WARN("Failed to remove tag from file in MetadataStore: id=%s, tag=%s",
+                      file->id.c_str(), tag_name.c_str());
+    }
+  }
+
+  return VXCORE_OK;
 }
 
 VxCoreError BundledFolderManager::GetFileInfo(const std::string &file_path,
@@ -869,11 +1058,20 @@ VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
   config->modified_utc = file->modified_utc;
 
   error = SaveFolderConfig(folder_path, *config);
-  if (error == VXCORE_OK) {
-    VXCORE_LOG_INFO("RenameFile successful: file renamed from %s to %s", clean_file_path.c_str(),
-                    ConcatenatePaths(folder_path, new_name).c_str());
+  if (error != VXCORE_OK) {
+    return error;
   }
-  return error;
+
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    if (!store->UpdateFile(file->id, file->name, file->modified_utc, file->metadata.dump())) {
+      VXCORE_LOG_WARN("Failed to update file in MetadataStore: id=%s", file->id.c_str());
+    }
+  }
+
+  VXCORE_LOG_INFO("RenameFile successful: file renamed from %s to %s", clean_file_path.c_str(),
+                  ConcatenatePaths(folder_path, new_name).c_str());
+  return VXCORE_OK;
 }
 
 VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
@@ -941,11 +1139,20 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
   dest_config->files.push_back(file_copy);
   dest_config->modified_utc = file_copy.modified_utc;
   error = SaveFolderConfig(clean_dest_folder_path, *dest_config);
-  if (error == VXCORE_OK) {
-    VXCORE_LOG_INFO("MoveFile successful: file moved from %s to %s", clean_src_file_path.c_str(),
-                    ConcatenatePaths(clean_dest_folder_path, file_name).c_str());
+  if (error != VXCORE_OK) {
+    return error;
   }
-  return error;
+
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    if (!store->MoveFile(file_copy.id, dest_config->id)) {
+      VXCORE_LOG_WARN("Failed to move file in MetadataStore: id=%s", file_copy.id.c_str());
+    }
+  }
+
+  VXCORE_LOG_INFO("MoveFile successful: file moved from %s to %s", clean_src_file_path.c_str(),
+                  ConcatenatePaths(clean_dest_folder_path, file_name).c_str());
+  return VXCORE_OK;
 }
 
 VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
@@ -1011,10 +1218,20 @@ VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
   dest_config->files.push_back(new_file);
   dest_config->modified_utc = new_file.created_utc;
   error = SaveFolderConfig(clean_dest_folder_path, *dest_config);
-  if (error == VXCORE_OK) {
-    VXCORE_LOG_INFO("File copied successfully: id=%s", out_file_id.c_str());
+  if (error != VXCORE_OK) {
+    return error;
   }
-  return error;
+
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    StoreFileRecord file_record = ToStoreFileRecord(new_file, dest_config->id);
+    if (!store->CreateFile(file_record)) {
+      VXCORE_LOG_WARN("Failed to create file in MetadataStore: id=%s", out_file_id.c_str());
+    }
+  }
+
+  VXCORE_LOG_INFO("File copied successfully: id=%s", out_file_id.c_str());
+  return VXCORE_OK;
 }
 
 void BundledFolderManager::IterateAllFiles(
@@ -1093,5 +1310,85 @@ VxCoreError BundledFolderManager::ListFolderContents(const std::string &folder_p
 }
 
 void BundledFolderManager::ClearCache() { config_cache_.clear(); }
+
+VxCoreError BundledFolderManager::SyncMetadataStoreFromConfigs() {
+  auto *store = notebook_->GetMetadataStore();
+  if (!store) {
+    VXCORE_LOG_ERROR("SyncMetadataStoreFromConfigs: MetadataStore not available");
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  VXCORE_LOG_INFO("SyncMetadataStoreFromConfigs: Starting sync from config files");
+
+  // Rebuild the store (clears all data and re-initializes schema)
+  if (!store->RebuildAll()) {
+    VXCORE_LOG_ERROR("SyncMetadataStoreFromConfigs: Failed to rebuild store");
+    return VXCORE_ERR_IO;
+  }
+
+  // Begin transaction for bulk inserts
+  if (!store->BeginTransaction()) {
+    VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Failed to begin transaction");
+  }
+
+  // Helper to recursively sync folders
+  // Returns true on success, false on failure
+  std::function<bool(const std::string &, const std::string &)> sync_folder =
+      [&](const std::string &folder_path, const std::string &parent_folder_id) -> bool {
+    FolderConfig *config = nullptr;
+    VxCoreError error = GetFolderConfig(folder_path, &config);
+    if (error != VXCORE_OK) {
+      VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Failed to load config for folder: %s",
+                      folder_path.c_str());
+      return false;
+    }
+
+    // Create folder record in store
+    StoreFolderRecord folder_record = ToStoreFolderRecord(*config, parent_folder_id);
+    if (!store->CreateFolder(folder_record)) {
+      VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Failed to create folder in store: %s",
+                      config->id.c_str());
+      // Continue anyway - best effort
+    }
+
+    // Create file records in store
+    for (const auto &file : config->files) {
+      StoreFileRecord file_record = ToStoreFileRecord(file, config->id);
+      if (!store->CreateFile(file_record)) {
+        VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Failed to create file in store: %s",
+                        file.id.c_str());
+        // Continue anyway - best effort
+      }
+    }
+
+    // Recursively sync subfolders
+    for (const auto &subfolder_name : config->folders) {
+      std::string subfolder_path = ConcatenatePaths(folder_path, subfolder_name);
+      if (!sync_folder(subfolder_path, config->id)) {
+        // Log but continue with other subfolders
+        VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Failed to sync subfolder: %s",
+                        subfolder_path.c_str());
+      }
+    }
+
+    return true;
+  };
+
+  // Start from root folder with empty parent_id
+  bool success = sync_folder(".", "");
+
+  // Commit transaction
+  if (!store->CommitTransaction()) {
+    VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Failed to commit transaction");
+  }
+
+  if (success) {
+    VXCORE_LOG_INFO("SyncMetadataStoreFromConfigs: Sync completed successfully");
+    return VXCORE_OK;
+  } else {
+    VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Sync completed with warnings");
+    return VXCORE_OK;  // Return OK since we did best-effort sync
+  }
+}
 
 }  // namespace vxcore
