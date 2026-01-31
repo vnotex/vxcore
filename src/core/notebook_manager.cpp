@@ -180,6 +180,9 @@ VxCoreError NotebookManager::CloseNotebook(const std::string &notebook_id) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
+  // Close notebook first to release DB file lock before deleting local data
+  it->second->Close();
+
   DeleteNotebookLocalData(*it->second);
 
   notebooks_.erase(it);

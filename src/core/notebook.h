@@ -69,6 +69,10 @@ class Notebook {
   FolderManager *GetFolderManager() { return folder_manager_.get(); }
   MetadataStore *GetMetadataStore() { return metadata_store_.get(); }
 
+  // Closes the notebook, releasing all resources (DB connections, etc.).
+  // Must be called before deleting the notebook's local data folder.
+  void Close();
+
   VxCoreError CreateFolderPath(const std::string &folder_path, std::string &out_folder_id);
 
   VxCoreError CreateTag(const std::string &tag_name, const std::string &parent_tag = "");

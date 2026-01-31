@@ -155,6 +155,19 @@ VxCoreError Notebook::InitMetadataStore() {
   return VXCORE_OK;
 }
 
+void Notebook::Close() {
+  VXCORE_LOG_INFO("Closing notebook: id=%s", config_.id.c_str());
+
+  // Close MetadataStore first to release DB file lock
+  if (metadata_store_) {
+    metadata_store_->Close();
+    metadata_store_.reset();
+  }
+
+  // Reset folder manager
+  folder_manager_.reset();
+}
+
 TagNode *Notebook::FindTag(const std::string &tag_name) {
   for (auto &tag : config_.tags) {
     if (tag.name == tag_name) {

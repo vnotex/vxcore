@@ -967,6 +967,54 @@ int test_tag_create_path_trailing_slash() {
   return 0;
 }
 
+// Test that closing a notebook properly releases the DB file lock
+// so that the local data folder can be deleted (especially important on Windows)
+int test_notebook_close_releases_db_lock() {
+  std::cout << "  Running test_notebook_close_releases_db_lock..." << std::endl;
+  cleanup_test_dir("test_nb_close_db");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a bundled notebook (which has a local data folder with DB)
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, "test_nb_close_db", "{\"name\":\"Close DB Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Create some content to ensure DB is used
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "docs", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Close the notebook - this should release the DB lock and delete local data
+  err = vxcore_notebook_close(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify the notebook is no longer accessible
+  char *config_json = nullptr;
+  err = vxcore_notebook_get_config(ctx, notebook_id, &config_json);
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  // The notebook root folder should still exist (it's not deleted on close)
+  ASSERT(path_exists("test_nb_close_db"));
+  ASSERT(path_exists("test_nb_close_db/vx_notebook/config.json"));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir("test_nb_close_db");
+  std::cout << "  ✓ test_notebook_close_releases_db_lock passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
 
@@ -975,6 +1023,7 @@ int main() {
   RUN_TEST(test_notebook_create_bundled);
   RUN_TEST(test_notebook_create_raw);
   RUN_TEST(test_notebook_open_close);
+  RUN_TEST(test_notebook_close_releases_db_lock);
   RUN_TEST(test_notebook_get_properties);
   RUN_TEST(test_notebook_set_properties);
   RUN_TEST(test_notebook_list);
