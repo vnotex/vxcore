@@ -1,4 +1,4 @@
-#include <iostream>
+﻿#include <iostream>
 #include <string>
 
 #include "nlohmann/json.hpp"
@@ -7,15 +7,16 @@
 
 int test_search_files_basic() {
   std::cout << "  Running test_search_files_basic..." << std::endl;
-  cleanup_test_dir("test_search_basic");
+  cleanup_test_dir(get_test_path("test_search_basic"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_basic", "{\"name\":\"Test Search Basic\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_basic").c_str(),
+                               "{\"name\":\"Test Search Basic\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file1_id = nullptr;
@@ -62,22 +63,23 @@ int test_search_files_basic() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_basic");
-  std::cout << "  ✓ test_search_files_basic passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_basic"));
+  std::cout << "  âœ“ test_search_files_basic passed" << std::endl;
   return 0;
 }
 
 int test_search_files_include_folders() {
   std::cout << "  Running test_search_files_include_folders..." << std::endl;
-  cleanup_test_dir("test_search_folders");
+  cleanup_test_dir(get_test_path("test_search_folders"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_folders", "{\"name\":\"Test Search Folders\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_folders").c_str(),
+                               "{\"name\":\"Test Search Folders\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file1_id = nullptr;
@@ -129,22 +131,23 @@ int test_search_files_include_folders() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_folders");
-  std::cout << "  ✓ test_search_files_include_folders passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_folders"));
+  std::cout << "  âœ“ test_search_files_include_folders passed" << std::endl;
   return 0;
 }
 
 int test_search_files_pattern_matching() {
   std::cout << "  Running test_search_files_pattern_matching..." << std::endl;
-  cleanup_test_dir("test_search_pattern");
+  cleanup_test_dir(get_test_path("test_search_pattern"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_pattern", "{\"name\":\"Test Search Pattern\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_pattern").c_str(),
+                               "{\"name\":\"Test Search Pattern\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *readme_id = nullptr;
@@ -208,22 +211,23 @@ int test_search_files_pattern_matching() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_pattern");
-  std::cout << "  ✓ test_search_files_pattern_matching passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_pattern"));
+  std::cout << "  âœ“ test_search_files_pattern_matching passed" << std::endl;
   return 0;
 }
 
 int test_search_files_name_vs_path_ranking() {
   std::cout << "  Running test_search_files_name_vs_path_ranking..." << std::endl;
-  cleanup_test_dir("test_search_ranking");
+  cleanup_test_dir(get_test_path("test_search_ranking"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_ranking", "{\"name\":\"Test Search Ranking\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_ranking").c_str(),
+                               "{\"name\":\"Test Search Ranking\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *other_id = nullptr;
@@ -291,22 +295,23 @@ int test_search_files_name_vs_path_ranking() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_ranking");
-  std::cout << "  ✓ test_search_files_name_vs_path_ranking passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_ranking"));
+  std::cout << "  âœ“ test_search_files_name_vs_path_ranking passed" << std::endl;
   return 0;
 }
 
 int test_search_files_exclude_patterns() {
   std::cout << "  Running test_search_files_exclude_patterns..." << std::endl;
-  cleanup_test_dir("test_search_exclude");
+  cleanup_test_dir(get_test_path("test_search_exclude"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_exclude", "{\"name\":\"Test Search Exclude\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_exclude").c_str(),
+                               "{\"name\":\"Test Search Exclude\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file1_id = nullptr;
@@ -357,22 +362,23 @@ int test_search_files_exclude_patterns() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_exclude");
-  std::cout << "  ✓ test_search_files_exclude_patterns passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_exclude"));
+  std::cout << "  âœ“ test_search_files_exclude_patterns passed" << std::endl;
   return 0;
 }
 
 int test_search_files_max_results() {
   std::cout << "  Running test_search_files_max_results..." << std::endl;
-  cleanup_test_dir("test_search_max");
+  cleanup_test_dir(get_test_path("test_search_max"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_max", "{\"name\":\"Test Search Max\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_max").c_str(),
+                               "{\"name\":\"Test Search Max\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   for (int i = 1; i <= 10; i++) {
@@ -407,21 +413,21 @@ int test_search_files_max_results() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_max");
-  std::cout << "  ✓ test_search_files_max_results passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_max"));
+  std::cout << "  âœ“ test_search_files_max_results passed" << std::endl;
   return 0;
 }
 
 int test_search_by_tags_single_tag() {
   std::cout << "  Running test_search_by_tags_single_tag..." << std::endl;
-  cleanup_test_dir("test_search_tags_single");
+  cleanup_test_dir(get_test_path("test_search_tags_single"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_tags_single",
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_tags_single").c_str(),
                                "{\"name\":\"Test Search Tags Single\"}", VXCORE_NOTEBOOK_BUNDLED,
                                &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
@@ -485,22 +491,23 @@ int test_search_by_tags_single_tag() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_tags_single");
-  std::cout << "  ✓ test_search_by_tags_single_tag passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_tags_single"));
+  std::cout << "  âœ“ test_search_by_tags_single_tag passed" << std::endl;
   return 0;
 }
 
 int test_search_by_tags_and_operator() {
   std::cout << "  Running test_search_by_tags_and_operator..." << std::endl;
-  cleanup_test_dir("test_search_tags_and");
+  cleanup_test_dir(get_test_path("test_search_tags_and"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_tags_and", "{\"name\":\"Test Search Tags AND\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_tags_and").c_str(),
+                               "{\"name\":\"Test Search Tags AND\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file1_id = nullptr;
@@ -565,22 +572,23 @@ int test_search_by_tags_and_operator() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_tags_and");
-  std::cout << "  ✓ test_search_by_tags_and_operator passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_tags_and"));
+  std::cout << "  âœ“ test_search_by_tags_and_operator passed" << std::endl;
   return 0;
 }
 
 int test_search_by_tags_or_operator() {
   std::cout << "  Running test_search_by_tags_or_operator..." << std::endl;
-  cleanup_test_dir("test_search_tags_or");
+  cleanup_test_dir(get_test_path("test_search_tags_or"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_tags_or", "{\"name\":\"Test Search Tags OR\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_tags_or").c_str(),
+                               "{\"name\":\"Test Search Tags OR\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file1_id = nullptr;
@@ -652,21 +660,21 @@ int test_search_by_tags_or_operator() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_tags_or");
-  std::cout << "  ✓ test_search_by_tags_or_operator passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_tags_or"));
+  std::cout << "  âœ“ test_search_by_tags_or_operator passed" << std::endl;
   return 0;
 }
 
 int test_search_by_tags_recursive() {
   std::cout << "  Running test_search_by_tags_recursive..." << std::endl;
-  cleanup_test_dir("test_search_tags_recursive");
+  cleanup_test_dir(get_test_path("test_search_tags_recursive"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_tags_recursive",
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_tags_recursive").c_str(),
                                "{\"name\":\"Test Search Tags Recursive\"}", VXCORE_NOTEBOOK_BUNDLED,
                                &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
@@ -716,21 +724,21 @@ int test_search_by_tags_recursive() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_tags_recursive");
-  std::cout << "  ✓ test_search_by_tags_recursive passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_tags_recursive"));
+  std::cout << "  âœ“ test_search_by_tags_recursive passed" << std::endl;
   return 0;
 }
 
 int test_search_by_tags_with_exclude_patterns() {
   std::cout << "  Running test_search_by_tags_with_exclude_patterns..." << std::endl;
-  cleanup_test_dir("test_search_tags_exclude");
+  cleanup_test_dir(get_test_path("test_search_tags_exclude"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_tags_exclude",
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_tags_exclude").c_str(),
                                "{\"name\":\"Test Search Tags Exclude\"}", VXCORE_NOTEBOOK_BUNDLED,
                                &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
@@ -786,22 +794,23 @@ int test_search_by_tags_with_exclude_patterns() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_tags_exclude");
-  std::cout << "  ✓ test_search_by_tags_with_exclude_patterns passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_tags_exclude"));
+  std::cout << "  âœ“ test_search_by_tags_with_exclude_patterns passed" << std::endl;
   return 0;
 }
 
 int test_search_by_tags_max_results() {
   std::cout << "  Running test_search_by_tags_max_results..." << std::endl;
-  cleanup_test_dir("test_search_tags_max");
+  cleanup_test_dir(get_test_path("test_search_tags_max"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_tags_max", "{\"name\":\"Test Search Tags Max\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_tags_max").c_str(),
+                               "{\"name\":\"Test Search Tags Max\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "test");
@@ -841,23 +850,23 @@ int test_search_by_tags_max_results() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_tags_max");
-  std::cout << "  ✓ test_search_by_tags_max_results passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_tags_max"));
+  std::cout << "  âœ“ test_search_by_tags_max_results passed" << std::endl;
   return 0;
 }
 
 int test_search_by_tags_empty_results() {
   std::cout << "  Running test_search_by_tags_empty_results..." << std::endl;
-  cleanup_test_dir("test_search_tags_empty");
+  cleanup_test_dir(get_test_path("test_search_tags_empty"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err =
-      vxcore_notebook_create(ctx, "test_search_tags_empty", "{\"name\":\"Test Search Tags Empty\"}",
-                             VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_tags_empty").c_str(),
+                               "{\"name\":\"Test Search Tags Empty\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file1_id = nullptr;
@@ -894,21 +903,21 @@ int test_search_by_tags_empty_results() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_tags_empty");
-  std::cout << "  ✓ test_search_by_tags_empty_results passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_tags_empty"));
+  std::cout << "  âœ“ test_search_by_tags_empty_results passed" << std::endl;
   return 0;
 }
 
 int test_search_files_with_file_patterns() {
   std::cout << "  Running test_search_files_with_file_patterns..." << std::endl;
-  cleanup_test_dir("test_search_file_patterns");
+  cleanup_test_dir(get_test_path("test_search_file_patterns"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_file_patterns",
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_file_patterns").c_str(),
                                "{\"name\":\"Test Search File Patterns\"}", VXCORE_NOTEBOOK_BUNDLED,
                                &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
@@ -961,21 +970,21 @@ int test_search_files_with_file_patterns() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_file_patterns");
-  std::cout << "  ✓ test_search_files_with_file_patterns passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_file_patterns"));
+  std::cout << "  âœ“ test_search_files_with_file_patterns passed" << std::endl;
   return 0;
 }
 
 int test_search_files_file_patterns_recursive() {
   std::cout << "  Running test_search_files_file_patterns_recursive..." << std::endl;
-  cleanup_test_dir("test_search_file_patterns_recursive");
+  cleanup_test_dir(get_test_path("test_search_file_patterns_recursive"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_file_patterns_recursive",
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_file_patterns_recursive").c_str(),
                                "{\"name\":\"Test Search File Patterns Recursive\"}",
                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
@@ -1045,21 +1054,21 @@ int test_search_files_file_patterns_recursive() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_file_patterns_recursive");
-  std::cout << "  ✓ test_search_files_file_patterns_recursive passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_file_patterns_recursive"));
+  std::cout << "  âœ“ test_search_files_file_patterns_recursive passed" << std::endl;
   return 0;
 }
 
 int test_search_by_tags_with_file_patterns() {
   std::cout << "  Running test_search_by_tags_with_file_patterns..." << std::endl;
-  cleanup_test_dir("test_search_tags_file_patterns");
+  cleanup_test_dir(get_test_path("test_search_tags_file_patterns"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_tags_file_patterns",
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_tags_file_patterns").c_str(),
                                "{\"name\":\"Test Search Tags File Patterns\"}",
                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
@@ -1120,21 +1129,21 @@ int test_search_by_tags_with_file_patterns() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_tags_file_patterns");
-  std::cout << "  ✓ test_search_by_tags_with_file_patterns passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_tags_file_patterns"));
+  std::cout << "  âœ“ test_search_by_tags_with_file_patterns passed" << std::endl;
   return 0;
 }
 
 int test_search_file_and_exclude_patterns() {
   std::cout << "  Running test_search_file_and_exclude_patterns..." << std::endl;
-  cleanup_test_dir("test_search_include_exclude");
+  cleanup_test_dir(get_test_path("test_search_include_exclude"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_search_include_exclude",
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_include_exclude").c_str(),
                                "{\"name\":\"Test Search Include Exclude\"}",
                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
@@ -1199,22 +1208,23 @@ int test_search_file_and_exclude_patterns() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_search_include_exclude");
-  std::cout << "  ✓ test_search_file_and_exclude_patterns passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_search_include_exclude"));
+  std::cout << "  âœ“ test_search_file_and_exclude_patterns passed" << std::endl;
   return 0;
 }
 
 int test_search_content_exclude_patterns() {
   std::cout << "  Running test_search_content_exclude_patterns..." << std::endl;
-  cleanup_test_dir("test_content_exclude");
+  cleanup_test_dir(get_test_path("test_content_exclude"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_content_exclude", "{\"name\":\"Test Content Exclude\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_content_exclude").c_str(),
+                               "{\"name\":\"Test Content Exclude\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file1_id = nullptr;
@@ -1246,22 +1256,23 @@ int test_search_content_exclude_patterns() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_content_exclude");
-  std::cout << "  ✓ test_search_content_exclude_patterns passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_content_exclude"));
+  std::cout << "  âœ“ test_search_content_exclude_patterns passed" << std::endl;
   return 0;
 }
 
 int test_search_by_tags_with_exclude_tags() {
   std::cout << "  Running test_search_by_tags_with_exclude_tags..." << std::endl;
-  cleanup_test_dir("test_tags_exclude");
+  cleanup_test_dir(get_test_path("test_tags_exclude"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_tags_exclude", "{\"name\":\"Test Tags Exclude\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_tags_exclude").c_str(),
+                               "{\"name\":\"Test Tags Exclude\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file1_id = nullptr;
@@ -1327,8 +1338,8 @@ int test_search_by_tags_with_exclude_tags() {
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_tags_exclude");
-  std::cout << "  ✓ test_search_by_tags_with_exclude_tags passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_tags_exclude"));
+  std::cout << "  âœ“ test_search_by_tags_with_exclude_tags passed" << std::endl;
   return 0;
 }
 

@@ -6,68 +6,69 @@
 
 int test_notebook_create_bundled() {
   std::cout << "  Running test_notebook_create_bundled..." << std::endl;
-  cleanup_test_dir("test_nb_bundled");
+  cleanup_test_dir(get_test_path("test_nb_bundled"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_bundled", "{\"name\":\"Test Bundled\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_bundled").c_str(),
+                             "{\"name\":\"Test Bundled\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
 
-  ASSERT(path_exists("test_nb_bundled/vx_notebook/config.json"));
+  ASSERT(path_exists(get_test_path("test_nb_bundled") + "/vx_notebook/config.json"));
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_bundled");
-  std::cout << "  ✓ test_notebook_create_bundled passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_bundled"));
+  std::cout << "  âœ“ test_notebook_create_bundled passed" << std::endl;
   return 0;
 }
 
 int test_notebook_create_raw() {
   std::cout << "  Running test_notebook_create_raw..." << std::endl;
-  cleanup_test_dir("test_nb_raw");
+  cleanup_test_dir(get_test_path("test_nb_raw"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_raw", "{\"name\":\"Test Raw\"}", VXCORE_NOTEBOOK_RAW,
-                               &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_raw").c_str(), "{\"name\":\"Test Raw\"}",
+                               VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
 
-  ASSERT(!path_exists("test_nb_raw/vx_notebook"));
+  ASSERT(!path_exists(get_test_path("test_nb_raw") + "/vx_notebook"));
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_raw");
-  std::cout << "  ✓ test_notebook_create_raw passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_raw"));
+  std::cout << "  âœ“ test_notebook_create_raw passed" << std::endl;
   return 0;
 }
 
 int test_notebook_open_close() {
   std::cout << "  Running test_notebook_open_close..." << std::endl;
-  cleanup_test_dir("test_nb_open");
+  cleanup_test_dir(get_test_path("test_nb_open"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id1 = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_open", "{\"name\":\"Test Open\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id1);
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_open").c_str(),
+                               "{\"name\":\"Test Open\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id1);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_notebook_close(ctx, notebook_id1);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id2 = nullptr;
-  err = vxcore_notebook_open(ctx, "test_nb_open", &notebook_id2);
+  err = vxcore_notebook_open(ctx, get_test_path("test_nb_open").c_str(), &notebook_id2);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id2);
 
@@ -76,21 +77,21 @@ int test_notebook_open_close() {
   vxcore_string_free(notebook_id1);
   vxcore_string_free(notebook_id2);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_open");
-  std::cout << "  ✓ test_notebook_open_close passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_open"));
+  std::cout << "  âœ“ test_notebook_open_close passed" << std::endl;
   return 0;
 }
 
 int test_notebook_get_properties() {
   std::cout << "  Running test_notebook_get_properties..." << std::endl;
-  cleanup_test_dir("test_nb_props");
+  cleanup_test_dir(get_test_path("test_nb_props"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_props",
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_props").c_str(),
                                "{\"name\":\"Test Props\",\"description\":\"Test Description\"}",
                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
@@ -107,22 +108,23 @@ int test_notebook_get_properties() {
   vxcore_string_free(properties);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_props");
-  std::cout << "  ✓ test_notebook_get_properties passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_props"));
+  std::cout << "  âœ“ test_notebook_get_properties passed" << std::endl;
   return 0;
 }
 
 int test_notebook_set_properties() {
   std::cout << "  Running test_notebook_set_properties..." << std::endl;
-  cleanup_test_dir("test_nb_set_props");
+  cleanup_test_dir(get_test_path("test_nb_set_props"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_set_props", "{\"name\":\"Original Name\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_set_props").c_str(),
+                             "{\"name\":\"Original Name\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_notebook_update_config(ctx, notebook_id,
@@ -140,28 +142,28 @@ int test_notebook_set_properties() {
   vxcore_string_free(properties);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_set_props");
-  std::cout << "  ✓ test_notebook_set_properties passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_set_props"));
+  std::cout << "  âœ“ test_notebook_set_properties passed" << std::endl;
   return 0;
 }
 
 int test_notebook_list() {
   std::cout << "  Running test_notebook_list..." << std::endl;
-  cleanup_test_dir("test_nb_list1");
-  cleanup_test_dir("test_nb_list2");
+  cleanup_test_dir(get_test_path("test_nb_list1"));
+  cleanup_test_dir(get_test_path("test_nb_list2"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *id1 = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_list1", "{\"name\":\"Notebook 1\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &id1);
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_list1").c_str(),
+                               "{\"name\":\"Notebook 1\"}", VXCORE_NOTEBOOK_BUNDLED, &id1);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *id2 = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_list2", "{\"name\":\"Notebook 2\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &id2);
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_list2").c_str(),
+                               "{\"name\":\"Notebook 2\"}", VXCORE_NOTEBOOK_BUNDLED, &id2);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebooks_json = nullptr;
@@ -177,23 +179,24 @@ int test_notebook_list() {
   vxcore_string_free(id1);
   vxcore_string_free(id2);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_list1");
-  cleanup_test_dir("test_nb_list2");
-  std::cout << "  ✓ test_notebook_list passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_list1"));
+  cleanup_test_dir(get_test_path("test_nb_list2"));
+  std::cout << "  âœ“ test_notebook_list passed" << std::endl;
   return 0;
 }
 
 int test_notebook_persistence() {
   std::cout << "  Running test_notebook_persistence..." << std::endl;
-  cleanup_test_dir("test_nb_persist");
+  cleanup_test_dir(get_test_path("test_nb_persist"));
 
   VxCoreContextHandle ctx1 = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx1);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx1, "test_nb_persist", "{\"name\":\"Persistent Notebook\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx1, get_test_path("test_nb_persist").c_str(),
+                               "{\"name\":\"Persistent Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   std::string saved_id(notebook_id);
@@ -205,7 +208,7 @@ int test_notebook_persistence() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *reopened_id = nullptr;
-  err = vxcore_notebook_open(ctx2, "test_nb_persist", &reopened_id);
+  err = vxcore_notebook_open(ctx2, get_test_path("test_nb_persist").c_str(), &reopened_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(reopened_id);
 
@@ -221,14 +224,14 @@ int test_notebook_persistence() {
   vxcore_string_free(properties);
   vxcore_string_free(reopened_id);
   vxcore_context_destroy(ctx2);
-  cleanup_test_dir("test_nb_persist");
-  std::cout << "  ✓ test_notebook_persistence passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_persist"));
+  std::cout << "  âœ“ test_notebook_persistence passed" << std::endl;
   return 0;
 }
 
 int test_notebook_rebuild_cache() {
   std::cout << "  Running test_notebook_rebuild_cache..." << std::endl;
-  cleanup_test_dir("test_nb_rebuild");
+  cleanup_test_dir(get_test_path("test_nb_rebuild"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
@@ -236,8 +239,9 @@ int test_notebook_rebuild_cache() {
 
   // Create notebook with some content
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_rebuild", "{\"name\":\"Rebuild Cache Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_rebuild").c_str(),
+                               "{\"name\":\"Rebuild Cache Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create a folder and file
@@ -267,22 +271,22 @@ int test_notebook_rebuild_cache() {
   vxcore_string_free(folder_config);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_rebuild");
-  std::cout << "  ✓ test_notebook_rebuild_cache passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_rebuild"));
+  std::cout << "  âœ“ test_notebook_rebuild_cache passed" << std::endl;
   return 0;
 }
 
 int test_tag_create_list() {
   std::cout << "  Running test_tag_create_list..." << std::endl;
-  cleanup_test_dir("test_nb_tags");
+  cleanup_test_dir(get_test_path("test_nb_tags"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tags", "{\"name\":\"Tag Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_tags").c_str(),
+                               "{\"name\":\"Tag Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "work");
@@ -303,22 +307,23 @@ int test_tag_create_list() {
   vxcore_string_free(tags_json);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tags");
-  std::cout << "  ✓ test_tag_create_list passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tags"));
+  std::cout << "  âœ“ test_tag_create_list passed" << std::endl;
   return 0;
 }
 
 int test_tag_duplicate_create() {
   std::cout << "  Running test_tag_duplicate_create..." << std::endl;
-  cleanup_test_dir("test_nb_dup_tag");
+  cleanup_test_dir(get_test_path("test_nb_dup_tag"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_dup_tag", "{\"name\":\"Dup Tag Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_dup_tag").c_str(),
+                             "{\"name\":\"Dup Tag Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "important");
@@ -329,22 +334,23 @@ int test_tag_duplicate_create() {
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_dup_tag");
-  std::cout << "  ✓ test_tag_duplicate_create passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_dup_tag"));
+  std::cout << "  âœ“ test_tag_duplicate_create passed" << std::endl;
   return 0;
 }
 
 int test_tag_delete() {
   std::cout << "  Running test_tag_delete..." << std::endl;
-  cleanup_test_dir("test_nb_del_tag");
+  cleanup_test_dir(get_test_path("test_nb_del_tag"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_del_tag", "{\"name\":\"Del Tag Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_del_tag").c_str(),
+                             "{\"name\":\"Del Tag Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "temp");
@@ -363,22 +369,23 @@ int test_tag_delete() {
   vxcore_string_free(tags_json);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_del_tag");
-  std::cout << "  ✓ test_tag_delete passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_del_tag"));
+  std::cout << "  âœ“ test_tag_delete passed" << std::endl;
   return 0;
 }
 
 int test_file_tag_operations() {
   std::cout << "  Running test_file_tag_operations..." << std::endl;
-  cleanup_test_dir("test_nb_file_tag");
+  cleanup_test_dir(get_test_path("test_nb_file_tag"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_file_tag", "{\"name\":\"File Tag Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_file_tag").c_str(),
+                             "{\"name\":\"File Tag Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "urgent");
@@ -412,22 +419,23 @@ int test_file_tag_operations() {
   vxcore_string_free(file_id);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_file_tag");
-  std::cout << "  ✓ test_file_tag_operations passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_file_tag"));
+  std::cout << "  âœ“ test_file_tag_operations passed" << std::endl;
   return 0;
 }
 
 int test_tag_validation() {
   std::cout << "  Running test_tag_validation..." << std::endl;
-  cleanup_test_dir("test_nb_tag_val");
+  cleanup_test_dir(get_test_path("test_nb_tag_val"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_val", "{\"name\":\"Tag Validation Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_tag_val").c_str(),
+                               "{\"name\":\"Tag Validation Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "valid");
@@ -446,22 +454,23 @@ int test_tag_validation() {
   vxcore_string_free(file_id);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_val");
-  std::cout << "  ✓ test_tag_validation passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_val"));
+  std::cout << "  âœ“ test_tag_validation passed" << std::endl;
   return 0;
 }
 
 int test_tag_delete_with_files() {
   std::cout << "  Running test_tag_delete_with_files..." << std::endl;
-  cleanup_test_dir("test_nb_tag_del_files");
+  cleanup_test_dir(get_test_path("test_nb_tag_del_files"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_del_files", "{\"name\":\"Tag Delete Files Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_tag_del_files").c_str(),
+                               "{\"name\":\"Tag Delete Files Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "active");
@@ -488,21 +497,21 @@ int test_tag_delete_with_files() {
   vxcore_string_free(file_id);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_del_files");
-  std::cout << "  ✓ test_tag_delete_with_files passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_del_files"));
+  std::cout << "  âœ“ test_tag_delete_with_files passed" << std::endl;
   return 0;
 }
 
 int test_tag_delete_children() {
   std::cout << "  Running test_tag_delete_children..." << std::endl;
-  cleanup_test_dir("test_nb_tag_del_children");
+  cleanup_test_dir(get_test_path("test_nb_tag_del_children"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_del_children",
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_tag_del_children").c_str(),
                                "{\"name\":\"Tag Delete Children Test\"}", VXCORE_NOTEBOOK_BUNDLED,
                                &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
@@ -532,22 +541,23 @@ int test_tag_delete_children() {
   vxcore_string_free(tags_json);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_del_children");
-  std::cout << "  ✓ test_tag_delete_children passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_del_children"));
+  std::cout << "  âœ“ test_tag_delete_children passed" << std::endl;
   return 0;
 }
 
 int test_file_update_tags() {
   std::cout << "  Running test_file_update_tags..." << std::endl;
-  cleanup_test_dir("test_nb_update_tags");
+  cleanup_test_dir(get_test_path("test_nb_update_tags"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_update_tags", "{\"name\":\"Update Tags Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_update_tags").c_str(),
+                               "{\"name\":\"Update Tags Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "tag1");
@@ -577,22 +587,23 @@ int test_file_update_tags() {
   vxcore_string_free(file_id);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_update_tags");
-  std::cout << "  ✓ test_file_update_tags passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_update_tags"));
+  std::cout << "  âœ“ test_file_update_tags passed" << std::endl;
   return 0;
 }
 
 int test_tag_move_basic() {
   std::cout << "  Running test_tag_move_basic..." << std::endl;
-  cleanup_test_dir("test_nb_tag_move");
+  cleanup_test_dir(get_test_path("test_nb_tag_move"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_move", "{\"name\":\"Tag Move Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_tag_move").c_str(),
+                             "{\"name\":\"Tag Move Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "parent");
@@ -614,22 +625,23 @@ int test_tag_move_basic() {
   vxcore_string_free(tags_json);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_move");
-  std::cout << "  ✓ test_tag_move_basic passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_move"));
+  std::cout << "  âœ“ test_tag_move_basic passed" << std::endl;
   return 0;
 }
 
 int test_tag_move_to_root() {
   std::cout << "  Running test_tag_move_to_root..." << std::endl;
-  cleanup_test_dir("test_nb_tag_move_root");
+  cleanup_test_dir(get_test_path("test_nb_tag_move_root"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_move_root", "{\"name\":\"Tag Move Root Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_tag_move_root").c_str(),
+                               "{\"name\":\"Tag Move Root Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "parent");
@@ -651,22 +663,23 @@ int test_tag_move_to_root() {
   vxcore_string_free(tags_json);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_move_root");
-  std::cout << "  ✓ test_tag_move_to_root passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_move_root"));
+  std::cout << "  âœ“ test_tag_move_to_root passed" << std::endl;
   return 0;
 }
 
 int test_tag_move_nonexistent_tag() {
   std::cout << "  Running test_tag_move_nonexistent_tag..." << std::endl;
-  cleanup_test_dir("test_nb_tag_move_noexist");
+  cleanup_test_dir(get_test_path("test_nb_tag_move_noexist"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_move_noexist", "{\"name\":\"Tag Move Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_tag_move_noexist").c_str(),
+                             "{\"name\":\"Tag Move Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "parent");
@@ -677,22 +690,23 @@ int test_tag_move_nonexistent_tag() {
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_move_noexist");
-  std::cout << "  ✓ test_tag_move_nonexistent_tag passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_move_noexist"));
+  std::cout << "  âœ“ test_tag_move_nonexistent_tag passed" << std::endl;
   return 0;
 }
 
 int test_tag_move_nonexistent_parent() {
   std::cout << "  Running test_tag_move_nonexistent_parent..." << std::endl;
-  cleanup_test_dir("test_nb_tag_move_noparent");
+  cleanup_test_dir(get_test_path("test_nb_tag_move_noparent"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_move_noparent", "{\"name\":\"Tag Move Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_tag_move_noparent").c_str(),
+                             "{\"name\":\"Tag Move Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "child");
@@ -703,22 +717,23 @@ int test_tag_move_nonexistent_parent() {
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_move_noparent");
-  std::cout << "  ✓ test_tag_move_nonexistent_parent passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_move_noparent"));
+  std::cout << "  âœ“ test_tag_move_nonexistent_parent passed" << std::endl;
   return 0;
 }
 
 int test_tag_move_self_parent() {
   std::cout << "  Running test_tag_move_self_parent..." << std::endl;
-  cleanup_test_dir("test_nb_tag_move_self");
+  cleanup_test_dir(get_test_path("test_nb_tag_move_self"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_move_self", "{\"name\":\"Tag Move Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_tag_move_self").c_str(),
+                             "{\"name\":\"Tag Move Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "tag");
@@ -729,22 +744,23 @@ int test_tag_move_self_parent() {
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_move_self");
-  std::cout << "  ✓ test_tag_move_self_parent passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_move_self"));
+  std::cout << "  âœ“ test_tag_move_self_parent passed" << std::endl;
   return 0;
 }
 
 int test_tag_move_circular_dependency() {
   std::cout << "  Running test_tag_move_circular_dependency..." << std::endl;
-  cleanup_test_dir("test_nb_tag_move_circular");
+  cleanup_test_dir(get_test_path("test_nb_tag_move_circular"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_move_circular", "{\"name\":\"Tag Move Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_tag_move_circular").c_str(),
+                             "{\"name\":\"Tag Move Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "parent");
@@ -764,22 +780,23 @@ int test_tag_move_circular_dependency() {
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_move_circular");
-  std::cout << "  ✓ test_tag_move_circular_dependency passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_move_circular"));
+  std::cout << "  âœ“ test_tag_move_circular_dependency passed" << std::endl;
   return 0;
 }
 
 int test_tag_move_reparent() {
   std::cout << "  Running test_tag_move_reparent..." << std::endl;
-  cleanup_test_dir("test_nb_tag_move_reparent");
+  cleanup_test_dir(get_test_path("test_nb_tag_move_reparent"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_move_reparent", "{\"name\":\"Tag Move Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_tag_move_reparent").c_str(),
+                             "{\"name\":\"Tag Move Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "oldparent");
@@ -803,22 +820,23 @@ int test_tag_move_reparent() {
   vxcore_string_free(tags_json);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_move_reparent");
-  std::cout << "  ✓ test_tag_move_reparent passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_move_reparent"));
+  std::cout << "  âœ“ test_tag_move_reparent passed" << std::endl;
   return 0;
 }
 
 int test_tag_create_path_basic() {
   std::cout << "  Running test_tag_create_path_basic..." << std::endl;
-  cleanup_test_dir("test_nb_tag_path_basic");
+  cleanup_test_dir(get_test_path("test_nb_tag_path_basic"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_path_basic", "{\"name\":\"Tag Path Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_tag_path_basic").c_str(),
+                             "{\"name\":\"Tag Path Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create_path(ctx, notebook_id, "category/subcategory/item");
@@ -838,22 +856,23 @@ int test_tag_create_path_basic() {
   vxcore_string_free(tags_json);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_path_basic");
-  std::cout << "  ✓ test_tag_create_path_basic passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_path_basic"));
+  std::cout << "  âœ“ test_tag_create_path_basic passed" << std::endl;
   return 0;
 }
 
 int test_tag_create_path_single() {
   std::cout << "  Running test_tag_create_path_single..." << std::endl;
-  cleanup_test_dir("test_nb_tag_path_single");
+  cleanup_test_dir(get_test_path("test_nb_tag_path_single"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_path_single", "{\"name\":\"Tag Path Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_tag_path_single").c_str(),
+                             "{\"name\":\"Tag Path Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create_path(ctx, notebook_id, "singletag");
@@ -869,22 +888,23 @@ int test_tag_create_path_single() {
   vxcore_string_free(tags_json);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_path_single");
-  std::cout << "  ✓ test_tag_create_path_single passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_path_single"));
+  std::cout << "  âœ“ test_tag_create_path_single passed" << std::endl;
   return 0;
 }
 
 int test_tag_create_path_partial_exists() {
   std::cout << "  Running test_tag_create_path_partial_exists..." << std::endl;
-  cleanup_test_dir("test_nb_tag_path_partial");
+  cleanup_test_dir(get_test_path("test_nb_tag_path_partial"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_path_partial", "{\"name\":\"Tag Path Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_tag_path_partial").c_str(),
+                             "{\"name\":\"Tag Path Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "existing");
@@ -907,22 +927,23 @@ int test_tag_create_path_partial_exists() {
   vxcore_string_free(tags_json);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_path_partial");
-  std::cout << "  ✓ test_tag_create_path_partial_exists passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_path_partial"));
+  std::cout << "  âœ“ test_tag_create_path_partial_exists passed" << std::endl;
   return 0;
 }
 
 int test_tag_create_path_empty() {
   std::cout << "  Running test_tag_create_path_empty..." << std::endl;
-  cleanup_test_dir("test_nb_tag_path_empty");
+  cleanup_test_dir(get_test_path("test_nb_tag_path_empty"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_path_empty", "{\"name\":\"Tag Path Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_tag_path_empty").c_str(),
+                             "{\"name\":\"Tag Path Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create_path(ctx, notebook_id, "");
@@ -930,22 +951,23 @@ int test_tag_create_path_empty() {
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_path_empty");
-  std::cout << "  ✓ test_tag_create_path_empty passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_path_empty"));
+  std::cout << "  âœ“ test_tag_create_path_empty passed" << std::endl;
   return 0;
 }
 
 int test_tag_create_path_trailing_slash() {
   std::cout << "  Running test_tag_create_path_trailing_slash..." << std::endl;
-  cleanup_test_dir("test_nb_tag_path_trailing");
+  cleanup_test_dir(get_test_path("test_nb_tag_path_trailing"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_tag_path_trailing", "{\"name\":\"Tag Path Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_tag_path_trailing").c_str(),
+                             "{\"name\":\"Tag Path Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create_path(ctx, notebook_id, "tag1/tag2/");
@@ -962,8 +984,8 @@ int test_tag_create_path_trailing_slash() {
   vxcore_string_free(tags_json);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_tag_path_trailing");
-  std::cout << "  ✓ test_tag_create_path_trailing_slash passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_tag_path_trailing"));
+  std::cout << "  âœ“ test_tag_create_path_trailing_slash passed" << std::endl;
   return 0;
 }
 
@@ -971,7 +993,7 @@ int test_tag_create_path_trailing_slash() {
 // so that the local data folder can be deleted (especially important on Windows)
 int test_notebook_close_releases_db_lock() {
   std::cout << "  Running test_notebook_close_releases_db_lock..." << std::endl;
-  cleanup_test_dir("test_nb_close_db");
+  cleanup_test_dir(get_test_path("test_nb_close_db"));
 
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
@@ -979,8 +1001,9 @@ int test_notebook_close_releases_db_lock() {
 
   // Create a bundled notebook (which has a local data folder with DB)
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, "test_nb_close_db", "{\"name\":\"Close DB Test\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_close_db").c_str(),
+                             "{\"name\":\"Close DB Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
 
@@ -1005,13 +1028,13 @@ int test_notebook_close_releases_db_lock() {
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
 
   // The notebook root folder should still exist (it's not deleted on close)
-  ASSERT(path_exists("test_nb_close_db"));
-  ASSERT(path_exists("test_nb_close_db/vx_notebook/config.json"));
+  ASSERT(path_exists(get_test_path("test_nb_close_db")));
+  ASSERT(path_exists(get_test_path("test_nb_close_db/vx_notebook") + "/config.json"));
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir("test_nb_close_db");
-  std::cout << "  ✓ test_notebook_close_releases_db_lock passed" << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_close_db"));
+  std::cout << "  âœ“ test_notebook_close_releases_db_lock passed" << std::endl;
   return 0;
 }
 
@@ -1050,6 +1073,6 @@ int main() {
   RUN_TEST(test_tag_create_path_empty);
   RUN_TEST(test_tag_create_path_trailing_slash);
 
-  std::cout << "✓ All notebook tests passed" << std::endl;
+  std::cout << "âœ“ All notebook tests passed" << std::endl;
   return 0;
 }
