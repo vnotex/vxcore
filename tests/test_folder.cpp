@@ -1,4 +1,4 @@
-﻿#include <iostream>
+#include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -1591,6 +1591,494 @@ int test_metadata_store_copy_preserves_data() {
   return 0;
 }
 
+// Test that recursive folder sync works correctly.
+// When accessing a parent folder, all subfolders should be synced to MetadataStore.
+int test_sync_recursive_folders() {
+  std::cout << "  Running test_sync_recursive_folders..." << std::endl;
+  cleanup_test_dir(get_test_path("test_sync_recursive_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_sync_recursive_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create nested folder structure: root -> level1 -> level2 -> level3
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "level1", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  err = vxcore_folder_create(ctx, notebook_id, "level1", "level2", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  err = vxcore_folder_create(ctx, notebook_id, "level1/level2", "level3", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Create files at each level
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "level1", "file1.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_create(ctx, notebook_id, "level1/level2", "file2.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_create(ctx, notebook_id, "level1/level2/level3", "file3.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Close and reopen to clear in-memory state
+  err = vxcore_notebook_close(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  notebook_id = nullptr;
+
+  err = vxcore_notebook_open(ctx, get_test_path("test_sync_recursive_nb").c_str(), &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Access root folder - this triggers lazy sync which should recursively sync all subfolders
+  char *config_json = nullptr;
+  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(config_json);
+
+  // Verify level1 is accessible and has correct content
+  err = vxcore_folder_get_config(ctx, notebook_id, "level1", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json level1_config = nlohmann::json::parse(config_json);
+  ASSERT(level1_config["folders"].size() == 1);  // level2
+  ASSERT(level1_config["files"].size() == 1);    // file1.md
+  vxcore_string_free(config_json);
+
+  // Verify level2 is accessible
+  err = vxcore_folder_get_config(ctx, notebook_id, "level1/level2", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json level2_config = nlohmann::json::parse(config_json);
+  ASSERT(level2_config["folders"].size() == 1);  // level3
+  ASSERT(level2_config["files"].size() == 1);    // file2.md
+  vxcore_string_free(config_json);
+
+  // Verify level3 is accessible
+  err = vxcore_folder_get_config(ctx, notebook_id, "level1/level2/level3", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json level3_config = nlohmann::json::parse(config_json);
+  ASSERT(level3_config["files"].size() == 1);  // file3.md
+  vxcore_string_free(config_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_sync_recursive_nb"));
+  std::cout << "  ✓ test_sync_recursive_folders passed" << std::endl;
+  return 0;
+}
+
+// Test that orphan files are deleted from store when they no longer exist in config.
+// This simulates external modification of config files.
+int test_sync_orphan_file_deletion() {
+  std::cout << "  Running test_sync_orphan_file_deletion..." << std::endl;
+  cleanup_test_dir(get_test_path("test_sync_orphan_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_sync_orphan_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create two files
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "keep.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_create(ctx, notebook_id, ".", "delete.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Verify both files exist
+  char *config_json = nullptr;
+  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"].size() == 2);
+  vxcore_string_free(config_json);
+
+  // Close notebook
+  err = vxcore_notebook_close(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  notebook_id = nullptr;
+
+  // Manually edit the vx.json to remove "delete.md" (simulating external modification)
+  std::string vx_json_path = get_test_path("test_sync_orphan_nb") + "/vx_notebook/contents/vx.json";
+  std::ifstream in_file(vx_json_path);
+  nlohmann::json vx_json;
+  in_file >> vx_json;
+  in_file.close();
+
+  // Remove delete.md from files array
+  nlohmann::json new_files = nlohmann::json::array();
+  for (const auto &file : vx_json["files"]) {
+    if (file["name"] != "delete.md") {
+      new_files.push_back(file);
+    }
+  }
+  vx_json["files"] = new_files;
+  // Update modified timestamp to trigger staleness check
+  vx_json["modifiedUtc"] = vx_json["modifiedUtc"].get<int64_t>() + 1000;
+
+  std::ofstream out_file(vx_json_path);
+  out_file << vx_json.dump(2);
+  out_file.close();
+
+  // Reopen notebook - sync should detect staleness and remove orphan from store
+  err = vxcore_notebook_open(ctx, get_test_path("test_sync_orphan_nb").c_str(), &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Access folder to trigger sync
+  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  config = nlohmann::json::parse(config_json);
+
+  // Verify only "keep.md" remains
+  ASSERT(config["files"].size() == 1);
+  ASSERT(config["files"][0]["name"] == "keep.md");
+  vxcore_string_free(config_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_sync_orphan_nb"));
+  std::cout << "  ✓ test_sync_orphan_file_deletion passed" << std::endl;
+  return 0;
+}
+
+// Test that file metadata updates are synced correctly when config changes externally.
+int test_sync_file_metadata_update() {
+  std::cout << "  Running test_sync_file_metadata_update..." << std::endl;
+  cleanup_test_dir(get_test_path("test_sync_file_update_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_sync_file_update_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file with initial metadata
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Set initial metadata
+  err = vxcore_file_update_metadata(ctx, notebook_id, "note.md", "{\"priority\":\"low\"}");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify initial metadata
+  char *info_json = nullptr;
+  err = vxcore_file_get_info(ctx, notebook_id, "note.md", &info_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json info = nlohmann::json::parse(info_json);
+  ASSERT(info["metadata"]["priority"] == "low");
+  vxcore_string_free(info_json);
+
+  // Close notebook
+  err = vxcore_notebook_close(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  notebook_id = nullptr;
+
+  // Manually edit the vx.json to change file metadata (simulating external modification)
+  std::string vx_json_path =
+      get_test_path("test_sync_file_update_nb") + "/vx_notebook/contents/vx.json";
+  std::ifstream in_file(vx_json_path);
+  nlohmann::json vx_json;
+  in_file >> vx_json;
+  in_file.close();
+
+  // Update file metadata
+  for (auto &file : vx_json["files"]) {
+    if (file["name"] == "note.md") {
+      file["metadata"]["priority"] = "high";
+      file["metadata"]["author"] = "test";
+    }
+  }
+  // Update modified timestamp to trigger staleness check
+  vx_json["modifiedUtc"] = vx_json["modifiedUtc"].get<int64_t>() + 1000;
+
+  std::ofstream out_file(vx_json_path);
+  out_file << vx_json.dump(2);
+  out_file.close();
+
+  // Reopen notebook - sync should update file metadata in store
+  err = vxcore_notebook_open(ctx, get_test_path("test_sync_file_update_nb").c_str(), &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Access folder to trigger sync
+  char *config_json = nullptr;
+  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(config_json);
+
+  // Verify metadata was updated
+  err = vxcore_file_get_info(ctx, notebook_id, "note.md", &info_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  info = nlohmann::json::parse(info_json);
+  ASSERT(info["metadata"]["priority"] == "high");
+  ASSERT(info["metadata"]["author"] == "test");
+  vxcore_string_free(info_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_sync_file_update_nb"));
+  std::cout << "  ✓ test_sync_file_metadata_update passed" << std::endl;
+  return 0;
+}
+
+// Test that new files added externally to config are synced to store.
+int test_sync_new_file_creation() {
+  std::cout << "  Running test_sync_new_file_creation..." << std::endl;
+  cleanup_test_dir(get_test_path("test_sync_new_file_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_sync_new_file_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create one file initially
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "existing.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Verify only one file
+  char *config_json = nullptr;
+  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"].size() == 1);
+  vxcore_string_free(config_json);
+
+  // Close notebook
+  err = vxcore_notebook_close(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  notebook_id = nullptr;
+
+  // Manually add a new file entry to vx.json (simulating external addition)
+  std::string vx_json_path =
+      get_test_path("test_sync_new_file_nb") + "/vx_notebook/contents/vx.json";
+  std::ifstream in_file(vx_json_path);
+  nlohmann::json vx_json;
+  in_file >> vx_json;
+  in_file.close();
+
+  // Add new file entry
+  nlohmann::json new_file;
+  new_file["id"] = "new-file-uuid-12345";
+  new_file["name"] = "newfile.md";
+  new_file["createdUtc"] = vx_json["modifiedUtc"].get<int64_t>();
+  new_file["modifiedUtc"] = vx_json["modifiedUtc"].get<int64_t>();
+  new_file["metadata"] = nlohmann::json::object();
+  new_file["tags"] = nlohmann::json::array();
+  vx_json["files"].push_back(new_file);
+
+  // Update modified timestamp to trigger staleness check
+  vx_json["modifiedUtc"] = vx_json["modifiedUtc"].get<int64_t>() + 1000;
+
+  std::ofstream out_file(vx_json_path);
+  out_file << vx_json.dump(2);
+  out_file.close();
+
+  // Also create the actual file on disk
+  write_file(get_test_path("test_sync_new_file_nb") + "/newfile.md", "# New File\n");
+
+  // Reopen notebook - sync should add new file to store
+  err = vxcore_notebook_open(ctx, get_test_path("test_sync_new_file_nb").c_str(), &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Access folder to trigger sync
+  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  config = nlohmann::json::parse(config_json);
+
+  // Verify both files exist
+  ASSERT(config["files"].size() == 2);
+
+  // Find the new file
+  bool found_new_file = false;
+  for (const auto &file : config["files"]) {
+    if (file["name"] == "newfile.md") {
+      found_new_file = true;
+      ASSERT(file["id"] == "new-file-uuid-12345");
+      break;
+    }
+  }
+  ASSERT(found_new_file);
+  vxcore_string_free(config_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_sync_new_file_nb"));
+  std::cout << "  ✓ test_sync_new_file_creation passed" << std::endl;
+  return 0;
+}
+
+// Test that folder metadata updates are synced correctly.
+int test_sync_folder_metadata_update() {
+  std::cout << "  Running test_sync_folder_metadata_update..." << std::endl;
+  cleanup_test_dir(get_test_path("test_sync_folder_update_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_sync_folder_update_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a folder with metadata
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Set initial folder metadata
+  err = vxcore_folder_update_metadata(ctx, notebook_id, "docs",
+                                      "{\"description\":\"Documentation\"}");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Close notebook
+  err = vxcore_notebook_close(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  notebook_id = nullptr;
+
+  // Manually edit the docs folder's vx.json to change metadata
+  std::string vx_json_path =
+      get_test_path("test_sync_folder_update_nb") + "/vx_notebook/contents/docs/vx.json";
+  std::ifstream in_file(vx_json_path);
+  nlohmann::json vx_json;
+  in_file >> vx_json;
+  in_file.close();
+
+  // Update folder metadata
+  vx_json["metadata"]["description"] = "Updated docs";
+  vx_json["metadata"]["version"] = "2.0";
+  // Update modified timestamp
+  vx_json["modifiedUtc"] = vx_json["modifiedUtc"].get<int64_t>() + 1000;
+
+  std::ofstream out_file(vx_json_path);
+  out_file << vx_json.dump(2);
+  out_file.close();
+
+  // Reopen notebook
+  err =
+      vxcore_notebook_open(ctx, get_test_path("test_sync_folder_update_nb").c_str(), &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Access folder to trigger sync
+  char *config_json = nullptr;
+  err = vxcore_folder_get_config(ctx, notebook_id, "docs", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+
+  // Verify metadata was updated
+  ASSERT(config["metadata"]["description"] == "Updated docs");
+  ASSERT(config["metadata"]["version"] == "2.0");
+  vxcore_string_free(config_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_sync_folder_update_nb"));
+  std::cout << "  ✓ test_sync_folder_metadata_update passed" << std::endl;
+  return 0;
+}
+
+// Test that sync is skipped when store is already up-to-date (staleness check).
+// This validates performance optimization - no unnecessary DB operations.
+int test_sync_staleness_check() {
+  std::cout << "  Running test_sync_staleness_check..." << std::endl;
+  cleanup_test_dir(get_test_path("test_sync_stale_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_sync_stale_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a folder with file
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "docs", "readme.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Access folder multiple times - second access should use cached/synced data
+  char *config_json = nullptr;
+  for (int i = 0; i < 3; i++) {
+    err = vxcore_folder_get_config(ctx, notebook_id, "docs", &config_json);
+    ASSERT_EQ(err, VXCORE_OK);
+    nlohmann::json config = nlohmann::json::parse(config_json);
+    ASSERT(config["files"].size() == 1);
+    ASSERT(config["files"][0]["name"] == "readme.md");
+    vxcore_string_free(config_json);
+    config_json = nullptr;
+  }
+
+  // Close and reopen
+  err = vxcore_notebook_close(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  notebook_id = nullptr;
+
+  err = vxcore_notebook_open(ctx, get_test_path("test_sync_stale_nb").c_str(), &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Access again - sync state should be preserved, so only staleness check happens
+  err = vxcore_folder_get_config(ctx, notebook_id, "docs", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"].size() == 1);
+  ASSERT(config["files"][0]["name"] == "readme.md");
+  vxcore_string_free(config_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_sync_stale_nb"));
+  std::cout << "  ✓ test_sync_staleness_check passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -1640,6 +2128,14 @@ int main() {
   RUN_TEST(test_metadata_store_write_through);
   RUN_TEST(test_metadata_store_copy_preserves_data);
 
-  std::cout << "âœ“ All folder tests passed" << std::endl;
+  // SyncFolderToStore enhancement tests
+  RUN_TEST(test_sync_recursive_folders);
+  RUN_TEST(test_sync_orphan_file_deletion);
+  RUN_TEST(test_sync_file_metadata_update);
+  RUN_TEST(test_sync_new_file_creation);
+  RUN_TEST(test_sync_folder_metadata_update);
+  RUN_TEST(test_sync_staleness_check);
+
+  std::cout << "✓ All folder tests passed" << std::endl;
   return 0;
 }

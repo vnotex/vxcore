@@ -2,6 +2,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "metadata_store.h"
 #include "notebook.h"
@@ -38,6 +40,65 @@ StoreFileRecord ToStoreFileRecord(const FileRecord &file, const std::string &fol
   record.metadata = file.metadata.dump();
   record.tags = file.tags;
   return record;
+}
+
+// Helper to sync files from config to store (add/update/delete orphans)
+// - Deletes files in store that no longer exist in config
+// - Creates new files that exist in config but not in store
+// - Updates existing files if they differ
+void SyncFilesToStore(MetadataStore *store, const std::string &folder_id,
+                      const std::vector<FileRecord> &config_files) {
+  if (!store) {
+    return;
+  }
+
+  // Get existing files from store
+  std::vector<StoreFileRecord> store_files = store->ListFiles(folder_id);
+
+  // Build set of config file IDs for quick lookup
+  std::unordered_set<std::string> config_file_ids;
+  for (const auto &file : config_files) {
+    config_file_ids.insert(file.id);
+  }
+
+  // Delete orphaned files (in store but not in config)
+  for (const auto &store_file : store_files) {
+    if (config_file_ids.find(store_file.id) == config_file_ids.end()) {
+      VXCORE_LOG_DEBUG("SyncFilesToStore: Deleting orphaned file: id=%s, name=%s",
+                       store_file.id.c_str(), store_file.name.c_str());
+      if (!store->DeleteFile(store_file.id)) {
+        VXCORE_LOG_WARN("SyncFilesToStore: Failed to delete orphaned file: id=%s",
+                        store_file.id.c_str());
+      }
+    }
+  }
+
+  // Build map of store file IDs for quick lookup
+  std::unordered_map<std::string, const StoreFileRecord *> store_file_map;
+  for (const auto &store_file : store_files) {
+    store_file_map[store_file.id] = &store_file;
+  }
+
+  // Add or update files from config
+  for (const auto &file : config_files) {
+    auto it = store_file_map.find(file.id);
+    if (it != store_file_map.end()) {
+      // File exists in store - update it
+      if (!store->UpdateFile(file.id, file.name, file.modified_utc, file.metadata.dump())) {
+        VXCORE_LOG_WARN("SyncFilesToStore: Failed to update file: id=%s", file.id.c_str());
+      }
+      // Also update tags
+      if (!store->SetFileTags(file.id, file.tags)) {
+        VXCORE_LOG_WARN("SyncFilesToStore: Failed to update file tags: id=%s", file.id.c_str());
+      }
+    } else {
+      // File doesn't exist in store - create it
+      StoreFileRecord file_record = ToStoreFileRecord(file, folder_id);
+      if (!store->CreateFile(file_record)) {
+        VXCORE_LOG_WARN("SyncFilesToStore: Failed to create file: id=%s", file.id.c_str());
+      }
+    }
+  }
 }
 
 }  // namespace
@@ -189,11 +250,13 @@ VxCoreError BundledFolderManager::GetFolderConfig(const std::string &folder_path
 }
 
 VxCoreError BundledFolderManager::GetFolderConfig(const std::string &folder_path,
-                                                  FolderConfig **out_config) {
+                                                  FolderConfig **out_config,
+                                                  const std::string *parent_id) {
   *out_config = nullptr;
 
   FolderConfig *cached = GetCachedConfig(folder_path);
   if (cached) {
+    // Once it is in cache, we assume that it is up-to-date in store.
     *out_config = cached;
     return VXCORE_OK;
   }
@@ -204,12 +267,11 @@ VxCoreError BundledFolderManager::GetFolderConfig(const std::string &folder_path
     return error;
   }
 
-  // Lazy sync: populate MetadataStore with this folder's data
-  std::string parent_id = GetParentFolderId(folder_path);
-  SyncFolderToStore(folder_path, *config, parent_id);
-
   *out_config = config.get();
-  config_cache_[folder_path] = std::move(config);
+  CacheConfig(folder_path, std::move(config));
+
+  SyncFolderToStore(folder_path, **out_config,
+                    parent_id ? *parent_id : GetParentFolderId(folder_path));
   return VXCORE_OK;
 }
 
@@ -1403,17 +1465,13 @@ std::string BundledFolderManager::GetParentFolderId(const std::string &folder_pa
   const auto [parent_path, folder_name] = SplitPath(folder_path);
   (void)folder_name;  // Unused
 
-  FolderConfig *parent_config = GetCachedConfig(parent_path);
-  if (parent_config) {
-    return parent_config->id;
-  }
-
-  // Parent not in cache - try to load it (which will also trigger lazy sync for parent)
+  FolderConfig *parent_config = nullptr;
   VxCoreError error = GetFolderConfig(parent_path, &parent_config);
   if (error == VXCORE_OK && parent_config) {
     return parent_config->id;
   }
 
+  VXCORE_LOG_ERROR("GetParentFolderId: Parent folder not found: %s", parent_path.c_str());
   return "";  // Parent not found
 }
 
@@ -1425,39 +1483,62 @@ void BundledFolderManager::SyncFolderToStore(const std::string &folder_path,
     return;  // No store available
   }
 
+  // Check staleness by comparing config.modified_utc against stored sync state
+  auto sync_state = store->GetSyncState(config.id);
+  if (sync_state.has_value() && config.modified_utc <= sync_state->config_file_modified_utc) {
+    // Folder is up-to-date, no sync needed
+    VXCORE_LOG_DEBUG("SyncFolderToStore: Folder up-to-date: id=%s, path=%s", config.id.c_str(),
+                     folder_path.c_str());
+    return;
+  }
+
+  VXCORE_LOG_INFO("SyncFolderToStore: Syncing folder: id=%s, path=%s", config.id.c_str(),
+                  folder_path.c_str());
+
   // Check if folder already exists in store
   auto existing_folder = store->GetFolder(config.id);
   if (existing_folder.has_value()) {
-    // Folder exists - check if we need to update sync state
-    // For now, we assume the store is up-to-date if folder exists
-    // (write-through cache should keep it in sync)
-    VXCORE_LOG_DEBUG("SyncFolderToStore: Folder already in store: id=%s, path=%s",
-                     config.id.c_str(), folder_path.c_str());
-    return;
-  }
-
-  VXCORE_LOG_INFO("SyncFolderToStore: Adding folder to store: id=%s, path=%s", config.id.c_str(),
-                  folder_path.c_str());
-
-  // Create folder record in store
-  StoreFolderRecord folder_record = ToStoreFolderRecord(config, parent_folder_id);
-  if (!store->CreateFolder(folder_record)) {
-    VXCORE_LOG_WARN("SyncFolderToStore: Failed to create folder in store: id=%s",
-                    config.id.c_str());
-    return;
-  }
-
-  // Create file records in store
-  for (const auto &file : config.files) {
-    StoreFileRecord file_record = ToStoreFileRecord(file, config.id);
-    if (!store->CreateFile(file_record)) {
-      VXCORE_LOG_WARN("SyncFolderToStore: Failed to create file in store: id=%s", file.id.c_str());
-      // Continue anyway - best effort
+    // Update existing folder
+    if (!store->UpdateFolder(config.id, config.name, config.modified_utc, config.metadata.dump())) {
+      VXCORE_LOG_WARN("SyncFolderToStore: Failed to update folder: id=%s", config.id.c_str());
+      return;  // Skip processing its children
+    }
+  } else {
+    // Create new folder
+    StoreFolderRecord folder_record = ToStoreFolderRecord(config, parent_folder_id);
+    if (!store->CreateFolder(folder_record)) {
+      VXCORE_LOG_WARN("SyncFolderToStore: Failed to create folder in store: id=%s",
+                      config.id.c_str());
+      return;  // Can't proceed without folder
     }
   }
 
-  VXCORE_LOG_DEBUG("SyncFolderToStore: Synced folder with %zu files: path=%s", config.files.size(),
-                   folder_path.c_str());
+  // Sync files (add/update/delete orphans)
+  SyncFilesToStore(store, config.id, config.files);
+
+  // Recursively sync subfolders
+  // NOTE: Use LoadFolderConfig (not GetFolderConfig) to avoid infinite recursion.
+  // GetFolderConfig triggers lazy sync which calls SyncFolderToStore again.
+  for (const auto &subfolder_name : config.folders) {
+    std::string subfolder_path = ConcatenatePaths(folder_path, subfolder_name);
+    FolderConfig *subfolder_config;
+    // Will call SyncFolderToStore recursively if necessary.
+    VxCoreError error = GetFolderConfig(subfolder_path, &subfolder_config, &config.id);
+    if (error != VXCORE_OK || !subfolder_config) {
+      VXCORE_LOG_WARN("SyncFolderToStore: Failed to load subfolder config: %s",
+                      subfolder_path.c_str());
+      continue;  // Best-effort: skip this subfolder
+    }
+  }
+
+  // Update sync state to track when this folder was synced
+  int64_t sync_time = GetCurrentTimestampMillis();
+  if (!store->UpdateSyncState(config.id, sync_time, config.modified_utc)) {
+    VXCORE_LOG_WARN("SyncFolderToStore: Failed to update sync state: id=%s", config.id.c_str());
+  }
+
+  VXCORE_LOG_DEBUG("SyncFolderToStore: Completed sync for folder: id=%s, path=%s",
+                   config.id.c_str(), folder_path.c_str());
 }
 
 }  // namespace vxcore

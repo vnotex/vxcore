@@ -86,7 +86,8 @@ class BundledFolderManager : public FolderManager {
   VxCoreError SyncMetadataStoreFromConfigs();
 
  private:
-  VxCoreError GetFolderConfig(const std::string &folder_path, FolderConfig **out_config);
+  VxCoreError GetFolderConfig(const std::string &folder_path, FolderConfig **out_config,
+                              const std::string *parent_id = nullptr);
   VxCoreError LoadFolderConfig(const std::string &folder_path,
                                std::unique_ptr<FolderConfig> &out_config);
   VxCoreError SaveFolderConfig(const std::string &folder_path, const FolderConfig &config);
