@@ -10,7 +10,7 @@ namespace db {
 namespace schema {
 
 // Schema version for migration tracking
-constexpr int kCurrentSchemaVersion = 2;
+constexpr int kCurrentSchemaVersion = 3;
 
 // Folders table: stores folder hierarchy
 // parent_id references folders(id) - NULL for root folders
@@ -82,6 +82,14 @@ CREATE TABLE IF NOT EXISTS file_tags (
 CREATE INDEX IF NOT EXISTS idx_file_tags_tag ON file_tags(tag_id);
 )";
 
+// Notebook metadata: key-value store for notebook-level metadata
+inline constexpr const char* kCreateNotebookMetadataTable = R"(
+CREATE TABLE IF NOT EXISTS notebook_metadata (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+)";
+
 // Schema version table for migrations
 inline constexpr const char* kCreateSchemaVersionTable = R"(
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -92,18 +100,19 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // Table names in reverse dependency order (safe for dropping)
 // When adding a new table, add it to this array in the appropriate position
 inline constexpr const char* kTableNames[] = {
-    "file_tags",       // Many-to-many relationship (depends on files, tags)
-    "files",           // Depends on folders
-    "tags",            // Independent
-    "folders",         // Independent (now includes sync state)
-    "schema_version",  // Independent
+    "file_tags",          // Many-to-many relationship (depends on files, tags)
+    "files",              // Depends on folders
+    "tags",               // Independent
+    "folders",            // Independent (now includes sync state)
+    "notebook_metadata",  // Independent (key-value store)
+    "schema_version",     // Independent
 };
 
 // Combined initialization script
 inline const std::string GetInitializationScript() {
   return std::string(kCreateFoldersTable) + "\n" + std::string(kCreateFilesTable) + "\n" +
          std::string(kCreateTagsTable) + "\n" + std::string(kCreateFileTagsTable) + "\n" +
-         std::string(kCreateSchemaVersionTable);
+         std::string(kCreateNotebookMetadataTable) + "\n" + std::string(kCreateSchemaVersionTable);
 }
 
 // Generate DROP TABLE statements for all tables

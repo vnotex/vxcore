@@ -3,6 +3,7 @@
 #include <vxcore/vxcore_types.h>
 
 #include <algorithm>
+#include <unordered_map>
 
 #include "db/sqlite_metadata_store.h"
 #include "folder_manager.h"
@@ -45,7 +46,8 @@ nlohmann::json TagNode::ToJson() const {
 NotebookConfig::NotebookConfig()
     : assets_folder("vx_assets"),
       attachments_folder("vx_attachments"),
-      metadata(nlohmann::json::object()) {}
+      metadata(nlohmann::json::object()),
+      tags_modified_utc(0) {}
 
 NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
   NotebookConfig config;
@@ -72,6 +74,9 @@ NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
       config.tags.push_back(TagNode::FromJson(tag_json));
     }
   }
+  if (json.contains("tagsModifiedUtc") && json["tagsModifiedUtc"].is_number_integer()) {
+    config.tags_modified_utc = json["tagsModifiedUtc"].get<int64_t>();
+  }
   return config;
 }
 
@@ -88,6 +93,7 @@ nlohmann::json NotebookConfig::ToJson() const {
     tags_array.push_back(tag.ToJson());
   }
   json["tags"] = std::move(tags_array);
+  json["tagsModifiedUtc"] = tags_modified_utc;
   return json;
 }
 
@@ -155,6 +161,136 @@ VxCoreError Notebook::InitMetadataStore() {
   return VXCORE_OK;
 }
 
+VxCoreError Notebook::SyncTagsToMetadataStore() {
+  if (!metadata_store_ || !metadata_store_->IsOpen()) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  // 1. Get tags_synced_utc from DB
+  int64_t tags_synced_utc = 0;
+  auto synced_str = metadata_store_->GetNotebookMetadata("tags_synced_utc");
+  if (synced_str.has_value()) {
+    try {
+      tags_synced_utc = std::stoll(synced_str.value());
+    } catch (...) {
+      tags_synced_utc = 0;
+    }
+  }
+
+  // 2. Check if sync needed
+  if (config_.tags_modified_utc > 0 && config_.tags_modified_utc <= tags_synced_utc) {
+    VXCORE_LOG_DEBUG("Tags already synced: config=%lld, db=%lld", config_.tags_modified_utc,
+                     tags_synced_utc);
+    return VXCORE_OK;  // No sync needed
+  }
+
+  VXCORE_LOG_INFO("Syncing tags to MetadataStore: config=%lld, db=%lld", config_.tags_modified_utc,
+                  tags_synced_utc);
+
+  // 3. Begin transaction
+  if (!metadata_store_->BeginTransaction()) {
+    VXCORE_LOG_ERROR("Failed to begin transaction for tag sync");
+    return VXCORE_ERR_UNKNOWN;
+  }
+
+  bool success = true;
+
+  // 4. Sort tags by depth (root tags first, then children)
+  // Build a map of tag name -> depth
+  std::unordered_map<std::string, int> tag_depth;
+  for (const auto &tag : config_.tags) {
+    if (tag.parent.empty()) {
+      tag_depth[tag.name] = 0;
+    }
+  }
+
+  // Iteratively compute depths for tags with parents
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const auto &tag : config_.tags) {
+      if (tag_depth.find(tag.name) != tag_depth.end()) {
+        continue;
+      }
+      if (!tag.parent.empty() && tag_depth.find(tag.parent) != tag_depth.end()) {
+        tag_depth[tag.name] = tag_depth[tag.parent] + 1;
+        changed = true;
+      }
+    }
+  }
+
+  // Sort tags by depth
+  std::vector<const TagNode *> sorted_tags;
+  sorted_tags.reserve(config_.tags.size());
+  for (const auto &tag : config_.tags) {
+    sorted_tags.push_back(&tag);
+  }
+  std::sort(sorted_tags.begin(), sorted_tags.end(),
+            [&tag_depth](const TagNode *a, const TagNode *b) {
+              int da = tag_depth.count(a->name) ? tag_depth[a->name] : 999;
+              int db = tag_depth.count(b->name) ? tag_depth[b->name] : 999;
+              return da < db;
+            });
+
+  // 5. Create/update tags in depth order
+  for (const TagNode *tag : sorted_tags) {
+    StoreTagRecord store_tag;
+    store_tag.name = tag->name;
+    store_tag.parent_name = tag->parent;
+    store_tag.metadata = tag->metadata.dump();
+
+    if (!metadata_store_->CreateOrUpdateTag(store_tag)) {
+      VXCORE_LOG_ERROR("Failed to sync tag: %s", tag->name.c_str());
+      success = false;
+      break;
+    }
+  }
+
+  // 6. Delete orphan tags (tags in DB but not in config)
+  if (success) {
+    auto db_tags = metadata_store_->ListTags();
+    for (const auto &db_tag : db_tags) {
+      if (tag_depth.find(db_tag.name) == tag_depth.end()) {
+        VXCORE_LOG_INFO("Deleting orphan tag: %s", db_tag.name.c_str());
+        if (!metadata_store_->DeleteTag(db_tag.name)) {
+          VXCORE_LOG_WARN("Failed to delete orphan tag: %s", db_tag.name.c_str());
+          // Continue anyway - orphan cleanup is best-effort
+        }
+      }
+    }
+  }
+
+  // 7. Commit or rollback
+  if (success) {
+    if (!metadata_store_->CommitTransaction()) {
+      VXCORE_LOG_ERROR("Failed to commit tag sync transaction");
+      return VXCORE_ERR_UNKNOWN;
+    }
+  } else {
+    metadata_store_->RollbackTransaction();
+    return VXCORE_ERR_UNKNOWN;
+  }
+
+  // 8. Update tags_synced_utc in DB
+  int64_t sync_time =
+      config_.tags_modified_utc > 0 ? config_.tags_modified_utc : GetCurrentTimestampMillis();
+  metadata_store_->SetNotebookMetadata("tags_synced_utc", std::to_string(sync_time));
+
+  // 9. If config had tags_modified_utc=0, set it to current time and save
+  if (config_.tags_modified_utc == 0 && !config_.tags.empty()) {
+    config_.tags_modified_utc = sync_time;
+    // Note: UpdateConfig is virtual, will save to appropriate location
+    auto err = UpdateConfig(config_);
+    if (err != VXCORE_OK) {
+      VXCORE_LOG_WARN("Failed to update config after tag sync: error=%d", err);
+      // Don't fail - sync itself succeeded
+    }
+  }
+
+  VXCORE_LOG_INFO("Tag sync completed successfully");
+  return VXCORE_OK;
+}
+
 void Notebook::Close() {
   VXCORE_LOG_INFO("Closing notebook: id=%s", config_.id.c_str());
 
@@ -191,6 +327,7 @@ VxCoreError Notebook::CreateTag(const std::string &tag_name, const std::string &
   }
 
   config_.tags.emplace_back(tag_name, parent_tag);
+  config_.tags_modified_utc = GetCurrentTimestampMillis();
 
   auto err = UpdateConfig(config_);
   if (err != VXCORE_OK) {
@@ -323,6 +460,7 @@ VxCoreError Notebook::DeleteTag(const std::string &tag_name) {
     }
   }
 
+  config_.tags_modified_utc = GetCurrentTimestampMillis();
   auto err = UpdateConfig(config_);
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR(
@@ -367,6 +505,7 @@ VxCoreError Notebook::MoveTag(const std::string &tag_name, const std::string &pa
 
   tag->parent = parent_tag;
 
+  config_.tags_modified_utc = GetCurrentTimestampMillis();
   auto err = UpdateConfig(config_);
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR(

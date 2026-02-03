@@ -4,6 +4,7 @@
 
 #include "db_manager.h"
 #include "file_db.h"
+#include "notebook_db.h"
 #include "tag_db.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
@@ -12,7 +13,10 @@ namespace vxcore {
 namespace db {
 
 SqliteMetadataStore::SqliteMetadataStore()
-    : db_manager_(std::make_unique<DbManager>()), file_db_(nullptr), tag_db_(nullptr) {}
+    : db_manager_(std::make_unique<DbManager>()),
+      file_db_(nullptr),
+      tag_db_(nullptr),
+      notebook_db_(nullptr) {}
 
 SqliteMetadataStore::~SqliteMetadataStore() { Close(); }
 
@@ -39,6 +43,7 @@ bool SqliteMetadataStore::Open(const std::string& db_path) {
   // Create FileDb and TagDb with the open database handle
   file_db_ = std::make_unique<FileDb>(db_manager_->GetHandle());
   tag_db_ = std::make_unique<TagDb>(db_manager_->GetHandle());
+  notebook_db_ = std::make_unique<NotebookDb>(db_manager_->GetHandle());
 
   VXCORE_LOG_INFO("SqliteMetadataStore opened: %s", db_path.c_str());
   return true;
@@ -47,6 +52,7 @@ bool SqliteMetadataStore::Open(const std::string& db_path) {
 void SqliteMetadataStore::Close() {
   file_db_.reset();
   tag_db_.reset();
+  notebook_db_.reset();
   db_manager_->Close();
   VXCORE_LOG_DEBUG("SqliteMetadataStore closed");
 }
@@ -863,6 +869,14 @@ void SqliteMetadataStore::IterateAllFiles(
 
   // Start from root (-1)
   iterate_folder(-1);
+}
+
+std::optional<std::string> SqliteMetadataStore::GetNotebookMetadata(const std::string& key) {
+  return notebook_db_->GetMetadata(key);
+}
+
+bool SqliteMetadataStore::SetNotebookMetadata(const std::string& key, const std::string& value) {
+  return notebook_db_->SetMetadata(key, value);
 }
 
 // --- Error Handling ---

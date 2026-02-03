@@ -2,6 +2,8 @@
 
 #include <sqlite3.h>
 
+#include <optional>
+
 #include "db_schema.h"
 #include "utils/logger.h"
 

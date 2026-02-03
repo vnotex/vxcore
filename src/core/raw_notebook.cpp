@@ -80,6 +80,13 @@ VxCoreError RawNotebook::InitOnCreation() {
     return err;
   }
 
+  // Sync tags from NotebookConfig to MetadataStore
+  err = SyncTagsToMetadataStore();
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_WARN("Tag sync failed on creation: root=%s, error=%d", root_folder_.c_str(), err);
+    // Continue anyway - tags will be synced on next open
+  }
+
   return VXCORE_OK;
 }
 
@@ -100,6 +107,14 @@ VxCoreError RawNotebook::Open(const std::string &local_data_folder, const std::s
     VXCORE_LOG_ERROR("Failed to initialize MetadataStore on open: root=%s, id=%s, error=%d",
                      root_folder.c_str(), id.c_str(), err);
     return err;
+  }
+
+  // Sync tags from NotebookConfig to MetadataStore if needed
+  err = notebook->SyncTagsToMetadataStore();
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_WARN("Tag sync failed on open: root=%s, id=%s, error=%d", root_folder.c_str(),
+                    id.c_str(), err);
+    // Continue anyway - tags will be synced on next open or RebuildCache
   }
 
   out_notebook = std::move(notebook);

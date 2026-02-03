@@ -217,6 +217,11 @@ class MetadataStore {
   virtual void IterateAllFiles(
       std::function<bool(const std::string&, const StoreFileRecord&)> callback) = 0;
 
+  // --- Notebook Metadata ---
+  // Key-value store for notebook-level metadata (e.g., tags_synced_utc)
+  virtual std::optional<std::string> GetNotebookMetadata(const std::string& key) = 0;
+  virtual bool SetNotebookMetadata(const std::string& key, const std::string& value) = 0;
+
   // --- Error Handling ---
 
   // Returns the last error message

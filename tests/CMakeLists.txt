@@ -9,6 +9,7 @@ add_vxcore_test(test_core)
 add_vxcore_test(test_notebook)
 add_vxcore_test(test_folder)
 add_vxcore_test(test_search)
+add_vxcore_test(test_tag_sync)
 
 add_executable(test_file_utils test_file_utils.cpp ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_include_directories(test_file_utils PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
@@ -53,10 +54,10 @@ add_executable(test_metadata_store test_metadata_store.cpp
     ${CMAKE_SOURCE_DIR}/src/db/db_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/db/file_db.cpp
     ${CMAKE_SOURCE_DIR}/src/db/tag_db.cpp
+    ${CMAKE_SOURCE_DIR}/src/db/notebook_db.cpp
     ${CMAKE_SOURCE_DIR}/src/db/sqlite_metadata_store.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_include_directories(test_metadata_store PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(test_metadata_store PRIVATE sqlite3 nlohmann_json)
 add_test(NAME test_metadata_store COMMAND test_metadata_store)
-

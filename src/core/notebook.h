@@ -35,6 +35,7 @@ struct NotebookConfig {
   std::string attachments_folder;
   nlohmann::json metadata;
   std::vector<TagNode> tags;
+  int64_t tags_modified_utc;
 
   NotebookConfig();
 
@@ -100,6 +101,10 @@ class Notebook {
   // Initialize and open the MetadataStore for this notebook
   // Returns VXCORE_OK on success, or error code on failure
   VxCoreError InitMetadataStore();
+
+  // Syncs tags from NotebookConfig to MetadataStore if config is newer
+  // Returns VXCORE_OK on success or if no sync needed
+  VxCoreError SyncTagsToMetadataStore();
 
   std::string GetDbPath() const;
   virtual std::string GetConfigPath() const = 0;

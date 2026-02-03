@@ -17,6 +17,7 @@ namespace db {
 class DbManager;
 class FileDb;
 class TagDb;
+class NotebookDb;
 
 // SQLite-based implementation of MetadataStore
 // Wraps DbManager, FileDb, TagDb to provide the MetadataStore interface
@@ -96,6 +97,10 @@ class SqliteMetadataStore : public MetadataStore {
   void IterateAllFiles(
       std::function<bool(const std::string&, const StoreFileRecord&)> callback) override;
 
+  // --- Notebook Metadata ---
+  std::optional<std::string> GetNotebookMetadata(const std::string& key) override;
+  bool SetNotebookMetadata(const std::string& key, const std::string& value) override;
+
   // --- Error Handling ---
   std::string GetLastError() const override;
 
@@ -113,6 +118,7 @@ class SqliteMetadataStore : public MetadataStore {
   std::unique_ptr<DbManager> db_manager_;
   std::unique_ptr<FileDb> file_db_;
   std::unique_ptr<TagDb> tag_db_;
+  std::unique_ptr<NotebookDb> notebook_db_;
   mutable std::string last_error_;
 };
 

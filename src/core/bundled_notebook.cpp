@@ -64,6 +64,13 @@ VxCoreError BundledNotebook::InitOnCreation() {
     return err;
   }
 
+  // Sync tags from NotebookConfig to MetadataStore
+  err = SyncTagsToMetadataStore();
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_WARN("Tag sync failed on creation: root=%s, error=%d", root_folder_.c_str(), err);
+    // Continue anyway - tags will be synced on next open
+  }
+
   err = folder_manager_->InitOnCreation();
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to initialize bundled notebook folder manager: root=%s, error=%d",
@@ -104,7 +111,14 @@ VxCoreError BundledNotebook::Open(const std::string &local_data_folder,
     return err;
   }
 
-  // Note: We do NOT sync MetadataStore from config files here.
+  // Sync tags from NotebookConfig to MetadataStore if needed
+  err = notebook->SyncTagsToMetadataStore();
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_WARN("Tag sync failed on open: root=%s, error=%d", root_folder.c_str(), err);
+    // Continue anyway - tags will be synced on next open or RebuildCache
+  }
+
+  // Note: We do NOT sync folder/file MetadataStore from config files here.
   // The cache uses lazy sync - data is loaded on demand when accessed.
   // Users can call RebuildCache() if they need a full refresh.
 

@@ -27,6 +27,7 @@ set(VXCORE_SOURCES
     db/db_manager.cpp
     db/file_db.cpp
     db/tag_db.cpp
+    db/notebook_db.cpp
     db/sync_manager.cpp
     db/sqlite_metadata_store.cpp
     search/search_manager.cpp
