@@ -14,6 +14,8 @@ const char *kPortableConfigFolderName = "config";
 const char *kTestConfigFolderName = "vxcore_test_config";
 
 bool ConfigManager::test_mode_ = false;
+std::string ConfigManager::org_name_ = "VNoteX";
+std::string ConfigManager::app_name_ = "VNote";
 
 ConfigManager::ConfigManager() : config_(), session_config_() {
   if (test_mode_) {
@@ -33,8 +35,8 @@ ConfigManager::ConfigManager() : config_(), session_config_() {
       app_data_path_ = portable_config_path;
       local_data_path_ = portable_config_path;
     } else {
-      app_data_path_ = PathProvider::GetAppDataPath();
-      local_data_path_ = PathProvider::GetLocalDataPath();
+      app_data_path_ = PathProvider::GetAppDataPath(app_name_);
+      local_data_path_ = PathProvider::GetLocalDataPath(app_name_);
     }
   }
 }
@@ -128,5 +130,10 @@ VxCoreError ConfigManager::SaveSessionConfig() {
 void ConfigManager::SetTestMode(bool enabled) { test_mode_ = enabled; }
 
 bool ConfigManager::IsTestMode() { return test_mode_; }
+
+void ConfigManager::SetAppInfo(const std::string &org_name, const std::string &app_name) {
+  org_name_ = org_name;
+  app_name_ = app_name;
+}
 
 }  // namespace vxcore

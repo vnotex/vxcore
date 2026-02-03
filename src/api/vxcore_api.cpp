@@ -19,6 +19,13 @@ VXCORE_API void vxcore_set_test_mode(int enabled) {
   vxcore::ConfigManager::SetTestMode(enabled != 0);
 }
 
+VXCORE_API void vxcore_set_app_info(const char *org_name, const char *app_name) {
+  if (!org_name || !app_name) {
+    return;
+  }
+  vxcore::ConfigManager::SetAppInfo(org_name, app_name);
+}
+
 VXCORE_API const char *vxcore_error_message(VxCoreError error) {
   switch (error) {
     case VXCORE_OK:

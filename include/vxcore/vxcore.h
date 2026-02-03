@@ -16,6 +16,8 @@ VXCORE_API const char *vxcore_error_message(VxCoreError error);
 
 VXCORE_API void vxcore_set_test_mode(int enabled);
 
+VXCORE_API void vxcore_set_app_info(const char *org_name, const char *app_name);
+
 VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
                                              VxCoreContextHandle *out_context);
 

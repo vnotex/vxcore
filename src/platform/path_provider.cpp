@@ -16,11 +16,11 @@
 
 namespace vxcore {
 
-std::filesystem::path PathProvider::GetAppDataPath() {
+std::filesystem::path PathProvider::GetAppDataPath(const std::string &app_name) {
 #ifdef _WIN32
   wchar_t *path = nullptr;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &path))) {
-    std::filesystem::path result = std::filesystem::path(path) / kAppName;
+    std::filesystem::path result = std::filesystem::path(path) / app_name;
     CoTaskMemFree(path);
     return result;
   }
@@ -34,13 +34,13 @@ std::filesystem::path PathProvider::GetAppDataPath() {
     }
   }
   if (home) {
-    return std::filesystem::path(home) / "Library" / "Application Support" / kAppName;
+    return std::filesystem::path(home) / "Library" / "Application Support" / app_name;
   }
   return {};
 #else
   const char *xdg_data_home = getenv("XDG_DATA_HOME");
   if (xdg_data_home) {
-    return std::filesystem::path(xdg_data_home) / kAppName;
+    return std::filesystem::path(xdg_data_home) / app_name;
   }
   const char *home = getenv("HOME");
   if (!home) {
@@ -50,17 +50,17 @@ std::filesystem::path PathProvider::GetAppDataPath() {
     }
   }
   if (home) {
-    return std::filesystem::path(home) / ".local" / "share" / kAppName;
+    return std::filesystem::path(home) / ".local" / "share" / app_name;
   }
   return {};
 #endif
 }
 
-std::filesystem::path PathProvider::GetLocalDataPath() {
+std::filesystem::path PathProvider::GetLocalDataPath(const std::string &app_name) {
 #ifdef _WIN32
   wchar_t *path = nullptr;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &path))) {
-    std::filesystem::path result = std::filesystem::path(path) / kAppName;
+    std::filesystem::path result = std::filesystem::path(path) / app_name;
     CoTaskMemFree(path);
     return result;
   }
@@ -74,13 +74,13 @@ std::filesystem::path PathProvider::GetLocalDataPath() {
     }
   }
   if (home) {
-    return std::filesystem::path(home) / "Library" / "Caches" / kAppName;
+    return std::filesystem::path(home) / "Library" / "Caches" / app_name;
   }
   return {};
 #else
   const char *xdg_cache_home = getenv("XDG_CACHE_HOME");
   if (xdg_cache_home) {
-    return std::filesystem::path(xdg_cache_home) / kAppName;
+    return std::filesystem::path(xdg_cache_home) / app_name;
   }
   const char *home = getenv("HOME");
   if (!home) {
@@ -90,7 +90,7 @@ std::filesystem::path PathProvider::GetLocalDataPath() {
     }
   }
   if (home) {
-    return std::filesystem::path(home) / ".cache" / kAppName;
+    return std::filesystem::path(home) / ".cache" / app_name;
   }
   return {};
 #endif

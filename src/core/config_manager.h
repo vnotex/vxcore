@@ -30,6 +30,10 @@ class ConfigManager {
   static void SetTestMode(bool enabled);
   static bool IsTestMode();
 
+  static void SetAppInfo(const std::string &org_name, const std::string &app_name);
+  static const std::string &GetOrgName() { return org_name_; }
+  static const std::string &GetAppName() { return app_name_; }
+
  private:
   VxCoreError EnsureDataFolders();
 
@@ -41,6 +45,8 @@ class ConfigManager {
   std::filesystem::path local_data_path_;
 
   static bool test_mode_;
+  static std::string org_name_;
+  static std::string app_name_;
 };
 
 }  // namespace vxcore
