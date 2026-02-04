@@ -47,6 +47,8 @@ typedef enum {
 
 typedef enum { VXCORE_NOTEBOOK_BUNDLED = 0, VXCORE_NOTEBOOK_RAW = 1 } VxCoreNotebookType;
 
+typedef enum { VXCORE_DATA_APP = 0, VXCORE_DATA_LOCAL = 1 } VxCoreDataLocation;
+
 typedef struct VxCoreContext *VxCoreContextHandle;
 
 typedef struct {

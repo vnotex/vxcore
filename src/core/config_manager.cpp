@@ -9,7 +9,7 @@
 namespace vxcore {
 
 const char *kCoreConfigFileName = "vxcore.json";
-const char *kSessionConfigFileName = "session.json";
+const char *kSessionConfigFileName = "vxcore_session.json";
 const char *kPortableConfigFolderName = "config";
 const char *kTestConfigFolderName = "vxcore_test_config";
 
@@ -134,6 +134,71 @@ bool ConfigManager::IsTestMode() { return test_mode_; }
 void ConfigManager::SetAppInfo(const std::string &org_name, const std::string &app_name) {
   org_name_ = org_name;
   app_name_ = app_name;
+}
+
+bool ConfigManager::IsValidConfigBaseName(const std::string &base_name) const {
+  if (base_name.empty()) {
+    return false;
+  }
+  // Reject path separators and parent directory references
+  if (base_name.find('/') != std::string::npos || base_name.find('\\') != std::string::npos ||
+      base_name.find("..") != std::string::npos) {
+    return false;
+  }
+  return true;
+}
+
+VxCoreError ConfigManager::LoadConfigByName(VxCoreDataLocation location,
+                                            const std::string &base_name,
+                                            std::string &out_content) {
+  if (!IsValidConfigBaseName(base_name)) {
+    VXCORE_LOG_ERROR("Invalid config base name: %s", base_name.c_str());
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  std::filesystem::path base_path =
+      (location == VXCORE_DATA_APP) ? app_data_path_ : local_data_path_;
+  std::filesystem::path config_path = base_path / (base_name + ".json");
+
+  if (!std::filesystem::exists(config_path)) {
+    VXCORE_LOG_DEBUG("Config file not found: %s", config_path.string().c_str());
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  VXCORE_LOG_DEBUG("Loading config by name: %s", config_path.string().c_str());
+  VxCoreError err = ReadFile(config_path, out_content);
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to read config file: %s", config_path.string().c_str());
+  }
+  return err;
+}
+
+VxCoreError ConfigManager::SaveConfigByName(VxCoreDataLocation location,
+                                            const std::string &base_name,
+                                            const std::string &content) {
+  if (!IsValidConfigBaseName(base_name)) {
+    VXCORE_LOG_ERROR("Invalid config base name: %s", base_name.c_str());
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  std::filesystem::path base_path =
+      (location == VXCORE_DATA_APP) ? app_data_path_ : local_data_path_;
+
+  try {
+    std::filesystem::create_directories(base_path);
+  } catch (...) {
+    VXCORE_LOG_ERROR("Failed to create directory: %s", base_path.string().c_str());
+    return VXCORE_ERR_IO;
+  }
+
+  std::filesystem::path config_path = base_path / (base_name + ".json");
+  VXCORE_LOG_DEBUG("Saving config by name: %s", config_path.string().c_str());
+
+  VxCoreError err = WriteFile(config_path, content);
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_ERROR("Failed to write config file: %s", config_path.string().c_str());
+  }
+  return err;
 }
 
 }  // namespace vxcore

@@ -26,6 +26,10 @@ inline std::string CleanPath(const std::string &path) {
 
 bool IsRelativePath(const std::string &path);
 
+VxCoreError ReadFile(const std::filesystem::path &path, std::string &out_content);
+
+VxCoreError WriteFile(const std::filesystem::path &path, const std::string &content);
+
 VxCoreError LoadJsonFile(const std::filesystem::path &path, nlohmann::json &out_json);
 
 // Assuming that all paths here are already cleaned using |CleanPath|.

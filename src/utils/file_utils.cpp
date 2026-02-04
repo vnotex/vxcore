@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 
 namespace vxcore {
 
@@ -62,6 +63,34 @@ std::string RelativePath(const std::string &base, const std::string &path) {
     return path.substr(base.size() + 1);
   } else {
     return path.substr(base.size());
+  }
+}
+
+VxCoreError ReadFile(const std::filesystem::path &path, std::string &out_content) {
+  try {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+      return VXCORE_ERR_IO;
+    }
+    std::ostringstream ss;
+    ss << file.rdbuf();
+    out_content = ss.str();
+    return VXCORE_OK;
+  } catch (...) {
+    return VXCORE_ERR_IO;
+  }
+}
+
+VxCoreError WriteFile(const std::filesystem::path &path, const std::string &content) {
+  try {
+    std::ofstream file(path);
+    if (!file.is_open()) {
+      return VXCORE_ERR_IO;
+    }
+    file << content;
+    return VXCORE_OK;
+  } catch (...) {
+    return VXCORE_ERR_IO;
   }
 }
 

@@ -22,10 +22,16 @@ class ConfigManager {
   VxCoreSessionConfig &GetSessionConfig() { return session_config_; }
 
   std::string GetLocalDataPath() const { return local_data_path_.string(); }
+  std::string GetAppDataPath() const { return app_data_path_.string(); }
   std::string GetConfigPath() const { return (app_data_path_ / "vxcore.json").string(); }
   std::string GetSessionConfigPath() const { return (local_data_path_ / "session.json").string(); }
 
   VxCoreError SaveSessionConfig();
+
+  VxCoreError LoadConfigByName(VxCoreDataLocation location, const std::string &base_name,
+                               std::string &out_content);
+  VxCoreError SaveConfigByName(VxCoreDataLocation location, const std::string &base_name,
+                               const std::string &content);
 
   static void SetTestMode(bool enabled);
   static bool IsTestMode();
@@ -36,6 +42,8 @@ class ConfigManager {
 
  private:
   VxCoreError EnsureDataFolders();
+
+  bool IsValidConfigBaseName(const std::string &base_name) const;
 
   static std::string GetDataPathInTestMode();
 

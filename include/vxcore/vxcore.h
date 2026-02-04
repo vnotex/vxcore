@@ -1,7 +1,6 @@
 #ifndef VXCORE_H
 #define VXCORE_H
 
-#include "vxcore_events.h"
 #include "vxcore_types.h"
 
 #ifdef __cplusplus
@@ -35,6 +34,15 @@ VXCORE_API VxCoreError vxcore_context_get_config(VxCoreContextHandle context, ch
 
 VXCORE_API VxCoreError vxcore_context_get_session_config(VxCoreContextHandle context,
                                                          char **out_json);
+
+VXCORE_API VxCoreError vxcore_context_get_config_by_name(VxCoreContextHandle context,
+                                                         VxCoreDataLocation location,
+                                                         const char *base_name, char **out_json);
+
+VXCORE_API VxCoreError vxcore_context_update_config_by_name(VxCoreContextHandle context,
+                                                            VxCoreDataLocation location,
+                                                            const char *base_name,
+                                                            const char *json);
 
 VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const char *path,
                                               const char *config_json, VxCoreNotebookType type,

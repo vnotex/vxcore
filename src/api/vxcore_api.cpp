@@ -195,6 +195,51 @@ VXCORE_API VxCoreError vxcore_context_get_session_config(VxCoreContextHandle con
   }
 }
 
+VXCORE_API VxCoreError vxcore_context_get_config_by_name(VxCoreContextHandle context,
+                                                         VxCoreDataLocation location,
+                                                         const char *base_name, char **out_json) {
+  if (!context || !base_name || !out_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->config_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    std::string content;
+    VxCoreError err = ctx->config_manager->LoadConfigByName(location, base_name, content);
+    if (err != VXCORE_OK) {
+      return err;
+    }
+    *out_json = vxcore_strdup(content.c_str());
+    return VXCORE_OK;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_context_update_config_by_name(VxCoreContextHandle context,
+                                                            VxCoreDataLocation location,
+                                                            const char *base_name,
+                                                            const char *json) {
+  if (!context || !base_name || !json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->config_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    return ctx->config_manager->SaveConfigByName(location, base_name, json);
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API void vxcore_string_free(char *str) {
   if (str) {
     free(str);
