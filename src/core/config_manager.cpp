@@ -201,4 +201,140 @@ VxCoreError ConfigManager::SaveConfigByName(VxCoreDataLocation location,
   return err;
 }
 
+VxCoreError ConfigManager::LoadJsonWithDefaults(const std::string &file_path,
+                                                const std::string &defaults_json,
+                                                std::string &out_merged) {
+  if (file_path.empty()) {
+    VXCORE_LOG_ERROR("LoadJsonWithDefaults: file_path is empty");
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  try {
+    // Parse defaults
+    nlohmann::json default_json = nlohmann::json::parse(defaults_json);
+
+    // Load user file if exists
+    nlohmann::json user_json = nlohmann::json::object();
+    std::filesystem::path path(file_path);
+    if (std::filesystem::exists(path)) {
+      VXCORE_LOG_DEBUG("Loading JSON with defaults: %s", file_path.c_str());
+      VxCoreError err = LoadJsonFile(path, user_json);
+      if (err != VXCORE_OK) {
+        VXCORE_LOG_ERROR("Failed to load JSON file: %s", file_path.c_str());
+        return err;
+      }
+    } else {
+      VXCORE_LOG_DEBUG("File not found, using defaults: %s", file_path.c_str());
+    }
+
+    // Merge user config on top of defaults using merge_patch
+    default_json.merge_patch(user_json);
+    out_merged = default_json.dump(2);
+    return VXCORE_OK;
+  } catch (const nlohmann::json::exception &e) {
+    VXCORE_LOG_ERROR("JSON error in LoadJsonWithDefaults: %s", e.what());
+    return VXCORE_ERR_JSON_PARSE;
+  } catch (...) {
+    VXCORE_LOG_ERROR("Unknown error in LoadJsonWithDefaults");
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VxCoreError ConfigManager::SaveJson(const std::string &file_path, const std::string &content) {
+  if (file_path.empty()) {
+    VXCORE_LOG_ERROR("SaveJson: file_path is empty");
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  try {
+    // Validate JSON before saving
+    (void)nlohmann::json::parse(content);
+
+    std::filesystem::path path(file_path);
+    // Ensure parent directory exists
+    if (path.has_parent_path()) {
+      std::filesystem::create_directories(path.parent_path());
+    }
+
+    VXCORE_LOG_DEBUG("Saving JSON: %s", file_path.c_str());
+    VxCoreError err = WriteFile(path, content);
+    if (err != VXCORE_OK) {
+      VXCORE_LOG_ERROR("Failed to write JSON file: %s", file_path.c_str());
+      return err;
+    }
+    return VXCORE_OK;
+  } catch (const nlohmann::json::exception &e) {
+    VXCORE_LOG_ERROR("JSON error in SaveJson: %s", e.what());
+    return VXCORE_ERR_JSON_PARSE;
+  } catch (...) {
+    VXCORE_LOG_ERROR("Unknown error in SaveJson");
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VxCoreError ConfigManager::ReadJsonValue(const std::string &file_path, const std::string &json_path,
+                                         std::string &out_value) {
+  if (file_path.empty()) {
+    VXCORE_LOG_ERROR("ReadJsonValue: file_path is empty");
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  try {
+    std::filesystem::path path(file_path);
+    if (!std::filesystem::exists(path)) {
+      VXCORE_LOG_DEBUG("ReadJsonValue: file not found: %s", file_path.c_str());
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    nlohmann::json json_obj;
+    VxCoreError err = LoadJsonFile(path, json_obj);
+    if (err != VXCORE_OK) {
+      VXCORE_LOG_ERROR("ReadJsonValue: failed to load file: %s", file_path.c_str());
+      return err;
+    }
+
+    // Navigate JSON path (e.g., "core.theme" -> json["core"]["theme"])
+    if (json_path.empty()) {
+      // Return entire JSON
+      out_value = json_obj.dump(2);
+      return VXCORE_OK;
+    }
+
+    nlohmann::json current = json_obj;
+    size_t start = 0;
+    size_t dot_pos = json_path.find('.');
+    while (dot_pos != std::string::npos) {
+      std::string key = json_path.substr(start, dot_pos - start);
+      if (!current.contains(key)) {
+        VXCORE_LOG_DEBUG("ReadJsonValue: key not found: %s", key.c_str());
+        return VXCORE_ERR_NOT_FOUND;
+      }
+      current = current[key];
+      start = dot_pos + 1;
+      dot_pos = json_path.find('.', start);
+    }
+
+    // Final key
+    std::string final_key = json_path.substr(start);
+    if (!current.contains(final_key)) {
+      VXCORE_LOG_DEBUG("ReadJsonValue: key not found: %s", final_key.c_str());
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    current = current[final_key];
+    if (current.is_string()) {
+      out_value = current.get<std::string>();
+    } else {
+      out_value = current.dump();
+    }
+    return VXCORE_OK;
+  } catch (const nlohmann::json::exception &e) {
+    VXCORE_LOG_ERROR("JSON error in ReadJsonValue: %s", e.what());
+    return VXCORE_ERR_JSON_PARSE;
+  } catch (...) {
+    VXCORE_LOG_ERROR("Unknown error in ReadJsonValue");
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 }  // namespace vxcore

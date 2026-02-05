@@ -44,6 +44,17 @@ VXCORE_API VxCoreError vxcore_context_update_config_by_name(VxCoreContextHandle 
                                                             const char *base_name,
                                                             const char *json);
 
+// Generic JSON I/O utilities for VNote integration
+VXCORE_API VxCoreError vxcore_json_load_with_defaults(VxCoreContextHandle context,
+                                                      const char *file_path,
+                                                      const char *defaults_json, char **out_merged);
+
+VXCORE_API VxCoreError vxcore_json_save(VxCoreContextHandle context, const char *file_path,
+                                        const char *content);
+
+VXCORE_API VxCoreError vxcore_json_read_value(const char *file_path, const char *json_path,
+                                              char **out_value);
+
 VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const char *path,
                                               const char *config_json, VxCoreNotebookType type,
                                               char **out_notebook_id);

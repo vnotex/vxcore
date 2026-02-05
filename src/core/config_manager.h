@@ -33,6 +33,13 @@ class ConfigManager {
   VxCoreError SaveConfigByName(VxCoreDataLocation location, const std::string &base_name,
                                const std::string &content);
 
+  // Generic JSON I/O utilities for VNote integration
+  VxCoreError LoadJsonWithDefaults(const std::string &file_path, const std::string &defaults_json,
+                                   std::string &out_merged);
+  VxCoreError SaveJson(const std::string &file_path, const std::string &content);
+  static VxCoreError ReadJsonValue(const std::string &file_path, const std::string &json_path,
+                                   std::string &out_value);
+
   static void SetTestMode(bool enabled);
   static bool IsTestMode();
 

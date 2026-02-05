@@ -240,6 +240,70 @@ VXCORE_API VxCoreError vxcore_context_update_config_by_name(VxCoreContextHandle 
   }
 }
 
+VXCORE_API VxCoreError vxcore_json_load_with_defaults(VxCoreContextHandle context,
+                                                      const char *file_path,
+                                                      const char *defaults_json,
+                                                      char **out_merged) {
+  if (!context || !file_path || !defaults_json || !out_merged) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->config_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    std::string merged;
+    VxCoreError err = ctx->config_manager->LoadJsonWithDefaults(file_path, defaults_json, merged);
+    if (err != VXCORE_OK) {
+      return err;
+    }
+    *out_merged = vxcore_strdup(merged.c_str());
+    return VXCORE_OK;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_json_save(VxCoreContextHandle context, const char *file_path,
+                                        const char *content) {
+  if (!context || !file_path || !content) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->config_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    return ctx->config_manager->SaveJson(file_path, content);
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_json_read_value(const char *file_path, const char *json_path,
+                                              char **out_value) {
+  if (!file_path || !out_value) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  try {
+    std::string value;
+    VxCoreError err =
+        vxcore::ConfigManager::ReadJsonValue(file_path, json_path ? json_path : "", value);
+    if (err != VXCORE_OK) {
+      return err;
+    }
+    *out_value = vxcore_strdup(value.c_str());
+    return VXCORE_OK;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API void vxcore_string_free(char *str) {
   if (str) {
     free(str);
