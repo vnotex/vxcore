@@ -9,12 +9,17 @@ project(vxcore
 option(VXCORE_BUILD_SHARED "Build shared library" ON)
 option(VXCORE_BUILD_CLI "Build command-line interface" ON)
 option(VXCORE_BUILD_TESTS "Build tests" ON)
+option(VXCORE_INSTALL "Enable install targets" ON)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+# Disable Qt's AUTOMOC/AUTOUIC/AUTORCC for this pure C/C++ library
+# (prevents warnings when built as subdirectory of Qt projects)
+set(CMAKE_AUTOMOC OFF)
+set(CMAKE_AUTOUIC OFF)
+set(CMAKE_AUTORCC OFF)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -36,27 +41,29 @@ if(VXCORE_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-include(GNUInstallDirs)
+if(VXCORE_INSTALL)
+    include(GNUInstallDirs)
 
-install(DIRECTORY include/
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    FILES_MATCHING PATTERN "*.h"
-)
+    install(DIRECTORY include/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.h"
+    )
 
-install(DIRECTORY data/
-    DESTINATION ${CMAKE_INSTALL_BINDIR}/data
-    FILES_MATCHING PATTERN "*.json"
-)
+    install(DIRECTORY data/
+        DESTINATION ${CMAKE_INSTALL_BINDIR}/data
+        FILES_MATCHING PATTERN "*.json"
+    )
 
-include(CMakePackageConfigHelpers)
+    include(CMakePackageConfigHelpers)
 
-write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/vxcore-config-version.cmake"
-    VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMajorVersion
-)
+    write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/vxcore-config-version.cmake"
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMajorVersion
+    )
 
-install(FILES
-    "${CMAKE_CURRENT_BINARY_DIR}/vxcore-config-version.cmake"
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/vxcore
-)
+    install(FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/vxcore-config-version.cmake"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/vxcore
+    )
+endif()

@@ -1,8 +1,8 @@
 set(VXCORE_PUBLIC_HEADERS
-    ${CMAKE_SOURCE_DIR}/include/vxcore/vxcore.h
-    ${CMAKE_SOURCE_DIR}/include/vxcore/vxcore_types.h
-    ${CMAKE_SOURCE_DIR}/include/vxcore/vxcore_events.h
-    ${CMAKE_SOURCE_DIR}/include/vxcore/vxcore_log.h
+    ${PROJECT_SOURCE_DIR}/include/vxcore/vxcore.h
+    ${PROJECT_SOURCE_DIR}/include/vxcore/vxcore_types.h
+    ${PROJECT_SOURCE_DIR}/include/vxcore/vxcore_events.h
+    ${PROJECT_SOURCE_DIR}/include/vxcore/vxcore_log.h
 )
 
 set(VXCORE_SOURCES
@@ -53,11 +53,11 @@ endif()
 
 target_include_directories(vxcore
     PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/src
 )
 
 target_link_libraries(vxcore PRIVATE nlohmann_json sqlite3)
@@ -82,16 +82,18 @@ else()
     target_compile_options(vxcore PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-install(TARGETS vxcore
-    EXPORT vxcore-targets
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vxcore
-)
+if(VXCORE_INSTALL)
+    install(TARGETS vxcore
+        EXPORT vxcore-targets
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vxcore
+    )
 
-install(EXPORT vxcore-targets
-    FILE vxcore-targets.cmake
-    NAMESPACE vxcore::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/vxcore
-)
+    install(EXPORT vxcore-targets
+        FILE vxcore-targets.cmake
+        NAMESPACE vxcore::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/vxcore
+    )
+endif()

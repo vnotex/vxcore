@@ -9,13 +9,13 @@
 namespace vxcore {
 
 const char *kCoreConfigFileName = "vxcore.json";
-const char *kSessionConfigFileName = "vxcore_session.json";
+const char *kSessionConfigFileName = "session.json";
 const char *kPortableConfigFolderName = "config";
 const char *kTestConfigFolderName = "vxcore_test_config";
 
 bool ConfigManager::test_mode_ = false;
 std::string ConfigManager::org_name_ = "VNoteX";
-std::string ConfigManager::app_name_ = "VNote";
+std::string ConfigManager::app_name_ = "vxcore";
 
 ConfigManager::ConfigManager() : config_(), session_config_() {
   if (test_mode_) {
