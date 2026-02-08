@@ -17,6 +17,10 @@ VXCORE_API void vxcore_set_test_mode(int enabled);
 
 VXCORE_API void vxcore_set_app_info(const char *org_name, const char *app_name);
 
+VXCORE_API void vxcore_get_execution_file_path(char **out_path);
+
+VXCORE_API void vxcore_get_execution_folder_path(char **out_path);
+
 VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
                                              VxCoreContextHandle *out_context);
 
@@ -24,6 +28,10 @@ VXCORE_API void vxcore_context_destroy(VxCoreContextHandle context);
 
 VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context,
                                                      const char **out_message);
+
+VXCORE_API VxCoreError vxcore_context_get_data_path(VxCoreContextHandle context,
+                                                      VxCoreDataLocation location,
+                                                      char **out_path);
 
 VXCORE_API VxCoreError vxcore_context_get_config_path(VxCoreContextHandle context, char **out_path);
 
@@ -39,21 +47,14 @@ VXCORE_API VxCoreError vxcore_context_get_config_by_name(VxCoreContextHandle con
                                                          VxCoreDataLocation location,
                                                          const char *base_name, char **out_json);
 
+VXCORE_API VxCoreError vxcore_context_get_config_by_name_with_defaults(
+  VxCoreContextHandle context, VxCoreDataLocation location,
+  const char *base_name, const char *default_json, char **out_json);
+
 VXCORE_API VxCoreError vxcore_context_update_config_by_name(VxCoreContextHandle context,
                                                             VxCoreDataLocation location,
                                                             const char *base_name,
                                                             const char *json);
-
-// Generic JSON I/O utilities for VNote integration
-VXCORE_API VxCoreError vxcore_json_load_with_defaults(VxCoreContextHandle context,
-                                                      const char *file_path,
-                                                      const char *defaults_json, char **out_merged);
-
-VXCORE_API VxCoreError vxcore_json_save(VxCoreContextHandle context, const char *file_path,
-                                        const char *content);
-
-VXCORE_API VxCoreError vxcore_json_read_value(const char *file_path, const char *json_path,
-                                              char **out_value);
 
 VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const char *path,
                                               const char *config_json, VxCoreNotebookType type,

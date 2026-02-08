@@ -9,7 +9,7 @@
 namespace vxcore {
 
 const char *kCoreConfigFileName = "vxcore.json";
-const char *kSessionConfigFileName = "session.json";
+const char *kSessionConfigFileName = "vxsession.json";
 const char *kPortableConfigFolderName = "config";
 const char *kTestConfigFolderName = "vxcore_test_config";
 
@@ -30,7 +30,7 @@ ConfigManager::ConfigManager() : config_(), session_config_() {
     app_data_path_ = temp_path;
     local_data_path_ = temp_path;
   } else {
-    auto portable_config_path = PathProvider::GetExecutablePath() / kPortableConfigFolderName;
+    auto portable_config_path = PathProvider::GetExecutionFolderPath() / kPortableConfigFolderName;
     if (std::filesystem::exists(portable_config_path)) {
       app_data_path_ = portable_config_path;
       local_data_path_ = portable_config_path;
@@ -107,7 +107,7 @@ VxCoreError ConfigManager::SaveSessionConfig() {
   }
 
   try {
-    auto session_config_path = local_data_path_ / "session.json";
+    auto session_config_path = local_data_path_ / kSessionConfigFileName;
     VXCORE_LOG_DEBUG("Saving session config: %s", session_config_path.string().c_str());
     std::ofstream file(session_config_path);
     if (!file.is_open()) {
@@ -134,6 +134,17 @@ bool ConfigManager::IsTestMode() { return test_mode_; }
 void ConfigManager::SetAppInfo(const std::string &org_name, const std::string &app_name) {
   org_name_ = org_name;
   app_name_ = app_name;
+}
+
+std::string ConfigManager::GetDataPath(VxCoreDataLocation location) const {
+  switch (location) {
+    case VXCORE_DATA_APP:
+      return app_data_path_.string();
+    case VXCORE_DATA_LOCAL:
+      return local_data_path_.string();
+    default:
+      return std::string();
+  }
 }
 
 bool ConfigManager::IsValidConfigBaseName(const std::string &base_name) const {
@@ -201,138 +212,34 @@ VxCoreError ConfigManager::SaveConfigByName(VxCoreDataLocation location,
   return err;
 }
 
-VxCoreError ConfigManager::LoadJsonWithDefaults(const std::string &file_path,
-                                                const std::string &defaults_json,
-                                                std::string &out_merged) {
-  if (file_path.empty()) {
-    VXCORE_LOG_ERROR("LoadJsonWithDefaults: file_path is empty");
-    return VXCORE_ERR_INVALID_PARAM;
+VxCoreError ConfigManager::LoadConfigByNameWithDefaults(VxCoreDataLocation location,
+                                                        const std::string &base_name,
+                                                        const std::string &defaults_json,
+                                                        std::string &out_merged) {
+  std::string content;
+  VxCoreError err = LoadConfigByName(location, base_name, content);
+  if (err == VXCORE_ERR_NOT_FOUND || content.empty()) {
+    // File not found, use defaults
+    out_merged = defaults_json;
+    return VXCORE_OK;
+  } else if (err != VXCORE_OK) {
+    return err;
   }
 
   try {
     // Parse defaults
     nlohmann::json default_json = nlohmann::json::parse(defaults_json);
-
-    // Load user file if exists
-    nlohmann::json user_json = nlohmann::json::object();
-    std::filesystem::path path(file_path);
-    if (std::filesystem::exists(path)) {
-      VXCORE_LOG_DEBUG("Loading JSON with defaults: %s", file_path.c_str());
-      VxCoreError err = LoadJsonFile(path, user_json);
-      if (err != VXCORE_OK) {
-        VXCORE_LOG_ERROR("Failed to load JSON file: %s", file_path.c_str());
-        return err;
-      }
-    } else {
-      VXCORE_LOG_DEBUG("File not found, using defaults: %s", file_path.c_str());
-    }
+    nlohmann::json user_json = nlohmann::json::parse(content);
 
     // Merge user config on top of defaults using merge_patch
     default_json.merge_patch(user_json);
     out_merged = default_json.dump(2);
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &e) {
-    VXCORE_LOG_ERROR("JSON error in LoadJsonWithDefaults: %s", e.what());
+    VXCORE_LOG_ERROR("JSON error in LoadConfigByNameWithDefaults: %s", e.what());
     return VXCORE_ERR_JSON_PARSE;
   } catch (...) {
-    VXCORE_LOG_ERROR("Unknown error in LoadJsonWithDefaults");
-    return VXCORE_ERR_UNKNOWN;
-  }
-}
-
-VxCoreError ConfigManager::SaveJson(const std::string &file_path, const std::string &content) {
-  if (file_path.empty()) {
-    VXCORE_LOG_ERROR("SaveJson: file_path is empty");
-    return VXCORE_ERR_INVALID_PARAM;
-  }
-
-  try {
-    // Validate JSON before saving
-    (void)nlohmann::json::parse(content);
-
-    std::filesystem::path path(file_path);
-    // Ensure parent directory exists
-    if (path.has_parent_path()) {
-      std::filesystem::create_directories(path.parent_path());
-    }
-
-    VXCORE_LOG_DEBUG("Saving JSON: %s", file_path.c_str());
-    VxCoreError err = WriteFile(path, content);
-    if (err != VXCORE_OK) {
-      VXCORE_LOG_ERROR("Failed to write JSON file: %s", file_path.c_str());
-      return err;
-    }
-    return VXCORE_OK;
-  } catch (const nlohmann::json::exception &e) {
-    VXCORE_LOG_ERROR("JSON error in SaveJson: %s", e.what());
-    return VXCORE_ERR_JSON_PARSE;
-  } catch (...) {
-    VXCORE_LOG_ERROR("Unknown error in SaveJson");
-    return VXCORE_ERR_UNKNOWN;
-  }
-}
-
-VxCoreError ConfigManager::ReadJsonValue(const std::string &file_path, const std::string &json_path,
-                                         std::string &out_value) {
-  if (file_path.empty()) {
-    VXCORE_LOG_ERROR("ReadJsonValue: file_path is empty");
-    return VXCORE_ERR_INVALID_PARAM;
-  }
-
-  try {
-    std::filesystem::path path(file_path);
-    if (!std::filesystem::exists(path)) {
-      VXCORE_LOG_DEBUG("ReadJsonValue: file not found: %s", file_path.c_str());
-      return VXCORE_ERR_NOT_FOUND;
-    }
-
-    nlohmann::json json_obj;
-    VxCoreError err = LoadJsonFile(path, json_obj);
-    if (err != VXCORE_OK) {
-      VXCORE_LOG_ERROR("ReadJsonValue: failed to load file: %s", file_path.c_str());
-      return err;
-    }
-
-    // Navigate JSON path (e.g., "core.theme" -> json["core"]["theme"])
-    if (json_path.empty()) {
-      // Return entire JSON
-      out_value = json_obj.dump(2);
-      return VXCORE_OK;
-    }
-
-    nlohmann::json current = json_obj;
-    size_t start = 0;
-    size_t dot_pos = json_path.find('.');
-    while (dot_pos != std::string::npos) {
-      std::string key = json_path.substr(start, dot_pos - start);
-      if (!current.contains(key)) {
-        VXCORE_LOG_DEBUG("ReadJsonValue: key not found: %s", key.c_str());
-        return VXCORE_ERR_NOT_FOUND;
-      }
-      current = current[key];
-      start = dot_pos + 1;
-      dot_pos = json_path.find('.', start);
-    }
-
-    // Final key
-    std::string final_key = json_path.substr(start);
-    if (!current.contains(final_key)) {
-      VXCORE_LOG_DEBUG("ReadJsonValue: key not found: %s", final_key.c_str());
-      return VXCORE_ERR_NOT_FOUND;
-    }
-
-    current = current[final_key];
-    if (current.is_string()) {
-      out_value = current.get<std::string>();
-    } else {
-      out_value = current.dump();
-    }
-    return VXCORE_OK;
-  } catch (const nlohmann::json::exception &e) {
-    VXCORE_LOG_ERROR("JSON error in ReadJsonValue: %s", e.what());
-    return VXCORE_ERR_JSON_PARSE;
-  } catch (...) {
-    VXCORE_LOG_ERROR("Unknown error in ReadJsonValue");
+    VXCORE_LOG_ERROR("Unknown error in LoadConfigByNameWithDefaults");
     return VXCORE_ERR_UNKNOWN;
   }
 }

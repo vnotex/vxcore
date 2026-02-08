@@ -10,7 +10,8 @@ class PathProvider {
  public:
   static std::filesystem::path GetAppDataPath(const std::string &app_name);
   static std::filesystem::path GetLocalDataPath(const std::string &app_name);
-  static std::filesystem::path GetExecutablePath();
+  static std::filesystem::path GetExecutionFolderPath();
+  static std::filesystem::path GetExecutionFilePath();
 };
 
 }  // namespace vxcore

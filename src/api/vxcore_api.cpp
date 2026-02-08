@@ -7,6 +7,7 @@
 #include "utils/logger.h"
 #include "vxcore/vxcore.h"
 #include "vxcore/vxcore_log.h"
+#include "platform/path_provider.h"
 
 VXCORE_API VxCoreVersion vxcore_get_version(void) {
   VxCoreVersion version = {0, 1, 0};
@@ -24,6 +25,30 @@ VXCORE_API void vxcore_set_app_info(const char *org_name, const char *app_name) 
     return;
   }
   vxcore::ConfigManager::SetAppInfo(org_name, app_name);
+}
+
+VXCORE_API void vxcore_get_execution_file_path(char **out_path) {
+  if (!out_path) {
+    return;
+  }
+  try {
+    std::filesystem::path exe_path = vxcore::PathProvider::GetExecutionFilePath();
+    *out_path = vxcore_strdup(exe_path.string().c_str());
+  } catch (...) {
+    *out_path = nullptr;
+  }
+}
+
+VXCORE_API void vxcore_get_execution_folder_path(char **out_path) {
+  if (!out_path) {
+    return;
+  }
+  try {
+    std::filesystem::path exe_path = vxcore::PathProvider::GetExecutionFolderPath();
+    *out_path = vxcore_strdup(exe_path.string().c_str());
+  } catch (...) {
+    *out_path = nullptr;
+  }
 }
 
 VXCORE_API const char *vxcore_error_message(VxCoreError error) {
@@ -108,6 +133,27 @@ VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context
     *out_message = ctx->last_error.c_str();
   }
   return VXCORE_OK;
+}
+
+VXCORE_API VxCoreError vxcore_context_get_data_path(VxCoreContextHandle context,
+                                                    VxCoreDataLocation location,
+                                                    char **out_path) {
+  if (!context || !out_path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->config_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    std::string path = ctx->config_manager->GetDataPath(location);
+    *out_path = vxcore_strdup(path.c_str());
+    return VXCORE_OK;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
 }
 
 VXCORE_API VxCoreError vxcore_context_get_config_path(VxCoreContextHandle context,
@@ -220,6 +266,32 @@ VXCORE_API VxCoreError vxcore_context_get_config_by_name(VxCoreContextHandle con
   }
 }
 
+VXCORE_API VxCoreError vxcore_context_get_config_by_name_with_defaults(
+    VxCoreContextHandle context, VxCoreDataLocation location,
+    const char *base_name, const char *default_json, char **out_json) {
+  if (!context || !base_name || !default_json || !out_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->config_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    std::string merged;
+    VxCoreError err = ctx->config_manager->LoadConfigByNameWithDefaults(
+        location, base_name, default_json, merged);
+    if (err != VXCORE_OK) {
+      return err;
+    }
+    *out_json = vxcore_strdup(merged.c_str());
+    return VXCORE_OK;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_context_update_config_by_name(VxCoreContextHandle context,
                                                             VxCoreDataLocation location,
                                                             const char *base_name,
@@ -235,70 +307,6 @@ VXCORE_API VxCoreError vxcore_context_update_config_by_name(VxCoreContextHandle 
 
   try {
     return ctx->config_manager->SaveConfigByName(location, base_name, json);
-  } catch (...) {
-    return VXCORE_ERR_UNKNOWN;
-  }
-}
-
-VXCORE_API VxCoreError vxcore_json_load_with_defaults(VxCoreContextHandle context,
-                                                      const char *file_path,
-                                                      const char *defaults_json,
-                                                      char **out_merged) {
-  if (!context || !file_path || !defaults_json || !out_merged) {
-    return VXCORE_ERR_NULL_POINTER;
-  }
-
-  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
-  if (!ctx->config_manager) {
-    return VXCORE_ERR_NOT_INITIALIZED;
-  }
-
-  try {
-    std::string merged;
-    VxCoreError err = ctx->config_manager->LoadJsonWithDefaults(file_path, defaults_json, merged);
-    if (err != VXCORE_OK) {
-      return err;
-    }
-    *out_merged = vxcore_strdup(merged.c_str());
-    return VXCORE_OK;
-  } catch (...) {
-    return VXCORE_ERR_UNKNOWN;
-  }
-}
-
-VXCORE_API VxCoreError vxcore_json_save(VxCoreContextHandle context, const char *file_path,
-                                        const char *content) {
-  if (!context || !file_path || !content) {
-    return VXCORE_ERR_NULL_POINTER;
-  }
-
-  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
-  if (!ctx->config_manager) {
-    return VXCORE_ERR_NOT_INITIALIZED;
-  }
-
-  try {
-    return ctx->config_manager->SaveJson(file_path, content);
-  } catch (...) {
-    return VXCORE_ERR_UNKNOWN;
-  }
-}
-
-VXCORE_API VxCoreError vxcore_json_read_value(const char *file_path, const char *json_path,
-                                              char **out_value) {
-  if (!file_path || !out_value) {
-    return VXCORE_ERR_NULL_POINTER;
-  }
-
-  try {
-    std::string value;
-    VxCoreError err =
-        vxcore::ConfigManager::ReadJsonValue(file_path, json_path ? json_path : "", value);
-    if (err != VXCORE_OK) {
-      return err;
-    }
-    *out_value = vxcore_strdup(value.c_str());
-    return VXCORE_OK;
   } catch (...) {
     return VXCORE_ERR_UNKNOWN;
   }

@@ -21,6 +21,7 @@ class ConfigManager {
   const VxCoreSessionConfig &GetSessionConfig() const { return session_config_; }
   VxCoreSessionConfig &GetSessionConfig() { return session_config_; }
 
+  std::string GetDataPath(VxCoreDataLocation location) const;
   std::string GetLocalDataPath() const { return local_data_path_.string(); }
   std::string GetAppDataPath() const { return app_data_path_.string(); }
   std::string GetConfigPath() const { return (app_data_path_ / "vxcore.json").string(); }
@@ -33,12 +34,10 @@ class ConfigManager {
   VxCoreError SaveConfigByName(VxCoreDataLocation location, const std::string &base_name,
                                const std::string &content);
 
-  // Generic JSON I/O utilities for VNote integration
-  VxCoreError LoadJsonWithDefaults(const std::string &file_path, const std::string &defaults_json,
-                                   std::string &out_merged);
-  VxCoreError SaveJson(const std::string &file_path, const std::string &content);
-  static VxCoreError ReadJsonValue(const std::string &file_path, const std::string &json_path,
-                                   std::string &out_value);
+  VxCoreError LoadConfigByNameWithDefaults(VxCoreDataLocation location,
+                                           const std::string &base_name,
+                                           const std::string &defaults_json,
+                                           std::string &out_merged);
 
   static void SetTestMode(bool enabled);
   static bool IsTestMode();

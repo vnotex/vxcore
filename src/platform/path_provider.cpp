@@ -96,19 +96,27 @@ std::filesystem::path PathProvider::GetLocalDataPath(const std::string &app_name
 #endif
 }
 
-std::filesystem::path PathProvider::GetExecutablePath() {
+std::filesystem::path PathProvider::GetExecutionFolderPath() {
+  auto file_path = GetExecutionFilePath();
+  if (!file_path.empty()) {
+    return file_path.parent_path();
+  }
+  return {};
+}
+
+std::filesystem::path PathProvider::GetExecutionFilePath() {
 #ifdef _WIN32
   wchar_t path[MAX_PATH];
   DWORD len = GetModuleFileNameW(nullptr, path, MAX_PATH);
   if (len > 0) {
-    return std::filesystem::path(path).parent_path();
+    return std::filesystem::path(path);
   }
   return {};
 #elif __APPLE__
   char path[1024];
   uint32_t size = sizeof(path);
   if (_NSGetExecutablePath(path, &size) == 0) {
-    return std::filesystem::path(path).parent_path();
+    return std::filesystem::path(path);
   }
   return {};
 #else
@@ -116,7 +124,7 @@ std::filesystem::path PathProvider::GetExecutablePath() {
   ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
   if (len != -1) {
     path[len] = '\0';
-    return std::filesystem::path(path).parent_path();
+    return std::filesystem::path(path);
   }
   return {};
 #endif
