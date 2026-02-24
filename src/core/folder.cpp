@@ -51,6 +51,12 @@ nlohmann::json FileRecord::ToJson() const {
   return json;
 }
 
+nlohmann::json FileRecord::ToJsonWithType() const {
+  nlohmann::json json = ToJson();
+  json["type"] = "file";
+  return json;
+}
+
 FolderRecord::FolderRecord()
     : created_utc(0), modified_utc(0), metadata(nlohmann::json::object()) {}
 
@@ -119,6 +125,12 @@ nlohmann::json FolderConfig::ToJson() const {
   json["files"] = files_json;
 
   json["folders"] = folders;
+  return json;
+}
+
+nlohmann::json FolderConfig::ToJsonWithType() const {
+  nlohmann::json json = ToJson();
+  json["type"] = "folder";
   return json;
 }
 

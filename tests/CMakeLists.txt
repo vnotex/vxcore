@@ -8,6 +8,7 @@ endfunction()
 add_vxcore_test(test_core)
 add_vxcore_test(test_notebook)
 add_vxcore_test(test_folder)
+add_vxcore_test(test_node)
 add_vxcore_test(test_search)
 add_vxcore_test(test_tag_sync)
 

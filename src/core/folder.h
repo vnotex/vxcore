@@ -20,6 +20,7 @@ struct FileRecord {
 
   static FileRecord FromJson(const nlohmann::json &json);
   nlohmann::json ToJson() const;
+  nlohmann::json ToJsonWithType() const;
 };
 
 struct FolderRecord {
@@ -49,6 +50,7 @@ struct FolderConfig {
 
   static FolderConfig FromJson(const nlohmann::json &json);
   nlohmann::json ToJson() const;
+  nlohmann::json ToJsonWithType() const;
 };
 
 }  // namespace vxcore

@@ -151,6 +151,53 @@ VXCORE_API VxCoreError vxcore_file_tag(VxCoreContextHandle context, const char *
 VXCORE_API VxCoreError vxcore_file_untag(VxCoreContextHandle context, const char *notebook_id,
                                          const char *file_path, const char *tag_name);
 
+// ============ Node Operations (Unified File/Folder API) ============
+// These APIs work with both files and folders using the same (notebook_id, node_path) pair.
+// The returned JSON includes a "type" field ("file" or "folder") for caller identification.
+
+// Get node config (unified version of folder_get_config and file_get_info)
+VXCORE_API VxCoreError vxcore_node_get_config(VxCoreContextHandle context,
+                                               const char *notebook_id,
+                                               const char *node_path,
+                                               char **out_config_json);
+
+// Delete node (file or folder)
+VXCORE_API VxCoreError vxcore_node_delete(VxCoreContextHandle context,
+                                           const char *notebook_id,
+                                           const char *node_path);
+
+// Rename node (file or folder)
+VXCORE_API VxCoreError vxcore_node_rename(VxCoreContextHandle context,
+                                           const char *notebook_id,
+                                           const char *node_path,
+                                           const char *new_name);
+
+// Move node to a different parent folder
+VXCORE_API VxCoreError vxcore_node_move(VxCoreContextHandle context,
+                                         const char *notebook_id,
+                                         const char *src_path,
+                                         const char *dest_parent_path);
+
+// Copy node to a different parent folder with optional new name
+VXCORE_API VxCoreError vxcore_node_copy(VxCoreContextHandle context,
+                                         const char *notebook_id,
+                                         const char *src_path,
+                                         const char *dest_parent_path,
+                                         const char *new_name,
+                                         char **out_node_id);
+
+// Get node metadata
+VXCORE_API VxCoreError vxcore_node_get_metadata(VxCoreContextHandle context,
+                                                 const char *notebook_id,
+                                                 const char *node_path,
+                                                 char **out_metadata_json);
+
+// Update node metadata
+VXCORE_API VxCoreError vxcore_node_update_metadata(VxCoreContextHandle context,
+                                                    const char *notebook_id,
+                                                    const char *node_path,
+                                                    const char *metadata_json);
+
 VXCORE_API VxCoreError vxcore_tag_create(VxCoreContextHandle context, const char *notebook_id,
                                          const char *tag_name);
 

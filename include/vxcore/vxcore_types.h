@@ -66,4 +66,9 @@ typedef struct {
 }
 #endif
 
+// C++ only types
+namespace vxcore {
+  enum class NodeType { File, Folder };
+}  // namespace vxcore
+
 #endif
