@@ -57,7 +57,7 @@ int test_file_create() {
   ASSERT_NOT_NULL(file_id);
 
   char *config_json = nullptr;
-  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
 
   nlohmann::json config = nlohmann::json::parse(config_json);
@@ -93,8 +93,7 @@ int test_file_metadata_and_tags() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
 
-  err = vxcore_file_update_metadata(ctx, notebook_id, "note.md",
-                                    R"({"author": "John Doe", "priority": "high"})");
+  err = vxcore_node_update_metadata(ctx, notebook_id, "note.md", R"({"author": "John Doe", "priority": "high"})");
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "work");
@@ -107,7 +106,7 @@ int test_file_metadata_and_tags() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *config_json = nullptr;
-  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
 
   nlohmann::json config = nlohmann::json::parse(config_json);
@@ -143,7 +142,7 @@ int test_folder_delete() {
 
   ASSERT(path_exists(get_test_path("test_folder_delete_nb") + "/to_delete"));
 
-  err = vxcore_folder_delete(ctx, notebook_id, "to_delete");
+  err = vxcore_node_delete(ctx, notebook_id, "to_delete");
   ASSERT_EQ(err, VXCORE_OK);
 
   ASSERT(!path_exists(get_test_path("test_folder_delete_nb") + "/to_delete"));
@@ -302,7 +301,7 @@ int test_folder_not_found() {
                              "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  err = vxcore_folder_delete(ctx, notebook_id, "nonexistent");
+  err = vxcore_node_delete(ctx, notebook_id, "nonexistent");
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
 
   vxcore_string_free(notebook_id);
@@ -326,10 +325,10 @@ int test_file_not_found() {
                              "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  err = vxcore_file_delete(ctx, notebook_id, "nonexistent.md");
+  err = vxcore_node_delete(ctx, notebook_id, "nonexistent.md");
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
 
-  err = vxcore_file_update_metadata(ctx, notebook_id, "nonexistent.md", "{}");
+  err = vxcore_node_update_metadata(ctx, notebook_id, "nonexistent.md", "{}");
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
 
   err = vxcore_file_update_tags(ctx, notebook_id, "nonexistent.md", "[]");
@@ -361,10 +360,10 @@ int test_invalid_json() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
 
-  err = vxcore_file_update_metadata(ctx, notebook_id, "test.md", "invalid json");
+  err = vxcore_node_update_metadata(ctx, notebook_id, "test.md", "invalid json");
   ASSERT_EQ(err, VXCORE_ERR_JSON_PARSE);
 
-  err = vxcore_file_update_metadata(ctx, notebook_id, "test.md", "[]");
+  err = vxcore_node_update_metadata(ctx, notebook_id, "test.md", "[]");
   ASSERT_EQ(err, VXCORE_ERR_JSON_PARSE);
 
   err = vxcore_file_update_tags(ctx, notebook_id, "test.md", "not an array");
@@ -423,13 +422,13 @@ int test_file_delete() {
 
   ASSERT(path_exists(get_test_path("test_file_delete_nb") + "/to_delete.md"));
 
-  err = vxcore_file_delete(ctx, notebook_id, "to_delete.md");
+  err = vxcore_node_delete(ctx, notebook_id, "to_delete.md");
   ASSERT_EQ(err, VXCORE_OK);
 
   ASSERT(!path_exists(get_test_path("test_file_delete_nb") + "/to_delete.md"));
 
   char *config_json = nullptr;
-  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
 
   nlohmann::json config = nlohmann::json::parse(config_json);
@@ -505,7 +504,7 @@ int test_folder_rename() {
 
   ASSERT(path_exists(get_test_path("test_folder_rename_nb") + "/old_name"));
 
-  err = vxcore_folder_rename(ctx, notebook_id, "old_name", "new_name");
+  err = vxcore_node_rename(ctx, notebook_id, "old_name", "new_name");
   ASSERT_EQ(err, VXCORE_OK);
 
   ASSERT(!path_exists(get_test_path("test_folder_rename_nb") + "/old_name"));
@@ -541,7 +540,7 @@ int test_folder_move() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(folder_id);
 
-  err = vxcore_folder_move(ctx, notebook_id, "source", "dest");
+  err = vxcore_node_move(ctx, notebook_id, "source", "dest");
   ASSERT_EQ(err, VXCORE_OK);
 
   ASSERT(!path_exists(get_test_path("test_folder_move_nb") + "/source"));
@@ -579,7 +578,7 @@ int test_folder_copy() {
   vxcore_string_free(file_id);
 
   char *copied_folder_id = nullptr;
-  err = vxcore_folder_copy(ctx, notebook_id, "original", ".", "copy", &copied_folder_id);
+  err = vxcore_node_copy(ctx, notebook_id, "original", ".", "copy", &copied_folder_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT(copied_folder_id != nullptr);
   vxcore_string_free(copied_folder_id);
@@ -614,7 +613,7 @@ int test_file_rename() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
 
-  err = vxcore_file_rename(ctx, notebook_id, "old.md", "new.md");
+  err = vxcore_node_rename(ctx, notebook_id, "old.md", "new.md");
   ASSERT_EQ(err, VXCORE_OK);
 
   ASSERT(!path_exists(get_test_path("test_file_rename_nb") + "/old.md"));
@@ -651,7 +650,7 @@ int test_file_move() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(folder_id);
 
-  err = vxcore_file_move(ctx, notebook_id, "file.md", "dest");
+  err = vxcore_node_move(ctx, notebook_id, "file.md", "dest");
   ASSERT_EQ(err, VXCORE_OK);
 
   ASSERT(!path_exists(get_test_path("test_file_move_nb") + "/file.md"));
@@ -684,7 +683,7 @@ int test_file_copy() {
   vxcore_string_free(file_id);
 
   char *copied_file_id = nullptr;
-  err = vxcore_file_copy(ctx, notebook_id, "original.md", ".", "copy.md", &copied_file_id);
+  err = vxcore_node_copy(ctx, notebook_id, "original.md", ".", "copy.md", &copied_file_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT(copied_file_id != nullptr);
   vxcore_string_free(copied_file_id);
@@ -718,11 +717,11 @@ int test_file_get_info() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
 
-  err = vxcore_file_update_metadata(ctx, notebook_id, "test.md", R"({"key": "value"})");
+  err = vxcore_node_update_metadata(ctx, notebook_id, "test.md", R"({"key": "value"})");
   ASSERT_EQ(err, VXCORE_OK);
 
   char *info_json = nullptr;
-  err = vxcore_file_get_info(ctx, notebook_id, "test.md", &info_json);
+  err = vxcore_node_get_config(ctx, notebook_id, "test.md", &info_json);
   ASSERT_EQ(err, VXCORE_OK);
 
   nlohmann::json info = nlohmann::json::parse(info_json);
@@ -756,11 +755,11 @@ int test_folder_get_metadata() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(folder_id);
 
-  err = vxcore_folder_update_metadata(ctx, notebook_id, "test", R"({"color": "blue"})");
+  err = vxcore_node_update_metadata(ctx, notebook_id, "test", R"({"color": "blue"})");
   ASSERT_EQ(err, VXCORE_OK);
 
   char *metadata_json = nullptr;
-  err = vxcore_folder_get_metadata(ctx, notebook_id, "test", &metadata_json);
+  err = vxcore_node_get_metadata(ctx, notebook_id, "test", &metadata_json);
   ASSERT_EQ(err, VXCORE_OK);
 
   nlohmann::json metadata = nlohmann::json::parse(metadata_json);
@@ -793,7 +792,7 @@ int test_folder_copy_invalid_params() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(folder_id);
 
-  err = vxcore_folder_copy(ctx, notebook_id, "original", ".", "copy", nullptr);
+  err = vxcore_node_copy(ctx, notebook_id, "original", ".", "copy", nullptr);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
 
   vxcore_string_free(notebook_id);
@@ -818,7 +817,7 @@ int test_folder_copy_not_found() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *copied_folder_id = nullptr;
-  err = vxcore_folder_copy(ctx, notebook_id, "nonexistent", ".", "copy", &copied_folder_id);
+  err = vxcore_node_copy(ctx, notebook_id, "nonexistent", ".", "copy", &copied_folder_id);
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
   ASSERT(copied_folder_id == nullptr);
 
@@ -853,7 +852,7 @@ int test_folder_copy_already_exists() {
   vxcore_string_free(folder_id);
 
   char *copied_folder_id = nullptr;
-  err = vxcore_folder_copy(ctx, notebook_id, "original", ".", "existing", &copied_folder_id);
+  err = vxcore_node_copy(ctx, notebook_id, "original", ".", "existing", &copied_folder_id);
   ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
   ASSERT(copied_folder_id == nullptr);
 
@@ -883,7 +882,7 @@ int test_file_copy_invalid_params() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
 
-  err = vxcore_file_copy(ctx, notebook_id, "original.md", ".", "copy.md", nullptr);
+  err = vxcore_node_copy(ctx, notebook_id, "original.md", ".", "copy.md", nullptr);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
 
   vxcore_string_free(notebook_id);
@@ -908,7 +907,7 @@ int test_file_copy_not_found() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *copied_file_id = nullptr;
-  err = vxcore_file_copy(ctx, notebook_id, "nonexistent.md", ".", "copy.md", &copied_file_id);
+  err = vxcore_node_copy(ctx, notebook_id, "nonexistent.md", ".", "copy.md", &copied_file_id);
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
   ASSERT(copied_file_id == nullptr);
 
@@ -943,7 +942,7 @@ int test_file_copy_already_exists() {
   vxcore_string_free(file_id);
 
   char *copied_file_id = nullptr;
-  err = vxcore_file_copy(ctx, notebook_id, "original.md", ".", "existing.md", &copied_file_id);
+  err = vxcore_node_copy(ctx, notebook_id, "original.md", ".", "existing.md", &copied_file_id);
   ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
   ASSERT(copied_file_id == nullptr);
 
@@ -986,7 +985,7 @@ int test_file_tag() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *config_json = nullptr;
-  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
 
   nlohmann::json config = nlohmann::json::parse(config_json);
@@ -1043,7 +1042,7 @@ int test_file_untag() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *config_json = nullptr;
-  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
 
   nlohmann::json config = nlohmann::json::parse(config_json);
@@ -1390,7 +1389,7 @@ int test_metadata_store_sync_on_reopen() {
   char *config_json = nullptr;
 
   // Check root folder config
-  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   nlohmann::json root_config = nlohmann::json::parse(config_json);
   ASSERT(root_config["folders"].size() == 1);  // docs
@@ -1398,7 +1397,7 @@ int test_metadata_store_sync_on_reopen() {
   vxcore_string_free(config_json);
 
   // Check nested folder config
-  err = vxcore_folder_get_config(ctx, notebook_id, "docs", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, "docs", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   nlohmann::json docs_config = nlohmann::json::parse(config_json);
   ASSERT(docs_config["folders"].size() == 1);  // guides
@@ -1406,7 +1405,7 @@ int test_metadata_store_sync_on_reopen() {
   vxcore_string_free(config_json);
 
   // Check deeply nested folder config
-  err = vxcore_folder_get_config(ctx, notebook_id, "docs/guides", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, "docs/guides", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   nlohmann::json guides_config = nlohmann::json::parse(config_json);
   ASSERT(guides_config["files"].size() == 1);  // setup.md
@@ -1447,8 +1446,7 @@ int test_metadata_store_write_through() {
   vxcore_string_free(file_id);
 
   // Update file metadata
-  err = vxcore_file_update_metadata(ctx, notebook_id, "notes/test.md",
-                                    R"({"author": "test", "version": 1})");
+  err = vxcore_node_update_metadata(ctx, notebook_id, "notes/test.md", R"({"author": "test", "version": 1})");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create and apply tag
@@ -1459,16 +1457,16 @@ int test_metadata_store_write_through() {
   ASSERT_EQ(err, VXCORE_OK);
 
   // Rename file
-  err = vxcore_file_rename(ctx, notebook_id, "notes/test.md", "renamed.md");
+  err = vxcore_node_rename(ctx, notebook_id, "notes/test.md", "renamed.md");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Move file to root
-  err = vxcore_file_move(ctx, notebook_id, "notes/renamed.md", ".");
+  err = vxcore_node_move(ctx, notebook_id, "notes/renamed.md", ".");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Verify file in root with all its attributes
   char *info_json = nullptr;
-  err = vxcore_file_get_info(ctx, notebook_id, "renamed.md", &info_json);
+  err = vxcore_node_get_config(ctx, notebook_id, "renamed.md", &info_json);
   ASSERT_EQ(err, VXCORE_OK);
 
   nlohmann::json info = nlohmann::json::parse(info_json);
@@ -1479,7 +1477,7 @@ int test_metadata_store_write_through() {
   vxcore_string_free(info_json);
 
   // Rename folder
-  err = vxcore_folder_rename(ctx, notebook_id, "notes", "documents");
+  err = vxcore_node_rename(ctx, notebook_id, "notes", "documents");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Verify folder exists with new name
@@ -1487,16 +1485,16 @@ int test_metadata_store_write_through() {
   ASSERT(path_exists(get_test_path("test_ms_write_through_nb") + "/documents"));
 
   // Delete file
-  err = vxcore_file_delete(ctx, notebook_id, "renamed.md");
+  err = vxcore_node_delete(ctx, notebook_id, "renamed.md");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Delete folder
-  err = vxcore_folder_delete(ctx, notebook_id, "documents");
+  err = vxcore_node_delete(ctx, notebook_id, "documents");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Verify root is empty (except for vx_notebook metadata folder)
   char *config_json = nullptr;
-  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
 
   nlohmann::json config = nlohmann::json::parse(config_json);
@@ -1538,8 +1536,7 @@ int test_metadata_store_copy_preserves_data() {
   vxcore_string_free(file_id);
 
   // Set metadata and tags on original file
-  err = vxcore_file_update_metadata(ctx, notebook_id, "source/original.md",
-                                    R"({"priority": "high"})");
+  err = vxcore_node_update_metadata(ctx, notebook_id, "source/original.md", R"({"priority": "high"})");
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "important");
@@ -1550,14 +1547,14 @@ int test_metadata_store_copy_preserves_data() {
 
   // Copy file
   char *copied_file_id = nullptr;
-  err = vxcore_file_copy(ctx, notebook_id, "source/original.md", ".", "copy.md", &copied_file_id);
+  err = vxcore_node_copy(ctx, notebook_id, "source/original.md", ".", "copy.md", &copied_file_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(copied_file_id);
   vxcore_string_free(copied_file_id);
 
   // Verify copied file has same metadata and tags
   char *info_json = nullptr;
-  err = vxcore_file_get_info(ctx, notebook_id, "copy.md", &info_json);
+  err = vxcore_node_get_config(ctx, notebook_id, "copy.md", &info_json);
   ASSERT_EQ(err, VXCORE_OK);
 
   nlohmann::json info = nlohmann::json::parse(info_json);
@@ -1569,13 +1566,13 @@ int test_metadata_store_copy_preserves_data() {
 
   // Copy folder
   char *copied_folder_id = nullptr;
-  err = vxcore_folder_copy(ctx, notebook_id, "source", ".", "source_copy", &copied_folder_id);
+  err = vxcore_node_copy(ctx, notebook_id, "source", ".", "source_copy", &copied_folder_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(copied_folder_id);
   vxcore_string_free(copied_folder_id);
 
   // Verify copied folder's file has metadata and tags
-  err = vxcore_file_get_info(ctx, notebook_id, "source_copy/original.md", &info_json);
+  err = vxcore_node_get_config(ctx, notebook_id, "source_copy/original.md", &info_json);
   ASSERT_EQ(err, VXCORE_OK);
 
   info = nlohmann::json::parse(info_json);
@@ -1646,12 +1643,12 @@ int test_sync_recursive_folders() {
 
   // Access root folder - this triggers lazy sync which should recursively sync all subfolders
   char *config_json = nullptr;
-  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(config_json);
 
   // Verify level1 is accessible and has correct content
-  err = vxcore_folder_get_config(ctx, notebook_id, "level1", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, "level1", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   nlohmann::json level1_config = nlohmann::json::parse(config_json);
   ASSERT(level1_config["folders"].size() == 1);  // level2
@@ -1659,7 +1656,7 @@ int test_sync_recursive_folders() {
   vxcore_string_free(config_json);
 
   // Verify level2 is accessible
-  err = vxcore_folder_get_config(ctx, notebook_id, "level1/level2", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, "level1/level2", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   nlohmann::json level2_config = nlohmann::json::parse(config_json);
   ASSERT(level2_config["folders"].size() == 1);  // level3
@@ -1667,7 +1664,7 @@ int test_sync_recursive_folders() {
   vxcore_string_free(config_json);
 
   // Verify level3 is accessible
-  err = vxcore_folder_get_config(ctx, notebook_id, "level1/level2/level3", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, "level1/level2/level3", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   nlohmann::json level3_config = nlohmann::json::parse(config_json);
   ASSERT(level3_config["files"].size() == 1);  // file3.md
@@ -1708,7 +1705,7 @@ int test_sync_orphan_file_deletion() {
 
   // Verify both files exist
   char *config_json = nullptr;
-  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   nlohmann::json config = nlohmann::json::parse(config_json);
   ASSERT(config["files"].size() == 2);
@@ -1747,7 +1744,7 @@ int test_sync_orphan_file_deletion() {
   ASSERT_EQ(err, VXCORE_OK);
 
   // Access folder to trigger sync
-  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   config = nlohmann::json::parse(config_json);
 
@@ -1785,12 +1782,12 @@ int test_sync_file_metadata_update() {
   vxcore_string_free(file_id);
 
   // Set initial metadata
-  err = vxcore_file_update_metadata(ctx, notebook_id, "note.md", "{\"priority\":\"low\"}");
+  err = vxcore_node_update_metadata(ctx, notebook_id, "note.md", "{\"priority\":\"low\"}");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Verify initial metadata
   char *info_json = nullptr;
-  err = vxcore_file_get_info(ctx, notebook_id, "note.md", &info_json);
+  err = vxcore_node_get_config(ctx, notebook_id, "note.md", &info_json);
   ASSERT_EQ(err, VXCORE_OK);
   nlohmann::json info = nlohmann::json::parse(info_json);
   ASSERT(info["metadata"]["priority"] == "low");
@@ -1830,12 +1827,12 @@ int test_sync_file_metadata_update() {
 
   // Access folder to trigger sync
   char *config_json = nullptr;
-  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(config_json);
 
   // Verify metadata was updated
-  err = vxcore_file_get_info(ctx, notebook_id, "note.md", &info_json);
+  err = vxcore_node_get_config(ctx, notebook_id, "note.md", &info_json);
   ASSERT_EQ(err, VXCORE_OK);
   info = nlohmann::json::parse(info_json);
   ASSERT(info["metadata"]["priority"] == "high");
@@ -1872,7 +1869,7 @@ int test_sync_new_file_creation() {
 
   // Verify only one file
   char *config_json = nullptr;
-  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   nlohmann::json config = nlohmann::json::parse(config_json);
   ASSERT(config["files"].size() == 1);
@@ -1917,7 +1914,7 @@ int test_sync_new_file_creation() {
   ASSERT_EQ(err, VXCORE_OK);
 
   // Access folder to trigger sync
-  err = vxcore_folder_get_config(ctx, notebook_id, ".", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   config = nlohmann::json::parse(config_json);
 
@@ -1965,8 +1962,7 @@ int test_sync_folder_metadata_update() {
   vxcore_string_free(folder_id);
 
   // Set initial folder metadata
-  err = vxcore_folder_update_metadata(ctx, notebook_id, "docs",
-                                      "{\"description\":\"Documentation\"}");
+  err = vxcore_node_update_metadata(ctx, notebook_id, "docs", "{\"description\":\"Documentation\"}");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Close notebook
@@ -2000,7 +1996,7 @@ int test_sync_folder_metadata_update() {
 
   // Access folder to trigger sync
   char *config_json = nullptr;
-  err = vxcore_folder_get_config(ctx, notebook_id, "docs", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, "docs", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   nlohmann::json config = nlohmann::json::parse(config_json);
 
@@ -2046,7 +2042,7 @@ int test_sync_staleness_check() {
   // Access folder multiple times - second access should use cached/synced data
   char *config_json = nullptr;
   for (int i = 0; i < 3; i++) {
-    err = vxcore_folder_get_config(ctx, notebook_id, "docs", &config_json);
+    err = vxcore_node_get_config(ctx, notebook_id, "docs", &config_json);
     ASSERT_EQ(err, VXCORE_OK);
     nlohmann::json config = nlohmann::json::parse(config_json);
     ASSERT(config["files"].size() == 1);
@@ -2065,7 +2061,7 @@ int test_sync_staleness_check() {
   ASSERT_EQ(err, VXCORE_OK);
 
   // Access again - sync state should be preserved, so only staleness check happens
-  err = vxcore_folder_get_config(ctx, notebook_id, "docs", &config_json);
+  err = vxcore_node_get_config(ctx, notebook_id, "docs", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   nlohmann::json config = nlohmann::json::parse(config_json);
   ASSERT(config["files"].size() == 1);

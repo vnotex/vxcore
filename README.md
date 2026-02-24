@@ -57,7 +57,7 @@ vxcore_string_free(metadata_json);
 - `vxcore_node_get_metadata` - Get metadata for file or folder
 - `vxcore_node_update_metadata` - Update metadata for file or folder
 
-**Traditional APIs:** For create operations and file-specific tag operations, use the dedicated `vxcore_folder_*`, `vxcore_file_*`, and `vxcore_file_tag/untag` APIs.
+**Create Operations:** For creating folders and files, use `vxcore_folder_create`, `vxcore_folder_create_path`, and `vxcore_file_create`. For file-specific tag operations, use `vxcore_file_update_tags`, `vxcore_file_tag`, and `vxcore_file_untag`.
 
 
 ## Build

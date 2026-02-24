@@ -261,7 +261,7 @@ int test_notebook_rebuild_cache() {
 
   // Verify data is still accessible after rebuild
   char *folder_config = nullptr;
-  err = vxcore_folder_get_config(ctx, notebook_id, "docs", &folder_config);
+  err = vxcore_node_get_config(ctx, notebook_id, "docs", &folder_config);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(folder_config);
 
@@ -399,7 +399,7 @@ int test_file_tag_operations() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file_info = nullptr;
-  err = vxcore_file_get_info(ctx, notebook_id, "test.md", &file_info);
+  err = vxcore_node_get_config(ctx, notebook_id, "test.md", &file_info);
   ASSERT_EQ(err, VXCORE_OK);
 
   std::string info_str(file_info);
@@ -409,7 +409,7 @@ int test_file_tag_operations() {
   ASSERT_EQ(err, VXCORE_OK);
 
   vxcore_string_free(file_info);
-  err = vxcore_file_get_info(ctx, notebook_id, "test.md", &file_info);
+  err = vxcore_node_get_config(ctx, notebook_id, "test.md", &file_info);
   ASSERT_EQ(err, VXCORE_OK);
 
   info_str = std::string(file_info);
@@ -487,7 +487,7 @@ int test_tag_delete_with_files() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file_info = nullptr;
-  err = vxcore_file_get_info(ctx, notebook_id, "note.md", &file_info);
+  err = vxcore_node_get_config(ctx, notebook_id, "note.md", &file_info);
   ASSERT_EQ(err, VXCORE_OK);
 
   std::string info_str(file_info);
@@ -573,7 +573,7 @@ int test_file_update_tags() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file_info = nullptr;
-  err = vxcore_file_get_info(ctx, notebook_id, "multi.md", &file_info);
+  err = vxcore_node_get_config(ctx, notebook_id, "multi.md", &file_info);
   ASSERT_EQ(err, VXCORE_OK);
 
   std::string info_str(file_info);
