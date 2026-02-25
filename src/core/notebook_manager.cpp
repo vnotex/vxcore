@@ -187,6 +187,14 @@ VxCoreError NotebookManager::CloseNotebook(const std::string &notebook_id) {
 
   notebooks_.erase(it);
 
+  // Remove notebook record from session config
+  auto &session_config = config_manager_->GetSessionConfig();
+  auto rec_it = std::find_if(session_config.notebooks.begin(), session_config.notebooks.end(),
+                             [&notebook_id](const NotebookRecord &r) { return r.id == notebook_id; });
+  if (rec_it != session_config.notebooks.end()) {
+    session_config.notebooks.erase(rec_it);
+  }
+
   config_manager_->SaveSessionConfig();
 
   VXCORE_LOG_INFO("Notebook closed successfully: id=%s", notebook_id.c_str());

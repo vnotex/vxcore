@@ -1038,6 +1038,66 @@ int test_notebook_close_releases_db_lock() {
   return 0;
 }
 
+// Test that closing a notebook removes it from session config
+// so it doesn't reappear after creating a new context (restart simulation)
+int test_notebook_close_removes_from_session() {
+  std::cout << "  Running test_notebook_close_removes_from_session..." << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_close_session"));
+
+  // Create first context and notebook
+  VxCoreContextHandle ctx1 = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx1, get_test_path("test_nb_close_session").c_str(),
+                               "{\"name\":\"Session Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  std::string saved_id(notebook_id);
+
+  // Verify notebook appears in list
+  char *list_json1 = nullptr;
+  err = vxcore_notebook_list(ctx1, &list_json1);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NE(std::string(list_json1).find(saved_id), std::string::npos);
+  vxcore_string_free(list_json1);
+
+  // Close the notebook
+  err = vxcore_notebook_close(ctx1, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify notebook no longer appears in list after close
+  char *list_json2 = nullptr;
+  err = vxcore_notebook_list(ctx1, &list_json2);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(std::string(list_json2).find(saved_id), std::string::npos);
+  vxcore_string_free(list_json2);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx1);
+
+  // Create NEW context (simulates app restart)
+  VxCoreContextHandle ctx2 = nullptr;
+  err = vxcore_context_create(nullptr, &ctx2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // CRITICAL: Closed notebook should NOT appear in new context's list
+  // This was the bug - notebook record wasn't removed from session config
+  char *list_json3 = nullptr;
+  err = vxcore_notebook_list(ctx2, &list_json3);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(std::string(list_json3).find(saved_id), std::string::npos);
+  vxcore_string_free(list_json3);
+
+  vxcore_context_destroy(ctx2);
+  cleanup_test_dir(get_test_path("test_nb_close_session"));
+  std::cout << "  ✓ test_notebook_close_removes_from_session passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
 
@@ -1072,6 +1132,7 @@ int main() {
   RUN_TEST(test_tag_create_path_partial_exists);
   RUN_TEST(test_tag_create_path_empty);
   RUN_TEST(test_tag_create_path_trailing_slash);
+  RUN_TEST(test_notebook_close_removes_from_session);
 
   std::cout << "âœ“ All notebook tests passed" << std::endl;
   return 0;
