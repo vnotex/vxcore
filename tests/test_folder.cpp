@@ -2338,6 +2338,247 @@ int test_recycle_bin_raw_notebook_unsupported() {
   return 0;
 }
 
+// ============ File Import Tests ============
+
+int test_file_import_basic() {
+  std::cout << "  Running test_file_import_basic..." << std::endl;
+  cleanup_test_dir(get_test_path("test_file_import_basic_nb"));
+  cleanup_test_dir(get_test_path("test_file_import_source"));
+
+  // Create external source file
+  create_directory(get_test_path("test_file_import_source"));
+  std::string source_file = get_test_path("test_file_import_source") + "/external.md";
+  write_file(source_file, "# External File Content\n\nThis is test content.");
+  ASSERT(path_exists(source_file));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_file_import_basic_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Import the file
+  char *file_id = nullptr;
+  err = vxcore_file_import(ctx, notebook_id, ".", source_file.c_str(), &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(file_id);
+
+  // Verify file exists in notebook with correct name
+  std::string imported_path = get_test_path("test_file_import_basic_nb") + "/external.md";
+  ASSERT(path_exists(imported_path));
+
+  // Verify file is in metadata
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"].size() == 1);
+  ASSERT(config["files"][0]["name"] == "external.md");
+  vxcore_string_free(config_json);
+
+  // Verify source file still exists (copy, not move)
+  ASSERT(path_exists(source_file));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_file_import_basic_nb"));
+  cleanup_test_dir(get_test_path("test_file_import_source"));
+  std::cout << "  ✓ test_file_import_basic passed" << std::endl;
+  return 0;
+}
+
+int test_file_import_name_conflict() {
+  std::cout << "  Running test_file_import_name_conflict..." << std::endl;
+  cleanup_test_dir(get_test_path("test_file_import_conflict_nb"));
+  cleanup_test_dir(get_test_path("test_file_import_conflict_src"));
+
+  // Create external source file
+  create_directory(get_test_path("test_file_import_conflict_src"));
+  std::string source_file = get_test_path("test_file_import_conflict_src") + "/conflict.md";
+  write_file(source_file, "# Source content");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_file_import_conflict_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create existing file with same name
+  char *existing_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "conflict.md", &existing_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(existing_id);
+
+  // Import file - should auto-rename to conflict_1.md
+  char *file_id = nullptr;
+  err = vxcore_file_import(ctx, notebook_id, ".", source_file.c_str(), &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(file_id);
+
+  // Verify both files exist
+  std::string original_path = get_test_path("test_file_import_conflict_nb") + "/conflict.md";
+  std::string renamed_path = get_test_path("test_file_import_conflict_nb") + "/conflict_1.md";
+  ASSERT(path_exists(original_path));
+  ASSERT(path_exists(renamed_path));
+
+  // Import again - should become conflict_2.md
+  char *file_id2 = nullptr;
+  err = vxcore_file_import(ctx, notebook_id, ".", source_file.c_str(), &file_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string renamed_path2 = get_test_path("test_file_import_conflict_nb") + "/conflict_2.md";
+  ASSERT(path_exists(renamed_path2));
+  vxcore_string_free(file_id2);
+
+  // Verify metadata has 3 files
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"].size() == 3);
+  vxcore_string_free(config_json);
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_file_import_conflict_nb"));
+  cleanup_test_dir(get_test_path("test_file_import_conflict_src"));
+  std::cout << "  ✓ test_file_import_name_conflict passed" << std::endl;
+  return 0;
+}
+
+int test_file_import_source_not_found() {
+  std::cout << "  Running test_file_import_source_not_found..." << std::endl;
+  cleanup_test_dir(get_test_path("test_file_import_notfound_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_file_import_notfound_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Try to import non-existent file
+  char *file_id = nullptr;
+  err = vxcore_file_import(ctx, notebook_id, ".", "/nonexistent/path/file.md", &file_id);
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+  ASSERT_NULL(file_id);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_file_import_notfound_nb"));
+  std::cout << "  ✓ test_file_import_source_not_found passed" << std::endl;
+  return 0;
+}
+
+int test_file_import_invalid_params() {
+  std::cout << "  Running test_file_import_invalid_params..." << std::endl;
+  cleanup_test_dir(get_test_path("test_file_import_invalid_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_file_import_invalid_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+
+  // Null context
+  err = vxcore_file_import(nullptr, notebook_id, ".", "/some/path.md", &file_id);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Null notebook_id
+  err = vxcore_file_import(ctx, nullptr, ".", "/some/path.md", &file_id);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Null folder_path
+  err = vxcore_file_import(ctx, notebook_id, nullptr, "/some/path.md", &file_id);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Null external_file_path
+  err = vxcore_file_import(ctx, notebook_id, ".", nullptr, &file_id);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Null out_file_id
+  err = vxcore_file_import(ctx, notebook_id, ".", "/some/path.md", nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_file_import_invalid_nb"));
+  std::cout << "  ✓ test_file_import_invalid_params passed" << std::endl;
+  return 0;
+}
+
+int test_file_import_to_subfolder() {
+  std::cout << "  Running test_file_import_to_subfolder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_file_import_subfolder_nb"));
+  cleanup_test_dir(get_test_path("test_file_import_subfolder_src"));
+
+  // Create external source file
+  create_directory(get_test_path("test_file_import_subfolder_src"));
+  std::string source_file = get_test_path("test_file_import_subfolder_src") + "/doc.md";
+  write_file(source_file, "# Document");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_file_import_subfolder_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create subfolder
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Import to subfolder
+  char *file_id = nullptr;
+  err = vxcore_file_import(ctx, notebook_id, "docs", source_file.c_str(), &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(file_id);
+
+  // Verify file is in subfolder
+  std::string imported_path = get_test_path("test_file_import_subfolder_nb") + "/docs/doc.md";
+  ASSERT(path_exists(imported_path));
+
+  // Verify metadata in subfolder
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "docs", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"].size() == 1);
+  ASSERT(config["files"][0]["name"] == "doc.md");
+  vxcore_string_free(config_json);
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_file_import_subfolder_nb"));
+  cleanup_test_dir(get_test_path("test_file_import_subfolder_src"));
+  std::cout << "  ✓ test_file_import_to_subfolder passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -2402,6 +2643,13 @@ int main() {
   RUN_TEST(test_recycle_bin_get_path);
   RUN_TEST(test_recycle_bin_empty);
   RUN_TEST(test_recycle_bin_raw_notebook_unsupported);
+
+  // File import tests
+  RUN_TEST(test_file_import_basic);
+  RUN_TEST(test_file_import_name_conflict);
+  RUN_TEST(test_file_import_source_not_found);
+  RUN_TEST(test_file_import_invalid_params);
+  RUN_TEST(test_file_import_to_subfolder);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;

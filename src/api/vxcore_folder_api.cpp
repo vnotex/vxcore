@@ -246,3 +246,39 @@ VXCORE_API VxCoreError vxcore_folder_list_children(VxCoreContextHandle context,
     return VXCORE_ERR_UNKNOWN;
   }
 }
+
+VXCORE_API VxCoreError vxcore_file_import(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *folder_path, const char *external_file_path,
+                                          char **out_file_id) {
+  if (!context || !notebook_id || !folder_path || !external_file_path || !out_file_id) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    std::string file_id;
+    VxCoreError error = folder_manager->ImportFile(folder_path, external_file_path, file_id);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+
+    *out_file_id = vxcore_strdup(file_id.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}

@@ -1632,4 +1632,123 @@ VxCoreError BundledFolderManager::MoveToRecycleBin(const std::filesystem::path &
     return VXCORE_ERR_IO;
   }
 }
+
+std::string BundledFolderManager::GenerateUniqueFileName(const std::string &folder_abs_path,
+                                                         const std::string &desired_name) const {
+  fs::path folder_path(folder_abs_path);
+  fs::path dest_path = folder_path / desired_name;
+
+  if (!fs::exists(dest_path)) {
+    return desired_name;
+  }
+
+  // Extract base name and extension
+  std::string base_name = desired_name;
+  std::string extension;
+  size_t dot_pos = desired_name.find_last_of('.');
+  if (dot_pos != std::string::npos && dot_pos > 0) {
+    base_name = desired_name.substr(0, dot_pos);
+    extension = desired_name.substr(dot_pos);
+  }
+
+  // Try _1, _2, _3, etc. until we find a unique name
+  int suffix = 1;
+  while (true) {
+    std::string new_name = base_name + "_" + std::to_string(suffix) + extension;
+    dest_path = folder_path / new_name;
+    if (!fs::exists(dest_path)) {
+      return new_name;
+    }
+    ++suffix;
+    if (suffix > 10000) {
+      // Safety limit to prevent infinite loop
+      VXCORE_LOG_ERROR("GenerateUniqueFileName: Too many conflicts for %s", desired_name.c_str());
+      return base_name + "_" + std::to_string(GetCurrentTimestampMillis()) + extension;
+    }
+  }
+}
+
+VxCoreError BundledFolderManager::ImportFile(const std::string &folder_path,
+                                             const std::string &external_file_path,
+                                             std::string &out_file_id) {
+  VXCORE_LOG_INFO("ImportFile: folder=%s, external_file=%s", folder_path.c_str(),
+                  external_file_path.c_str());
+
+  // Validate external file exists
+  if (!fs::exists(external_file_path)) {
+    VXCORE_LOG_ERROR("ImportFile: External file not found: %s", external_file_path.c_str());
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  if (!fs::is_regular_file(external_file_path)) {
+    VXCORE_LOG_ERROR("ImportFile: Path is not a regular file: %s", external_file_path.c_str());
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  const auto clean_folder_path = GetCleanRelativePath(folder_path);
+
+  // Get folder config to ensure destination exists
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(clean_folder_path, &config);
+  if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("ImportFile: Failed to get folder config: folder=%s, error=%d",
+                     clean_folder_path.c_str(), error);
+    return error;
+  }
+
+  // Get destination content path and determine unique file name
+  std::string content_path = GetContentPath(clean_folder_path);
+  fs::path source_path(external_file_path);
+  std::string original_name = source_path.filename().string();
+  std::string target_name = GenerateUniqueFileName(content_path, original_name);
+  fs::path dest_path = fs::path(content_path) / target_name;
+
+  // Check if file with this name already exists in config (shouldn't happen after unique name gen)
+  if (FindFileRecord(*config, target_name)) {
+    VXCORE_LOG_WARN("ImportFile: File already exists in config: %s", target_name.c_str());
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+
+  // Copy the external file to notebook folder
+  try {
+    fs::copy_file(external_file_path, dest_path);
+    VXCORE_LOG_DEBUG("ImportFile: Copied file to: %s", dest_path.string().c_str());
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("ImportFile: Failed to copy file: %s", e.what());
+    return VXCORE_ERR_IO;
+  }
+
+  // Add file to folder config
+  const auto ts = GetCurrentTimestampMillis();
+  config->files.emplace_back(target_name);
+  config->files.back().created_utc = ts;
+  config->files.back().modified_utc = ts;
+  config->modified_utc = ts;
+
+  error = SaveFolderConfig(clean_folder_path, *config);
+  if (error != VXCORE_OK) {
+    // Rollback: delete the copied file
+    try {
+      fs::remove(dest_path);
+    } catch (const std::exception &) {
+      VXCORE_LOG_WARN("ImportFile: Failed to rollback copied file");
+    }
+    return error;
+  }
+
+  out_file_id = config->files.back().id;
+
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    StoreFileRecord file_record = ToStoreFileRecord(config->files.back(), config->id);
+    if (!store->CreateFile(file_record)) {
+      VXCORE_LOG_WARN("ImportFile: Failed to create file in MetadataStore: id=%s",
+                      out_file_id.c_str());
+    }
+  }
+
+  VXCORE_LOG_INFO("ImportFile: Successfully imported file: id=%s, name=%s", out_file_id.c_str(),
+                  target_name.c_str());
+  return VXCORE_OK;
+}
 }  // namespace vxcore

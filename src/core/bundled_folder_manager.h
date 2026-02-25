@@ -71,6 +71,9 @@ class BundledFolderManager : public FolderManager {
   VxCoreError CopyFile(const std::string &src_file_path, const std::string &dest_folder_path,
                        const std::string &new_name, std::string &out_file_id) override;
 
+  VxCoreError ImportFile(const std::string &folder_path, const std::string &external_file_path,
+                         std::string &out_file_id) override;
+
   void IterateAllFiles(
       std::function<bool(const std::string &, const FileRecord &)> callback) override;
 
@@ -115,6 +118,8 @@ class BundledFolderManager : public FolderManager {
 
   // Recycle bin helpers
   std::string GenerateUniqueRecycleBinName(const std::string &name) const;
+  std::string GenerateUniqueFileName(const std::string &folder_abs_path,
+                                     const std::string &desired_name) const;
   VxCoreError MoveToRecycleBin(const std::filesystem::path &source_path);
   std::map<std::string, std::unique_ptr<FolderConfig>> config_cache_;
 };

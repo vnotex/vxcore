@@ -75,6 +75,10 @@ class FolderManager {
                                const std::string &dest_folder_path, const std::string &new_name,
                                std::string &out_file_id) = 0;
 
+  virtual VxCoreError ImportFile(const std::string &folder_path,
+                                 const std::string &external_file_path,
+                                 std::string &out_file_id) = 0;
+
   virtual void IterateAllFiles(
       std::function<bool(const std::string &, const FileRecord &)> callback) = 0;
 

@@ -113,6 +113,14 @@ VXCORE_API VxCoreError vxcore_file_create(VxCoreContextHandle context, const cha
                                           const char *folder_path, const char *file_name,
                                           char **out_file_id);
 
+// Import an external file into a notebook folder.
+// The file is copied (not moved) to the notebook.
+// If a file with the same name exists, a unique name is generated (e.g., file_1.txt).
+// out_file_id: receives the ID of the imported file (caller must free with vxcore_string_free)
+VXCORE_API VxCoreError vxcore_file_import(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *folder_path, const char *external_file_path,
+                                          char **out_file_id);
+
 VXCORE_API VxCoreError vxcore_file_update_tags(VxCoreContextHandle context, const char *notebook_id,
                                                const char *file_path, const char *tags_json);
 
