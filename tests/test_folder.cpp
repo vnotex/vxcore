@@ -2075,6 +2075,269 @@ int test_sync_staleness_check() {
   return 0;
 }
 
+// ============ Recycle Bin Tests ============
+
+int test_recycle_bin_file_delete() {
+  std::cout << "  Running test_recycle_bin_file_delete..." << std::endl;
+  cleanup_test_dir(get_test_path("test_recycle_bin_file_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_file_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "to_recycle.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  std::string file_path = get_test_path("test_recycle_bin_file_nb") + "/to_recycle.md";
+  ASSERT(path_exists(file_path));
+
+  // Delete the file - should move to recycle bin
+  err = vxcore_node_delete(ctx, notebook_id, "to_recycle.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Original file should no longer exist
+  ASSERT(!path_exists(file_path));
+
+  // File should be in recycle bin
+  std::string recycle_bin_path =
+      get_test_path("test_recycle_bin_file_nb") + "/vx_notebook/recycle_bin";
+  ASSERT(path_exists(recycle_bin_path));
+  ASSERT(path_exists(recycle_bin_path + "/to_recycle.md"));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_recycle_bin_file_nb"));
+  std::cout << "  ✓ test_recycle_bin_file_delete passed" << std::endl;
+  return 0;
+}
+
+int test_recycle_bin_folder_delete() {
+  std::cout << "  Running test_recycle_bin_folder_delete..." << std::endl;
+  cleanup_test_dir(get_test_path("test_recycle_bin_folder_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_folder_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a folder with a file inside
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "to_recycle_folder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "to_recycle_folder", "inner.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  std::string folder_path = get_test_path("test_recycle_bin_folder_nb") + "/to_recycle_folder";
+  ASSERT(path_exists(folder_path));
+  ASSERT(path_exists(folder_path + "/inner.md"));
+
+  // Delete the folder - should move entire folder to recycle bin
+  err = vxcore_node_delete(ctx, notebook_id, "to_recycle_folder");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Original folder should no longer exist
+  ASSERT(!path_exists(folder_path));
+
+  // Folder should be in recycle bin with contents
+  std::string recycle_bin_path =
+      get_test_path("test_recycle_bin_folder_nb") + "/vx_notebook/recycle_bin";
+  ASSERT(path_exists(recycle_bin_path));
+  ASSERT(path_exists(recycle_bin_path + "/to_recycle_folder"));
+  ASSERT(path_exists(recycle_bin_path + "/to_recycle_folder/inner.md"));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_recycle_bin_folder_nb"));
+  std::cout << "  ✓ test_recycle_bin_folder_delete passed" << std::endl;
+  return 0;
+}
+
+int test_recycle_bin_name_conflict() {
+  std::cout << "  Running test_recycle_bin_name_conflict..." << std::endl;
+  cleanup_test_dir(get_test_path("test_recycle_bin_conflict_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_conflict_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create and delete first file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "conflict.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_node_delete(ctx, notebook_id, "conflict.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create and delete second file with same name
+  err = vxcore_file_create(ctx, notebook_id, ".", "conflict.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_node_delete(ctx, notebook_id, "conflict.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create and delete third file with same name
+  err = vxcore_file_create(ctx, notebook_id, ".", "conflict.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_node_delete(ctx, notebook_id, "conflict.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // All three should be in recycle bin with different names
+  std::string recycle_bin_path =
+      get_test_path("test_recycle_bin_conflict_nb") + "/vx_notebook/recycle_bin";
+  ASSERT(path_exists(recycle_bin_path + "/conflict.md"));
+  ASSERT(path_exists(recycle_bin_path + "/conflict_1.md"));
+  ASSERT(path_exists(recycle_bin_path + "/conflict_2.md"));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_recycle_bin_conflict_nb"));
+  std::cout << "  ✓ test_recycle_bin_name_conflict passed" << std::endl;
+  return 0;
+}
+
+int test_recycle_bin_get_path() {
+  std::cout << "  Running test_recycle_bin_get_path..." << std::endl;
+  cleanup_test_dir(get_test_path("test_recycle_bin_path_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_path_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *recycle_bin_path = nullptr;
+  err = vxcore_notebook_get_recycle_bin_path(ctx, notebook_id, &recycle_bin_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(recycle_bin_path);
+
+  std::string expected_path =
+      normalize_path(get_test_path("test_recycle_bin_path_nb") + "/vx_notebook/recycle_bin");
+  ASSERT_EQ(std::string(recycle_bin_path), expected_path);
+
+  vxcore_string_free(recycle_bin_path);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_recycle_bin_path_nb"));
+  std::cout << "  ✓ test_recycle_bin_get_path passed" << std::endl;
+  return 0;
+}
+
+int test_recycle_bin_empty() {
+  std::cout << "  Running test_recycle_bin_empty..." << std::endl;
+  cleanup_test_dir(get_test_path("test_recycle_bin_empty_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_empty_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create and delete multiple files
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "file1.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+  err = vxcore_node_delete(ctx, notebook_id, "file1.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_create(ctx, notebook_id, ".", "file2.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+  err = vxcore_node_delete(ctx, notebook_id, "file2.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify files are in recycle bin
+  std::string recycle_bin_path =
+      get_test_path("test_recycle_bin_empty_nb") + "/vx_notebook/recycle_bin";
+  ASSERT(path_exists(recycle_bin_path + "/file1.md"));
+  ASSERT(path_exists(recycle_bin_path + "/file2.md"));
+
+  // Empty the recycle bin
+  err = vxcore_notebook_empty_recycle_bin(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Recycle bin folder should still exist but be empty
+  ASSERT(path_exists(recycle_bin_path));
+  ASSERT(!path_exists(recycle_bin_path + "/file1.md"));
+  ASSERT(!path_exists(recycle_bin_path + "/file2.md"));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_recycle_bin_empty_nb"));
+  std::cout << "  ✓ test_recycle_bin_empty passed" << std::endl;
+  return 0;
+}
+
+int test_recycle_bin_raw_notebook_unsupported() {
+  std::cout << "  Running test_recycle_bin_raw_notebook_unsupported..." << std::endl;
+  cleanup_test_dir(get_test_path("test_recycle_bin_raw_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a raw notebook
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_raw_nb").c_str(),
+                               "{\"name\":\"Raw Notebook\"}", VXCORE_NOTEBOOK_RAW,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Get recycle bin path should return empty string for raw notebook
+  char *recycle_bin_path = nullptr;
+  err = vxcore_notebook_get_recycle_bin_path(ctx, notebook_id, &recycle_bin_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(recycle_bin_path);
+  ASSERT_EQ(std::string(recycle_bin_path), std::string(""));
+  vxcore_string_free(recycle_bin_path);
+
+  // Empty recycle bin should return VXCORE_ERR_UNSUPPORTED for raw notebook
+  err = vxcore_notebook_empty_recycle_bin(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_recycle_bin_raw_nb"));
+  std::cout << "  ✓ test_recycle_bin_raw_notebook_unsupported passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -2131,6 +2394,14 @@ int main() {
   RUN_TEST(test_sync_new_file_creation);
   RUN_TEST(test_sync_folder_metadata_update);
   RUN_TEST(test_sync_staleness_check);
+
+  // Recycle bin tests
+  RUN_TEST(test_recycle_bin_file_delete);
+  RUN_TEST(test_recycle_bin_folder_delete);
+  RUN_TEST(test_recycle_bin_name_conflict);
+  RUN_TEST(test_recycle_bin_get_path);
+  RUN_TEST(test_recycle_bin_empty);
+  RUN_TEST(test_recycle_bin_raw_notebook_unsupported);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;

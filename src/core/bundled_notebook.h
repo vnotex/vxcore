@@ -19,6 +19,9 @@ class BundledNotebook : public Notebook {
   VxCoreError UpdateConfig(const NotebookConfig &config) override;
   VxCoreError RebuildCache() override;
 
+  std::string GetRecycleBinPath() const override;
+  VxCoreError EmptyRecycleBin() override;
+
  private:
   BundledNotebook(const std::string &local_data_folder, const std::string &root_folder);
 

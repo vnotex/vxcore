@@ -67,6 +67,13 @@ class Notebook {
   std::string GetLocalDataFolder() const;
   virtual std::string GetMetadataFolder() const = 0;
 
+  // Recycle bin operations (bundled notebooks only)
+  // Returns the path to the recycle bin folder, or empty string if not supported.
+  virtual std::string GetRecycleBinPath() const = 0;
+  // Empties the recycle bin by deleting all files and folders in it.
+  // Returns VXCORE_OK on success, VXCORE_ERR_NOT_SUPPORTED for raw notebooks.
+  virtual VxCoreError EmptyRecycleBin() = 0;
+
   FolderManager *GetFolderManager() { return folder_manager_.get(); }
   MetadataStore *GetMetadataStore() { return metadata_store_.get(); }
 

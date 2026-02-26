@@ -382,10 +382,18 @@ VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
   }
 
   try {
+    // Move content folder to recycle bin instead of permanent delete
+    VxCoreError move_error = MoveToRecycleBin(fs::path(content_path));
+    if (move_error != VXCORE_OK) {
+      VXCORE_LOG_WARN("Failed to move folder to recycle bin, falling back to delete: %s",
+                      content_path.c_str());
+      fs::remove_all(content_path);
+    }
+
+    // Always permanently delete the config folder (vx.json metadata)
     if (fs::exists(config_path)) {
       fs::remove_all(fs::path(config_path).parent_path());
     }
-    fs::remove_all(content_path);
 
     // Write-through to MetadataStore
     if (auto *store = notebook_->GetMetadataStore(); store && !folder_id.empty()) {
@@ -824,7 +832,14 @@ VxCoreError BundledFolderManager::DeleteFile(const std::string &file_path) {
   try {
     std::string content_path = GetContentPath(folder_path);
     fs::path fs_file_path = fs::path(content_path) / file_name;
-    fs::remove(fs_file_path);
+
+    // Move to recycle bin instead of permanent delete
+    VxCoreError move_error = MoveToRecycleBin(fs_file_path);
+    if (move_error != VXCORE_OK) {
+      VXCORE_LOG_WARN("Failed to move file to recycle bin, falling back to delete: %s",
+                      fs_file_path.string().c_str());
+      fs::remove(fs_file_path);
+    }
 
     // Write-through to MetadataStore
     if (auto *store = notebook_->GetMetadataStore(); !file_id.empty()) {
@@ -1541,4 +1556,80 @@ void BundledFolderManager::SyncFolderToStore(const std::string &folder_path,
                    config.id.c_str(), folder_path.c_str());
 }
 
+
+std::string BundledFolderManager::GetRecycleBinPath() const {
+  return ConcatenatePaths(notebook_->GetMetadataFolder(), "recycle_bin");
+}
+
+std::string BundledFolderManager::GenerateUniqueRecycleBinName(const std::string &name) const {
+  fs::path recycle_bin_path(GetRecycleBinPath());
+  fs::path dest_path = recycle_bin_path / name;
+
+  if (!fs::exists(dest_path)) {
+    return name;
+  }
+
+  // Extract base name and extension
+  std::string base_name = name;
+  std::string extension;
+  size_t dot_pos = name.find_last_of('.');
+  if (dot_pos != std::string::npos && dot_pos > 0) {
+    base_name = name.substr(0, dot_pos);
+    extension = name.substr(dot_pos);
+  }
+
+  // Try _1, _2, _3, etc. until we find a unique name
+  int suffix = 1;
+  while (true) {
+    std::string new_name = base_name + "_" + std::to_string(suffix) + extension;
+    dest_path = recycle_bin_path / new_name;
+    if (!fs::exists(dest_path)) {
+      return new_name;
+    }
+    ++suffix;
+    if (suffix > 10000) {
+      // Safety limit to prevent infinite loop
+      VXCORE_LOG_ERROR("GenerateUniqueRecycleBinName: Too many conflicts for %s", name.c_str());
+      return base_name + "_" + std::to_string(GetCurrentTimestampMillis()) + extension;
+    }
+  }
+}
+
+VxCoreError BundledFolderManager::MoveToRecycleBin(const std::filesystem::path &source_path) {
+  if (!fs::exists(source_path)) {
+    VXCORE_LOG_WARN("MoveToRecycleBin: Source does not exist: %s", source_path.string().c_str());
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  fs::path recycle_bin_path(GetRecycleBinPath());
+
+  // Ensure recycle bin directory exists
+  try {
+    if (!fs::exists(recycle_bin_path)) {
+      fs::create_directories(recycle_bin_path);
+      VXCORE_LOG_INFO("MoveToRecycleBin: Created recycle bin at %s",
+                      recycle_bin_path.string().c_str());
+    }
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("MoveToRecycleBin: Failed to create recycle bin: %s", e.what());
+    return VXCORE_ERR_IO;
+  }
+
+  // Generate unique name in recycle bin
+  std::string original_name = source_path.filename().string();
+  std::string unique_name = GenerateUniqueRecycleBinName(original_name);
+  fs::path dest_path = recycle_bin_path / unique_name;
+
+  // Move the file/folder to recycle bin
+  try {
+    fs::rename(source_path, dest_path);
+    VXCORE_LOG_INFO("MoveToRecycleBin: Moved %s to %s", source_path.string().c_str(),
+                    dest_path.string().c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("MoveToRecycleBin: Failed to move %s: %s", source_path.string().c_str(),
+                     e.what());
+    return VXCORE_ERR_IO;
+  }
+}
 }  // namespace vxcore

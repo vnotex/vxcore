@@ -199,3 +199,59 @@ VXCORE_API VxCoreError vxcore_notebook_rebuild_cache(VxCoreContextHandle context
     return VXCORE_ERR_UNKNOWN;
   }
 }
+
+VXCORE_API VxCoreError vxcore_notebook_get_recycle_bin_path(VxCoreContextHandle context,
+                                                            const char *notebook_id,
+                                                            char **out_path) {
+  if (!context || !notebook_id || !out_path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    std::string path = notebook->GetRecycleBinPath();
+    char *path_copy = vxcore_strdup(path.c_str());
+    if (!path_copy) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+
+    *out_path = path_copy;
+    return VXCORE_OK;
+  } catch (...) {
+    ctx->last_error = "Unknown error getting recycle bin path";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_notebook_empty_recycle_bin(VxCoreContextHandle context,
+                                                         const char *notebook_id) {
+  if (!context || !notebook_id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    VxCoreError err = notebook->EmptyRecycleBin();
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to empty recycle bin";
+    }
+    return err;
+  } catch (...) {
+    ctx->last_error = "Unknown error emptying recycle bin";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}

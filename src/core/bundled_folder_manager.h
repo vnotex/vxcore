@@ -2,6 +2,7 @@
 #define VXCORE_BUNDLED_FOLDER_MANAGER_H
 
 #include <map>
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -85,6 +86,9 @@ class BundledFolderManager : public FolderManager {
   // Returns VXCORE_OK on success
   VxCoreError SyncMetadataStoreFromConfigs();
 
+  // Returns the path to the recycle bin folder
+  std::string GetRecycleBinPath() const;
+
  private:
   VxCoreError GetFolderConfig(const std::string &folder_path, FolderConfig **out_config,
                               const std::string *parent_id = nullptr);
@@ -109,6 +113,9 @@ class BundledFolderManager : public FolderManager {
   // Get the parent folder's ID (UUID) for a given folder path
   std::string GetParentFolderId(const std::string &folder_path);
 
+  // Recycle bin helpers
+  std::string GenerateUniqueRecycleBinName(const std::string &name) const;
+  VxCoreError MoveToRecycleBin(const std::filesystem::path &source_path);
   std::map<std::string, std::unique_ptr<FolderConfig>> config_cache_;
 };
 

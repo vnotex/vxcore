@@ -79,5 +79,11 @@ inline void create_directory(const std::string &path) {
 inline std::string get_test_path(const std::string &name) {
   return (std::filesystem::temp_directory_path() / "vxcore_test_data" / name).string();
 }
+inline std::string normalize_path(const std::string &path) {
+  std::string result = path;
+  std::replace(result.begin(), result.end(), '\\', '/');
+  return result;
+}
+
 
 #endif

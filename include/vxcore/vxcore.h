@@ -80,6 +80,18 @@ VXCORE_API VxCoreError vxcore_notebook_update_config(VxCoreContextHandle context
 VXCORE_API VxCoreError vxcore_notebook_rebuild_cache(VxCoreContextHandle context,
                                                      const char *notebook_id);
 
+// ============ Recycle Bin Operations (Bundled Notebooks Only) ============
+// Get the path to the recycle bin folder.
+// Returns empty string for raw notebooks (not supported).
+VXCORE_API VxCoreError vxcore_notebook_get_recycle_bin_path(VxCoreContextHandle context,
+                                                            const char *notebook_id,
+                                                            char **out_path);
+
+// Empty the recycle bin by deleting all files and folders in it.
+// Returns VXCORE_ERR_UNSUPPORTED for raw notebooks.
+VXCORE_API VxCoreError vxcore_notebook_empty_recycle_bin(VxCoreContextHandle context,
+                                                         const char *notebook_id);
+
 // ============ Folder Operations ============
 VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const char *notebook_id,
                                             const char *parent_path, const char *folder_name,

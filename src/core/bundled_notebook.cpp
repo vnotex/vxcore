@@ -186,4 +186,31 @@ VxCoreError BundledNotebook::RebuildCache() {
   return bundled_folder_manager->SyncMetadataStoreFromConfigs();
 }
 
+std::string BundledNotebook::GetRecycleBinPath() const {
+  auto *bundled_folder_manager = dynamic_cast<BundledFolderManager *>(folder_manager_.get());
+  if (!bundled_folder_manager) {
+    VXCORE_LOG_ERROR("GetRecycleBinPath: folder_manager is not BundledFolderManager");
+    return "";
+  }
+  return bundled_folder_manager->GetRecycleBinPath();
+}
+
+VxCoreError BundledNotebook::EmptyRecycleBin() {
+  std::string recycle_bin_path = GetRecycleBinPath();
+  try {
+    std::filesystem::path rb_path(recycle_bin_path);
+    if (!std::filesystem::exists(rb_path)) {
+      return VXCORE_OK;  // Nothing to empty
+    }
+    for (const auto &entry : std::filesystem::directory_iterator(rb_path)) {
+      std::filesystem::remove_all(entry.path());
+    }
+    VXCORE_LOG_INFO("EmptyRecycleBin: Cleared recycle bin at %s", recycle_bin_path.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("EmptyRecycleBin: Failed to empty recycle bin: %s", e.what());
+    return VXCORE_ERR_IO;
+  }
+}
+
 }  // namespace vxcore

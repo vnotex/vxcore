@@ -154,4 +154,14 @@ VxCoreError RawNotebook::RebuildCache() {
   return VXCORE_OK;
 }
 
+std::string RawNotebook::GetRecycleBinPath() const {
+  // Raw notebooks do not support recycle bin
+  return "";
+}
+
+VxCoreError RawNotebook::EmptyRecycleBin() {
+  // Raw notebooks do not support recycle bin
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
 }  // namespace vxcore

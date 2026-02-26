@@ -17,6 +17,9 @@ class RawNotebook : public Notebook {
   VxCoreError UpdateConfig(const NotebookConfig &config) override;
   VxCoreError RebuildCache() override;
 
+  std::string GetRecycleBinPath() const override;
+  VxCoreError EmptyRecycleBin() override;
+
  private:
   RawNotebook(const std::string &local_data_folder, const std::string &root_folder);
 
