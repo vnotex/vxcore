@@ -196,6 +196,14 @@ VXCORE_API VxCoreError vxcore_search_by_tags(VxCoreContextHandle context, const 
                                              const char *query_json, const char *input_files_json,
                                              char **out_results_json);
 
+// Resolve an absolute path to its containing notebook.
+// out_notebook_id: receives the notebook ID (caller must free with vxcore_string_free)
+// out_relative_path: receives the relative path within notebook (caller must free with vxcore_string_free)
+// Returns VXCORE_ERR_NOT_FOUND if path is not within any open notebook.
+VXCORE_API VxCoreError vxcore_path_resolve(VxCoreContextHandle context,
+                                           const char *absolute_path,
+                                           char **out_notebook_id,
+                                           char **out_relative_path);
 VXCORE_API void vxcore_string_free(char *str);
 
 #ifdef __cplusplus

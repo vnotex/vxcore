@@ -1,6 +1,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <nlohmann/json.hpp>
+
 #include "api/api_utils.h"
 #include "core/context.h"
 #include "core/notebook_manager.h"
@@ -252,6 +254,45 @@ VXCORE_API VxCoreError vxcore_notebook_empty_recycle_bin(VxCoreContextHandle con
     return err;
   } catch (...) {
     ctx->last_error = "Unknown error emptying recycle bin";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_path_resolve(VxCoreContextHandle context, const char *absolute_path,
+                                           char **out_notebook_id, char **out_relative_path) {
+  if (!context || !absolute_path || !out_notebook_id || !out_relative_path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    std::string notebook_id;
+    std::string relative_path;
+    VxCoreError err =
+        ctx->notebook_manager->ResolvePathToNotebook(absolute_path, notebook_id, relative_path);
+
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Path not found in any open notebook";
+      return err;
+    }
+
+    char *id_copy = vxcore_strdup(notebook_id.c_str());
+    if (!id_copy) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+
+    char *path_copy = vxcore_strdup(relative_path.c_str());
+    if (!path_copy) {
+      free(id_copy);
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+
+    *out_notebook_id = id_copy;
+    *out_relative_path = path_copy;
+    return VXCORE_OK;
+  } catch (...) {
+    ctx->last_error = "Unknown error resolving path";
     return VXCORE_ERR_UNKNOWN;
   }
 }

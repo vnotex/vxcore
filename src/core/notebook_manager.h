@@ -33,6 +33,12 @@ class NotebookManager {
 
   Notebook *GetNotebook(const std::string &notebook_id);
 
+  // Resolve an absolute path to its containing notebook.
+  // Returns the notebook ID and relative path within that notebook.
+  // Returns VXCORE_ERR_NOT_FOUND if path is not within any open notebook.
+  VxCoreError ResolvePathToNotebook(const std::string &absolute_path, std::string &out_notebook_id,
+                                    std::string &out_relative_path);
+
  private:
   void LoadOpenNotebooks();
   Notebook *FindNotebookByRootFolder(const std::string &root_folder);

@@ -1098,6 +1098,196 @@ int test_notebook_close_removes_from_session() {
   return 0;
 }
 
+int test_path_resolve_basic() {
+  std::cout << "  Running test_path_resolve_basic..." << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_path_resolve"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a bundled notebook
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_path_resolve").c_str(),
+                               "{\"name\":\"Path Resolve Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Create a folder and file
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "docs", "readme.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Resolve root path
+  std::string root_path = normalize_path(get_test_path("test_nb_path_resolve"));
+  char *out_notebook_id = nullptr;
+  char *out_relative_path = nullptr;
+  err = vxcore_path_resolve(ctx, root_path.c_str(), &out_notebook_id, &out_relative_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(out_notebook_id);
+  ASSERT_NOT_NULL(out_relative_path);
+  ASSERT_EQ(std::string(out_notebook_id), std::string(notebook_id));
+  ASSERT_EQ(std::string(out_relative_path), ".");
+  vxcore_string_free(out_notebook_id);
+  vxcore_string_free(out_relative_path);
+
+  // Resolve folder path
+  std::string folder_path = normalize_path(get_test_path("test_nb_path_resolve") + "/docs");
+  err = vxcore_path_resolve(ctx, folder_path.c_str(), &out_notebook_id, &out_relative_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(std::string(out_notebook_id), std::string(notebook_id));
+  ASSERT_EQ(std::string(out_relative_path), "docs");
+  vxcore_string_free(out_notebook_id);
+  vxcore_string_free(out_relative_path);
+
+  // Resolve file path
+  std::string file_path = normalize_path(get_test_path("test_nb_path_resolve") + "/docs/readme.md");
+  err = vxcore_path_resolve(ctx, file_path.c_str(), &out_notebook_id, &out_relative_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(std::string(out_notebook_id), std::string(notebook_id));
+  ASSERT_EQ(std::string(out_relative_path), "docs/readme.md");
+  vxcore_string_free(out_notebook_id);
+  vxcore_string_free(out_relative_path);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_nb_path_resolve"));
+  std::cout << "  \xE2\x9C\x93 test_path_resolve_basic passed" << std::endl;
+  return 0;
+}
+
+int test_path_resolve_not_found() {
+  std::cout << "  Running test_path_resolve_not_found..." << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_path_not_found"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a notebook
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_path_not_found").c_str(),
+                               "{\"name\":\"Not Found Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Try to resolve a path that's not in any notebook
+  char *out_notebook_id = nullptr;
+  char *out_relative_path = nullptr;
+  std::string external_path = normalize_path(get_test_path("nonexistent_notebook"));
+  err = vxcore_path_resolve(ctx, external_path.c_str(), &out_notebook_id, &out_relative_path);
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+  ASSERT_NULL(out_notebook_id);
+  ASSERT_NULL(out_relative_path);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_nb_path_not_found"));
+  std::cout << "  \xE2\x9C\x93 test_path_resolve_not_found passed" << std::endl;
+  return 0;
+}
+
+int test_path_resolve_multiple_notebooks() {
+  std::cout << "  Running test_path_resolve_multiple_notebooks..." << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_resolve_multi1"));
+  cleanup_test_dir(get_test_path("test_nb_resolve_multi2"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create two notebooks
+  char *notebook_id1 = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_resolve_multi1").c_str(),
+                               "{\"name\":\"Multi Test 1\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id2 = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_resolve_multi2").c_str(),
+                               "{\"name\":\"Multi Test 2\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create files in both notebooks
+  char *file_id1 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id1, "", "note1.md", &file_id1);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id1);
+
+  char *file_id2 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id2, "", "note2.md", &file_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id2);
+
+  // Resolve path in first notebook
+  char *out_notebook_id = nullptr;
+  char *out_relative_path = nullptr;
+  std::string path1 = normalize_path(get_test_path("test_nb_resolve_multi1") + "/note1.md");
+  err = vxcore_path_resolve(ctx, path1.c_str(), &out_notebook_id, &out_relative_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(std::string(out_notebook_id), std::string(notebook_id1));
+  ASSERT_EQ(std::string(out_relative_path), "note1.md");
+  vxcore_string_free(out_notebook_id);
+  vxcore_string_free(out_relative_path);
+
+  // Resolve path in second notebook
+  std::string path2 = normalize_path(get_test_path("test_nb_resolve_multi2") + "/note2.md");
+  err = vxcore_path_resolve(ctx, path2.c_str(), &out_notebook_id, &out_relative_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(std::string(out_notebook_id), std::string(notebook_id2));
+  ASSERT_EQ(std::string(out_relative_path), "note2.md");
+  vxcore_string_free(out_notebook_id);
+  vxcore_string_free(out_relative_path);
+
+  vxcore_string_free(notebook_id1);
+  vxcore_string_free(notebook_id2);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_nb_resolve_multi1"));
+  cleanup_test_dir(get_test_path("test_nb_resolve_multi2"));
+  std::cout << "  \xE2\x9C\x93 test_path_resolve_multiple_notebooks passed" << std::endl;
+  return 0;
+}
+
+int test_path_resolve_null_params() {
+  std::cout << "  Running test_path_resolve_null_params..." << std::endl;
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *out_notebook_id = nullptr;
+  char *out_relative_path = nullptr;
+
+  // Null context
+  err = vxcore_path_resolve(nullptr, "/some/path", &out_notebook_id, &out_relative_path);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  // Null path
+  err = vxcore_path_resolve(ctx, nullptr, &out_notebook_id, &out_relative_path);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  // Null out_notebook_id
+  err = vxcore_path_resolve(ctx, "/some/path", nullptr, &out_relative_path);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  // Null out_relative_path
+  err = vxcore_path_resolve(ctx, "/some/path", &out_notebook_id, nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  vxcore_context_destroy(ctx);
+  std::cout << "  \xE2\x9C\x93 test_path_resolve_null_params passed" << std::endl;
+  return 0;
+}
+
+
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
 
@@ -1133,6 +1323,10 @@ int main() {
   RUN_TEST(test_tag_create_path_empty);
   RUN_TEST(test_tag_create_path_trailing_slash);
   RUN_TEST(test_notebook_close_removes_from_session);
+  RUN_TEST(test_path_resolve_basic);
+  RUN_TEST(test_path_resolve_not_found);
+  RUN_TEST(test_path_resolve_multiple_notebooks);
+  RUN_TEST(test_path_resolve_null_params);
 
   std::cout << "âœ“ All notebook tests passed" << std::endl;
   return 0;

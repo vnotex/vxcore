@@ -340,4 +340,39 @@ Notebook *NotebookManager::FindNotebookByRootFolder(const std::string &root_fold
   return nullptr;
 }
 
+VxCoreError NotebookManager::ResolvePathToNotebook(const std::string &absolute_path,
+                                                   std::string &out_notebook_id,
+                                                   std::string &out_relative_path) {
+  const std::string clean_path = CleanPath(absolute_path);
+  std::filesystem::path abs_path(clean_path);
+
+  // Iterate through all open notebooks and find which one contains this path.
+  for (const auto &pair : notebooks_) {
+    const std::string &root_folder = pair.second->GetRootFolder();
+    std::filesystem::path root_path(root_folder);
+
+    // Check if absolute_path starts with root_folder.
+    auto [root_end, path_pos] = std::mismatch(root_path.begin(), root_path.end(), abs_path.begin());
+
+    if (root_end == root_path.end()) {
+      // Path is within this notebook.
+      out_notebook_id = pair.first;
+
+      // Compute relative path.
+      std::filesystem::path relative;
+      for (; path_pos != abs_path.end(); ++path_pos) {
+        relative /= *path_pos;
+      }
+      out_relative_path = CleanFsPath(relative);
+
+      VXCORE_LOG_DEBUG("Resolved path %s to notebook %s, relative path %s", clean_path.c_str(),
+                       out_notebook_id.c_str(), out_relative_path.c_str());
+      return VXCORE_OK;
+    }
+  }
+
+  VXCORE_LOG_DEBUG("Path %s not found in any open notebook", clean_path.c_str());
+  return VXCORE_ERR_NOT_FOUND;
+}
+
 }  // namespace vxcore
