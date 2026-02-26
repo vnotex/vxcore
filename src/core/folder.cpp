@@ -71,6 +71,17 @@ FolderRecord::FolderRecord(const std::string &id, const std::string &name, int64
       modified_utc(modified_utc),
       metadata(metadata) {}
 
+nlohmann::json FolderRecord::ToJson() const {
+  nlohmann::json json;
+  json["id"] = id;
+  json["name"] = name;
+  json["createdUtc"] = created_utc;
+  json["modifiedUtc"] = modified_utc;
+  json["metadata"] = metadata;
+  json["type"] = "folder";
+  return json;
+}
+
 FolderConfig::FolderConfig() : created_utc(0), modified_utc(0) {}
 
 FolderConfig::FolderConfig(const std::string &name)

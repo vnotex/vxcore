@@ -89,6 +89,13 @@ VXCORE_API VxCoreError vxcore_folder_create_path(VxCoreContextHandle context,
                                                  const char *notebook_id, const char *folder_path,
                                                  char **out_folder_id);
 
+// List direct children of a folder (files and subfolders)
+// folder_path: Path relative to notebook root ("" or "." for root)
+// Output JSON: {"files": [...], "folders": [...]}
+VXCORE_API VxCoreError vxcore_folder_list_children(VxCoreContextHandle context,
+                                                   const char *notebook_id,
+                                                   const char *folder_path,
+                                                   char **out_children_json);
 // ============ File Operations ============
 VXCORE_API VxCoreError vxcore_file_create(VxCoreContextHandle context, const char *notebook_id,
                                           const char *folder_path, const char *file_name,

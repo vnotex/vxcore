@@ -23,6 +23,7 @@ struct FileRecord {
   nlohmann::json ToJsonWithType() const;
 };
 
+// Folder record contains all infomation about the folder itself including metadata.
 struct FolderRecord {
   std::string id;
   std::string name;
@@ -34,6 +35,7 @@ struct FolderRecord {
   FolderRecord(const std::string &name);
   FolderRecord(const std::string &id, const std::string &name, int64_t created_utc,
                int64_t modified_utc, const nlohmann::json &metadata);
+  nlohmann::json ToJson() const;
 };
 
 struct FolderConfig {

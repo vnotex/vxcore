@@ -8,12 +8,6 @@
 #include <vector>
 
 namespace vxcore {
-
-// Forward declarations
-struct FileRecord;
-struct FolderRecord;
-struct FolderConfig;
-
 // Metadata store record structures (storage-agnostic)
 // These mirror the core types but are used for store operations
 
