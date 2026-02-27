@@ -199,9 +199,6 @@ class MetadataStore {
   // Gets sync state for a folder
   virtual std::optional<StoreSyncState> GetSyncState(const std::string& folder_id) = 0;
 
-  // Updates sync state after syncing a folder
-  virtual bool UpdateSyncState(const std::string& folder_id, int64_t sync_time,
-                               int64_t config_file_modified_utc) = 0;
 
   // Clears sync state (e.g., when folder is deleted)
   virtual bool ClearSyncState(const std::string& folder_id) = 0;

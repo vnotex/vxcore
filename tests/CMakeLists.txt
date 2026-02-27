@@ -42,7 +42,6 @@ add_executable(test_db test_db.cpp
     ${CMAKE_SOURCE_DIR}/src/db/db_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/db/file_db.cpp
     ${CMAKE_SOURCE_DIR}/src/db/tag_db.cpp
-    ${CMAKE_SOURCE_DIR}/src/db/sync_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/folder.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp

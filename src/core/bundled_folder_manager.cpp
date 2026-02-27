@@ -1548,13 +1548,6 @@ void BundledFolderManager::SyncFolderToStore(const std::string &folder_path,
       continue;  // Best-effort: skip this subfolder
     }
   }
-
-  // Update sync state to track when this folder was synced
-  int64_t sync_time = GetCurrentTimestampMillis();
-  if (!store->UpdateSyncState(config.id, sync_time, config.modified_utc)) {
-    VXCORE_LOG_WARN("SyncFolderToStore: Failed to update sync state: id=%s", config.id.c_str());
-  }
-
   VXCORE_LOG_DEBUG("SyncFolderToStore: Completed sync for folder: id=%s, path=%s",
                    config.id.c_str(), folder_path.c_str());
 }

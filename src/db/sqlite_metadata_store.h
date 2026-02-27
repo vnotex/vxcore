@@ -89,8 +89,6 @@ class SqliteMetadataStore : public MetadataStore {
 
   // --- Sync/Recovery Operations ---
   std::optional<StoreSyncState> GetSyncState(const std::string& folder_id) override;
-  bool UpdateSyncState(const std::string& folder_id, int64_t sync_time,
-                       int64_t config_file_modified_utc) override;
   bool ClearSyncState(const std::string& folder_id) override;
   bool RebuildAll() override;
 

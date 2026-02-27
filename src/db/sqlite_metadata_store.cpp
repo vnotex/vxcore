@@ -164,22 +164,21 @@ bool SqliteMetadataStore::UpdateFolder(const std::string& folder_id, const std::
     return false;
   }
 
-  int64_t db_id = GetFolderDbId(folder_id);
-  if (db_id == -1) {
-    last_error_ = "Folder not found: " + folder_id;
-    return false;
-  }
-
-  // FileDb::UpdateFolder doesn't update metadata, so we need to use CreateOrUpdateFolder
-  auto existing = file_db_->GetFolder(db_id);
+  // Single query to get folder by UUID (instead of GetFolderDbId + GetFolder)
+  auto existing = file_db_->GetFolderByUuid(folder_id);
   if (!existing) {
     last_error_ = "Folder not found: " + folder_id;
     return false;
   }
 
-  int64_t result = file_db_->CreateOrUpdateFolder(existing->uuid, existing->parent_id, name,
-                                                  existing->created_utc, modified_utc, metadata);
-  if (result == -1) {
+  // Early return if nothing changed (skip unnecessary DB write)
+  if (existing->name == name && existing->modified_utc == modified_utc &&
+      existing->metadata == metadata) {
+    return true;  // No changes needed
+  }
+
+  // Use FileDb::UpdateFolder which now handles metadata and sync timestamps
+  if (!file_db_->UpdateFolder(existing->id, name, modified_utc, metadata)) {
     last_error_ = "Failed to update folder: " + file_db_->GetLastError();
     return false;
   }
@@ -364,19 +363,20 @@ bool SqliteMetadataStore::UpdateFile(const std::string& file_id, const std::stri
     return false;
   }
 
-  int64_t db_id = GetFileDbId(file_id);
-  if (db_id == -1) {
-    last_error_ = "File not found: " + file_id;
-    return false;
-  }
-
-  // Get existing file to preserve folder_id and created_utc
-  auto existing = file_db_->GetFile(db_id);
+  // Single query to get file by UUID (instead of GetFileDbId + GetFile)
+  auto existing = file_db_->GetFileByUuid(file_id);
   if (!existing) {
     last_error_ = "File not found: " + file_id;
     return false;
   }
 
+  // Early return if nothing changed (skip unnecessary DB write)
+  if (existing->name == name && existing->modified_utc == modified_utc &&
+      existing->metadata == metadata) {
+    return true;  // No changes needed
+  }
+
+  // Update file preserving folder_id and created_utc
   int64_t result = file_db_->CreateOrUpdateFile(existing->uuid, existing->folder_id, name,
                                                 existing->created_utc, modified_utc, metadata);
   if (result == -1) {
@@ -779,45 +779,6 @@ std::optional<StoreSyncState> SqliteMetadataStore::GetSyncState(const std::strin
   return state;
 }
 
-bool SqliteMetadataStore::UpdateSyncState(const std::string& folder_id, int64_t sync_time,
-                                          int64_t config_file_modified_utc) {
-  if (!IsOpen()) {
-    last_error_ = "Store not open";
-    return false;
-  }
-
-  int64_t db_id = GetFolderDbId(folder_id);
-  if (db_id == -1) {
-    last_error_ = "Folder not found: " + folder_id;
-    return false;
-  }
-
-  // Update sync state using raw SQL (FileDb doesn't expose this)
-  const char* sql =
-      "UPDATE folders SET last_sync_utc = ?, metadata_file_modified_utc = ? WHERE id = ?;";
-
-  sqlite3_stmt* stmt = nullptr;
-  sqlite3* db = db_manager_->GetHandle();
-  int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
-  if (rc != SQLITE_OK) {
-    last_error_ = "Failed to prepare sync state update: " + std::string(sqlite3_errmsg(db));
-    return false;
-  }
-
-  sqlite3_bind_int64(stmt, 1, sync_time);
-  sqlite3_bind_int64(stmt, 2, config_file_modified_utc);
-  sqlite3_bind_int64(stmt, 3, db_id);
-
-  rc = sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
-
-  if (rc != SQLITE_DONE) {
-    last_error_ = "Failed to update sync state: " + std::string(sqlite3_errmsg(db));
-    return false;
-  }
-
-  return true;
-}
 
 bool SqliteMetadataStore::ClearSyncState(const std::string& folder_id) {
   if (!IsOpen()) {
