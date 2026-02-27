@@ -1752,6 +1752,235 @@ VxCoreError BundledFolderManager::ImportFile(const std::string &folder_path,
   return VXCORE_OK;
 }
 
+VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_path,
+                                               const std::string &external_folder_path,
+                                               std::string &out_folder_id) {
+  VXCORE_LOG_INFO("ImportFolder: dest=%s, external=%s", dest_folder_path.c_str(),
+                  external_folder_path.c_str());
+
+  // Require absolute path for external folder
+  fs::path external_path(external_folder_path);
+  if (!external_path.is_absolute()) {
+    VXCORE_LOG_ERROR("ImportFolder: External folder path must be absolute: %s",
+                     external_folder_path.c_str());
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  // Validate external folder exists and is a directory
+  if (!fs::exists(external_folder_path)) {
+    VXCORE_LOG_ERROR("ImportFolder: External folder not found: %s", external_folder_path.c_str());
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  if (!fs::is_directory(external_folder_path)) {
+    VXCORE_LOG_ERROR("ImportFolder: Path is not a directory: %s", external_folder_path.c_str());
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  // Reject importing a folder from within the notebook root to prevent circular copies
+  try {
+    fs::path canonical_external = fs::canonical(external_folder_path);
+    fs::path root_path(notebook_->GetRootFolder());
+    // Check if external path starts with (is under) notebook root
+    auto mismatch_pair = std::mismatch(root_path.begin(), root_path.end(),
+                                       canonical_external.begin(), canonical_external.end());
+    if (mismatch_pair.first == root_path.end()) {
+      // root_path is a prefix of canonical_external (external is inside notebook)
+      VXCORE_LOG_ERROR("ImportFolder: Cannot import folder from within notebook root: %s",
+                       external_folder_path.c_str());
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+  } catch (const std::exception &e) {
+    // If canonical fails, the path may not exist or be inaccessible
+    VXCORE_LOG_WARN("ImportFolder: Failed to canonicalize paths: %s", e.what());
+  }
+
+  const auto clean_dest_path = GetCleanRelativePath(dest_folder_path);
+
+  // Get destination folder config to ensure it exists
+  FolderConfig *dest_config = nullptr;
+  VxCoreError error = GetFolderConfig(clean_dest_path, &dest_config);
+  if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("ImportFolder: Failed to get dest folder config: folder=%s, error=%d",
+                     clean_dest_path.c_str(), error);
+    return error;
+  }
+
+  // Get destination content path and determine unique folder name
+  std::string dest_content_path = GetContentPath(clean_dest_path);
+  fs::path source_path(external_folder_path);
+  std::string original_name = source_path.filename().string();
+  std::string target_name = original_name;
+
+  // Generate unique name if folder already exists
+  fs::path target_path = fs::path(dest_content_path) / target_name;
+  if (fs::exists(target_path)) {
+    int suffix = 1;
+    while (suffix <= 10000) {
+      target_name = original_name + "_" + std::to_string(suffix);
+      target_path = fs::path(dest_content_path) / target_name;
+      if (!fs::exists(target_path)) {
+        break;
+      }
+      ++suffix;
+    }
+    if (suffix > 10000) {
+      target_name = original_name + "_" + std::to_string(GetCurrentTimestampMillis());
+      target_path = fs::path(dest_content_path) / target_name;
+    }
+  }
+
+  // Check if folder with this name already exists in config
+  auto it = std::find(dest_config->folders.begin(), dest_config->folders.end(), target_name);
+  if (it != dest_config->folders.end()) {
+    VXCORE_LOG_WARN("ImportFolder: Folder already exists in config: %s", target_name.c_str());
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+
+  // Copy the external folder to notebook folder recursively
+  try {
+    fs::copy(external_folder_path, target_path, fs::copy_options::recursive);
+    VXCORE_LOG_DEBUG("ImportFolder: Copied folder to: %s", target_path.string().c_str());
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("ImportFolder: Failed to copy folder: %s", e.what());
+    return VXCORE_ERR_IO;
+  }
+
+  // Add folder to destination's folder list
+  dest_config->folders.push_back(target_name);
+  dest_config->modified_utc = GetCurrentTimestampMillis();
+  error = SaveFolderConfig(clean_dest_path, *dest_config);
+  if (error != VXCORE_OK) {
+    // Rollback: delete the copied folder
+    try {
+      fs::remove_all(target_path);
+    } catch (const std::exception &) {
+      VXCORE_LOG_WARN("ImportFolder: Failed to rollback copied folder");
+    }
+    return error;
+  }
+
+  // Create folder config for the imported folder (index it)
+  const auto imported_folder_path = ConcatenatePaths(clean_dest_path, target_name);
+  std::unique_ptr<FolderConfig> new_config(new FolderConfig(target_name));
+
+  // Recursively scan and index the imported folder contents
+  std::function<VxCoreError(const std::string &, FolderConfig &)> index_contents =
+      [&](const std::string &rel_path, FolderConfig &config) -> VxCoreError {
+    std::string abs_path = GetContentPath(rel_path);
+
+    try {
+      for (const auto &entry : fs::directory_iterator(abs_path)) {
+        std::string entry_name = entry.path().filename().string();
+
+        if (entry.is_directory()) {
+          // Skip hidden folders and vx_notebook metadata folder
+          if (entry_name.empty() || entry_name[0] == '.' || entry_name == "vx_notebook") {
+            continue;
+          }
+
+          // Add subfolder to config
+          config.folders.push_back(entry_name);
+
+          // Create and save config for subfolder
+          std::string subfolder_rel_path = ConcatenatePaths(rel_path, entry_name);
+          std::unique_ptr<FolderConfig> subfolder_config(new FolderConfig(entry_name));
+
+          // Recursively index subfolder contents
+          VxCoreError err = index_contents(subfolder_rel_path, *subfolder_config);
+          if (err != VXCORE_OK) {
+            VXCORE_LOG_WARN("ImportFolder: Failed to index subfolder: %s", subfolder_rel_path.c_str());
+            // Continue with other entries
+          }
+
+          err = SaveFolderConfig(subfolder_rel_path, *subfolder_config);
+          if (err != VXCORE_OK) {
+            VXCORE_LOG_WARN("ImportFolder: Failed to save subfolder config: %s",
+                            subfolder_rel_path.c_str());
+          }
+
+          // Write subfolder to MetadataStore
+          if (auto *store = notebook_->GetMetadataStore()) {
+            StoreFolderRecord store_record = ToStoreFolderRecord(*subfolder_config, config.id);
+            if (!store->CreateFolder(store_record)) {
+              VXCORE_LOG_WARN("ImportFolder: Failed to write subfolder to MetadataStore: id=%s",
+                              subfolder_config->id.c_str());
+            }
+
+            // Write subfolder's files to MetadataStore
+            for (const auto &file : subfolder_config->files) {
+              StoreFileRecord file_record = ToStoreFileRecord(file, subfolder_config->id);
+              if (!store->CreateFile(file_record)) {
+                VXCORE_LOG_WARN("ImportFolder: Failed to write file to MetadataStore: id=%s",
+                                file.id.c_str());
+              }
+            }
+          }
+
+          CacheConfig(subfolder_rel_path, std::move(subfolder_config));
+
+        } else if (entry.is_regular_file()) {
+          // Skip hidden files
+          if (entry_name.empty() || entry_name[0] == '.') {
+            continue;
+          }
+
+          // Add file to config
+          const auto ts = GetCurrentTimestampMillis();
+          config.files.emplace_back(entry_name);
+          config.files.back().created_utc = ts;
+          config.files.back().modified_utc = ts;
+        }
+      }
+    } catch (const std::exception &e) {
+      VXCORE_LOG_ERROR("ImportFolder: Failed to scan directory: %s, error: %s", abs_path.c_str(),
+                       e.what());
+      return VXCORE_ERR_IO;
+    }
+
+    return VXCORE_OK;
+  };
+
+  // Index contents of the imported folder
+  error = index_contents(imported_folder_path, *new_config);
+  if (error != VXCORE_OK) {
+    VXCORE_LOG_WARN("ImportFolder: Some contents failed to index, continuing...");
+    // Continue anyway - partial import is better than no import
+  }
+
+  // Save the imported folder's config
+  error = SaveFolderConfig(imported_folder_path, *new_config);
+  if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("ImportFolder: Failed to save imported folder config: error=%d", error);
+    return error;
+  }
+
+  out_folder_id = new_config->id;
+
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    StoreFolderRecord folder_record = ToStoreFolderRecord(*new_config, dest_config->id);
+    if (!store->CreateFolder(folder_record)) {
+      VXCORE_LOG_WARN("ImportFolder: Failed to write folder to MetadataStore: id=%s",
+                      out_folder_id.c_str());
+    }
+
+    // Write files of the imported folder to MetadataStore
+    for (const auto &file : new_config->files) {
+      StoreFileRecord file_record = ToStoreFileRecord(file, new_config->id);
+      if (!store->CreateFile(file_record)) {
+        VXCORE_LOG_WARN("ImportFolder: Failed to write file to MetadataStore: id=%s", file.id.c_str());
+      }
+    }
+  }
+
+  CacheConfig(imported_folder_path, std::move(new_config));
+
+  VXCORE_LOG_INFO("ImportFolder: Successfully imported folder: id=%s, name=%s", out_folder_id.c_str(),
+                  target_name.c_str());
+  return VXCORE_OK;
+}
+
 VxCoreError BundledFolderManager::IndexNode(const std::string &node_path) {
   const auto clean_path = GetCleanRelativePath(node_path);
   VXCORE_LOG_INFO("IndexNode: path=%s", clean_path.c_str());

@@ -45,6 +45,9 @@ class RawFolderManager : public FolderManager {
                        const std::string &new_name, std::string &out_file_id) override;
   VxCoreError ImportFile(const std::string &folder_path, const std::string &external_file_path,
                          std::string &out_file_id) override;
+  VxCoreError ImportFolder(const std::string &dest_folder_path,
+                           const std::string &external_folder_path,
+                           std::string &out_folder_id) override;
   void IterateAllFiles(
       std::function<bool(const std::string &, const FileRecord &)> callback) override;
   VxCoreError FindFilesByTag(const std::string &tag_name, std::string &out_files_json) override;

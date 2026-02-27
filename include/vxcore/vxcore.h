@@ -121,6 +121,16 @@ VXCORE_API VxCoreError vxcore_file_import(VxCoreContextHandle context, const cha
                                           const char *folder_path, const char *external_file_path,
                                           char **out_file_id);
 
+// Import an external folder into a notebook folder recursively.
+// The folder and all its contents are copied (not moved) to the notebook.
+// All files and subfolders are indexed into the notebook's metadata system.
+// If a folder with the same name exists, a unique name is generated (e.g., folder_1).
+// out_folder_id: receives the ID of the imported root folder (caller must free with vxcore_string_free)
+// external_folder_path: must be an absolute path to a folder outside the notebook root
+VXCORE_API VxCoreError vxcore_folder_import(VxCoreContextHandle context, const char *notebook_id,
+                                            const char *dest_folder_path,
+                                            const char *external_folder_path, char **out_folder_id);
+
 VXCORE_API VxCoreError vxcore_file_update_tags(VxCoreContextHandle context, const char *notebook_id,
                                                const char *file_path, const char *tags_json);
 
