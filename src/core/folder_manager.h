@@ -84,6 +84,13 @@ class FolderManager {
 
   virtual VxCoreError FindFilesByTag(const std::string &tag_name, std::string &out_files_json) = 0;
 
+  // Index a filesystem node (file or folder) into metadata.
+  // The node must exist on filesystem but not be tracked in metadata.
+  virtual VxCoreError IndexNode(const std::string &node_path) = 0;
+
+  // Remove a node from metadata without touching filesystem.
+  virtual VxCoreError UnindexNode(const std::string &node_path) = 0;
+
   struct FolderContents {
     std::vector<FileRecord> files;
     std::vector<FolderRecord> folders;

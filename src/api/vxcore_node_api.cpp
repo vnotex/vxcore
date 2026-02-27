@@ -352,3 +352,59 @@ VXCORE_API VxCoreError vxcore_node_update_metadata(VxCoreContextHandle context,
     return VXCORE_ERR_UNKNOWN;
   }
 }
+
+VXCORE_API VxCoreError vxcore_node_index(VxCoreContextHandle context, const char *notebook_id,
+                                         const char *node_path) {
+  if (!context || !notebook_id || !node_path) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    return folder_manager->IndexNode(node_path);
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_node_unindex(VxCoreContextHandle context, const char *notebook_id,
+                                           const char *node_path) {
+  if (!context || !notebook_id || !node_path) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    return folder_manager->UnindexNode(node_path);
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}

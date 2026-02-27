@@ -1751,4 +1751,199 @@ VxCoreError BundledFolderManager::ImportFile(const std::string &folder_path,
                   target_name.c_str());
   return VXCORE_OK;
 }
+
+VxCoreError BundledFolderManager::IndexNode(const std::string &node_path) {
+  const auto clean_path = GetCleanRelativePath(node_path);
+  VXCORE_LOG_INFO("IndexNode: path=%s", clean_path.c_str());
+
+  // Get parent folder path and node name
+  const auto [parent_path, node_name] = SplitPath(clean_path);
+
+  // Get content path to check filesystem
+  std::string content_path = GetContentPath(clean_path);
+
+  // Check if node exists on filesystem
+  if (!fs::exists(content_path)) {
+    VXCORE_LOG_WARN("IndexNode: Node does not exist on filesystem: %s", content_path.c_str());
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  // Get parent folder config
+  FolderConfig *parent_config = nullptr;
+  VxCoreError error = GetFolderConfig(parent_path, &parent_config);
+  if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("IndexNode: Failed to get parent folder config: path=%s, error=%d",
+                     parent_path.c_str(), error);
+    return error;
+  }
+
+  // Determine if it's a file or folder
+  bool is_directory = fs::is_directory(content_path);
+
+  if (is_directory) {
+    // Check if folder is already indexed
+    auto it = std::find(parent_config->folders.begin(), parent_config->folders.end(), node_name);
+    if (it != parent_config->folders.end()) {
+      VXCORE_LOG_WARN("IndexNode: Folder already indexed: %s", node_name.c_str());
+      return VXCORE_ERR_ALREADY_EXISTS;
+    }
+
+    // Create a new FolderConfig for the folder
+    std::unique_ptr<FolderConfig> new_config(new FolderConfig(node_name));
+    error = SaveFolderConfig(clean_path, *new_config);
+    if (error != VXCORE_OK) {
+      VXCORE_LOG_ERROR("IndexNode: Failed to save folder config: error=%d", error);
+      return error;
+    }
+
+    // Add folder to parent's folder list
+    parent_config->folders.push_back(node_name);
+    parent_config->modified_utc = GetCurrentTimestampMillis();
+    error = SaveFolderConfig(parent_path, *parent_config);
+    if (error != VXCORE_OK) {
+      VXCORE_LOG_ERROR("IndexNode: Failed to save parent folder config: error=%d", error);
+      return error;
+    }
+
+    // Write-through to MetadataStore
+    if (auto *store = notebook_->GetMetadataStore()) {
+      StoreFolderRecord store_record = ToStoreFolderRecord(*new_config, parent_config->id);
+      if (!store->CreateFolder(store_record)) {
+        VXCORE_LOG_WARN("IndexNode: Failed to write folder to MetadataStore: id=%s",
+                        new_config->id.c_str());
+      }
+    }
+
+    CacheConfig(clean_path, std::move(new_config));
+    VXCORE_LOG_INFO("IndexNode: Folder indexed successfully: path=%s", clean_path.c_str());
+  } else {
+    // It's a file
+    // Check if file is already indexed
+    if (FindFileRecord(*parent_config, node_name)) {
+      VXCORE_LOG_WARN("IndexNode: File already indexed: %s", node_name.c_str());
+      return VXCORE_ERR_ALREADY_EXISTS;
+    }
+
+    // Add file to parent folder's file list
+    const auto ts = GetCurrentTimestampMillis();
+    parent_config->files.emplace_back(node_name);
+    parent_config->files.back().created_utc = ts;
+    parent_config->files.back().modified_utc = ts;
+    parent_config->modified_utc = ts;
+
+    error = SaveFolderConfig(parent_path, *parent_config);
+    if (error != VXCORE_OK) {
+      VXCORE_LOG_ERROR("IndexNode: Failed to save parent folder config: error=%d", error);
+      return error;
+    }
+
+    // Write-through to MetadataStore
+    if (auto *store = notebook_->GetMetadataStore()) {
+      StoreFileRecord file_record =
+          ToStoreFileRecord(parent_config->files.back(), parent_config->id);
+      if (!store->CreateFile(file_record)) {
+        VXCORE_LOG_WARN("IndexNode: Failed to create file in MetadataStore: id=%s",
+                        parent_config->files.back().id.c_str());
+      }
+    }
+
+    VXCORE_LOG_INFO("IndexNode: File indexed successfully: path=%s", clean_path.c_str());
+  }
+
+  return VXCORE_OK;
+}
+
+VxCoreError BundledFolderManager::UnindexNode(const std::string &node_path) {
+  const auto clean_path = GetCleanRelativePath(node_path);
+  VXCORE_LOG_INFO("UnindexNode: path=%s", clean_path.c_str());
+
+  // Get parent folder path and node name
+  const auto [parent_path, node_name] = SplitPath(clean_path);
+
+  // Get parent folder config
+  FolderConfig *parent_config = nullptr;
+  VxCoreError error = GetFolderConfig(parent_path, &parent_config);
+  if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("UnindexNode: Failed to get parent folder config: path=%s, error=%d",
+                     parent_path.c_str(), error);
+    return error;
+  }
+
+  // Check if it's a folder first
+  auto folder_it =
+      std::find(parent_config->folders.begin(), parent_config->folders.end(), node_name);
+  if (folder_it != parent_config->folders.end()) {
+    // It's an indexed folder - get its ID before removing
+    FolderConfig *folder_config = nullptr;
+    error = GetFolderConfig(clean_path, &folder_config);
+    std::string folder_id;
+    if (error == VXCORE_OK && folder_config) {
+      folder_id = folder_config->id;
+    }
+
+    // Remove folder from parent's folder list
+    parent_config->folders.erase(folder_it);
+    parent_config->modified_utc = GetCurrentTimestampMillis();
+    error = SaveFolderConfig(parent_path, *parent_config);
+    if (error != VXCORE_OK) {
+      VXCORE_LOG_ERROR("UnindexNode: Failed to save parent folder config: error=%d", error);
+      return error;
+    }
+
+    // Delete the folder's vx.json config file (metadata only, not filesystem content)
+    std::string config_path = GetConfigPath(clean_path);
+    try {
+      if (fs::exists(config_path)) {
+        fs::remove_all(fs::path(config_path).parent_path());
+      }
+    } catch (const std::exception &e) {
+      VXCORE_LOG_WARN("UnindexNode: Failed to delete folder config: %s", e.what());
+    }
+
+    // Write-through to MetadataStore
+    if (auto *store = notebook_->GetMetadataStore(); !folder_id.empty()) {
+      if (!store->DeleteFolder(folder_id)) {
+        VXCORE_LOG_WARN("UnindexNode: Failed to delete folder from MetadataStore: id=%s",
+                        folder_id.c_str());
+      }
+    }
+
+    InvalidateCache(clean_path);
+    VXCORE_LOG_INFO("UnindexNode: Folder unindexed successfully: path=%s", clean_path.c_str());
+    return VXCORE_OK;
+  }
+
+  // Check if it's a file
+  auto file_it = std::find_if(
+      parent_config->files.begin(), parent_config->files.end(),
+      [&node_name](const FileRecord &file) { return file.name == node_name; });
+  if (file_it != parent_config->files.end()) {
+    // Save the file ID before erasing
+    std::string file_id = file_it->id;
+
+    // Remove file from parent folder's file list
+    parent_config->files.erase(file_it);
+    parent_config->modified_utc = GetCurrentTimestampMillis();
+    error = SaveFolderConfig(parent_path, *parent_config);
+    if (error != VXCORE_OK) {
+      VXCORE_LOG_ERROR("UnindexNode: Failed to save parent folder config: error=%d", error);
+      return error;
+    }
+
+    // Write-through to MetadataStore
+    if (auto *store = notebook_->GetMetadataStore(); !file_id.empty()) {
+      if (!store->DeleteFile(file_id)) {
+        VXCORE_LOG_WARN("UnindexNode: Failed to delete file from MetadataStore: id=%s",
+                        file_id.c_str());
+      }
+    }
+
+    VXCORE_LOG_INFO("UnindexNode: File unindexed successfully: path=%s", clean_path.c_str());
+    return VXCORE_OK;
+  }
+
+  // Node not found in metadata
+  VXCORE_LOG_WARN("UnindexNode: Node not found in metadata: %s", clean_path.c_str());
+  return VXCORE_ERR_NOT_FOUND;
+}
 }  // namespace vxcore

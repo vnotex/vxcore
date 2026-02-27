@@ -184,5 +184,15 @@ VxCoreError RawFolderManager::ListFolderContents(const std::string &folder_path,
 }
 
 void RawFolderManager::ClearCache() {}
+VxCoreError RawFolderManager::IndexNode(const std::string &node_path) {
+  (void)node_path;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VxCoreError RawFolderManager::UnindexNode(const std::string &node_path) {
+  (void)node_path;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
 
 }  // namespace vxcore

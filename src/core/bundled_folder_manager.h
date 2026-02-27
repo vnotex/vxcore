@@ -84,6 +84,10 @@ class BundledFolderManager : public FolderManager {
 
   void ClearCache() override;
 
+  VxCoreError IndexNode(const std::string &node_path) override;
+
+  VxCoreError UnindexNode(const std::string &node_path) override;
+
   // Syncs the MetadataStore from config files (vx.json)
   // Called on notebook open to rebuild cache from ground truth
   // Returns VXCORE_OK on success

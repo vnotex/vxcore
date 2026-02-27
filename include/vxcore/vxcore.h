@@ -177,6 +177,23 @@ VXCORE_API VxCoreError vxcore_node_update_metadata(VxCoreContextHandle context,
                                                     const char *node_path,
                                                     const char *metadata_json);
 
+// Index a filesystem node (file or folder) into the metadata store.
+// The node must exist on filesystem but not be tracked in metadata.
+// node_path: Path relative to notebook root (e.g., "folder/file.md")
+// Returns VXCORE_ERR_NOT_FOUND if node doesn't exist on filesystem.
+// Returns VXCORE_ERR_ALREADY_EXISTS if node is already indexed.
+VXCORE_API VxCoreError vxcore_node_index(VxCoreContextHandle context,
+                                         const char *notebook_id,
+                                         const char *node_path);
+
+// Remove a node (file or folder) from the metadata index.
+// The filesystem is NOT modified - only metadata is removed.
+// node_path: Path relative to notebook root (e.g., "folder/file.md")
+// Returns VXCORE_ERR_NOT_FOUND if node is not in metadata.
+VXCORE_API VxCoreError vxcore_node_unindex(VxCoreContextHandle context,
+                                           const char *notebook_id,
+                                           const char *node_path);
+
 VXCORE_API VxCoreError vxcore_tag_create(VxCoreContextHandle context, const char *notebook_id,
                                          const char *tag_name);
 

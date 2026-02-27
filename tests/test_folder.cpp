@@ -2579,6 +2579,400 @@ int test_file_import_to_subfolder() {
   return 0;
 }
 
+// ============ Node Index/Unindex Tests ============
+
+int test_node_index_file() {
+  std::cout << "  Running test_node_index_file..." << std::endl;
+  cleanup_test_dir(get_test_path("test_node_index_file_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_node_index_file_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create an unindexed file directly on filesystem (not through API)
+  std::string unindexed_file = get_test_path("test_node_index_file_nb") + "/unindexed.md";
+  write_file(unindexed_file, "# Unindexed File\n\nThis file is not in metadata.");
+  ASSERT(path_exists(unindexed_file));
+
+  // Verify file is NOT in metadata yet
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"].size() == 0);
+  vxcore_string_free(config_json);
+
+  // Index the file
+  err = vxcore_node_index(ctx, notebook_id, "unindexed.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify file is now in metadata
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"].size() == 1);
+  ASSERT(config["files"][0]["name"] == "unindexed.md");
+  vxcore_string_free(config_json);
+
+  // Verify we can get file config directly
+  char *file_config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "unindexed.md", &file_config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json file_config = nlohmann::json::parse(file_config_json);
+  ASSERT(file_config["name"] == "unindexed.md");
+  ASSERT(file_config["type"] == "file");
+  vxcore_string_free(file_config_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_node_index_file_nb"));
+  std::cout << "  ✓ test_node_index_file passed" << std::endl;
+  return 0;
+}
+
+int test_node_index_folder() {
+  std::cout << "  Running test_node_index_folder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_node_index_folder_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_node_index_folder_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create an unindexed folder directly on filesystem
+  std::string unindexed_folder = get_test_path("test_node_index_folder_nb") + "/unindexed_folder";
+  create_directory(unindexed_folder);
+  ASSERT(path_exists(unindexed_folder));
+
+  // Verify folder is NOT in metadata yet
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["folders"].size() == 0);
+  vxcore_string_free(config_json);
+
+  // Index the folder
+  err = vxcore_node_index(ctx, notebook_id, "unindexed_folder");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify folder is now in metadata
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  config = nlohmann::json::parse(config_json);
+  ASSERT(config["folders"].size() == 1);
+  ASSERT(config["folders"][0] == "unindexed_folder");
+  vxcore_string_free(config_json);
+
+  // Verify we can get folder config directly
+  char *folder_config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "unindexed_folder", &folder_config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json folder_config = nlohmann::json::parse(folder_config_json);
+  ASSERT(folder_config["name"] == "unindexed_folder");
+  ASSERT(folder_config["type"] == "folder");
+  vxcore_string_free(folder_config_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_node_index_folder_nb"));
+  std::cout << "  ✓ test_node_index_folder passed" << std::endl;
+  return 0;
+}
+
+int test_node_unindex_file() {
+  std::cout << "  Running test_node_unindex_file..." << std::endl;
+  cleanup_test_dir(get_test_path("test_node_unindex_file_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_node_unindex_file_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file through API (so it's indexed)
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "indexed.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Verify file is in metadata
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"].size() == 1);
+  vxcore_string_free(config_json);
+
+  // Verify file exists on filesystem
+  std::string file_path = get_test_path("test_node_unindex_file_nb") + "/indexed.md";
+  ASSERT(path_exists(file_path));
+
+  // Unindex the file (removes from metadata but keeps filesystem)
+  err = vxcore_node_unindex(ctx, notebook_id, "indexed.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify file is NO LONGER in metadata
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"].size() == 0);
+  vxcore_string_free(config_json);
+
+  // Verify file STILL exists on filesystem
+  ASSERT(path_exists(file_path));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_node_unindex_file_nb"));
+  std::cout << "  ✓ test_node_unindex_file passed" << std::endl;
+  return 0;
+}
+
+int test_node_unindex_folder() {
+  std::cout << "  Running test_node_unindex_folder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_node_unindex_folder_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_node_unindex_folder_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a folder through API (so it's indexed)
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "indexed_folder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Verify folder is in metadata
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["folders"].size() == 1);
+  vxcore_string_free(config_json);
+
+  // Verify folder exists on filesystem
+  std::string folder_path = get_test_path("test_node_unindex_folder_nb") + "/indexed_folder";
+  ASSERT(path_exists(folder_path));
+
+  // Unindex the folder (removes from metadata but keeps filesystem)
+  err = vxcore_node_unindex(ctx, notebook_id, "indexed_folder");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify folder is NO LONGER in metadata
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  config = nlohmann::json::parse(config_json);
+  ASSERT(config["folders"].size() == 0);
+  vxcore_string_free(config_json);
+
+  // Verify folder STILL exists on filesystem
+  ASSERT(path_exists(folder_path));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_node_unindex_folder_nb"));
+  std::cout << "  ✓ test_node_unindex_folder passed" << std::endl;
+  return 0;
+}
+
+int test_node_index_not_found() {
+  std::cout << "  Running test_node_index_not_found..." << std::endl;
+  cleanup_test_dir(get_test_path("test_node_index_notfound_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_node_index_notfound_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Try to index a non-existent file
+  err = vxcore_node_index(ctx, notebook_id, "nonexistent.md");
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_node_index_notfound_nb"));
+  std::cout << "  ✓ test_node_index_not_found passed" << std::endl;
+  return 0;
+}
+
+int test_node_index_already_exists() {
+  std::cout << "  Running test_node_index_already_exists..." << std::endl;
+  cleanup_test_dir(get_test_path("test_node_index_exists_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_node_index_exists_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file through API (already indexed)
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "existing.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Try to index the already-indexed file
+  err = vxcore_node_index(ctx, notebook_id, "existing.md");
+  ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_node_index_exists_nb"));
+  std::cout << "  ✓ test_node_index_already_exists passed" << std::endl;
+  return 0;
+}
+
+int test_node_unindex_not_found() {
+  std::cout << "  Running test_node_unindex_not_found..." << std::endl;
+  cleanup_test_dir(get_test_path("test_node_unindex_notfound_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_node_unindex_notfound_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Try to unindex a non-existent file
+  err = vxcore_node_unindex(ctx, notebook_id, "nonexistent.md");
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_node_unindex_notfound_nb"));
+  std::cout << "  ✓ test_node_unindex_not_found passed" << std::endl;
+  return 0;
+}
+
+int test_node_index_invalid_params() {
+  std::cout << "  Running test_node_index_invalid_params..." << std::endl;
+  cleanup_test_dir(get_test_path("test_node_index_inv_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_node_index_inv_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Null context
+  err = vxcore_node_index(nullptr, notebook_id, "test.md");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Null notebook_id
+  err = vxcore_node_index(ctx, nullptr, "test.md");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Null node_path
+  err = vxcore_node_index(ctx, notebook_id, nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Same for unindex
+  err = vxcore_node_unindex(nullptr, notebook_id, "test.md");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_node_unindex(ctx, nullptr, "test.md");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_node_unindex(ctx, notebook_id, nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_node_index_inv_nb"));
+  std::cout << "  ✓ test_node_index_invalid_params passed" << std::endl;
+  return 0;
+}
+
+int test_node_index_nested() {
+  std::cout << "  Running test_node_index_nested..." << std::endl;
+  cleanup_test_dir(get_test_path("test_node_index_nested_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_node_index_nested_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a folder through API
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Create an unindexed file in the nested folder
+  std::string nested_file = get_test_path("test_node_index_nested_nb") + "/docs/nested.md";
+  write_file(nested_file, "# Nested file");
+  ASSERT(path_exists(nested_file));
+
+  // Verify file is NOT in folder's metadata yet
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "docs", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"].size() == 0);
+  vxcore_string_free(config_json);
+
+  // Index the nested file
+  err = vxcore_node_index(ctx, notebook_id, "docs/nested.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify file is now in folder's metadata
+  err = vxcore_node_get_config(ctx, notebook_id, "docs", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  config = nlohmann::json::parse(config_json);
+  ASSERT(config["files"].size() == 1);
+  ASSERT(config["files"][0]["name"] == "nested.md");
+  vxcore_string_free(config_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_node_index_nested_nb"));
+  std::cout << "  ✓ test_node_index_nested passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -2643,6 +3037,17 @@ int main() {
   RUN_TEST(test_recycle_bin_get_path);
   RUN_TEST(test_recycle_bin_empty);
   RUN_TEST(test_recycle_bin_raw_notebook_unsupported);
+
+  // Node index/unindex tests
+  RUN_TEST(test_node_index_file);
+  RUN_TEST(test_node_index_folder);
+  RUN_TEST(test_node_unindex_file);
+  RUN_TEST(test_node_unindex_folder);
+  RUN_TEST(test_node_index_not_found);
+  RUN_TEST(test_node_index_already_exists);
+  RUN_TEST(test_node_unindex_not_found);
+  RUN_TEST(test_node_index_invalid_params);
+  RUN_TEST(test_node_index_nested);
 
   // File import tests
   RUN_TEST(test_file_import_basic);
