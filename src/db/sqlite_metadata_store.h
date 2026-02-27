@@ -56,6 +56,7 @@ class SqliteMetadataStore : public MetadataStore {
   std::optional<StoreFolderRecord> GetFolderByPath(const std::string& path) override;
   std::vector<StoreFolderRecord> ListFolders(const std::string& parent_id) override;
   std::string GetFolderPath(const std::string& folder_id) override;
+  std::string GetNodePathById(const std::string& node_id) override;
   bool MoveFolder(const std::string& folder_id, const std::string& new_parent_id) override;
 
   // --- File Operations ---

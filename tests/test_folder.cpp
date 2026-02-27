@@ -3352,6 +3352,110 @@ int test_node_index_nested() {
   return 0;
 }
 
+int test_node_get_path_by_id() {
+  std::cout << "  Running test_node_get_path_by_id..." << std::endl;
+  cleanup_test_dir(get_test_path("test_node_get_path_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_node_get_path_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create folder structure: docs/guides
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string docs_id(folder_id);
+  vxcore_string_free(folder_id);
+
+  err = vxcore_folder_create(ctx, notebook_id, "docs", "guides", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string guides_id(folder_id);
+  vxcore_string_free(folder_id);
+
+  // Create files at different levels
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "readme.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string readme_id(file_id);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_create(ctx, notebook_id, "docs", "intro.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string intro_id(file_id);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_create(ctx, notebook_id, "docs/guides", "setup.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string setup_id(file_id);
+  vxcore_string_free(file_id);
+
+  // Test getting path for folder at root level
+  char *path = nullptr;
+  err = vxcore_node_get_path_by_id(ctx, notebook_id, docs_id.c_str(), &path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(path);
+  ASSERT_EQ(std::string(path), std::string("docs"));
+  vxcore_string_free(path);
+
+  // Test getting path for nested folder
+  err = vxcore_node_get_path_by_id(ctx, notebook_id, guides_id.c_str(), &path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(path);
+  ASSERT_EQ(std::string(path), std::string("docs/guides"));
+  vxcore_string_free(path);
+
+  // Test getting path for file at root level
+  err = vxcore_node_get_path_by_id(ctx, notebook_id, readme_id.c_str(), &path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(path);
+  ASSERT_EQ(std::string(path), std::string("readme.md"));
+  vxcore_string_free(path);
+
+  // Test getting path for file in subfolder
+  err = vxcore_node_get_path_by_id(ctx, notebook_id, intro_id.c_str(), &path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(path);
+  ASSERT_EQ(std::string(path), std::string("docs/intro.md"));
+  vxcore_string_free(path);
+
+  // Test getting path for deeply nested file
+  err = vxcore_node_get_path_by_id(ctx, notebook_id, setup_id.c_str(), &path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(path);
+  ASSERT_EQ(std::string(path), std::string("docs/guides/setup.md"));
+  vxcore_string_free(path);
+
+  // Test with non-existent ID
+  err = vxcore_node_get_path_by_id(ctx, notebook_id, "nonexistent-uuid", &path);
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+  ASSERT_NULL(path);
+
+  // Test invalid params
+  err = vxcore_node_get_path_by_id(nullptr, notebook_id, docs_id.c_str(), &path);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_node_get_path_by_id(ctx, nullptr, docs_id.c_str(), &path);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_node_get_path_by_id(ctx, notebook_id, nullptr, &path);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = vxcore_node_get_path_by_id(ctx, notebook_id, docs_id.c_str(), nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_node_get_path_nb"));
+  std::cout << "  ✓ test_node_get_path_by_id passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -3428,6 +3532,8 @@ int main() {
   RUN_TEST(test_node_index_invalid_params);
   RUN_TEST(test_node_index_nested);
 
+  // Node path lookup tests
+  RUN_TEST(test_node_get_path_by_id);
   // File import tests
   RUN_TEST(test_file_import_basic);
   RUN_TEST(test_file_import_name_conflict);

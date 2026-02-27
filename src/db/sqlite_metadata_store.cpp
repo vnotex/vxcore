@@ -266,6 +266,42 @@ std::string SqliteMetadataStore::GetFolderPath(const std::string& folder_id) {
   return file_db_->GetFolderPath(db_id);
 }
 
+std::string SqliteMetadataStore::GetNodePathById(const std::string& node_id) {
+  if (!IsOpen()) {
+    last_error_ = "Store not open";
+    return "";
+  }
+
+  // Helper to strip leading './' from path
+  auto strip_root_prefix = [](const std::string& path) -> std::string {
+    if (path.size() >= 2 && path[0] == '.' && path[1] == '/') {
+      return path.substr(2);
+    }
+    if (path == ".") {
+      return "";  // Root folder itself
+    }
+    return path;
+  };
+
+  // Try folder first
+  auto folder = file_db_->GetFolderByUuid(node_id);
+  if (folder) {
+    return strip_root_prefix(file_db_->GetFolderPath(folder->id));
+  }
+
+  // Try file
+  auto file = file_db_->GetFileByUuid(node_id);
+  if (file) {
+    std::string folder_path = strip_root_prefix(file_db_->GetFolderPath(file->folder_id));
+    if (folder_path.empty()) {
+      return file->name;  // File in root
+    }
+    return folder_path + "/" + file->name;
+  }
+
+  return "";  // Not found
+}
+
 bool SqliteMetadataStore::MoveFolder(const std::string& folder_id,
                                      const std::string& new_parent_id) {
   if (!IsOpen()) {

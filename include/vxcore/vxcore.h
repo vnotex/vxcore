@@ -207,6 +207,15 @@ VXCORE_API VxCoreError vxcore_node_unindex(VxCoreContextHandle context,
                                            const char *notebook_id,
                                            const char *node_path);
 
+// Get relative path of a node (file or folder) by its ID.
+// node_id: The UUID of the node
+// out_path: receives the relative path (caller must free with vxcore_string_free)
+// Returns VXCORE_ERR_NOT_FOUND if node is not found in metadata.
+VXCORE_API VxCoreError vxcore_node_get_path_by_id(VxCoreContextHandle context,
+                                                  const char *notebook_id,
+                                                  const char *node_id,
+                                                  char **out_path);
+
 VXCORE_API VxCoreError vxcore_tag_create(VxCoreContextHandle context, const char *notebook_id,
                                          const char *tag_name);
 

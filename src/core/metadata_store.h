@@ -117,6 +117,12 @@ class MetadataStore {
   // Gets the relative path for a folder by traversing parent chain
   virtual std::string GetFolderPath(const std::string& folder_id) = 0;
 
+  // Gets the relative path for a node (file or folder) by UUID
+  // Returns empty string if node not found
+  // For files, returns folder_path/file_name
+  // For folders, returns the folder path
+  virtual std::string GetNodePathById(const std::string& node_id) = 0;
+
   // Moves folder to new parent
   virtual bool MoveFolder(const std::string& folder_id, const std::string& new_parent_id) = 0;
 

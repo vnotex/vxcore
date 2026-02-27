@@ -2,6 +2,7 @@
 #include "core/context.h"
 #include "core/folder.h"
 #include "core/folder_manager.h"
+#include "core/metadata_store.h"
 #include "core/notebook_manager.h"
 #include "vxcore/vxcore.h"
 
@@ -315,6 +316,45 @@ VXCORE_API VxCoreError vxcore_folder_import(VxCoreContextHandle context, const c
     }
 
     *out_folder_id = vxcore_strdup(folder_id.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_node_get_path_by_id(VxCoreContextHandle context,
+                                                  const char *notebook_id,
+                                                  const char *node_id,
+                                                  char **out_path) {
+  if (!context || !notebook_id || !node_id || !out_path) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  *out_path = nullptr;  // Initialize to nullptr
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    vxcore::MetadataStore *store = notebook->GetMetadataStore();
+    if (!store) {
+      ctx->last_error = "MetadataStore not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    std::string path = store->GetNodePathById(node_id);
+    if (path.empty()) {
+      ctx->last_error = "Node not found: " + std::string(node_id);
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    *out_path = vxcore_strdup(path.c_str());
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
