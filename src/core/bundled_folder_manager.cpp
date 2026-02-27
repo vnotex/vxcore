@@ -9,7 +9,7 @@
 #include <unordered_set>
 
 #include "metadata_store.h"
-#include "notebook.h"
+#include "bundled_notebook.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -1870,10 +1870,6 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
             continue;
           }
           if (entry.is_directory()) {
-            // Skip vx_notebook metadata folder
-            if (entry_name == "vx_notebook") {
-              continue;
-            }
             copy_filtered(entry.path(), dest / entry_name);
           } else if (entry.is_regular_file()) {
             // Apply suffix filter if allowlist is specified
@@ -1923,14 +1919,15 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
   std::function<VxCoreError(const std::string &, FolderConfig &)> index_contents =
       [&](const std::string &rel_path, FolderConfig &config) -> VxCoreError {
     std::string abs_path = GetContentPath(rel_path);
+    const bool is_root = (rel_path.empty() || rel_path == ".");
 
     try {
       for (const auto &entry : fs::directory_iterator(abs_path)) {
         std::string entry_name = entry.path().filename().string();
 
         if (entry.is_directory()) {
-          // Skip hidden folders and vx_notebook metadata folder
-          if (entry_name.empty() || entry_name[0] == '.' || entry_name == "vx_notebook") {
+          if (entry_name.empty() || entry_name[0] == '.' ||
+              (is_root && entry_name == BundledNotebook::kMetadataFolderName)) {
             continue;
           }
 
@@ -2229,5 +2226,98 @@ VxCoreError BundledFolderManager::UnindexNode(const std::string &node_path) {
   // Node not found in metadata
   VXCORE_LOG_WARN("UnindexNode: Node not found in metadata: %s", clean_path.c_str());
   return VXCORE_ERR_NOT_FOUND;
+}
+
+VxCoreError BundledFolderManager::ListExternalNodes(const std::string &folder_path,
+                                                   FolderContents &out_contents) {
+  const auto clean_path = GetCleanRelativePath(folder_path);
+  VXCORE_LOG_INFO("ListExternalNodes: path=%s", clean_path.c_str());
+
+  // Clear output
+  out_contents.files.clear();
+  out_contents.folders.clear();
+
+  // Get folder config (indexed items)
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(clean_path, &config);
+  if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("ListExternalNodes: Failed to get folder config: path=%s, error=%d",
+                     clean_path.c_str(), error);
+    return error;
+  }
+
+  // Build sets of indexed items for fast lookup
+  std::set<std::string> indexed_files;
+  std::set<std::string> indexed_folders;
+  for (const auto &file : config->files) {
+    indexed_files.insert(file.name);
+  }
+  for (const auto &folder_name : config->folders) {
+    indexed_folders.insert(folder_name);
+  }
+
+  // Get filesystem content path
+  std::string content_path = GetContentPath(clean_path);
+  if (!fs::exists(content_path)) {
+    VXCORE_LOG_WARN("ListExternalNodes: Content path does not exist: %s", content_path.c_str());
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  // Check if assets/attachments folders should be skipped (only if single name)
+  const NotebookConfig &nb_config = notebook_->GetConfig();
+  const bool need_check_assets_folder = IsSingleName(nb_config.assets_folder);
+  const bool need_check_attachments_folder = IsSingleName(nb_config.attachments_folder);
+
+  const bool is_root = clean_path.empty() || clean_path == ".";
+
+  // Scan filesystem and find unindexed items
+  try {
+    for (const auto &entry : fs::directory_iterator(content_path)) {
+      std::string entry_name = entry.path().filename().string();
+
+      // Skip hidden files/folders (starting with '.')
+      if (entry_name.empty() || entry_name[0] == '.') {
+        continue;
+      }
+
+      // Skip metadata folder (only at root)
+      if (is_root && entry_name == BundledNotebook::kMetadataFolderName) {
+        continue;
+      }
+
+      // Skip assets and attachments folders
+      if ((need_check_assets_folder && entry_name == nb_config.assets_folder) ||
+          (need_check_attachments_folder && entry_name == nb_config.attachments_folder)) {
+        continue;
+      }
+
+      if (entry.is_directory()) {
+        // Check if folder is NOT indexed
+        if (indexed_folders.find(entry_name) == indexed_folders.end()) {
+          // External folder - create a minimal FolderRecord
+          FolderRecord record;
+          record.name = entry_name;
+          // No ID since it's not indexed
+          out_contents.folders.push_back(record);
+        }
+      } else if (entry.is_regular_file()) {
+        // Check if file is NOT indexed
+        if (indexed_files.find(entry_name) == indexed_files.end()) {
+          // External file - create a minimal FileRecord
+          FileRecord record;
+          record.name = entry_name;
+          // No ID since it's not indexed
+          out_contents.files.push_back(record);
+        }
+      }
+    }
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("ListExternalNodes: Failed to iterate directory: %s", e.what());
+    return VXCORE_ERR_IO;
+  }
+
+  VXCORE_LOG_INFO("ListExternalNodes: Found %zu external files, %zu external folders",
+                  out_contents.files.size(), out_contents.folders.size());
+  return VXCORE_OK;
 }
 }  // namespace vxcore

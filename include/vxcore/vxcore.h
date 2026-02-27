@@ -108,6 +108,16 @@ VXCORE_API VxCoreError vxcore_folder_list_children(VxCoreContextHandle context,
                                                    const char *notebook_id,
                                                    const char *folder_path,
                                                    char **out_children_json);
+
+// List external (unindexed) nodes in a folder.
+// External nodes exist on filesystem but are not tracked in metadata.
+// folder_path: Path relative to notebook root ("" or "." for root)
+// Output JSON: {"files": [...], "folders": [...]}
+// Each entry contains only "name" field (no ID since not indexed).
+VXCORE_API VxCoreError vxcore_folder_list_external(VxCoreContextHandle context,
+                                                   const char *notebook_id,
+                                                   const char *folder_path,
+                                                   char **out_external_json);
 // ============ File Operations ============
 VXCORE_API VxCoreError vxcore_file_create(VxCoreContextHandle context, const char *notebook_id,
                                           const char *folder_path, const char *file_name,

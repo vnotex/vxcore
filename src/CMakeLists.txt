@@ -24,6 +24,7 @@ set(VXCORE_SOURCES
     core/notebook_manager.cpp
     core/folder.cpp
     core/bundled_folder_manager.cpp
+    core/folder_manager.cpp
     core/raw_folder_manager.cpp
     db/db_manager.cpp
     db/file_db.cpp

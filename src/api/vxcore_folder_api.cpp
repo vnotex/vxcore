@@ -63,7 +63,7 @@ VXCORE_API VxCoreError vxcore_folder_create_path(VxCoreContextHandle context,
     }
 
     std::string folder_id;
-    VxCoreError error = notebook->CreateFolderPath(folder_path, folder_id);
+    VxCoreError error = notebook->GetFolderManager()->CreateFolderPath(folder_path, folder_id);
     if (error != VXCORE_OK) {
       return error;
     }
@@ -247,6 +247,70 @@ VXCORE_API VxCoreError vxcore_folder_list_children(VxCoreContextHandle context,
     return VXCORE_ERR_UNKNOWN;
   }
 }
+
+VXCORE_API VxCoreError vxcore_folder_list_external(VxCoreContextHandle context,
+                                                   const char *notebook_id,
+                                                   const char *folder_path,
+                                                   char **out_external_json) {
+  if (!context || !notebook_id || !out_external_json) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    std::string path = folder_path ? folder_path : ".";
+    vxcore::FolderManager::FolderContents contents;
+
+    VxCoreError error = folder_manager->ListExternalNodes(path, contents);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+
+    // Build JSON response
+    nlohmann::json result;
+    nlohmann::json files_json = nlohmann::json::array();
+    nlohmann::json folders_json = nlohmann::json::array();
+
+    for (const auto &file : contents.files) {
+      // External files only have name (no ID)
+      nlohmann::json file_json;
+      file_json["name"] = file.name;
+      file_json["type"] = "file";
+      files_json.push_back(file_json);
+    }
+
+    for (const auto &folder : contents.folders) {
+      // External folders only have name (no ID)
+      nlohmann::json folder_json;
+      folder_json["name"] = folder.name;
+      folder_json["type"] = "folder";
+      folders_json.push_back(folder_json);
+    }
+
+    result["files"] = files_json;
+    result["folders"] = folders_json;
+
+    *out_external_json = vxcore_strdup(result.dump().c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 
 VXCORE_API VxCoreError vxcore_file_import(VxCoreContextHandle context, const char *notebook_id,
                                           const char *folder_path, const char *external_file_path,

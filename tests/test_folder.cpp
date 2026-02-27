@@ -3456,6 +3456,249 @@ int test_node_get_path_by_id() {
   return 0;
 }
 
+// ============================================================================
+// External nodes (list unindexed files/folders) tests
+// ============================================================================
+
+int test_folder_list_external_basic() {
+  std::cout << "  Running test_folder_list_external_basic..." << std::endl;
+  cleanup_test_dir(get_test_path("test_list_external_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_list_external_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create an indexed file through API
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "indexed.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Create an indexed folder through API
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "indexed_folder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Create unindexed file directly on filesystem
+  std::string unindexed_file = get_test_path("test_list_external_nb") + "/external.txt";
+  write_file(unindexed_file, "This is an external file.");
+  ASSERT(path_exists(unindexed_file));
+
+  // Create unindexed folder directly on filesystem
+  std::string unindexed_folder = get_test_path("test_list_external_nb") + "/external_folder";
+  create_directory(unindexed_folder);
+  ASSERT(path_exists(unindexed_folder));
+
+  // List external nodes
+  char *external_json = nullptr;
+  err = vxcore_folder_list_external(ctx, notebook_id, ".", &external_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(external_json);
+
+  nlohmann::json result = nlohmann::json::parse(external_json);
+  ASSERT(result.contains("files"));
+  ASSERT(result.contains("folders"));
+
+  // Should have 1 external file (external.txt)
+  ASSERT_EQ(result["files"].size(), 1);
+  ASSERT_EQ(result["files"][0]["name"].get<std::string>(), "external.txt");
+
+  // Should have 1 external folder (external_folder)
+  ASSERT_EQ(result["folders"].size(), 1);
+  ASSERT_EQ(result["folders"][0]["name"].get<std::string>(), "external_folder");
+
+  vxcore_string_free(external_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_list_external_nb"));
+  std::cout << "  ✓ test_folder_list_external_basic passed" << std::endl;
+  return 0;
+}
+
+int test_folder_list_external_empty() {
+  std::cout << "  Running test_folder_list_external_empty..." << std::endl;
+  cleanup_test_dir(get_test_path("test_list_external_empty_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_list_external_empty_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create only indexed items (no external files)
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "indexed.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // List external nodes - should be empty
+  char *external_json = nullptr;
+  err = vxcore_folder_list_external(ctx, notebook_id, ".", &external_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(external_json);
+
+  nlohmann::json result = nlohmann::json::parse(external_json);
+  ASSERT_EQ(result["files"].size(), 0);
+  ASSERT_EQ(result["folders"].size(), 0);
+
+  vxcore_string_free(external_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_list_external_empty_nb"));
+  std::cout << "  ✓ test_folder_list_external_empty passed" << std::endl;
+  return 0;
+}
+
+int test_folder_list_external_nested() {
+  std::cout << "  Running test_folder_list_external_nested..." << std::endl;
+  cleanup_test_dir(get_test_path("test_list_external_nested_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_list_external_nested_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create indexed folder through API
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Create indexed file inside docs through API
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "docs", "indexed.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Create external file in nested folder directly on filesystem
+  std::string unindexed_file = get_test_path("test_list_external_nested_nb") + "/docs/external.txt";
+  write_file(unindexed_file, "External file in nested folder.");
+  ASSERT(path_exists(unindexed_file));
+
+  // List external nodes in nested folder
+  char *external_json = nullptr;
+  err = vxcore_folder_list_external(ctx, notebook_id, "docs", &external_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(external_json);
+
+  nlohmann::json result = nlohmann::json::parse(external_json);
+  ASSERT_EQ(result["files"].size(), 1);
+  ASSERT_EQ(result["files"][0]["name"].get<std::string>(), "external.txt");
+  ASSERT_EQ(result["folders"].size(), 0);
+
+  vxcore_string_free(external_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_list_external_nested_nb"));
+  std::cout << "  ✓ test_folder_list_external_nested passed" << std::endl;
+  return 0;
+}
+
+int test_folder_list_external_skips_hidden() {
+  std::cout << "  Running test_folder_list_external_skips_hidden..." << std::endl;
+  cleanup_test_dir(get_test_path("test_list_external_hidden_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_list_external_hidden_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create hidden file (should be skipped)
+  std::string hidden_file = get_test_path("test_list_external_hidden_nb") + "/.hidden_file";
+  write_file(hidden_file, "Hidden file.");
+  ASSERT(path_exists(hidden_file));
+
+  // Create hidden folder (should be skipped)
+  std::string hidden_folder = get_test_path("test_list_external_hidden_nb") + "/.hidden_folder";
+  create_directory(hidden_folder);
+  ASSERT(path_exists(hidden_folder));
+
+  // Create visible external file (should be listed)
+  std::string visible_file = get_test_path("test_list_external_hidden_nb") + "/visible.txt";
+  write_file(visible_file, "Visible file.");
+  ASSERT(path_exists(visible_file));
+
+  // List external nodes - should only have visible.txt
+  char *external_json = nullptr;
+  err = vxcore_folder_list_external(ctx, notebook_id, ".", &external_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(external_json);
+
+  nlohmann::json result = nlohmann::json::parse(external_json);
+  ASSERT_EQ(result["files"].size(), 1);
+  ASSERT_EQ(result["files"][0]["name"].get<std::string>(), "visible.txt");
+  ASSERT_EQ(result["folders"].size(), 0);  // hidden folder excluded
+
+  vxcore_string_free(external_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_list_external_hidden_nb"));
+  std::cout << "  ✓ test_folder_list_external_skips_hidden passed" << std::endl;
+  return 0;
+}
+
+int test_folder_list_external_invalid_params() {
+  std::cout << "  Running test_folder_list_external_invalid_params..." << std::endl;
+  cleanup_test_dir(get_test_path("test_list_external_invalid_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_list_external_invalid_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *external_json = nullptr;
+
+  // Null context
+  err = vxcore_folder_list_external(nullptr, notebook_id, ".", &external_json);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Null notebook_id
+  err = vxcore_folder_list_external(ctx, nullptr, ".", &external_json);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Null folder_path - allowed, defaults to root
+  err = vxcore_folder_list_external(ctx, notebook_id, nullptr, &external_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(external_json);
+
+  // Null output pointer
+  err = vxcore_folder_list_external(ctx, notebook_id, ".", nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_list_external_invalid_nb"));
+  std::cout << "  ✓ test_folder_list_external_invalid_params passed" << std::endl;
+  return 0;
+}
+
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -3549,6 +3792,13 @@ int main() {
   RUN_TEST(test_folder_import_to_subfolder);
   RUN_TEST(test_folder_import_within_notebook);
   RUN_TEST(test_folder_import_suffix_filter);
+
+  // External nodes (list unindexed) tests
+  RUN_TEST(test_folder_list_external_basic);
+  RUN_TEST(test_folder_list_external_empty);
+  RUN_TEST(test_folder_list_external_nested);
+  RUN_TEST(test_folder_list_external_skips_hidden);
+  RUN_TEST(test_folder_list_external_invalid_params);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;

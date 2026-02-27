@@ -46,6 +46,17 @@ std::vector<std::string> SplitPathComponents(const std::string &path) {
 
 bool IsRelativePath(const std::string &path) { return std::filesystem::path(path).is_relative(); }
 
+bool IsSingleName(const std::string &path) {
+  if (path.empty()) {
+    return false;
+  }
+  if (!std::filesystem::path(path).is_relative()) {
+    return false;
+  }
+  return path.find(kPathSeparator) == std::string::npos &&
+         path.find('\\') == std::string::npos;
+}
+
 std::string RelativePath(const std::string &base, const std::string &path) {
   if (base.empty()) {
     return std::string();

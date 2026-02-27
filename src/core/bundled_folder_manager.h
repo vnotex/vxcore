@@ -93,6 +93,9 @@ class BundledFolderManager : public FolderManager {
 
   VxCoreError UnindexNode(const std::string &node_path) override;
 
+  VxCoreError ListExternalNodes(const std::string &folder_path,
+                                FolderContents &out_contents) override;
+
   // Syncs the MetadataStore from config files (vx.json)
   // Called on notebook open to rebuild cache from ground truth
   // Returns VXCORE_OK on success

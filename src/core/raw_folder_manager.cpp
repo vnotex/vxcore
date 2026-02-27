@@ -194,6 +194,14 @@ VxCoreError RawFolderManager::ListFolderContents(const std::string &folder_path,
   return VXCORE_ERR_UNSUPPORTED;
 }
 
+VxCoreError RawFolderManager::ListExternalNodes(const std::string &folder_path,
+                                                FolderContents &out_contents) {
+  (void)folder_path;
+  (void)out_contents;
+  // Raw notebooks don't track external nodes - all nodes are external by definition
+  return VXCORE_OK;
+}
+
 void RawFolderManager::ClearCache() {}
 VxCoreError RawFolderManager::IndexNode(const std::string &node_path) {
   (void)node_path;

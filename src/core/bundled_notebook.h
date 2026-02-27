@@ -22,6 +22,8 @@ class BundledNotebook : public Notebook {
   std::string GetRecycleBinPath() const override;
   VxCoreError EmptyRecycleBin() override;
 
+  static const char *kMetadataFolderName;
+
  private:
   BundledNotebook(const std::string &local_data_folder, const std::string &root_folder);
 

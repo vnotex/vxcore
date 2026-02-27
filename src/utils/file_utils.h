@@ -26,6 +26,9 @@ inline std::string CleanPath(const std::string &path) {
 
 bool IsRelativePath(const std::string &path);
 
+// Check if path is a single name (no path separators, not absolute).
+bool IsSingleName(const std::string &path);
+
 VxCoreError ReadFile(const std::filesystem::path &path, std::string &out_content);
 
 VxCoreError WriteFile(const std::filesystem::path &path, const std::string &content);

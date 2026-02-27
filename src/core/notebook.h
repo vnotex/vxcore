@@ -81,7 +81,6 @@ class Notebook {
   // Must be called before deleting the notebook's local data folder.
   void Close();
 
-  VxCoreError CreateFolderPath(const std::string &folder_path, std::string &out_folder_id);
 
   VxCoreError CreateTag(const std::string &tag_name, const std::string &parent_tag = "");
   VxCoreError CreateTagPath(const std::string &tag_path);

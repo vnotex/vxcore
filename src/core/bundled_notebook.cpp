@@ -9,6 +9,8 @@
 
 namespace vxcore {
 
+const char *BundledNotebook::kMetadataFolderName = "vx_notebook";
+
 BundledNotebook::BundledNotebook(const std::string &local_data_folder,
                                  const std::string &root_folder)
     : Notebook(local_data_folder, root_folder, NotebookType::Bundled) {
@@ -127,7 +129,7 @@ VxCoreError BundledNotebook::Open(const std::string &local_data_folder,
 }
 
 std::string BundledNotebook::GetMetadataFolder() const {
-  return ConcatenatePaths(root_folder_, "vx_notebook");
+  return ConcatenatePaths(root_folder_, kMetadataFolderName);
 }
 
 std::string BundledNotebook::GetConfigPath() const {
