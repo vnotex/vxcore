@@ -15,8 +15,6 @@ constexpr int kCurrentSchemaVersion = 3;
 // Folders table: stores folder hierarchy
 // parent_id references folders(id) - NULL for root folders
 // uuid is the string ID from JSON files (from FolderConfig.id)
-// last_sync_utc tracks when folder was last synced from vx.json (NULL if never synced)
-// metadata_file_modified_utc tracks vx.json modification time at last sync
 inline constexpr const char* kCreateFoldersTable = R"(
 CREATE TABLE IF NOT EXISTS folders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,13 +24,10 @@ CREATE TABLE IF NOT EXISTS folders (
   created_utc INTEGER NOT NULL,
   modified_utc INTEGER NOT NULL,
   metadata TEXT,
-  last_sync_utc INTEGER,
-  metadata_file_modified_utc INTEGER,
   FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);
 CREATE INDEX IF NOT EXISTS idx_folders_uuid ON folders(uuid);
-CREATE INDEX IF NOT EXISTS idx_folders_sync ON folders(last_sync_utc);
 )";
 
 // Files table: stores file metadata

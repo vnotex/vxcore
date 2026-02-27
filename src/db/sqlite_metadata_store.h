@@ -87,9 +87,7 @@ class SqliteMetadataStore : public MetadataStore {
       const std::vector<std::string>& tags) override;
   std::vector<std::pair<std::string, int>> CountFilesByTag() override;
 
-  // --- Sync/Recovery Operations ---
-  std::optional<StoreSyncState> GetSyncState(const std::string& folder_id) override;
-  bool ClearSyncState(const std::string& folder_id) override;
+
   bool RebuildAll() override;
 
   // --- Iteration ---

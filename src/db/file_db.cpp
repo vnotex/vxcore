@@ -94,8 +94,8 @@ int64_t FileDb::CreateOrUpdateFolder(const std::string& uuid, int64_t parent_id,
                                      int64_t modified_utc, const std::string& metadata) {
   const char* sql =
       "INSERT OR REPLACE INTO folders (uuid, parent_id, name, created_utc, modified_utc, "
-      "metadata, last_sync_utc, metadata_file_modified_utc) "
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?);";
+      "metadata) "
+      "VALUES (?, ?, ?, ?, ?, ?);";
 
   sqlite3_stmt* stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -113,8 +113,7 @@ int64_t FileDb::CreateOrUpdateFolder(const std::string& uuid, int64_t parent_id,
   sqlite3_bind_int64(stmt, 4, created_utc);
   sqlite3_bind_int64(stmt, 5, modified_utc);
   sqlite3_bind_text(stmt, 6, metadata.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_int64(stmt, 7, modified_utc);  // last_sync_utc = modified_utc
-  sqlite3_bind_int64(stmt, 8, modified_utc);  // metadata_file_modified_utc = modified_utc
+  // 6 parameters: uuid, parent_id, name, created_utc, modified_utc, metadata
 
   rc = sqlite3_step(stmt);
   int64_t folder_id = -1;
@@ -128,8 +127,7 @@ int64_t FileDb::CreateOrUpdateFolder(const std::string& uuid, int64_t parent_id,
 
 std::optional<DbFolderRecord> FileDb::GetFolder(int64_t folder_id) {
   const char* sql =
-      "SELECT id, uuid, parent_id, name, created_utc, modified_utc, metadata, "
-      "last_sync_utc, metadata_file_modified_utc FROM folders "
+      "SELECT id, uuid, parent_id, name, created_utc, modified_utc, metadata FROM folders "
       "WHERE id = ?;";
 
   sqlite3_stmt* stmt = nullptr;
@@ -155,10 +153,6 @@ std::optional<DbFolderRecord> FileDb::GetFolder(int64_t folder_id) {
   folder.created_utc = sqlite3_column_int64(stmt, 4);
   folder.modified_utc = sqlite3_column_int64(stmt, 5);
   folder.metadata = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
-  folder.last_sync_utc =
-      sqlite3_column_type(stmt, 7) == SQLITE_NULL ? -1 : sqlite3_column_int64(stmt, 7);
-  folder.metadata_file_modified_utc =
-      sqlite3_column_type(stmt, 8) == SQLITE_NULL ? -1 : sqlite3_column_int64(stmt, 8);
 
   sqlite3_finalize(stmt);
   return folder;
@@ -166,8 +160,7 @@ std::optional<DbFolderRecord> FileDb::GetFolder(int64_t folder_id) {
 
 std::optional<DbFolderRecord> FileDb::GetFolderByUuid(const std::string& uuid) {
   const char* sql =
-      "SELECT id, uuid, parent_id, name, created_utc, modified_utc, metadata, "
-      "last_sync_utc, metadata_file_modified_utc FROM folders "
+      "SELECT id, uuid, parent_id, name, created_utc, modified_utc, metadata FROM folders "
       "WHERE uuid = ?;";
 
   sqlite3_stmt* stmt = nullptr;
@@ -193,10 +186,6 @@ std::optional<DbFolderRecord> FileDb::GetFolderByUuid(const std::string& uuid) {
   folder.created_utc = sqlite3_column_int64(stmt, 4);
   folder.modified_utc = sqlite3_column_int64(stmt, 5);
   folder.metadata = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
-  folder.last_sync_utc =
-      sqlite3_column_type(stmt, 7) == SQLITE_NULL ? -1 : sqlite3_column_int64(stmt, 7);
-  folder.metadata_file_modified_utc =
-      sqlite3_column_type(stmt, 8) == SQLITE_NULL ? -1 : sqlite3_column_int64(stmt, 8);
 
   sqlite3_finalize(stmt);
   return folder;
@@ -206,13 +195,11 @@ std::optional<DbFolderRecord> FileDb::GetFolderByName(int64_t parent_id, const s
   const char* sql;
   if (parent_id == -1) {
     sql =
-        "SELECT id, uuid, parent_id, name, created_utc, modified_utc, metadata, "
-        "last_sync_utc, metadata_file_modified_utc FROM folders "
+        "SELECT id, uuid, parent_id, name, created_utc, modified_utc, metadata FROM folders "
         "WHERE parent_id IS NULL AND name = ?;";
   } else {
     sql =
-        "SELECT id, uuid, parent_id, name, created_utc, modified_utc, metadata, "
-        "last_sync_utc, metadata_file_modified_utc FROM folders "
+        "SELECT id, uuid, parent_id, name, created_utc, modified_utc, metadata FROM folders "
         "WHERE parent_id = ? AND name = ?;";
   }
 
@@ -244,10 +231,6 @@ std::optional<DbFolderRecord> FileDb::GetFolderByName(int64_t parent_id, const s
   folder.created_utc = sqlite3_column_int64(stmt, 4);
   folder.modified_utc = sqlite3_column_int64(stmt, 5);
   folder.metadata = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
-  folder.last_sync_utc =
-      sqlite3_column_type(stmt, 7) == SQLITE_NULL ? -1 : sqlite3_column_int64(stmt, 7);
-  folder.metadata_file_modified_utc =
-      sqlite3_column_type(stmt, 8) == SQLITE_NULL ? -1 : sqlite3_column_int64(stmt, 8);
 
   sqlite3_finalize(stmt);
   return folder;
@@ -283,8 +266,7 @@ std::optional<DbFolderRecord> FileDb::GetFolderByPath(const std::string& path) {
 bool FileDb::UpdateFolder(int64_t folder_id, const std::string& name, int64_t modified_utc,
                           const std::string& metadata) {
   const char* sql =
-      "UPDATE folders SET name = ?, modified_utc = ?, metadata = ?, "
-      "last_sync_utc = ?, metadata_file_modified_utc = ? WHERE id = ?;";
+      "UPDATE folders SET name = ?, modified_utc = ?, metadata = ? WHERE id = ?;";
 
   sqlite3_stmt* stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -295,9 +277,7 @@ bool FileDb::UpdateFolder(int64_t folder_id, const std::string& name, int64_t mo
   sqlite3_bind_text(stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_bind_int64(stmt, 2, modified_utc);
   sqlite3_bind_text(stmt, 3, metadata.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_int64(stmt, 4, modified_utc);  // last_sync_utc = modified_utc
-  sqlite3_bind_int64(stmt, 5, modified_utc);  // metadata_file_modified_utc = modified_utc
-  sqlite3_bind_int64(stmt, 6, folder_id);
+  sqlite3_bind_int64(stmt, 4, folder_id);
 
   rc = sqlite3_step(stmt);
   sqlite3_finalize(stmt);
@@ -326,13 +306,11 @@ std::vector<DbFolderRecord> FileDb::ListFolders(int64_t parent_id) {
   const char* sql;
   if (parent_id == -1) {
     sql =
-        "SELECT id, uuid, parent_id, name, created_utc, modified_utc, metadata, "
-        "last_sync_utc, metadata_file_modified_utc FROM folders "
+        "SELECT id, uuid, parent_id, name, created_utc, modified_utc, metadata FROM folders "
         "WHERE parent_id IS NULL ORDER BY name;";
   } else {
     sql =
-        "SELECT id, uuid, parent_id, name, created_utc, modified_utc, metadata, "
-        "last_sync_utc, metadata_file_modified_utc FROM folders "
+        "SELECT id, uuid, parent_id, name, created_utc, modified_utc, metadata FROM folders "
         "WHERE parent_id = ? ORDER BY name;";
   }
 
@@ -357,10 +335,6 @@ std::vector<DbFolderRecord> FileDb::ListFolders(int64_t parent_id) {
     folder.created_utc = sqlite3_column_int64(stmt, 4);
     folder.modified_utc = sqlite3_column_int64(stmt, 5);
     folder.metadata = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
-    folder.last_sync_utc =
-        sqlite3_column_type(stmt, 7) == SQLITE_NULL ? -1 : sqlite3_column_int64(stmt, 7);
-    folder.metadata_file_modified_utc =
-        sqlite3_column_type(stmt, 8) == SQLITE_NULL ? -1 : sqlite3_column_int64(stmt, 8);
     folders.push_back(folder);
   }
 

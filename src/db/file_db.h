@@ -33,8 +33,6 @@ struct DbFolderRecord {
   int64_t created_utc;
   int64_t modified_utc;
   std::string metadata;
-  int64_t last_sync_utc;               // -1 if never synced (represents NULL)
-  int64_t metadata_file_modified_utc;  // -1 if never synced (represents NULL)
 };
 
 // File database operations (CRUD for files, folders, and file-tag relationships)
@@ -56,7 +54,6 @@ class FileDb {
                        int64_t modified_utc);
 
   // Creates or updates a folder with UUID (for sync), returns folder_id or -1 on error
-  // Automatically sets last_sync_utc and metadata_file_modified_utc to modified_utc
   int64_t CreateOrUpdateFolder(const std::string& uuid, int64_t parent_id, const std::string& name,
                                int64_t created_utc, int64_t modified_utc,
                                const std::string& metadata);
@@ -76,8 +73,7 @@ class FileDb {
   // Returns nullopt if any path component is not found
   std::optional<DbFolderRecord> GetFolderByPath(const std::string& path);
 
-  // Updates folder name, modified_utc, metadata, and sync timestamps
-  // Automatically sets last_sync_utc and metadata_file_modified_utc to modified_utc
+  // Updates folder name, modified_utc, and metadata
   bool UpdateFolder(int64_t folder_id, const std::string& name, int64_t modified_utc,
                     const std::string& metadata);
 

@@ -1501,9 +1501,9 @@ void BundledFolderManager::SyncFolderToStore(const std::string &folder_path,
     return;  // No store available
   }
 
-  // Check staleness by comparing config.modified_utc against stored sync state
-  auto sync_state = store->GetSyncState(config.id);
-  if (sync_state.has_value() && config.modified_utc <= sync_state->config_file_modified_utc) {
+  // Check staleness by comparing config.modified_utc against stored folder's modified_utc
+  auto db_folder = store->GetFolder(config.id);
+  if (db_folder.has_value() && config.modified_utc <= db_folder->modified_utc) {
     // Folder is up-to-date, no sync needed
     VXCORE_LOG_DEBUG("SyncFolderToStore: Folder up-to-date: id=%s, path=%s", config.id.c_str(),
                      folder_path.c_str());
@@ -1513,9 +1513,8 @@ void BundledFolderManager::SyncFolderToStore(const std::string &folder_path,
   VXCORE_LOG_INFO("SyncFolderToStore: Syncing folder: id=%s, path=%s", config.id.c_str(),
                   folder_path.c_str());
 
-  // Check if folder already exists in store
-  auto existing_folder = store->GetFolder(config.id);
-  if (existing_folder.has_value()) {
+  // Reuse db_folder from staleness check (folder exists if db_folder has value)
+  if (db_folder.has_value()) {
     // Update existing folder
     if (!store->UpdateFolder(config.id, config.name, config.modified_utc, config.metadata.dump())) {
       VXCORE_LOG_WARN("SyncFolderToStore: Failed to update folder: id=%s", config.id.c_str());

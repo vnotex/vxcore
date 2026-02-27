@@ -45,12 +45,7 @@ struct StoreTagQueryResult {
   std::vector<std::string> tags;
 };
 
-// Sync state for a folder
-struct StoreSyncState {
-  std::string folder_id;
-  int64_t last_sync_utc;
-  int64_t config_file_modified_utc;  // vx.json modification time
-};
+
 
 // Sync result codes
 enum class SyncResultCode {
@@ -196,12 +191,6 @@ class MetadataStore {
   // --- Sync/Recovery Operations ---
   // These methods support rebuilding the store from config files
 
-  // Gets sync state for a folder
-  virtual std::optional<StoreSyncState> GetSyncState(const std::string& folder_id) = 0;
-
-
-  // Clears sync state (e.g., when folder is deleted)
-  virtual bool ClearSyncState(const std::string& folder_id) = 0;
 
   // Rebuilds entire store (drops all data and re-initializes schema)
   // WARNING: This deletes all cached data!

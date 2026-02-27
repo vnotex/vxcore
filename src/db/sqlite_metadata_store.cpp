@@ -757,65 +757,7 @@ std::vector<std::pair<std::string, int>> SqliteMetadataStore::CountFilesByTag() 
 
 // --- Sync/Recovery Operations ---
 
-std::optional<StoreSyncState> SqliteMetadataStore::GetSyncState(const std::string& folder_id) {
-  if (!IsOpen()) {
-    last_error_ = "Store not open";
-    return std::nullopt;
-  }
 
-  auto db_folder = file_db_->GetFolderByUuid(folder_id);
-  if (!db_folder) {
-    return std::nullopt;
-  }
-
-  if (db_folder->last_sync_utc == -1) {
-    return std::nullopt;  // Never synced
-  }
-
-  StoreSyncState state;
-  state.folder_id = folder_id;
-  state.last_sync_utc = db_folder->last_sync_utc;
-  state.config_file_modified_utc = db_folder->metadata_file_modified_utc;
-  return state;
-}
-
-
-bool SqliteMetadataStore::ClearSyncState(const std::string& folder_id) {
-  if (!IsOpen()) {
-    last_error_ = "Store not open";
-    return false;
-  }
-
-  int64_t db_id = GetFolderDbId(folder_id);
-  if (db_id == -1) {
-    last_error_ = "Folder not found: " + folder_id;
-    return false;
-  }
-
-  // Clear sync state using raw SQL
-  const char* sql =
-      "UPDATE folders SET last_sync_utc = NULL, metadata_file_modified_utc = NULL WHERE id = ?;";
-
-  sqlite3_stmt* stmt = nullptr;
-  sqlite3* db = db_manager_->GetHandle();
-  int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr);
-  if (rc != SQLITE_OK) {
-    last_error_ = "Failed to prepare sync state clear: " + std::string(sqlite3_errmsg(db));
-    return false;
-  }
-
-  sqlite3_bind_int64(stmt, 1, db_id);
-
-  rc = sqlite3_step(stmt);
-  sqlite3_finalize(stmt);
-
-  if (rc != SQLITE_DONE) {
-    last_error_ = "Failed to clear sync state: " + std::string(sqlite3_errmsg(db));
-    return false;
-  }
-
-  return true;
-}
 
 bool SqliteMetadataStore::RebuildAll() {
   if (!IsOpen()) {
