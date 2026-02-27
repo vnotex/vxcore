@@ -2609,7 +2609,7 @@ int test_folder_import_basic() {
 
   // Import the folder to root
   char *folder_id = nullptr;
-  err = vxcore_folder_import(ctx, notebook_id, ".", source_folder.c_str(), &folder_id);
+  err = vxcore_folder_import(ctx, notebook_id, ".", source_folder.c_str(), nullptr, &folder_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(folder_id);
 
@@ -2689,7 +2689,7 @@ int test_folder_import_name_conflict() {
 
   // Import folder - should auto-rename to conflict_1
   char *folder_id = nullptr;
-  err = vxcore_folder_import(ctx, notebook_id, ".", source_folder.c_str(), &folder_id);
+  err = vxcore_folder_import(ctx, notebook_id, ".", source_folder.c_str(), nullptr, &folder_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(folder_id);
 
@@ -2726,9 +2726,9 @@ int test_folder_import_source_not_found() {
   // Try to import non-existent folder
   char *folder_id = nullptr;
   #ifdef _WIN32
-  err = vxcore_folder_import(ctx, notebook_id, ".", "C:\\nonexistent\\path\\folder", &folder_id);
+  err = vxcore_folder_import(ctx, notebook_id, ".", "C:\\nonexistent\\path\\folder", nullptr, &folder_id);
 #else
-  err = vxcore_folder_import(ctx, notebook_id, ".", "/nonexistent/path/folder", &folder_id);
+  err = vxcore_folder_import(ctx, notebook_id, ".", "/nonexistent/path/folder", nullptr, &folder_id);
 #endif
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
   ASSERT_NULL(folder_id);
@@ -2757,23 +2757,23 @@ int test_folder_import_invalid_params() {
   char *folder_id = nullptr;
 
   // Null context
-  err = vxcore_folder_import(nullptr, notebook_id, ".", "/some/path", &folder_id);
+  err = vxcore_folder_import(nullptr, notebook_id, ".", "/some/path", nullptr, &folder_id);
   ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
 
   // Null notebook_id
-  err = vxcore_folder_import(ctx, nullptr, ".", "/some/path", &folder_id);
+  err = vxcore_folder_import(ctx, nullptr, ".", "/some/path", nullptr, &folder_id);
   ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
 
   // Null dest_folder_path
-  err = vxcore_folder_import(ctx, notebook_id, nullptr, "/some/path", &folder_id);
+  err = vxcore_folder_import(ctx, notebook_id, nullptr, "/some/path", nullptr, &folder_id);
   ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
 
   // Null external_folder_path
-  err = vxcore_folder_import(ctx, notebook_id, ".", nullptr, &folder_id);
+  err = vxcore_folder_import(ctx, notebook_id, ".", nullptr, nullptr, &folder_id);
   ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
 
   // Null out_folder_id
-  err = vxcore_folder_import(ctx, notebook_id, ".", "/some/path", nullptr);
+  err = vxcore_folder_import(ctx, notebook_id, ".", "/some/path", nullptr, nullptr);
   ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
 
   vxcore_string_free(notebook_id);
@@ -2813,7 +2813,7 @@ int test_folder_import_to_subfolder() {
 
   // Import to subfolder
   char *folder_id = nullptr;
-  err = vxcore_folder_import(ctx, notebook_id, "docs", source_folder.c_str(), &folder_id);
+  err = vxcore_folder_import(ctx, notebook_id, "docs", source_folder.c_str(), nullptr, &folder_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(folder_id);
 
@@ -2865,28 +2865,96 @@ int test_folder_import_within_notebook() {
   std::string internal_folder_path =
       get_test_path("test_folder_import_within_nb") + "/internal_folder";
   char *folder_id = nullptr;
-  err = vxcore_folder_import(ctx, notebook_id, ".", internal_folder_path.c_str(), &folder_id);
+  err = vxcore_folder_import(ctx, notebook_id, ".", internal_folder_path.c_str(), nullptr, &folder_id);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
   ASSERT_NULL(folder_id);
 
   // Also try importing the notebook root itself - should fail
-  err = vxcore_folder_import(ctx, notebook_id, ".",
-                             get_test_path("test_folder_import_within_nb").c_str(), &folder_id);
+  err = vxcore_folder_import(ctx, notebook_id, ".", get_test_path("test_folder_import_within_nb").c_str(), nullptr, &folder_id);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
   ASSERT_NULL(folder_id);
 
   // Try to import with a relative path - should fail
-  err = vxcore_folder_import(ctx, notebook_id, ".", "../some_relative_path", &folder_id);
+  err = vxcore_folder_import(ctx, notebook_id, ".", "../some_relative_path", nullptr, &folder_id);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
   ASSERT_NULL(folder_id);
 
-  err = vxcore_folder_import(ctx, notebook_id, ".", "relative/path", &folder_id);
+  err = vxcore_folder_import(ctx, notebook_id, ".", "relative/path", nullptr, &folder_id);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
   ASSERT_NULL(folder_id);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_folder_import_within_nb"));
   std::cout << "  ✓ test_folder_import_within_notebook passed" << std::endl;
+  return 0;
+}
+
+
+int test_folder_import_suffix_filter() {
+  std::cout << "  Running test_folder_import_suffix_filter..." << std::endl;
+  cleanup_test_dir(get_test_path("test_folder_import_filter_nb"));
+  cleanup_test_dir(get_test_path("test_folder_import_filter_src"));
+
+  // Create source folder with various file types
+  std::string source_folder = get_test_path("test_folder_import_filter_src/mixed_folder");
+  create_directory(source_folder);
+  write_file(source_folder + "/doc1.md", "# Markdown 1");
+  write_file(source_folder + "/doc2.MD", "# Markdown 2");  // Uppercase extension
+  write_file(source_folder + "/notes.txt", "Some notes");
+  write_file(source_folder + "/config.json", "{\"key\":\"value\"}");
+  write_file(source_folder + "/script.py", "print('hello')");
+  write_file(source_folder + "/image.png", "fake png data");
+  create_directory(source_folder + "/subfolder");
+  write_file(source_folder + "/subfolder/nested.md", "# Nested");
+  write_file(source_folder + "/subfolder/nested.txt", "Nested text");
+  write_file(source_folder + "/subfolder/nested.py", "# Python");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_folder_import_filter_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Import with suffix filter: only md and txt files
+  char *folder_id = nullptr;
+  err = vxcore_folder_import(ctx, notebook_id, ".", source_folder.c_str(), "md;txt", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id);
+
+  // Verify only filtered files were copied
+  std::string imported_folder = get_test_path("test_folder_import_filter_nb") + "/mixed_folder";
+  ASSERT(path_exists(imported_folder));
+  ASSERT(path_exists(imported_folder + "/doc1.md"));
+  ASSERT(path_exists(imported_folder + "/doc2.MD"));  // Case insensitive matching
+  ASSERT(path_exists(imported_folder + "/notes.txt"));
+  ASSERT(!path_exists(imported_folder + "/config.json"));  // Filtered out
+  ASSERT(!path_exists(imported_folder + "/script.py"));    // Filtered out
+  ASSERT(!path_exists(imported_folder + "/image.png"));    // Filtered out
+
+  // Verify subfolder structure preserved but only filtered files copied
+  ASSERT(path_exists(imported_folder + "/subfolder"));
+  ASSERT(path_exists(imported_folder + "/subfolder/nested.md"));
+  ASSERT(path_exists(imported_folder + "/subfolder/nested.txt"));
+  ASSERT(!path_exists(imported_folder + "/subfolder/nested.py"));  // Filtered out
+
+  // Verify files are indexed in metadata
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "mixed_folder", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT_EQ(config["files"].size(), 3);  // doc1.md, doc2.MD, notes.txt
+  vxcore_string_free(config_json);
+
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_folder_import_filter_nb"));
+  cleanup_test_dir(get_test_path("test_folder_import_filter_src"));
+  std::cout << "  ✓ test_folder_import_suffix_filter passed" << std::endl;
   return 0;
 }
 
@@ -3374,6 +3442,7 @@ int main() {
   RUN_TEST(test_folder_import_invalid_params);
   RUN_TEST(test_folder_import_to_subfolder);
   RUN_TEST(test_folder_import_within_notebook);
+  RUN_TEST(test_folder_import_suffix_filter);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;

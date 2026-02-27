@@ -76,6 +76,7 @@ class BundledFolderManager : public FolderManager {
 
   VxCoreError ImportFolder(const std::string &dest_folder_path,
                            const std::string &external_folder_path,
+                           const std::string &suffix_allowlist,
                            std::string &out_folder_id) override;
 
   void IterateAllFiles(

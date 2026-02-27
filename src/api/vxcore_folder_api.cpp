@@ -285,7 +285,8 @@ VXCORE_API VxCoreError vxcore_file_import(VxCoreContextHandle context, const cha
 
 VXCORE_API VxCoreError vxcore_folder_import(VxCoreContextHandle context, const char *notebook_id,
                                             const char *dest_folder_path,
-                                            const char *external_folder_path, char **out_folder_id) {
+                                            const char *external_folder_path,
+                                            const char *suffix_allowlist, char **out_folder_id) {
   if (!context || !notebook_id || !dest_folder_path || !external_folder_path || !out_folder_id) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -306,8 +307,9 @@ VXCORE_API VxCoreError vxcore_folder_import(VxCoreContextHandle context, const c
     }
 
     std::string folder_id;
+    std::string allowlist = suffix_allowlist ? suffix_allowlist : "";
     VxCoreError error =
-        folder_manager->ImportFolder(dest_folder_path, external_folder_path, folder_id);
+        folder_manager->ImportFolder(dest_folder_path, external_folder_path, allowlist, folder_id);
     if (error != VXCORE_OK) {
       return error;
     }

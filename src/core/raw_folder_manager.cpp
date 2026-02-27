@@ -164,9 +164,11 @@ VxCoreError RawFolderManager::ImportFile(const std::string &folder_path,
 
 VxCoreError RawFolderManager::ImportFolder(const std::string &dest_folder_path,
                                             const std::string &external_folder_path,
+                                            const std::string &suffix_allowlist,
                                             std::string &out_folder_id) {
   (void)dest_folder_path;
   (void)external_folder_path;
+  (void)suffix_allowlist;
   (void)out_folder_id;
   return VXCORE_ERR_UNSUPPORTED;
 }

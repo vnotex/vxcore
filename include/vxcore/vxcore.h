@@ -127,9 +127,12 @@ VXCORE_API VxCoreError vxcore_file_import(VxCoreContextHandle context, const cha
 // If a folder with the same name exists, a unique name is generated (e.g., folder_1).
 // out_folder_id: receives the ID of the imported root folder (caller must free with vxcore_string_free)
 // external_folder_path: must be an absolute path to a folder outside the notebook root
+// suffix_allowlist: semicolon-separated list of file extensions to import (e.g., "txt;md;json"),
+//                   or NULL/empty to import all files
 VXCORE_API VxCoreError vxcore_folder_import(VxCoreContextHandle context, const char *notebook_id,
                                             const char *dest_folder_path,
-                                            const char *external_folder_path, char **out_folder_id);
+                                            const char *external_folder_path,
+                                            const char *suffix_allowlist, char **out_folder_id);
 
 VXCORE_API VxCoreError vxcore_file_update_tags(VxCoreContextHandle context, const char *notebook_id,
                                                const char *file_path, const char *tags_json);

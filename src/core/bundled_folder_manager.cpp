@@ -1,7 +1,10 @@
 #include "bundled_folder_manager.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <set>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -1754,9 +1757,10 @@ VxCoreError BundledFolderManager::ImportFile(const std::string &folder_path,
 
 VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_path,
                                                const std::string &external_folder_path,
+                                               const std::string &suffix_allowlist,
                                                std::string &out_folder_id) {
-  VXCORE_LOG_INFO("ImportFolder: dest=%s, external=%s", dest_folder_path.c_str(),
-                  external_folder_path.c_str());
+  VXCORE_LOG_INFO("ImportFolder: dest=%s, external=%s, suffix_allowlist=%s", dest_folder_path.c_str(),
+                  external_folder_path.c_str(), suffix_allowlist.c_str());
 
   // Require absolute path for external folder
   fs::path external_path(external_folder_path);
@@ -1795,6 +1799,24 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
     VXCORE_LOG_WARN("ImportFolder: Failed to canonicalize paths: %s", e.what());
   }
 
+  // Parse suffix allowlist into a set of lowercase extensions
+  std::set<std::string> allowed_suffixes;
+  if (!suffix_allowlist.empty()) {
+    std::istringstream iss(suffix_allowlist);
+    std::string suffix;
+    while (std::getline(iss, suffix, ';')) {
+      if (!suffix.empty()) {
+        // Normalize: remove leading dot if present, convert to lowercase
+        if (suffix[0] == '.') {
+          suffix = suffix.substr(1);
+        }
+        std::transform(suffix.begin(), suffix.end(), suffix.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        allowed_suffixes.insert(suffix);
+      }
+    }
+    VXCORE_LOG_DEBUG("ImportFolder: Parsed %zu allowed suffixes", allowed_suffixes.size());
+  }
   const auto clean_dest_path = GetCleanRelativePath(dest_folder_path);
 
   // Get destination folder config to ensure it exists
@@ -1837,9 +1859,42 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
-  // Copy the external folder to notebook folder recursively
+  // Copy the external folder to notebook folder recursively (with suffix filtering)
+  std::function<void(const fs::path &, const fs::path &)> copy_filtered =
+      [&](const fs::path &src, const fs::path &dest) {
+        fs::create_directories(dest);
+        for (const auto &entry : fs::directory_iterator(src)) {
+          const std::string entry_name = entry.path().filename().string();
+          // Skip hidden files/folders
+          if (entry_name.empty() || entry_name[0] == '.') {
+            continue;
+          }
+          if (entry.is_directory()) {
+            // Skip vx_notebook metadata folder
+            if (entry_name == "vx_notebook") {
+              continue;
+            }
+            copy_filtered(entry.path(), dest / entry_name);
+          } else if (entry.is_regular_file()) {
+            // Apply suffix filter if allowlist is specified
+            if (!allowed_suffixes.empty()) {
+              std::string ext = entry.path().extension().string();
+              if (!ext.empty() && ext[0] == '.') {
+                ext = ext.substr(1);
+              }
+              std::transform(ext.begin(), ext.end(), ext.begin(),
+                             [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+              if (allowed_suffixes.find(ext) == allowed_suffixes.end()) {
+                continue;  // Skip files not in allowlist
+              }
+            }
+            fs::copy_file(entry.path(), dest / entry_name, fs::copy_options::overwrite_existing);
+          }
+        }
+      };
+
   try {
-    fs::copy(external_folder_path, target_path, fs::copy_options::recursive);
+    copy_filtered(fs::path(external_folder_path), target_path);
     VXCORE_LOG_DEBUG("ImportFolder: Copied folder to: %s", target_path.string().c_str());
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("ImportFolder: Failed to copy folder: %s", e.what());
