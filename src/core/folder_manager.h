@@ -135,6 +135,16 @@ class FolderManager {
   // Returns empty string if file not found.
   std::string GetAttachmentsFolder(const std::string &file_path);
 
+  // Get an available name for a new node (file or folder) in a folder.
+  // If new_name is available, returns it directly.
+  // If new_name exists, tries new_name_1, new_name_2, etc. until an available name is found.
+  // For files with extensions, the suffix is inserted before the extension (e.g., file_1.txt).
+  // folder_path: Path relative to notebook root ("." for root)
+  // new_name: Desired name for the new node
+  // out_available_name: Receives the available name
+  VxCoreError GetAvailableName(const std::string &folder_path, const std::string &new_name,
+                               std::string &out_available_name);
+
  protected:
   inline std::string GetCleanRelativePath(const std::string &path) const {
     return notebook_->GetCleanRelativePath(path);

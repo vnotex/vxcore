@@ -425,3 +425,45 @@ VXCORE_API VxCoreError vxcore_node_get_path_by_id(VxCoreContextHandle context,
     return VXCORE_ERR_UNKNOWN;
   }
 }
+
+VXCORE_API VxCoreError vxcore_folder_get_available_name(VxCoreContextHandle context,
+                                                        const char *notebook_id,
+                                                        const char *folder_path,
+                                                        const char *new_name,
+                                                        char **out_available_name) {
+  if (!context || !notebook_id || !new_name || !out_available_name) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  *out_available_name = nullptr;
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    std::string path = folder_path ? folder_path : ".";
+    std::string available_name;
+
+    VxCoreError error = folder_manager->GetAvailableName(path, new_name, available_name);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+
+    *out_available_name = vxcore_strdup(available_name.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}

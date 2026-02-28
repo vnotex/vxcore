@@ -118,6 +118,19 @@ VXCORE_API VxCoreError vxcore_folder_list_external(VxCoreContextHandle context,
                                                    const char *notebook_id,
                                                    const char *folder_path,
                                                    char **out_external_json);
+
+// Get an available name for a new node (file or folder) in a folder.
+// If new_name is available, out_available_name will be set to new_name.
+// If new_name exists, tries new_name_1, new_name_2, etc. until an available name is found.
+// For files with extensions, the suffix is inserted before the extension (e.g., file_1.txt).
+// folder_path: Path relative to notebook root ("" or "." for root)
+// new_name: Desired name for the new node
+// out_available_name: Receives the available name (caller must free with vxcore_string_free)
+VXCORE_API VxCoreError vxcore_folder_get_available_name(VxCoreContextHandle context,
+                                                        const char *notebook_id,
+                                                        const char *folder_path,
+                                                        const char *new_name,
+                                                        char **out_available_name);
 // ============ File Operations ============
 VXCORE_API VxCoreError vxcore_file_create(VxCoreContextHandle context, const char *notebook_id,
                                           const char *folder_path, const char *file_name,

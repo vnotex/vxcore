@@ -3699,6 +3699,272 @@ int test_folder_list_external_invalid_params() {
 }
 
 
+// ============================================================================
+// vxcore_folder_get_available_name tests
+// ============================================================================
+
+int test_folder_get_available_name_basic() {
+  std::cout << "  Running test_folder_get_available_name_basic..." << std::endl;
+  cleanup_test_dir(get_test_path("test_avail_name_basic_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_avail_name_basic_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Name doesn't exist - should return original name
+  char *available_name = nullptr;
+  err = vxcore_folder_get_available_name(ctx, notebook_id, ".", "new_folder", &available_name);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(available_name);
+  ASSERT_EQ(std::string(available_name), "new_folder");
+  vxcore_string_free(available_name);
+
+  // Same for file name
+  available_name = nullptr;
+  err = vxcore_folder_get_available_name(ctx, notebook_id, ".", "document.md", &available_name);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(available_name);
+  ASSERT_EQ(std::string(available_name), "document.md");
+  vxcore_string_free(available_name);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_avail_name_basic_nb"));
+  std::cout << "  ✓ test_folder_get_available_name_basic passed" << std::endl;
+  return 0;
+}
+
+int test_folder_get_available_name_conflict() {
+  std::cout << "  Running test_folder_get_available_name_conflict..." << std::endl;
+  cleanup_test_dir(get_test_path("test_avail_name_conflict_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_avail_name_conflict_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create existing folder
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "existing_folder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Now get available name for same name - should return existing_folder_1
+  char *available_name = nullptr;
+  err = vxcore_folder_get_available_name(ctx, notebook_id, ".", "existing_folder", &available_name);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(available_name);
+  ASSERT_EQ(std::string(available_name), "existing_folder_1");
+  vxcore_string_free(available_name);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_avail_name_conflict_nb"));
+  std::cout << "  ✓ test_folder_get_available_name_conflict passed" << std::endl;
+  return 0;
+}
+
+int test_folder_get_available_name_multiple_conflicts() {
+  std::cout << "  Running test_folder_get_available_name_multiple_conflicts..." << std::endl;
+  cleanup_test_dir(get_test_path("test_avail_name_multi_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_avail_name_multi_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create folder, folder_1, folder_2
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "folder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  err = vxcore_folder_create(ctx, notebook_id, ".", "folder_1", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  err = vxcore_folder_create(ctx, notebook_id, ".", "folder_2", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Get available name - should skip to folder_3
+  char *available_name = nullptr;
+  err = vxcore_folder_get_available_name(ctx, notebook_id, ".", "folder", &available_name);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(available_name);
+  ASSERT_EQ(std::string(available_name), "folder_3");
+  vxcore_string_free(available_name);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_avail_name_multi_nb"));
+  std::cout << "  ✓ test_folder_get_available_name_multiple_conflicts passed" << std::endl;
+  return 0;
+}
+
+int test_folder_get_available_name_with_extension() {
+  std::cout << "  Running test_folder_get_available_name_with_extension..." << std::endl;
+  cleanup_test_dir(get_test_path("test_avail_name_ext_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_avail_name_ext_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create existing file with extension
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "document.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Get available name - should return document_1.md (suffix before extension)
+  char *available_name = nullptr;
+  err = vxcore_folder_get_available_name(ctx, notebook_id, ".", "document.md", &available_name);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(available_name);
+  ASSERT_EQ(std::string(available_name), "document_1.md");
+  vxcore_string_free(available_name);
+
+  // Create document_1.md
+  err = vxcore_file_create(ctx, notebook_id, ".", "document_1.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Get available name again - should return document_2.md
+  available_name = nullptr;
+  err = vxcore_folder_get_available_name(ctx, notebook_id, ".", "document.md", &available_name);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(available_name);
+  ASSERT_EQ(std::string(available_name), "document_2.md");
+  vxcore_string_free(available_name);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_avail_name_ext_nb"));
+  std::cout << "  ✓ test_folder_get_available_name_with_extension passed" << std::endl;
+  return 0;
+}
+
+int test_folder_get_available_name_in_subfolder() {
+  std::cout << "  Running test_folder_get_available_name_in_subfolder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_avail_name_subfolder_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_avail_name_subfolder_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create parent folder
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "parent", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Create child in parent
+  err = vxcore_folder_create(ctx, notebook_id, "parent", "child", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Get available name in parent - should return child_1
+  char *available_name = nullptr;
+  err = vxcore_folder_get_available_name(ctx, notebook_id, "parent", "child", &available_name);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(available_name);
+  ASSERT_EQ(std::string(available_name), "child_1");
+  vxcore_string_free(available_name);
+
+  // Same name in root should be available (no conflict)
+  available_name = nullptr;
+  err = vxcore_folder_get_available_name(ctx, notebook_id, ".", "child", &available_name);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(available_name);
+  ASSERT_EQ(std::string(available_name), "child");
+  vxcore_string_free(available_name);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_avail_name_subfolder_nb"));
+  std::cout << "  ✓ test_folder_get_available_name_in_subfolder passed" << std::endl;
+  return 0;
+}
+
+int test_folder_get_available_name_invalid_params() {
+  std::cout << "  Running test_folder_get_available_name_invalid_params..." << std::endl;
+  cleanup_test_dir(get_test_path("test_avail_name_invalid_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_avail_name_invalid_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *available_name = nullptr;
+
+  // Null context
+  err = vxcore_folder_get_available_name(nullptr, notebook_id, ".", "name", &available_name);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Null notebook_id
+  err = vxcore_folder_get_available_name(ctx, nullptr, ".", "name", &available_name);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Null new_name
+  err = vxcore_folder_get_available_name(ctx, notebook_id, ".", nullptr, &available_name);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Null output pointer
+  err = vxcore_folder_get_available_name(ctx, notebook_id, ".", "name", nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Null folder_path - should be allowed (defaults to root)
+  err = vxcore_folder_get_available_name(ctx, notebook_id, nullptr, "name", &available_name);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(available_name);
+  ASSERT_EQ(std::string(available_name), "name");
+  vxcore_string_free(available_name);
+
+  // Non-existent notebook
+  err = vxcore_folder_get_available_name(ctx, "non_existent_id", ".", "name", &available_name);
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_avail_name_invalid_nb"));
+  std::cout << "  ✓ test_folder_get_available_name_invalid_params passed" << std::endl;
+  return 0;
+}
+
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -3799,6 +4065,14 @@ int main() {
   RUN_TEST(test_folder_list_external_nested);
   RUN_TEST(test_folder_list_external_skips_hidden);
   RUN_TEST(test_folder_list_external_invalid_params);
+  // Get available name tests
+  RUN_TEST(test_folder_get_available_name_basic);
+  RUN_TEST(test_folder_get_available_name_conflict);
+  RUN_TEST(test_folder_get_available_name_multiple_conflicts);
+  RUN_TEST(test_folder_get_available_name_with_extension);
+  RUN_TEST(test_folder_get_available_name_in_subfolder);
+  RUN_TEST(test_folder_get_available_name_invalid_params);
+
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;

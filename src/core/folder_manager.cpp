@@ -94,4 +94,50 @@ std::string FolderManager::GetAttachmentsFolder(const std::string &file_path) {
   return ConcatenatePaths(public_folder, record->id);
 }
 
+VxCoreError FolderManager::GetAvailableName(const std::string &folder_path,
+                                            const std::string &new_name,
+                                            std::string &out_available_name) {
+  if (new_name.empty()) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  namespace fs = std::filesystem;
+
+  const std::string clean_folder_path = GetCleanRelativePath(folder_path);
+  std::string abs_folder_path = notebook_->GetAbsolutePath(clean_folder_path);
+  fs::path folder_fs_path(abs_folder_path);
+
+  // Check if the original name is available
+  fs::path dest_path = folder_fs_path / new_name;
+  if (!fs::exists(dest_path)) {
+    out_available_name = new_name;
+    return VXCORE_OK;
+  }
+
+  // Extract base name and extension
+  std::string base_name = new_name;
+  std::string extension;
+  size_t dot_pos = new_name.find_last_of('.');
+  if (dot_pos != std::string::npos && dot_pos > 0) {
+    base_name = new_name.substr(0, dot_pos);
+    extension = new_name.substr(dot_pos);
+  }
+
+  // Try _1, _2, _3, etc. until we find an available name
+  int suffix = 1;
+  while (true) {
+    std::string candidate = base_name + "_" + std::to_string(suffix) + extension;
+    dest_path = folder_fs_path / candidate;
+    if (!fs::exists(dest_path)) {
+      out_available_name = candidate;
+      return VXCORE_OK;
+    }
+    ++suffix;
+    if (suffix > 10000) {
+      // Safety limit to prevent infinite loop
+      return VXCORE_ERR_UNKNOWN;
+    }
+  }
+}
+
 }  // namespace vxcore
