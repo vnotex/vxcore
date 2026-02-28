@@ -177,6 +177,12 @@ VXCORE_API VxCoreError vxcore_node_move(VxCoreContextHandle context, const char 
     return VXCORE_ERR_INVALID_PARAM;
   }
 
+  // Convert empty dest_parent_path to "." for root folder
+  std::string dest_path = dest_parent_path;
+  if (dest_path.empty()) {
+    dest_path = ".";
+  }
+
   vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
 
   try {
@@ -201,9 +207,9 @@ VXCORE_API VxCoreError vxcore_node_move(VxCoreContextHandle context, const char 
 
     // Move based on type
     if (node_type == vxcore::NodeType::File) {
-      return folder_manager->MoveFile(src_path, dest_parent_path);
+      return folder_manager->MoveFile(src_path, dest_path);
     } else {
-      return folder_manager->MoveFolder(src_path, dest_parent_path);
+      return folder_manager->MoveFolder(src_path, dest_path);
     }
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
@@ -216,6 +222,12 @@ VXCORE_API VxCoreError vxcore_node_copy(VxCoreContextHandle context, const char 
                                         const char *new_name, char **out_node_id) {
   if (!context || !notebook_id || !src_path || !dest_parent_path || !out_node_id) {
     return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  // Convert empty dest_parent_path to "." for root folder
+  std::string dest_path = dest_parent_path;
+  if (dest_path.empty()) {
+    dest_path = ".";
   }
 
   vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
@@ -245,9 +257,9 @@ VXCORE_API VxCoreError vxcore_node_copy(VxCoreContextHandle context, const char 
 
     // Copy based on type
     if (node_type == vxcore::NodeType::File) {
-      err = folder_manager->CopyFile(src_path, dest_parent_path, target_name, node_id);
+      err = folder_manager->CopyFile(src_path, dest_path, target_name, node_id);
     } else {
-      err = folder_manager->CopyFolder(src_path, dest_parent_path, target_name, node_id);
+      err = folder_manager->CopyFolder(src_path, dest_path, target_name, node_id);
     }
 
     if (err != VXCORE_OK) {
