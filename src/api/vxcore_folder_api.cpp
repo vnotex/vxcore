@@ -470,7 +470,8 @@ VXCORE_API VxCoreError vxcore_folder_get_available_name(VxCoreContextHandle cont
 }
 
 VXCORE_API VxCoreError vxcore_file_peek(VxCoreContextHandle context, const char *notebook_id,
-                                        const char *file_path, char **out_content) {
+                                        const char *file_path, size_t max_bytes,
+                                        char **out_content) {
   if (!context || !notebook_id || !file_path || !out_content) {
     return VXCORE_ERR_INVALID_PARAM;
   }
@@ -494,7 +495,7 @@ VXCORE_API VxCoreError vxcore_file_peek(VxCoreContextHandle context, const char 
     }
 
     std::string content;
-    VxCoreError error = vxcore::ReadFileHead(abs_path, 64, content);
+    VxCoreError error = vxcore::ReadFileHead(abs_path, max_bytes, content);
     if (error != VXCORE_OK) {
       ctx->last_error = "Failed to read file";
       return error;

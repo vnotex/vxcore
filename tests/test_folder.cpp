@@ -3978,13 +3978,13 @@ int test_file_peek() {
                              "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  // Create a file and write content longer than 64 chars
+  // Create a file and write content
   char *file_id = nullptr;
   err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
 
-  // Write content: 80 chars (should be truncated to 64)
+  // Write content: 80 chars
   std::string long_content =
       "0123456789012345678901234567890123456789012345678901234567890123456789ABCDEFGHIJ";
   std::string file_path =
@@ -3993,16 +3993,34 @@ int test_file_peek() {
   ofs << long_content;
   ofs.close();
 
-  // Test 1: Peek file with content longer than 64 chars
+  // Test 1: Peek with max_bytes=64 (truncates 80 char content)
   char *content = nullptr;
-  err = vxcore_file_peek(ctx, notebook_id, "note.md", &content);
+  err = vxcore_file_peek(ctx, notebook_id, "note.md", 64, &content);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(content);
   ASSERT_EQ(strlen(content), 64);
   ASSERT_EQ(std::string(content), long_content.substr(0, 64));
   vxcore_string_free(content);
 
-  // Test 2: Peek file with content shorter than 64 chars
+  // Test 2: Peek with max_bytes=32 (smaller than content)
+  char *content1b = nullptr;
+  err = vxcore_file_peek(ctx, notebook_id, "note.md", 32, &content1b);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(content1b);
+  ASSERT_EQ(strlen(content1b), 32);
+  ASSERT_EQ(std::string(content1b), long_content.substr(0, 32));
+  vxcore_string_free(content1b);
+
+  // Test 3: Peek with max_bytes=128 (larger than content)
+  char *content1c = nullptr;
+  err = vxcore_file_peek(ctx, notebook_id, "note.md", 128, &content1c);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(content1c);
+  ASSERT_EQ(strlen(content1c), 80);  // Returns full content
+  ASSERT_EQ(std::string(content1c), long_content);
+  vxcore_string_free(content1c);
+
+  // Test 4: Peek file with content shorter than requested
   char *file_id2 = nullptr;
   err = vxcore_file_create(ctx, notebook_id, ".", "short.md", &file_id2);
   ASSERT_EQ(err, VXCORE_OK);
@@ -4016,35 +4034,35 @@ int test_file_peek() {
   ofs2.close();
 
   char *content2 = nullptr;
-  err = vxcore_file_peek(ctx, notebook_id, "short.md", &content2);
+  err = vxcore_file_peek(ctx, notebook_id, "short.md", 64, &content2);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(content2);
   ASSERT_EQ(std::string(content2), short_content);
   vxcore_string_free(content2);
 
-  // Test 3: Peek non-existent file
+  // Test 5: Peek non-existent file
   char *content3 = nullptr;
-  err = vxcore_file_peek(ctx, notebook_id, "nonexistent.md", &content3);
+  err = vxcore_file_peek(ctx, notebook_id, "nonexistent.md", 64, &content3);
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
   ASSERT_NULL(content3);
 
-  // Test 4: Invalid params - null context
+  // Test 6: Invalid params - null context
   char *content4 = nullptr;
-  err = vxcore_file_peek(nullptr, notebook_id, "note.md", &content4);
+  err = vxcore_file_peek(nullptr, notebook_id, "note.md", 64, &content4);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
 
-  // Test 5: Invalid params - null notebook_id
+  // Test 7: Invalid params - null notebook_id
   char *content5 = nullptr;
-  err = vxcore_file_peek(ctx, nullptr, "note.md", &content5);
+  err = vxcore_file_peek(ctx, nullptr, "note.md", 64, &content5);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
 
-  // Test 6: Invalid params - null file_path
+  // Test 8: Invalid params - null file_path
   char *content6 = nullptr;
-  err = vxcore_file_peek(ctx, notebook_id, nullptr, &content6);
+  err = vxcore_file_peek(ctx, notebook_id, nullptr, 64, &content6);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
 
-  // Test 7: Invalid params - null out_content
-  err = vxcore_file_peek(ctx, notebook_id, "note.md", nullptr);
+  // Test 9: Invalid params - null out_content
+  err = vxcore_file_peek(ctx, notebook_id, "note.md", 64, nullptr);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
 
   vxcore_string_free(notebook_id);
