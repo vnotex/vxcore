@@ -3964,6 +3964,96 @@ int test_folder_get_available_name_invalid_params() {
   return 0;
 }
 
+int test_file_peek() {
+  std::cout << "  Running test_file_peek..." << std::endl;
+  cleanup_test_dir(get_test_path("test_file_peek_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_file_peek_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file and write content longer than 64 chars
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Write content: 80 chars (should be truncated to 64)
+  std::string long_content =
+      "0123456789012345678901234567890123456789012345678901234567890123456789ABCDEFGHIJ";
+  std::string file_path =
+      get_test_path("test_file_peek_nb") + "/note.md";
+  std::ofstream ofs(file_path);
+  ofs << long_content;
+  ofs.close();
+
+  // Test 1: Peek file with content longer than 64 chars
+  char *content = nullptr;
+  err = vxcore_file_peek(ctx, notebook_id, "note.md", &content);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(content);
+  ASSERT_EQ(strlen(content), 64);
+  ASSERT_EQ(std::string(content), long_content.substr(0, 64));
+  vxcore_string_free(content);
+
+  // Test 2: Peek file with content shorter than 64 chars
+  char *file_id2 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "short.md", &file_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id2);
+
+  std::string short_content = "Hello World";
+  std::string short_file_path =
+      get_test_path("test_file_peek_nb") + "/short.md";
+  std::ofstream ofs2(short_file_path);
+  ofs2 << short_content;
+  ofs2.close();
+
+  char *content2 = nullptr;
+  err = vxcore_file_peek(ctx, notebook_id, "short.md", &content2);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(content2);
+  ASSERT_EQ(std::string(content2), short_content);
+  vxcore_string_free(content2);
+
+  // Test 3: Peek non-existent file
+  char *content3 = nullptr;
+  err = vxcore_file_peek(ctx, notebook_id, "nonexistent.md", &content3);
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+  ASSERT_NULL(content3);
+
+  // Test 4: Invalid params - null context
+  char *content4 = nullptr;
+  err = vxcore_file_peek(nullptr, notebook_id, "note.md", &content4);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Test 5: Invalid params - null notebook_id
+  char *content5 = nullptr;
+  err = vxcore_file_peek(ctx, nullptr, "note.md", &content5);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Test 6: Invalid params - null file_path
+  char *content6 = nullptr;
+  err = vxcore_file_peek(ctx, notebook_id, nullptr, &content6);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Test 7: Invalid params - null out_content
+  err = vxcore_file_peek(ctx, notebook_id, "note.md", nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_file_peek_nb"));
+  std::cout << "  \xe2\x9c\x93 test_file_peek passed" << std::endl;
+  return 0;
+}
+
 
 int main() {
   std::cout << "Running folder tests..." << std::endl;
@@ -4072,6 +4162,9 @@ int main() {
   RUN_TEST(test_folder_get_available_name_with_extension);
   RUN_TEST(test_folder_get_available_name_in_subfolder);
   RUN_TEST(test_folder_get_available_name_invalid_params);
+
+  // File peek tests
+  RUN_TEST(test_file_peek);
 
 
   std::cout << "✓ All folder tests passed" << std::endl;

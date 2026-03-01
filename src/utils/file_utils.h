@@ -35,6 +35,10 @@ VxCoreError WriteFile(const std::filesystem::path &path, const std::string &cont
 
 VxCoreError LoadJsonFile(const std::filesystem::path &path, nlohmann::json &out_json);
 
+// Read up to max_bytes from the beginning of a file.
+VxCoreError ReadFileHead(const std::filesystem::path &path, size_t max_bytes,
+                         std::string &out_content);
+
 // Assuming that all paths here are already cleaned using |CleanPath|.
 
 std::string ConcatenatePaths(const std::string &parent_path, const std::string &child_name);

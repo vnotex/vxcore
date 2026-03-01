@@ -7,6 +7,7 @@
 #include "vxcore/vxcore.h"
 
 #include <nlohmann/json.hpp>
+#include "utils/file_utils.h"
 
 VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const char *notebook_id,
                                             const char *parent_path, const char *folder_name,
@@ -461,6 +462,45 @@ VXCORE_API VxCoreError vxcore_folder_get_available_name(VxCoreContextHandle cont
     }
 
     *out_available_name = vxcore_strdup(available_name.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_file_peek(VxCoreContextHandle context, const char *notebook_id,
+                                        const char *file_path, char **out_content) {
+  if (!context || !notebook_id || !file_path || !out_content) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  *out_content = nullptr;
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    std::filesystem::path abs_path =
+        std::filesystem::path(notebook->GetRootFolder()) / file_path;
+    if (!std::filesystem::exists(abs_path) || !std::filesystem::is_regular_file(abs_path)) {
+      ctx->last_error = "File not found: " + std::string(file_path);
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    std::string content;
+    VxCoreError error = vxcore::ReadFileHead(abs_path, 64, content);
+    if (error != VXCORE_OK) {
+      ctx->last_error = "Failed to read file";
+      return error;
+    }
+
+    *out_content = vxcore_strdup(content.c_str());
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();

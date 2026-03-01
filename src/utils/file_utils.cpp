@@ -92,6 +92,22 @@ VxCoreError ReadFile(const std::filesystem::path &path, std::string &out_content
   }
 }
 
+VxCoreError ReadFileHead(const std::filesystem::path &path, size_t max_bytes,
+                         std::string &out_content) {
+  try {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+      return VXCORE_ERR_IO;
+    }
+    out_content.resize(max_bytes);
+    file.read(&out_content[0], max_bytes);
+    out_content.resize(static_cast<size_t>(file.gcount()));
+    return VXCORE_OK;
+  } catch (...) {
+    return VXCORE_ERR_IO;
+  }
+}
+
 VxCoreError WriteFile(const std::filesystem::path &path, const std::string &content) {
   try {
     std::ofstream file(path);

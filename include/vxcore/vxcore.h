@@ -166,6 +166,13 @@ VXCORE_API VxCoreError vxcore_file_tag(VxCoreContextHandle context, const char *
 VXCORE_API VxCoreError vxcore_file_untag(VxCoreContextHandle context, const char *notebook_id,
                                          const char *file_path, const char *tag_name);
 
+// Peek at the first 64 bytes of a file's content.
+// file_path: Path relative to notebook root
+// out_content: receives the content (caller must free with vxcore_string_free)
+// Returns VXCORE_ERR_NOT_FOUND if file doesn't exist.
+VXCORE_API VxCoreError vxcore_file_peek(VxCoreContextHandle context, const char *notebook_id,
+                                        const char *file_path, char **out_content);
+
 // ============ Node Operations (Unified File/Folder API) ============
 // These APIs work with both files and folders using the same (notebook_id, node_path) pair.
 // The returned JSON includes a "type" field ("file" or "folder") for caller identification.
