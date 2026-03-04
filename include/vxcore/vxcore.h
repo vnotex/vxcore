@@ -30,8 +30,7 @@ VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context
                                                      const char **out_message);
 
 VXCORE_API VxCoreError vxcore_context_get_data_path(VxCoreContextHandle context,
-                                                      VxCoreDataLocation location,
-                                                      char **out_path);
+                                                    VxCoreDataLocation location, char **out_path);
 
 VXCORE_API VxCoreError vxcore_context_get_config_path(VxCoreContextHandle context, char **out_path);
 
@@ -47,9 +46,11 @@ VXCORE_API VxCoreError vxcore_context_get_config_by_name(VxCoreContextHandle con
                                                          VxCoreDataLocation location,
                                                          const char *base_name, char **out_json);
 
-VXCORE_API VxCoreError vxcore_context_get_config_by_name_with_defaults(
-  VxCoreContextHandle context, VxCoreDataLocation location,
-  const char *base_name, const char *default_json, char **out_json);
+VXCORE_API VxCoreError vxcore_context_get_config_by_name_with_defaults(VxCoreContextHandle context,
+                                                                       VxCoreDataLocation location,
+                                                                       const char *base_name,
+                                                                       const char *default_json,
+                                                                       char **out_json);
 
 VXCORE_API VxCoreError vxcore_context_update_config_by_name(VxCoreContextHandle context,
                                                             VxCoreDataLocation location,
@@ -105,8 +106,7 @@ VXCORE_API VxCoreError vxcore_folder_create_path(VxCoreContextHandle context,
 // folder_path: Path relative to notebook root ("" or "." for root)
 // Output JSON: {"files": [...], "folders": [...]}
 VXCORE_API VxCoreError vxcore_folder_list_children(VxCoreContextHandle context,
-                                                   const char *notebook_id,
-                                                   const char *folder_path,
+                                                   const char *notebook_id, const char *folder_path,
                                                    char **out_children_json);
 
 // List external (unindexed) nodes in a folder.
@@ -115,8 +115,7 @@ VXCORE_API VxCoreError vxcore_folder_list_children(VxCoreContextHandle context,
 // Output JSON: {"files": [...], "folders": [...]}
 // Each entry contains only "name" field (no ID since not indexed).
 VXCORE_API VxCoreError vxcore_folder_list_external(VxCoreContextHandle context,
-                                                   const char *notebook_id,
-                                                   const char *folder_path,
+                                                   const char *notebook_id, const char *folder_path,
                                                    char **out_external_json);
 
 // Get an available name for a new node (file or folder) in a folder.
@@ -148,9 +147,10 @@ VXCORE_API VxCoreError vxcore_file_import(VxCoreContextHandle context, const cha
 // The folder and all its contents are copied (not moved) to the notebook.
 // All files and subfolders are indexed into the notebook's metadata system.
 // If a folder with the same name exists, a unique name is generated (e.g., folder_1).
-// out_folder_id: receives the ID of the imported root folder (caller must free with vxcore_string_free)
-// external_folder_path: must be an absolute path to a folder outside the notebook root
-// suffix_allowlist: semicolon-separated list of file extensions to import (e.g., "txt;md;json"),
+// out_folder_id: receives the ID of the imported root folder (caller must free with
+// vxcore_string_free) external_folder_path: must be an absolute path to a folder outside the
+// notebook root suffix_allowlist: semicolon-separated list of file extensions to import (e.g.,
+// "txt;md;json"),
 //                   or NULL/empty to import all files
 VXCORE_API VxCoreError vxcore_folder_import(VxCoreContextHandle context, const char *notebook_id,
                                             const char *dest_folder_path,
@@ -180,63 +180,49 @@ VXCORE_API VxCoreError vxcore_file_peek(VxCoreContextHandle context, const char 
 // The returned JSON includes a "type" field ("file" or "folder") for caller identification.
 
 // Get node config (unified version of folder_get_config and file_get_info)
-VXCORE_API VxCoreError vxcore_node_get_config(VxCoreContextHandle context,
-                                               const char *notebook_id,
-                                               const char *node_path,
-                                               char **out_config_json);
+VXCORE_API VxCoreError vxcore_node_get_config(VxCoreContextHandle context, const char *notebook_id,
+                                              const char *node_path, char **out_config_json);
 
 // Delete node (file or folder)
-VXCORE_API VxCoreError vxcore_node_delete(VxCoreContextHandle context,
-                                           const char *notebook_id,
-                                           const char *node_path);
+VXCORE_API VxCoreError vxcore_node_delete(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *node_path);
 
 // Rename node (file or folder)
-VXCORE_API VxCoreError vxcore_node_rename(VxCoreContextHandle context,
-                                           const char *notebook_id,
-                                           const char *node_path,
-                                           const char *new_name);
+VXCORE_API VxCoreError vxcore_node_rename(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *node_path, const char *new_name);
 
 // Move node to a different parent folder
-VXCORE_API VxCoreError vxcore_node_move(VxCoreContextHandle context,
-                                         const char *notebook_id,
-                                         const char *src_path,
-                                         const char *dest_parent_path);
+VXCORE_API VxCoreError vxcore_node_move(VxCoreContextHandle context, const char *notebook_id,
+                                        const char *src_path, const char *dest_parent_path);
 
 // Copy node to a different parent folder with optional new name
-VXCORE_API VxCoreError vxcore_node_copy(VxCoreContextHandle context,
-                                         const char *notebook_id,
-                                         const char *src_path,
-                                         const char *dest_parent_path,
-                                         const char *new_name,
-                                         char **out_node_id);
+VXCORE_API VxCoreError vxcore_node_copy(VxCoreContextHandle context, const char *notebook_id,
+                                        const char *src_path, const char *dest_parent_path,
+                                        const char *new_name, char **out_node_id);
 
 // Get node metadata
 VXCORE_API VxCoreError vxcore_node_get_metadata(VxCoreContextHandle context,
-                                                 const char *notebook_id,
-                                                 const char *node_path,
-                                                 char **out_metadata_json);
+                                                const char *notebook_id, const char *node_path,
+                                                char **out_metadata_json);
 
 // Update node metadata
 VXCORE_API VxCoreError vxcore_node_update_metadata(VxCoreContextHandle context,
-                                                    const char *notebook_id,
-                                                    const char *node_path,
-                                                    const char *metadata_json);
+                                                   const char *notebook_id, const char *node_path,
+                                                   const char *metadata_json);
 
 // Index a filesystem node (file or folder) into the metadata store.
 // The node must exist on filesystem but not be tracked in metadata.
 // node_path: Path relative to notebook root (e.g., "folder/file.md")
 // Returns VXCORE_ERR_NOT_FOUND if node doesn't exist on filesystem.
 // Returns VXCORE_ERR_ALREADY_EXISTS if node is already indexed.
-VXCORE_API VxCoreError vxcore_node_index(VxCoreContextHandle context,
-                                         const char *notebook_id,
+VXCORE_API VxCoreError vxcore_node_index(VxCoreContextHandle context, const char *notebook_id,
                                          const char *node_path);
 
 // Remove a node (file or folder) from the metadata index.
 // The filesystem is NOT modified - only metadata is removed.
 // node_path: Path relative to notebook root (e.g., "folder/file.md")
 // Returns VXCORE_ERR_NOT_FOUND if node is not in metadata.
-VXCORE_API VxCoreError vxcore_node_unindex(VxCoreContextHandle context,
-                                           const char *notebook_id,
+VXCORE_API VxCoreError vxcore_node_unindex(VxCoreContextHandle context, const char *notebook_id,
                                            const char *node_path);
 
 // Get relative path of a node (file or folder) by its ID.
@@ -244,9 +230,28 @@ VXCORE_API VxCoreError vxcore_node_unindex(VxCoreContextHandle context,
 // out_path: receives the relative path (caller must free with vxcore_string_free)
 // Returns VXCORE_ERR_NOT_FOUND if node is not found in metadata.
 VXCORE_API VxCoreError vxcore_node_get_path_by_id(VxCoreContextHandle context,
-                                                  const char *notebook_id,
-                                                  const char *node_id,
+                                                  const char *notebook_id, const char *node_id,
                                                   char **out_path);
+
+// ============ File Type Operations ============
+
+// Returns JSON array of all file types.
+// Caller must free the returned string with vxcore_string_free().
+VXCORE_API VxCoreError vxcore_filetype_list(VxCoreContextHandle context, char **out_json);
+
+// Get file type by suffix (case-insensitive).
+// Returns Others type if suffix not found.
+// Caller must free the returned string with vxcore_string_free().
+VXCORE_API VxCoreError vxcore_filetype_get_by_suffix(VxCoreContextHandle context,
+                                                     const char *suffix, char **out_json);
+
+// Get file type by exact name match.
+// Returns VXCORE_ERR_NOT_FOUND if name not found.
+// Caller must free the returned string with vxcore_string_free().
+VXCORE_API VxCoreError vxcore_filetype_get_by_name(VxCoreContextHandle context, const char *name,
+                                                   char **out_json);
+
+// ============ Tag Operations ============
 
 VXCORE_API VxCoreError vxcore_tag_create(VxCoreContextHandle context, const char *notebook_id,
                                          const char *tag_name);
@@ -277,12 +282,10 @@ VXCORE_API VxCoreError vxcore_search_by_tags(VxCoreContextHandle context, const 
 
 // Resolve an absolute path to its containing notebook.
 // out_notebook_id: receives the notebook ID (caller must free with vxcore_string_free)
-// out_relative_path: receives the relative path within notebook (caller must free with vxcore_string_free)
-// Returns VXCORE_ERR_NOT_FOUND if path is not within any open notebook.
-VXCORE_API VxCoreError vxcore_path_resolve(VxCoreContextHandle context,
-                                           const char *absolute_path,
-                                           char **out_notebook_id,
-                                           char **out_relative_path);
+// out_relative_path: receives the relative path within notebook (caller must free with
+// vxcore_string_free) Returns VXCORE_ERR_NOT_FOUND if path is not within any open notebook.
+VXCORE_API VxCoreError vxcore_path_resolve(VxCoreContextHandle context, const char *absolute_path,
+                                           char **out_notebook_id, char **out_relative_path);
 VXCORE_API void vxcore_string_free(char *str);
 
 #ifdef __cplusplus
