@@ -11,6 +11,7 @@ add_vxcore_test(test_folder)
 add_vxcore_test(test_node)
 add_vxcore_test(test_search)
 add_vxcore_test(test_tag_sync)
+add_vxcore_test(test_filetype)
 
 add_executable(test_file_utils test_file_utils.cpp ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_include_directories(test_file_utils PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
