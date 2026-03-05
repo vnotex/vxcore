@@ -43,6 +43,7 @@ class ConfigManager {
 
   static void SetTestMode(bool enabled);
   static bool IsTestMode();
+  static void ClearTestDirectory();
 
   static void SetAppInfo(const std::string &org_name, const std::string &app_name);
   static const std::string &GetOrgName() { return org_name_; }

@@ -1,0 +1,810 @@
+#include <chrono>
+#include <fstream>
+#include <iostream>
+#include <nlohmann/json.hpp>
+#include <string>
+#include <thread>
+
+#include "test_utils.h"
+#include "vxcore/vxcore.h"
+
+// Simple base64 encoder for test purposes (RFC 4648)
+static std::string test_base64_encode(const uint8_t *data, size_t size) {
+  static const char *chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string result;
+  result.reserve(((size + 2) / 3) * 4);
+
+  for (size_t i = 0; i < size; i += 3) {
+    uint32_t triple = static_cast<uint32_t>(data[i]) << 16;
+    if (i + 1 < size) triple |= static_cast<uint32_t>(data[i + 1]) << 8;
+    if (i + 2 < size) triple |= static_cast<uint32_t>(data[i + 2]);
+
+    result += chars[(triple >> 18) & 0x3F];
+    result += chars[(triple >> 12) & 0x3F];
+    result += (i + 1 < size) ? chars[(triple >> 6) & 0x3F] : '=';
+    result += (i + 2 < size) ? chars[triple & 0x3F] : '=';
+  }
+  return result;
+}
+
+// Simple base64 decoder for test purposes
+static std::vector<uint8_t> test_base64_decode(const std::string &encoded) {
+  static const int8_t table[256] = {
+      -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+      -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62,
+      -1, -1, -1, 63, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1, -2, -1, -1, -1, 0,
+      1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+      23, 24, 25, -1, -1, -1, -1, -1, -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
+      39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1,
+  };
+  std::vector<uint8_t> result;
+  uint32_t buffer = 0;
+  int bits = 0;
+  for (char c : encoded) {
+    int8_t val = table[static_cast<uint8_t>(c)];
+    if (val >= 0) {
+      buffer = (buffer << 6) | static_cast<uint32_t>(val);
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        result.push_back(static_cast<uint8_t>((buffer >> bits) & 0xFF));
+      }
+    }
+  }
+  return result;
+}
+
+// Helper to create a test file
+void create_test_file(const std::string &path, const std::string &content) {
+  std::ofstream file(path, std::ios::binary);
+  if (file.is_open()) {
+    file.write(content.c_str(), content.length());
+    file.close();
+  }
+}
+
+// Helper to read file content
+std::string read_file_content(const std::string &path) {
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  if (!file.is_open()) return "";
+
+  std::streamsize size = file.tellg();
+  file.seekg(0, std::ios::beg);
+
+  std::string buffer(size, '\0');
+  file.read(&buffer[0], size);
+  return buffer;
+}
+
+int test_buffer_open_close() {
+  std::cout << "  Running test_buffer_open_close..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_open"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_open").c_str(),
+                               "{\"name\":\"Buffer Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a test file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_id);
+
+  // Close buffer
+  err = vxcore_buffer_close(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_open"));
+  std::cout << "  ✓ test_buffer_open_close passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_get() {
+  std::cout << "  Running test_buffer_get..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_get"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_get").c_str(),
+                               "{\"name\":\"Buffer Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Get buffer info
+  char *buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_json);
+
+  // Verify JSON contains expected fields
+  nlohmann::json buffer_data = nlohmann::json::parse(buffer_json);
+  ASSERT(buffer_data.contains("id"));
+  ASSERT(buffer_data.contains("filePath"));
+  ASSERT(buffer_data["filePath"] == "test.md");
+
+  vxcore_string_free(buffer_json);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_get"));
+  std::cout << "  ✓ test_buffer_get passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_list() {
+  std::cout << "  Running test_buffer_list..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_list"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_list").c_str(),
+                               "{\"name\":\"Buffer Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id1 = nullptr, *file_id2 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test1.md", &file_id1);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_file_create(ctx, notebook_id, ".", "test2.md", &file_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id1 = nullptr, *buffer_id2 = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test1.md", &buffer_id1);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_open(ctx, notebook_id, "test2.md", &buffer_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // List buffers
+  char *list_json = nullptr;
+  err = vxcore_buffer_list(ctx, &list_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(list_json);
+
+  nlohmann::json buffer_list = nlohmann::json::parse(list_json);
+  ASSERT(buffer_list.is_array());
+  // Note: May have buffers from previous tests due to session persistence
+  // We just check that our two buffers are present
+  bool found_buffer1 = false, found_buffer2 = false;
+  for (const auto &buf : buffer_list) {
+    std::string id = buf["id"];
+    if (id == buffer_id1) found_buffer1 = true;
+    if (id == buffer_id2) found_buffer2 = true;
+  }
+  ASSERT(found_buffer1);
+  ASSERT(found_buffer2);
+
+  vxcore_string_free(list_json);
+  vxcore_string_free(buffer_id1);
+  vxcore_string_free(buffer_id2);
+  vxcore_string_free(file_id1);
+  vxcore_string_free(file_id2);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_list"));
+  std::cout << "  ✓ test_buffer_list passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_content_raw() {
+  std::cout << "  Running test_buffer_content_raw..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_content_raw"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_content_raw").c_str(),
+                               "{\"name\":\"Buffer Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Set content using raw API
+  const char *test_content = "Hello, VxCore!";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, test_content, strlen(test_content));
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Get content using raw API
+  const void *content_ptr = nullptr;
+  size_t content_size = 0;
+  err = vxcore_buffer_get_content_raw(ctx, buffer_id, &content_ptr, &content_size);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(content_ptr);
+  ASSERT_EQ(content_size, strlen(test_content));
+
+  std::string retrieved(static_cast<const char *>(content_ptr), content_size);
+  ASSERT_EQ(retrieved, std::string(test_content));
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_content_raw"));
+  std::cout << "  ✓ test_buffer_content_raw passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_content_json() {
+  std::cout << "  Running test_buffer_content_json..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_content_json"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_content_json").c_str(),
+                               "{\"name\":\"Buffer Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Set content using JSON API (base64-encoded)
+  const char *test_content = "JSON Content Test";
+  std::string base64_content =
+      test_base64_encode(reinterpret_cast<const uint8_t *>(test_content), strlen(test_content));
+
+  nlohmann::json content_json;
+  content_json["content"] = base64_content;
+  std::string content_json_str = content_json.dump();
+
+  err = vxcore_buffer_set_content(ctx, buffer_id, content_json_str.c_str());
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Get content using JSON API
+  char *retrieved_json = nullptr;
+  err = vxcore_buffer_get_content(ctx, buffer_id, &retrieved_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(retrieved_json);
+
+  nlohmann::json retrieved_data = nlohmann::json::parse(retrieved_json);
+  ASSERT(retrieved_data.contains("content"));
+  ASSERT_EQ(retrieved_data["content"].get<std::string>(), base64_content);
+
+  // Verify decoding back to original content
+  std::vector<uint8_t> decoded = test_base64_decode(retrieved_data["content"].get<std::string>());
+  std::string decoded_str(decoded.begin(), decoded.end());
+  ASSERT_EQ(decoded_str, std::string(test_content));
+
+  vxcore_string_free(retrieved_json);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_content_json"));
+  std::cout << "  ✓ test_buffer_content_json passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_save_reload() {
+  std::cout << "  Running test_buffer_save_reload..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_save_reload"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_save_reload");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Buffer Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Set content
+  const char *original_content = "Original content";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, original_content, strlen(original_content));
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Save to disk
+  err = vxcore_buffer_save(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify file on disk
+  std::string file_path = notebook_path + "/test.md";
+  std::string disk_content = read_file_content(file_path);
+  ASSERT_EQ(disk_content, std::string(original_content));
+
+  // Modify file on disk externally
+  const char *modified_content = "Modified externally";
+  create_test_file(file_path, modified_content);
+
+  // Reload buffer
+  err = vxcore_buffer_reload(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify reloaded content
+  const void *content_ptr = nullptr;
+  size_t content_size = 0;
+  err = vxcore_buffer_get_content_raw(ctx, buffer_id, &content_ptr, &content_size);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string reloaded(static_cast<const char *>(content_ptr), content_size);
+  ASSERT_EQ(reloaded, std::string(modified_content));
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_save_reload"));
+  std::cout << "  ✓ test_buffer_save_reload passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_deduplication() {
+  std::cout << "  Running test_buffer_deduplication..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_dedup"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_dedup").c_str(),
+                               "{\"name\":\"Buffer Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer first time
+  char *buffer_id1 = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open same buffer again - should return same ID
+  char *buffer_id2 = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  ASSERT_EQ(std::string(buffer_id1), std::string(buffer_id2));
+
+  vxcore_string_free(buffer_id1);
+  vxcore_string_free(buffer_id2);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_dedup"));
+  std::cout << "  ✓ test_buffer_deduplication passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_external_file() {
+  std::cout << "  Running test_buffer_external_file..." << std::endl;
+
+  // Create external file outside any notebook
+  std::string external_path = get_test_path("external_test_file.txt");
+  create_test_file(external_path, "External file content");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open external file (notebook_id = NULL)
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, nullptr, external_path.c_str(), &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_id);
+
+  // Verify content
+  const void *content_ptr = nullptr;
+  size_t content_size = 0;
+  err = vxcore_buffer_get_content_raw(ctx, buffer_id, &content_ptr, &content_size);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string content(static_cast<const char *>(content_ptr), content_size);
+  ASSERT_EQ(content, "External file content");
+
+  vxcore_string_free(buffer_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(external_path);
+  std::cout << "  ✓ test_buffer_external_file passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_state() {
+  std::cout << "  Running test_buffer_state..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_state"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_state");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Buffer Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Write initial content to disk
+  std::string file_path = notebook_path + "/test.md";
+  create_test_file(file_path, "Initial content");
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Initial state should be NORMAL
+  VxCoreBufferState state;
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_NORMAL);
+
+  // Modify file externally and wait a bit to ensure timestamp changes
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  create_test_file(file_path, "Externally modified");
+
+  // Check for external changes (state should change to FILE_CHANGED)
+  err = vxcore_buffer_reload(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_state"));
+  std::cout << "  ✓ test_buffer_state passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_is_modified() {
+  std::cout << "  Running test_buffer_is_modified..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_modified"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_modified");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Modified Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Write initial content to disk
+  std::string file_path = notebook_path + "/test.md";
+  create_test_file(file_path, "Initial content");
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Load content first (triggers lazy loading)
+  const void *content_ptr = nullptr;
+  size_t content_size = 0;
+  err = vxcore_buffer_get_content_raw(ctx, buffer_id, &content_ptr, &content_size);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Initially should not be modified
+  int is_modified = -1;
+  err = vxcore_buffer_is_modified(ctx, buffer_id, &is_modified);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(is_modified, 0);
+
+  // Modify content
+  const char *new_content = "Modified content";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, new_content, strlen(new_content));
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Should now be modified
+  err = vxcore_buffer_is_modified(ctx, buffer_id, &is_modified);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(is_modified, 1);
+
+  // Save buffer
+  err = vxcore_buffer_save(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // After save, should not be modified
+  err = vxcore_buffer_is_modified(ctx, buffer_id, &is_modified);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(is_modified, 0);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_modified"));
+  std::cout << "  ✓ test_buffer_is_modified passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_auto_save() {
+  std::cout << "  Running test_buffer_auto_save..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_autosave"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_autosave");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Buffer Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Set short auto-save interval for testing (1ms)
+  err = vxcore_buffer_set_auto_save_interval(ctx, 1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Modify content
+  const char *content = "Auto-save test content";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, content, strlen(content));
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Wait for modification time to exceed auto-save interval
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+  // Trigger auto-save
+  err = vxcore_buffer_auto_save_tick(ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify file was saved
+  std::string file_path = notebook_path + "/test.md";
+  std::string disk_content = read_file_content(file_path);
+  ASSERT_EQ(disk_content, std::string(content));
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_autosave"));
+  std::cout << "  ✓ test_buffer_auto_save passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_notebook_close() {
+  std::cout << "  Running test_buffer_notebook_close..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_nb_close"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_nb_close").c_str(),
+                               "{\"name\":\"Buffer Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Close notebook - should close all buffers
+  err = vxcore_notebook_close(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Try to get closed buffer - should fail
+  char *buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id, &buffer_json);
+  ASSERT_EQ(err, VXCORE_ERR_BUFFER_NOT_FOUND);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_nb_close"));
+  std::cout << "  ✓ test_buffer_notebook_close passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_persistence() {
+  std::cout << "  Running test_buffer_persistence..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_persist"));
+
+  std::string buffer_id_str;
+  std::string notebook_id_str;
+
+  // Create notebook, file, and buffer
+  {
+    VxCoreContextHandle ctx = nullptr;
+    VxCoreError err = vxcore_context_create(nullptr, &ctx);
+    ASSERT_EQ(err, VXCORE_OK);
+
+    char *notebook_id = nullptr;
+    err =
+        vxcore_notebook_create(ctx, get_test_path("test_buffer_persist").c_str(),
+                               "{\"name\":\"Buffer Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+    ASSERT_EQ(err, VXCORE_OK);
+    notebook_id_str = std::string(notebook_id);
+
+    char *file_id = nullptr;
+    err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+    ASSERT_EQ(err, VXCORE_OK);
+
+    char *buffer_id = nullptr;
+    err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+    ASSERT_EQ(err, VXCORE_OK);
+    buffer_id_str = std::string(buffer_id);
+
+    vxcore_string_free(buffer_id);
+    vxcore_string_free(file_id);
+    vxcore_string_free(notebook_id);
+    vxcore_context_destroy(ctx);  // Should save session config
+  }
+
+  // Reload and verify buffer persisted
+  {
+    VxCoreContextHandle ctx = nullptr;
+    VxCoreError err = vxcore_context_create(nullptr, &ctx);
+    ASSERT_EQ(err, VXCORE_OK);
+
+    // Open the notebook
+    char *notebook_id = nullptr;
+    err = vxcore_notebook_open(ctx, get_test_path("test_buffer_persist").c_str(), &notebook_id);
+    ASSERT_EQ(err, VXCORE_OK);
+
+    // Check if buffer was restored
+    char *buffer_json = nullptr;
+    err = vxcore_buffer_get(ctx, buffer_id_str.c_str(), &buffer_json);
+    ASSERT_EQ(err, VXCORE_OK);
+
+    nlohmann::json buffer_data = nlohmann::json::parse(buffer_json);
+    ASSERT(buffer_data.contains("filePath"));
+    ASSERT_EQ(buffer_data["filePath"].get<std::string>(), "test.md");
+
+    vxcore_string_free(buffer_json);
+    vxcore_string_free(notebook_id);
+    vxcore_context_destroy(ctx);
+  }
+
+  cleanup_test_dir(get_test_path("test_buffer_persist"));
+  std::cout << "  ✓ test_buffer_persistence passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_lazy_loading() {
+  std::cout << "  Running test_buffer_lazy_loading..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_lazy"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_lazy");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Lazy Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "lazy.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Write content to the file on disk
+  std::string file_path = notebook_path + "/lazy.md";
+  const char *initial_content = "Lazy loaded content";
+  create_test_file(file_path, initial_content);
+
+  // Open buffer - content should NOT be loaded yet
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "lazy.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Check buffer info - contentLoaded should be false
+  char *buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json buffer_data = nlohmann::json::parse(buffer_json);
+  ASSERT_EQ(buffer_data["contentLoaded"].get<bool>(), false);
+  vxcore_string_free(buffer_json);
+
+  // Get content - should trigger lazy loading
+  const void *content_ptr = nullptr;
+  size_t content_size = 0;
+  err = vxcore_buffer_get_content_raw(ctx, buffer_id, &content_ptr, &content_size);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(content_ptr);
+  ASSERT_EQ(content_size, strlen(initial_content));
+
+  std::string loaded_content(static_cast<const char *>(content_ptr), content_size);
+  ASSERT_EQ(loaded_content, std::string(initial_content));
+
+  // Check buffer info again - contentLoaded should now be true
+  err = vxcore_buffer_get(ctx, buffer_id, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  buffer_data = nlohmann::json::parse(buffer_json);
+  ASSERT_EQ(buffer_data["contentLoaded"].get<bool>(), true);
+  vxcore_string_free(buffer_json);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_lazy"));
+  std::cout << "  ✓ test_buffer_lazy_loading passed" << std::endl;
+  return 0;
+}
+
+int main() {
+  std::cout << "Running buffer tests..." << std::endl;
+
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  RUN_TEST(test_buffer_open_close);
+  RUN_TEST(test_buffer_get);
+  RUN_TEST(test_buffer_list);
+  RUN_TEST(test_buffer_content_raw);
+  RUN_TEST(test_buffer_content_json);
+  RUN_TEST(test_buffer_save_reload);
+  RUN_TEST(test_buffer_deduplication);
+  RUN_TEST(test_buffer_external_file);
+  RUN_TEST(test_buffer_state);
+  RUN_TEST(test_buffer_is_modified);
+  RUN_TEST(test_buffer_auto_save);
+  RUN_TEST(test_buffer_notebook_close);
+  RUN_TEST(test_buffer_lazy_loading);
+  RUN_TEST(test_buffer_persistence);
+
+  std::cout << "All buffer tests passed!" << std::endl;
+  return 0;
+}

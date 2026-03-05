@@ -13,6 +13,8 @@ set(VXCORE_SOURCES
     api/vxcore_node_api.cpp
     api/vxcore_search_api.cpp
     api/vxcore_filetype_api.cpp
+    api/vxcore_workspace_api.cpp
+    api/vxcore_buffer_api.cpp
     api/vxcore_events.cpp
     api/handle_manager.cpp
     api/error_handler.cpp
@@ -20,6 +22,10 @@ set(VXCORE_SOURCES
     core/vxcore_config.cpp
     core/filetype_config.cpp
     core/vxcore_session_config.cpp
+    core/workspace.cpp
+    core/workspace_manager.cpp
+    core/buffer.cpp
+    core/buffer_manager.cpp
     core/notebook.cpp
     core/bundled_notebook.cpp
     core/raw_notebook.cpp
@@ -40,6 +46,7 @@ set(VXCORE_SOURCES
     search/simple_search_backend.cpp
     utils/utils.cpp
     utils/string_utils.cpp
+    utils/base64.cpp
     utils/logger.cpp
     utils/file_utils.cpp
     platform/path_provider.cpp

@@ -614,6 +614,7 @@ int test_node_invalid_params() {
 
 int main() {
   vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
 
   std::cout << "Running unified node API tests..." << std::endl;
 

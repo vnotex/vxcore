@@ -1050,9 +1050,9 @@ int test_notebook_close_removes_from_session() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx1, get_test_path("test_nb_close_session").c_str(),
-                               "{\"name\":\"Session Test\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx1, get_test_path("test_nb_close_session").c_str(),
+                             "{\"name\":\"Session Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
 
@@ -1205,15 +1205,15 @@ int test_path_resolve_multiple_notebooks() {
 
   // Create two notebooks
   char *notebook_id1 = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_nb_resolve_multi1").c_str(),
-                               "{\"name\":\"Multi Test 1\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id1);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_resolve_multi1").c_str(),
+                             "{\"name\":\"Multi Test 1\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id1);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id2 = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_nb_resolve_multi2").c_str(),
-                               "{\"name\":\"Multi Test 2\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id2);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_resolve_multi2").c_str(),
+                             "{\"name\":\"Multi Test 2\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id2);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create files in both notebooks
@@ -1287,11 +1287,11 @@ int test_path_resolve_null_params() {
   return 0;
 }
 
-
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
 
   vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
 
   RUN_TEST(test_notebook_create_bundled);
   RUN_TEST(test_notebook_create_raw);

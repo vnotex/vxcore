@@ -144,6 +144,7 @@ int main() {
   std::cout << "Running core tests..." << std::endl;
 
   vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
 
   RUN_TEST(test_version);
   RUN_TEST(test_error_message);

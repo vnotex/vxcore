@@ -93,7 +93,8 @@ int test_file_metadata_and_tags() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(file_id);
 
-  err = vxcore_node_update_metadata(ctx, notebook_id, "note.md", R"({"author": "John Doe", "priority": "high"})");
+  err = vxcore_node_update_metadata(ctx, notebook_id, "note.md",
+                                    R"({"author": "John Doe", "priority": "high"})");
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "work");
@@ -1446,7 +1447,8 @@ int test_metadata_store_write_through() {
   vxcore_string_free(file_id);
 
   // Update file metadata
-  err = vxcore_node_update_metadata(ctx, notebook_id, "notes/test.md", R"({"author": "test", "version": 1})");
+  err = vxcore_node_update_metadata(ctx, notebook_id, "notes/test.md",
+                                    R"({"author": "test", "version": 1})");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create and apply tag
@@ -1536,7 +1538,8 @@ int test_metadata_store_copy_preserves_data() {
   vxcore_string_free(file_id);
 
   // Set metadata and tags on original file
-  err = vxcore_node_update_metadata(ctx, notebook_id, "source/original.md", R"({"priority": "high"})");
+  err = vxcore_node_update_metadata(ctx, notebook_id, "source/original.md",
+                                    R"({"priority": "high"})");
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_tag_create(ctx, notebook_id, "important");
@@ -1962,7 +1965,8 @@ int test_sync_folder_metadata_update() {
   vxcore_string_free(folder_id);
 
   // Set initial folder metadata
-  err = vxcore_node_update_metadata(ctx, notebook_id, "docs", "{\"description\":\"Documentation\"}");
+  err =
+      vxcore_node_update_metadata(ctx, notebook_id, "docs", "{\"description\":\"Documentation\"}");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Close notebook
@@ -2129,9 +2133,9 @@ int test_recycle_bin_folder_delete() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_folder_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_folder_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create a folder with a file inside
@@ -2179,9 +2183,9 @@ int test_recycle_bin_name_conflict() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_conflict_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_conflict_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create and delete first file
@@ -2232,9 +2236,9 @@ int test_recycle_bin_get_path() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_path_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_path_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *recycle_bin_path = nullptr;
@@ -2263,9 +2267,9 @@ int test_recycle_bin_empty() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_empty_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_empty_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create and delete multiple files
@@ -2315,8 +2319,7 @@ int test_recycle_bin_raw_notebook_unsupported() {
   // Create a raw notebook
   char *notebook_id = nullptr;
   err = vxcore_notebook_create(ctx, get_test_path("test_recycle_bin_raw_nb").c_str(),
-                               "{\"name\":\"Raw Notebook\"}", VXCORE_NOTEBOOK_RAW,
-                               &notebook_id);
+                               "{\"name\":\"Raw Notebook\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Get recycle bin path should return empty string for raw notebook
@@ -2356,9 +2359,9 @@ int test_file_import_basic() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_file_import_basic_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_file_import_basic_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Import the file
@@ -2407,9 +2410,9 @@ int test_file_import_name_conflict() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_file_import_conflict_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_file_import_conflict_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create existing file with same name
@@ -2464,9 +2467,9 @@ int test_file_import_source_not_found() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_file_import_notfound_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_file_import_notfound_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Try to import non-existent file
@@ -2491,9 +2494,9 @@ int test_file_import_invalid_params() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_file_import_invalid_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_file_import_invalid_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file_id = nullptr;
@@ -2540,9 +2543,9 @@ int test_file_import_to_subfolder() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_file_import_subfolder_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_file_import_subfolder_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create subfolder
@@ -2590,8 +2593,7 @@ int test_folder_import_basic() {
   create_directory(get_test_path("test_folder_import_source"));
   create_directory(get_test_path("test_folder_import_source") + "/external_folder");
   create_directory(get_test_path("test_folder_import_source") + "/external_folder/subfolder");
-  write_file(get_test_path("test_folder_import_source") + "/external_folder/file1.md",
-             "# File 1");
+  write_file(get_test_path("test_folder_import_source") + "/external_folder/file1.md", "# File 1");
   write_file(get_test_path("test_folder_import_source") + "/external_folder/subfolder/file2.md",
              "# File 2");
   std::string source_folder = get_test_path("test_folder_import_source") + "/external_folder";
@@ -2602,9 +2604,9 @@ int test_folder_import_basic() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_folder_import_basic_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_folder_import_basic_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Import the folder to root
@@ -2667,8 +2669,7 @@ int test_folder_import_name_conflict() {
   // Create external source folder
   create_directory(get_test_path("test_folder_import_conflict_src"));
   create_directory(get_test_path("test_folder_import_conflict_src") + "/conflict");
-  write_file(get_test_path("test_folder_import_conflict_src") + "/conflict/file.md",
-             "# File");
+  write_file(get_test_path("test_folder_import_conflict_src") + "/conflict/file.md", "# File");
   std::string source_folder = get_test_path("test_folder_import_conflict_src") + "/conflict";
 
   VxCoreContextHandle ctx = nullptr;
@@ -2676,9 +2677,9 @@ int test_folder_import_name_conflict() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_folder_import_conflict_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_folder_import_conflict_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create existing folder with same name
@@ -2718,17 +2719,19 @@ int test_folder_import_source_not_found() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_folder_import_notfound_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_folder_import_notfound_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Try to import non-existent folder
   char *folder_id = nullptr;
-  #ifdef _WIN32
-  err = vxcore_folder_import(ctx, notebook_id, ".", "C:\\nonexistent\\path\\folder", nullptr, &folder_id);
+#ifdef _WIN32
+  err = vxcore_folder_import(ctx, notebook_id, ".", "C:\\nonexistent\\path\\folder", nullptr,
+                             &folder_id);
 #else
-  err = vxcore_folder_import(ctx, notebook_id, ".", "/nonexistent/path/folder", nullptr, &folder_id);
+  err =
+      vxcore_folder_import(ctx, notebook_id, ".", "/nonexistent/path/folder", nullptr, &folder_id);
 #endif
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
   ASSERT_NULL(folder_id);
@@ -2749,9 +2752,9 @@ int test_folder_import_invalid_params() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_folder_import_invalid_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_folder_import_invalid_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *folder_id = nullptr;
@@ -2791,8 +2794,7 @@ int test_folder_import_to_subfolder() {
   // Create external source folder
   create_directory(get_test_path("test_folder_import_subfolder_src"));
   create_directory(get_test_path("test_folder_import_subfolder_src") + "/imported");
-  write_file(get_test_path("test_folder_import_subfolder_src") + "/imported/doc.md",
-             "# Document");
+  write_file(get_test_path("test_folder_import_subfolder_src") + "/imported/doc.md", "# Document");
   std::string source_folder = get_test_path("test_folder_import_subfolder_src") + "/imported";
 
   VxCoreContextHandle ctx = nullptr;
@@ -2800,9 +2802,9 @@ int test_folder_import_to_subfolder() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_folder_import_subfolder_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_folder_import_subfolder_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create target subfolder
@@ -2818,8 +2820,7 @@ int test_folder_import_to_subfolder() {
   ASSERT_NOT_NULL(folder_id);
 
   // Verify folder is in subfolder
-  std::string imported_path =
-      get_test_path("test_folder_import_subfolder_nb") + "/docs/imported";
+  std::string imported_path = get_test_path("test_folder_import_subfolder_nb") + "/docs/imported";
   ASSERT(path_exists(imported_path));
   ASSERT(path_exists(imported_path + "/doc.md"));
 
@@ -2850,9 +2851,9 @@ int test_folder_import_within_notebook() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_folder_import_within_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_folder_import_within_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create a folder inside the notebook
@@ -2865,12 +2866,15 @@ int test_folder_import_within_notebook() {
   std::string internal_folder_path =
       get_test_path("test_folder_import_within_nb") + "/internal_folder";
   char *folder_id = nullptr;
-  err = vxcore_folder_import(ctx, notebook_id, ".", internal_folder_path.c_str(), nullptr, &folder_id);
+  err = vxcore_folder_import(ctx, notebook_id, ".", internal_folder_path.c_str(), nullptr,
+                             &folder_id);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
   ASSERT_NULL(folder_id);
 
   // Also try importing the notebook root itself - should fail
-  err = vxcore_folder_import(ctx, notebook_id, ".", get_test_path("test_folder_import_within_nb").c_str(), nullptr, &folder_id);
+  err = vxcore_folder_import(ctx, notebook_id, ".",
+                             get_test_path("test_folder_import_within_nb").c_str(), nullptr,
+                             &folder_id);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
   ASSERT_NULL(folder_id);
 
@@ -2888,7 +2892,6 @@ int test_folder_import_within_notebook() {
   std::cout << "  ✓ test_folder_import_within_notebook passed" << std::endl;
   return 0;
 }
-
 
 int test_folder_import_suffix_filter() {
   std::cout << "  Running test_folder_import_suffix_filter..." << std::endl;
@@ -2914,9 +2917,9 @@ int test_folder_import_suffix_filter() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_folder_import_filter_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_folder_import_filter_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Import with suffix filter: only md and txt files
@@ -2969,9 +2972,9 @@ int test_node_index_file() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_node_index_file_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_node_index_file_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create an unindexed file directly on filesystem (not through API)
@@ -3024,9 +3027,9 @@ int test_node_index_folder() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_node_index_folder_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_node_index_folder_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create an unindexed folder directly on filesystem
@@ -3079,9 +3082,9 @@ int test_node_unindex_file() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_node_unindex_file_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_node_unindex_file_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create a file through API (so it's indexed)
@@ -3132,9 +3135,9 @@ int test_node_unindex_folder() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_node_unindex_folder_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_node_unindex_folder_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create a folder through API (so it's indexed)
@@ -3185,9 +3188,9 @@ int test_node_index_not_found() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_node_index_notfound_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_node_index_notfound_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Try to index a non-existent file
@@ -3210,9 +3213,9 @@ int test_node_index_already_exists() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_node_index_exists_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_node_index_exists_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create a file through API (already indexed)
@@ -3241,9 +3244,9 @@ int test_node_unindex_not_found() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_node_unindex_notfound_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_node_unindex_notfound_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Try to unindex a non-existent file
@@ -3266,9 +3269,9 @@ int test_node_index_invalid_params() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_node_index_inv_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_node_index_inv_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Null context
@@ -3309,9 +3312,9 @@ int test_node_index_nested() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_node_index_nested_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_node_index_nested_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create a folder through API
@@ -3361,9 +3364,9 @@ int test_node_get_path_by_id() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_node_get_path_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_node_get_path_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create folder structure: docs/guides
@@ -3469,9 +3472,9 @@ int test_folder_list_external_basic() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_list_external_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_list_external_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create an indexed file through API
@@ -3531,9 +3534,9 @@ int test_folder_list_external_empty() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_list_external_empty_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_list_external_empty_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create only indexed items (no external files)
@@ -3569,9 +3572,9 @@ int test_folder_list_external_nested() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_list_external_nested_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_list_external_nested_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create indexed folder through API
@@ -3619,9 +3622,9 @@ int test_folder_list_external_skips_hidden() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_list_external_hidden_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_list_external_hidden_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create hidden file (should be skipped)
@@ -3667,9 +3670,9 @@ int test_folder_list_external_invalid_params() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_list_external_invalid_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_list_external_invalid_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *external_json = nullptr;
@@ -3698,7 +3701,6 @@ int test_folder_list_external_invalid_params() {
   return 0;
 }
 
-
 // ============================================================================
 // vxcore_folder_get_available_name tests
 // ============================================================================
@@ -3712,9 +3714,9 @@ int test_folder_get_available_name_basic() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_avail_name_basic_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_avail_name_basic_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Name doesn't exist - should return original name
@@ -3749,9 +3751,9 @@ int test_folder_get_available_name_conflict() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_avail_name_conflict_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_avail_name_conflict_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create existing folder
@@ -3784,9 +3786,9 @@ int test_folder_get_available_name_multiple_conflicts() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_avail_name_multi_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_avail_name_multi_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create folder, folder_1, folder_2
@@ -3827,9 +3829,9 @@ int test_folder_get_available_name_with_extension() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_avail_name_ext_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_avail_name_ext_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create existing file with extension
@@ -3875,9 +3877,9 @@ int test_folder_get_available_name_in_subfolder() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_avail_name_subfolder_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_avail_name_subfolder_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create parent folder
@@ -3923,9 +3925,9 @@ int test_folder_get_available_name_invalid_params() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_avail_name_invalid_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_avail_name_invalid_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *available_name = nullptr;
@@ -3987,8 +3989,7 @@ int test_file_peek() {
   // Write content: 80 chars
   std::string long_content =
       "0123456789012345678901234567890123456789012345678901234567890123456789ABCDEFGHIJ";
-  std::string file_path =
-      get_test_path("test_file_peek_nb") + "/note.md";
+  std::string file_path = get_test_path("test_file_peek_nb") + "/note.md";
   std::ofstream ofs(file_path);
   ofs << long_content;
   ofs.close();
@@ -4027,8 +4028,7 @@ int test_file_peek() {
   vxcore_string_free(file_id2);
 
   std::string short_content = "Hello World";
-  std::string short_file_path =
-      get_test_path("test_file_peek_nb") + "/short.md";
+  std::string short_file_path = get_test_path("test_file_peek_nb") + "/short.md";
   std::ofstream ofs2(short_file_path);
   ofs2 << short_content;
   ofs2.close();
@@ -4072,11 +4072,11 @@ int test_file_peek() {
   return 0;
 }
 
-
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
   vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
 
   RUN_TEST(test_folder_create);
   RUN_TEST(test_file_create);
@@ -4183,7 +4183,6 @@ int main() {
 
   // File peek tests
   RUN_TEST(test_file_peek);
-
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;

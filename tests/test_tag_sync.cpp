@@ -354,6 +354,7 @@ int test_raw_notebook_tag_operations() {
 
 int main() {
   vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
 
   std::cout << "Running tag sync tests..." << std::endl;
 

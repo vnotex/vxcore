@@ -1345,6 +1345,7 @@ int test_search_by_tags_with_exclude_tags() {
 
 int main() {
   vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
 
   std::cout << "\nRunning search tests..." << std::endl;
 

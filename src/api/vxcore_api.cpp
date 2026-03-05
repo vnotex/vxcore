@@ -1,13 +1,15 @@
 #include <stdlib.h>
 
 #include "api_utils.h"
+#include "core/buffer_manager.h"
 #include "core/config_manager.h"
 #include "core/context.h"
 #include "core/notebook_manager.h"
+#include "core/workspace_manager.h"
+#include "platform/path_provider.h"
 #include "utils/logger.h"
 #include "vxcore/vxcore.h"
 #include "vxcore/vxcore_log.h"
-#include "platform/path_provider.h"
 
 VXCORE_API VxCoreVersion vxcore_get_version(void) {
   VxCoreVersion version = {0, 1, 0};
@@ -19,6 +21,8 @@ VXCORE_API const char *vxcore_get_version_string(void) { return "0.1.0"; }
 VXCORE_API void vxcore_set_test_mode(int enabled) {
   vxcore::ConfigManager::SetTestMode(enabled != 0);
 }
+
+VXCORE_API void vxcore_clear_test_directory(void) { vxcore::ConfigManager::ClearTestDirectory(); }
 
 VXCORE_API void vxcore_set_app_info(const char *org_name, const char *app_name) {
   if (!org_name || !app_name) {
@@ -106,6 +110,9 @@ VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
     }
 
     ctx->notebook_manager = std::make_unique<vxcore::NotebookManager>(ctx->config_manager.get());
+    ctx->workspace_manager = std::make_unique<vxcore::WorkspaceManager>(ctx->config_manager.get());
+    ctx->buffer_manager = std::make_unique<vxcore::BufferManager>(ctx->config_manager.get(),
+                                                                  ctx->notebook_manager.get());
 
     *out_context = reinterpret_cast<VxCoreContextHandle>(ctx);
     return VXCORE_OK;
@@ -136,8 +143,7 @@ VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context
 }
 
 VXCORE_API VxCoreError vxcore_context_get_data_path(VxCoreContextHandle context,
-                                                    VxCoreDataLocation location,
-                                                    char **out_path) {
+                                                    VxCoreDataLocation location, char **out_path) {
   if (!context || !out_path) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -266,9 +272,11 @@ VXCORE_API VxCoreError vxcore_context_get_config_by_name(VxCoreContextHandle con
   }
 }
 
-VXCORE_API VxCoreError vxcore_context_get_config_by_name_with_defaults(
-    VxCoreContextHandle context, VxCoreDataLocation location,
-    const char *base_name, const char *default_json, char **out_json) {
+VXCORE_API VxCoreError vxcore_context_get_config_by_name_with_defaults(VxCoreContextHandle context,
+                                                                       VxCoreDataLocation location,
+                                                                       const char *base_name,
+                                                                       const char *default_json,
+                                                                       char **out_json) {
   if (!context || !base_name || !default_json || !out_json) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -280,8 +288,8 @@ VXCORE_API VxCoreError vxcore_context_get_config_by_name_with_defaults(
 
   try {
     std::string merged;
-    VxCoreError err = ctx->config_manager->LoadConfigByNameWithDefaults(
-        location, base_name, default_json, merged);
+    VxCoreError err = ctx->config_manager->LoadConfigByNameWithDefaults(location, base_name,
+                                                                        default_json, merged);
     if (err != VXCORE_OK) {
       return err;
     }

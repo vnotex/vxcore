@@ -523,6 +523,7 @@ int main() {
   std::cout << "Running filetype tests..." << std::endl;
 
   vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
 
   RUN_TEST(test_filetype_defaults);
   RUN_TEST(test_filetype_get_by_suffix_md);

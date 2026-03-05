@@ -20,13 +20,6 @@ std::string ConfigManager::app_name_ = "vxcore";
 ConfigManager::ConfigManager() : config_(), session_config_() {
   if (test_mode_) {
     std::filesystem::path temp_path(GetDataPathInTestMode());
-
-    std::error_code ec;
-    std::filesystem::remove_all(temp_path, ec);
-    if (ec) {
-      VXCORE_LOG_WARN("Failed to clear test data path: %s", ec.message().c_str());
-    }
-
     app_data_path_ = temp_path;
     local_data_path_ = temp_path;
   } else {
@@ -157,6 +150,19 @@ VxCoreError ConfigManager::SaveSessionConfig() {
 void ConfigManager::SetTestMode(bool enabled) { test_mode_ = enabled; }
 
 bool ConfigManager::IsTestMode() { return test_mode_; }
+
+void ConfigManager::ClearTestDirectory() {
+  if (!test_mode_) {
+    VXCORE_LOG_WARN("ClearTestDirectory called but test mode is not enabled");
+    return;
+  }
+  std::filesystem::path temp_path(GetDataPathInTestMode());
+  std::error_code ec;
+  std::filesystem::remove_all(temp_path, ec);
+  if (ec) {
+    VXCORE_LOG_WARN("Failed to clear test data path: %s", ec.message().c_str());
+  }
+}
 
 void ConfigManager::SetAppInfo(const std::string &org_name, const std::string &app_name) {
   org_name_ = org_name;

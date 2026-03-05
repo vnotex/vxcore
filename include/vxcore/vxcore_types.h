@@ -42,10 +42,21 @@ typedef enum {
   VXCORE_ERR_PERMISSION_DENIED = 13,
   VXCORE_ERR_UNSUPPORTED = 14,
   VXCORE_ERR_NOT_IMPLEMENTED = 15,
+  VXCORE_ERR_BUFFER_NOT_FOUND = 16,
+  VXCORE_ERR_WORKSPACE_NOT_FOUND = 17,
+  VXCORE_ERR_FILE_CHANGED_OUTSIDE = 18,
+  VXCORE_ERR_BUFFER_ALREADY_OPEN = 19,
   VXCORE_ERR_UNKNOWN = 999
 } VxCoreError;
 
 typedef enum { VXCORE_NOTEBOOK_BUNDLED = 0, VXCORE_NOTEBOOK_RAW = 1 } VxCoreNotebookType;
+
+typedef enum {
+  VXCORE_BUFFER_NORMAL = 0,
+  VXCORE_BUFFER_FILE_MISSING = 1,
+  VXCORE_BUFFER_FILE_CHANGED = 2,
+  VXCORE_BUFFER_SAVE_FAILED = 3
+} VxCoreBufferState;
 
 typedef enum { VXCORE_DATA_APP = 0, VXCORE_DATA_LOCAL = 1 } VxCoreDataLocation;
 
@@ -68,7 +79,7 @@ typedef struct {
 
 // C++ only types
 namespace vxcore {
-  enum class NodeType { File, Folder };
+enum class NodeType { File, Folder };
 }  // namespace vxcore
 
 #endif

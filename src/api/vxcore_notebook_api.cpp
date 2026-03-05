@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include "api/api_utils.h"
+#include "core/buffer_manager.h"
 #include "core/context.h"
 #include "core/notebook_manager.h"
 #include "vxcore/vxcore.h"
@@ -83,6 +84,11 @@ VXCORE_API VxCoreError vxcore_notebook_close(VxCoreContextHandle context, const 
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
 
   try {
+    // Close all buffers associated with this notebook first
+    if (ctx->buffer_manager) {
+      ctx->buffer_manager->CloseBuffersForNotebook(notebook_id);
+    }
+
     VxCoreError err = ctx->notebook_manager->CloseNotebook(notebook_id);
     if (err != VXCORE_OK) {
       ctx->last_error = "Failed to close notebook";

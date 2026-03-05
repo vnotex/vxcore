@@ -15,6 +15,8 @@ VXCORE_API const char *vxcore_error_message(VxCoreError error);
 
 VXCORE_API void vxcore_set_test_mode(int enabled);
 
+VXCORE_API void vxcore_clear_test_directory(void);
+
 VXCORE_API void vxcore_set_app_info(const char *org_name, const char *app_name);
 
 VXCORE_API void vxcore_get_execution_file_path(char **out_path);
@@ -298,6 +300,123 @@ VXCORE_API VxCoreError vxcore_search_by_tags(VxCoreContextHandle context, const 
 // vxcore_string_free) Returns VXCORE_ERR_NOT_FOUND if path is not within any open notebook.
 VXCORE_API VxCoreError vxcore_path_resolve(VxCoreContextHandle context, const char *absolute_path,
                                            char **out_notebook_id, char **out_relative_path);
+
+// ============ Workspace Operations ============
+
+// Create a new workspace with the given name.
+// Returns the workspace ID in out_id (caller must free with vxcore_string_free).
+VXCORE_API VxCoreError vxcore_workspace_create(VxCoreContextHandle context, const char *name,
+                                               char **out_id);
+
+// Delete a workspace by ID.
+// If this is the current workspace, the current workspace is set to another workspace.
+VXCORE_API VxCoreError vxcore_workspace_delete(VxCoreContextHandle context, const char *id);
+
+// Get workspace configuration by ID.
+// Returns JSON representation (caller must free with vxcore_string_free).
+VXCORE_API VxCoreError vxcore_workspace_get(VxCoreContextHandle context, const char *id,
+                                            char **out_json);
+
+// List all workspaces.
+// Returns JSON array of WorkspaceRecord objects (caller must free with vxcore_string_free).
+VXCORE_API VxCoreError vxcore_workspace_list(VxCoreContextHandle context, char **out_json);
+
+// Rename a workspace.
+VXCORE_API VxCoreError vxcore_workspace_rename(VxCoreContextHandle context, const char *id,
+                                               const char *name);
+
+// Get the current workspace ID.
+// Returns empty string if no current workspace (caller must free with vxcore_string_free).
+VXCORE_API VxCoreError vxcore_workspace_get_current(VxCoreContextHandle context, char **out_id);
+
+// Set the current workspace by ID.
+VXCORE_API VxCoreError vxcore_workspace_set_current(VxCoreContextHandle context, const char *id);
+
+// Add a buffer to a workspace.
+// Returns VXCORE_ERR_ALREADY_EXISTS if buffer is already in the workspace.
+VXCORE_API VxCoreError vxcore_workspace_add_buffer(VxCoreContextHandle context,
+                                                   const char *workspace_id, const char *buffer_id);
+
+// Remove a buffer from a workspace.
+VXCORE_API VxCoreError vxcore_workspace_remove_buffer(VxCoreContextHandle context,
+                                                      const char *workspace_id,
+                                                      const char *buffer_id);
+
+// Set the current buffer in a workspace.
+// Pass NULL or empty string to clear the current buffer.
+VXCORE_API VxCoreError vxcore_workspace_set_current_buffer(VxCoreContextHandle context,
+                                                           const char *workspace_id,
+                                                           const char *buffer_id);
+
+// ============ Buffer Operations ============
+
+// Open a file as a buffer.
+// notebook_id: ID of the notebook containing the file (or NULL for external files).
+// file_path: For notebook files, path relative to notebook root; for external files, absolute
+// path. Returns the buffer ID in out_id (caller must free with vxcore_string_free). If the buffer
+// is already open, returns the existing buffer ID.
+VXCORE_API VxCoreError vxcore_buffer_open(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *file_path, char **out_id);
+
+// Close a buffer by ID.
+VXCORE_API VxCoreError vxcore_buffer_close(VxCoreContextHandle context, const char *id);
+
+// Get buffer configuration by ID.
+// Returns JSON representation (caller must free with vxcore_string_free).
+VXCORE_API VxCoreError vxcore_buffer_get(VxCoreContextHandle context, const char *id,
+                                         char **out_json);
+
+// List all open buffers.
+// Returns JSON array of BufferRecord objects (caller must free with vxcore_string_free).
+VXCORE_API VxCoreError vxcore_buffer_list(VxCoreContextHandle context, char **out_json);
+
+// Save buffer content to disk.
+VXCORE_API VxCoreError vxcore_buffer_save(VxCoreContextHandle context, const char *id);
+
+// Reload buffer content from disk.
+VXCORE_API VxCoreError vxcore_buffer_reload(VxCoreContextHandle context, const char *id);
+
+// Get buffer content as JSON.
+// Returns JSON: {"content": "<hex-encoded-bytes>"} (caller must free with vxcore_string_free).
+VXCORE_API VxCoreError vxcore_buffer_get_content(VxCoreContextHandle context, const char *id,
+                                                 char **out_json);
+
+// Set buffer content from JSON.
+// content_json: JSON object with "content" field containing hex-encoded bytes.
+VXCORE_API VxCoreError vxcore_buffer_set_content(VxCoreContextHandle context, const char *id,
+                                                 const char *content_json);
+
+// Get buffer content as raw bytes (direct memory access for large files).
+// out_data: receives pointer to internal buffer (DO NOT FREE, valid until buffer is modified or
+// closed) out_size: receives size of the content in bytes
+VXCORE_API VxCoreError vxcore_buffer_get_content_raw(VxCoreContextHandle context, const char *id,
+                                                     const void **out_data, size_t *out_size);
+
+// Set buffer content from raw bytes (direct memory access for large files).
+// data: pointer to content bytes
+// size: size of the content in bytes
+VXCORE_API VxCoreError vxcore_buffer_set_content_raw(VxCoreContextHandle context, const char *id,
+                                                     const void *data, size_t size);
+
+// Get buffer state.
+// out_state: receives the buffer state (NORMAL, FILE_MISSING, FILE_CHANGED, SAVE_FAILED)
+VXCORE_API VxCoreError vxcore_buffer_get_state(VxCoreContextHandle context, const char *id,
+                                               VxCoreBufferState *out_state);
+
+// Check if buffer has unsaved modifications.
+// out_modified: receives 1 if buffer has unsaved changes, 0 otherwise
+VXCORE_API VxCoreError vxcore_buffer_is_modified(VxCoreContextHandle context, const char *id,
+                                                 int *out_modified);
+
+// Trigger auto-save for modified buffers.
+// Checks all buffers and saves those that have been modified beyond the auto-save interval.
+VXCORE_API VxCoreError vxcore_buffer_auto_save_tick(VxCoreContextHandle context);
+
+// Set auto-save interval in milliseconds.
+// interval_ms: Auto-save interval (must be >= 0). Default is 30000ms (30 seconds).
+VXCORE_API VxCoreError vxcore_buffer_set_auto_save_interval(VxCoreContextHandle context,
+                                                            int64_t interval_ms);
+
 VXCORE_API void vxcore_string_free(char *str);
 
 #ifdef __cplusplus
