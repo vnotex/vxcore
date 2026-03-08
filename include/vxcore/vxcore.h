@@ -168,25 +168,6 @@ VXCORE_API VxCoreError vxcore_file_tag(VxCoreContextHandle context, const char *
 VXCORE_API VxCoreError vxcore_file_untag(VxCoreContextHandle context, const char *notebook_id,
                                          const char *file_path, const char *tag_name);
 
-// Get all attachments for a file.
-// file_path: Path relative to notebook root
-// out_attachments_json: receives JSON array of attachment paths (caller must free with
-// vxcore_string_free) Example: ["image.png", "document.pdf"]
-// Returns VXCORE_ERR_NOT_FOUND if file doesn't exist.
-VXCORE_API VxCoreError vxcore_file_get_attachments(VxCoreContextHandle context,
-                                                   const char *notebook_id, const char *file_path,
-                                                   char **out_attachments_json);
-
-// Update all attachments for a file.
-// file_path: Path relative to notebook root
-// attachments_json: JSON array of attachment paths (e.g., ["image.png", "document.pdf"])
-// Returns VXCORE_ERR_NOT_FOUND if file doesn't exist.
-// Returns VXCORE_ERR_JSON_PARSE if attachments_json is invalid JSON.
-VXCORE_API VxCoreError vxcore_file_update_attachments(VxCoreContextHandle context,
-                                                      const char *notebook_id,
-                                                      const char *file_path,
-                                                      const char *attachments_json);
-
 // Peek at the first N bytes of a file's content.
 // file_path: Path relative to notebook root
 // max_bytes: Maximum number of bytes to read

@@ -227,4 +227,18 @@ VxCoreError RawFolderManager::UpdateFileAttachments(const std::string &file_path
   return VXCORE_ERR_UNSUPPORTED;
 }
 
+VxCoreError RawFolderManager::AddFileAttachment(const std::string &file_path,
+                                                const std::string &attachment) {
+  (void)file_path;
+  (void)attachment;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VxCoreError RawFolderManager::DeleteFileAttachment(const std::string &file_path,
+                                                   const std::string &attachment) {
+  (void)file_path;
+  (void)attachment;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
 }  // namespace vxcore

@@ -2377,4 +2377,88 @@ VxCoreError BundledFolderManager::UpdateFileAttachments(const std::string &file_
     return VXCORE_ERR_JSON_PARSE;
   }
 }
+
+VxCoreError BundledFolderManager::AddFileAttachment(const std::string &file_path,
+                                                    const std::string &attachment) {
+  const auto clean_file_path = GetCleanRelativePath(file_path);
+
+  const auto [folder_path, file_name] = SplitPath(clean_file_path);
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  FileRecord *file = FindFileRecord(*config, file_name);
+  if (!file) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  // Deduplication: check if attachment already exists
+  auto it = std::find(file->attachments.begin(), file->attachments.end(), attachment);
+  if (it != file->attachments.end()) {
+    // Already exists, nothing to do
+    return VXCORE_OK;
+  }
+
+  file->attachments.push_back(attachment);
+  file->modified_utc = GetCurrentTimestampMillis();
+  config->modified_utc = file->modified_utc;
+
+  error = SaveFolderConfig(folder_path, *config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    if (!store->SetFileAttachments(file->id, file->attachments)) {
+      VXCORE_LOG_WARN("Failed to set file attachments in MetadataStore: id=%s", file->id.c_str());
+    }
+  }
+
+  return VXCORE_OK;
+}
+
+VxCoreError BundledFolderManager::DeleteFileAttachment(const std::string &file_path,
+                                                       const std::string &attachment) {
+  const auto clean_file_path = GetCleanRelativePath(file_path);
+
+  const auto [folder_path, file_name] = SplitPath(clean_file_path);
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  FileRecord *file = FindFileRecord(*config, file_name);
+  if (!file) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  // Find and remove the attachment
+  auto it = std::find(file->attachments.begin(), file->attachments.end(), attachment);
+  if (it == file->attachments.end()) {
+    // Not found, nothing to do
+    return VXCORE_OK;
+  }
+
+  file->attachments.erase(it);
+  file->modified_utc = GetCurrentTimestampMillis();
+  config->modified_utc = file->modified_utc;
+
+  error = SaveFolderConfig(folder_path, *config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    if (!store->SetFileAttachments(file->id, file->attachments)) {
+      VXCORE_LOG_WARN("Failed to set file attachments in MetadataStore: id=%s", file->id.c_str());
+    }
+  }
+
+  return VXCORE_OK;
+}
 }  // namespace vxcore

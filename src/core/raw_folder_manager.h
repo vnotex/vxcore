@@ -38,6 +38,10 @@ class RawFolderManager : public FolderManager {
                                  std::string &out_attachments_json) override;
   VxCoreError UpdateFileAttachments(const std::string &file_path,
                                     const std::string &attachments_json) override;
+  VxCoreError AddFileAttachment(const std::string &file_path,
+                                const std::string &attachment) override;
+  VxCoreError DeleteFileAttachment(const std::string &file_path,
+                                   const std::string &attachment) override;
   VxCoreError GetFileInfo(const std::string &file_path, std::string &out_file_info_json) override;
   VxCoreError GetFileInfo(const std::string &file_path, const FileRecord **out_record) override;
   VxCoreError GetFileMetadata(const std::string &file_path,

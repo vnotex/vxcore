@@ -70,6 +70,14 @@ class FolderManager {
   virtual VxCoreError UpdateFileAttachments(const std::string &file_path,
                                             const std::string &attachments_json) = 0;
 
+  // Add a single attachment to a file (with deduplication)
+  virtual VxCoreError AddFileAttachment(const std::string &file_path,
+                                        const std::string &attachment) = 0;
+
+  // Delete a single attachment from a file
+  virtual VxCoreError DeleteFileAttachment(const std::string &file_path,
+                                           const std::string &attachment) = 0;
+
   virtual VxCoreError GetFileInfo(const std::string &file_path,
                                   std::string &out_file_info_json) = 0;
 
