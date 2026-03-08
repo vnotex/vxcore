@@ -14,6 +14,7 @@ struct FileRecord {
   int64_t modified_utc;
   nlohmann::json metadata;
   std::vector<std::string> tags;
+  std::vector<std::string> attachments;  // Relative paths within vx_assets/<file_uuid>/
 
   FileRecord();
   FileRecord(const std::string &name);

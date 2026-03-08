@@ -163,9 +163,9 @@ VxCoreError RawFolderManager::ImportFile(const std::string &folder_path,
 }
 
 VxCoreError RawFolderManager::ImportFolder(const std::string &dest_folder_path,
-                                            const std::string &external_folder_path,
-                                            const std::string &suffix_allowlist,
-                                            std::string &out_folder_id) {
+                                           const std::string &external_folder_path,
+                                           const std::string &suffix_allowlist,
+                                           std::string &out_folder_id) {
   (void)dest_folder_path;
   (void)external_folder_path;
   (void)suffix_allowlist;
@@ -213,5 +213,18 @@ VxCoreError RawFolderManager::UnindexNode(const std::string &node_path) {
   return VXCORE_ERR_UNSUPPORTED;
 }
 
+VxCoreError RawFolderManager::GetFileAttachments(const std::string &file_path,
+                                                 std::string &out_attachments_json) {
+  (void)file_path;
+  (void)out_attachments_json;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VxCoreError RawFolderManager::UpdateFileAttachments(const std::string &file_path,
+                                                    const std::string &attachments_json) {
+  (void)file_path;
+  (void)attachments_json;
+  return VXCORE_ERR_UNSUPPORTED;
+}
 
 }  // namespace vxcore

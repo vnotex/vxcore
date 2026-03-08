@@ -1,13 +1,13 @@
+#include <nlohmann/json.hpp>
+
 #include "api/api_utils.h"
 #include "core/context.h"
 #include "core/folder.h"
 #include "core/folder_manager.h"
 #include "core/metadata_store.h"
 #include "core/notebook_manager.h"
-#include "vxcore/vxcore.h"
-
-#include <nlohmann/json.hpp>
 #include "utils/file_utils.h"
+#include "vxcore/vxcore.h"
 
 VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const char *notebook_id,
                                             const char *parent_path, const char *folder_name,
@@ -194,9 +194,73 @@ VXCORE_API VxCoreError vxcore_file_untag(VxCoreContextHandle context, const char
   }
 }
 
+VXCORE_API VxCoreError vxcore_file_get_attachments(VxCoreContextHandle context,
+                                                   const char *notebook_id, const char *file_path,
+                                                   char **out_attachments_json) {
+  if (!context || !notebook_id || !file_path || !out_attachments_json) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    std::string attachments_json;
+    VxCoreError error = folder_manager->GetFileAttachments(file_path, attachments_json);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+
+    *out_attachments_json = _strdup(attachments_json.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_file_update_attachments(VxCoreContextHandle context,
+                                                      const char *notebook_id,
+                                                      const char *file_path,
+                                                      const char *attachments_json) {
+  if (!context || !notebook_id || !file_path || !attachments_json) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+    return folder_manager->UpdateFileAttachments(file_path, attachments_json);
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_folder_list_children(VxCoreContextHandle context,
-                                                   const char *notebook_id,
-                                                   const char *folder_path,
+                                                   const char *notebook_id, const char *folder_path,
                                                    char **out_children_json) {
   if (!context || !notebook_id || !out_children_json) {
     return VXCORE_ERR_INVALID_PARAM;
@@ -250,8 +314,7 @@ VXCORE_API VxCoreError vxcore_folder_list_children(VxCoreContextHandle context,
 }
 
 VXCORE_API VxCoreError vxcore_folder_list_external(VxCoreContextHandle context,
-                                                   const char *notebook_id,
-                                                   const char *folder_path,
+                                                   const char *notebook_id, const char *folder_path,
                                                    char **out_external_json) {
   if (!context || !notebook_id || !out_external_json) {
     return VXCORE_ERR_INVALID_PARAM;
@@ -311,7 +374,6 @@ VXCORE_API VxCoreError vxcore_folder_list_external(VxCoreContextHandle context,
     return VXCORE_ERR_UNKNOWN;
   }
 }
-
 
 VXCORE_API VxCoreError vxcore_file_import(VxCoreContextHandle context, const char *notebook_id,
                                           const char *folder_path, const char *external_file_path,
@@ -389,8 +451,7 @@ VXCORE_API VxCoreError vxcore_folder_import(VxCoreContextHandle context, const c
 }
 
 VXCORE_API VxCoreError vxcore_node_get_path_by_id(VxCoreContextHandle context,
-                                                  const char *notebook_id,
-                                                  const char *node_id,
+                                                  const char *notebook_id, const char *node_id,
                                                   char **out_path) {
   if (!context || !notebook_id || !node_id || !out_path) {
     return VXCORE_ERR_INVALID_PARAM;
@@ -487,8 +548,7 @@ VXCORE_API VxCoreError vxcore_file_peek(VxCoreContextHandle context, const char 
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    std::filesystem::path abs_path =
-        std::filesystem::path(notebook->GetRootFolder()) / file_path;
+    std::filesystem::path abs_path = std::filesystem::path(notebook->GetRootFolder()) / file_path;
     if (!std::filesystem::exists(abs_path) || !std::filesystem::is_regular_file(abs_path)) {
       ctx->last_error = "File not found: " + std::string(file_path);
       return VXCORE_ERR_NOT_FOUND;

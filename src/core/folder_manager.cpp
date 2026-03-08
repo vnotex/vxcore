@@ -53,23 +53,6 @@ std::string FolderManager::GetPublicAssetsFolder(const std::string &file_path) c
   return CleanFsPath(std::filesystem::path(abs_parent) / assets_folder);
 }
 
-std::string FolderManager::GetPublicAttachmentsFolder(const std::string &file_path) const {
-  const NotebookConfig &config = notebook_->GetConfig();
-  const std::string &attachments_folder = config.attachments_folder;
-
-  // If absolute path, return as-is
-  if (!IsRelativePath(attachments_folder)) {
-    return CleanPath(attachments_folder);
-  }
-
-  // Get parent folder of the file
-  auto [parent_path, _] = SplitPath(file_path);
-  std::string abs_parent = notebook_->GetAbsolutePath(parent_path);
-
-  // Resolve relative to file's parent folder
-  return CleanFsPath(std::filesystem::path(abs_parent) / attachments_folder);
-}
-
 std::string FolderManager::GetAssetsFolder(const std::string &file_path) {
   // Get file's UUID
   const FileRecord *record = nullptr;
@@ -79,18 +62,6 @@ std::string FolderManager::GetAssetsFolder(const std::string &file_path) {
   }
 
   std::string public_folder = GetPublicAssetsFolder(file_path);
-  return ConcatenatePaths(public_folder, record->id);
-}
-
-std::string FolderManager::GetAttachmentsFolder(const std::string &file_path) {
-  // Get file's UUID
-  const FileRecord *record = nullptr;
-  VxCoreError err = GetFileInfo(file_path, &record);
-  if (err != VXCORE_OK || !record) {
-    return "";
-  }
-
-  std::string public_folder = GetPublicAttachmentsFolder(file_path);
   return ConcatenatePaths(public_folder, record->id);
 }
 

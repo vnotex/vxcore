@@ -28,6 +28,7 @@ struct StoreFileRecord {
   int64_t modified_utc;
   std::string metadata;  // JSON string
   std::vector<std::string> tags;
+  std::vector<std::string> attachments;  // Relative paths within vx_assets/<file_uuid>/
 };
 
 struct StoreTagRecord {
@@ -44,8 +45,6 @@ struct StoreTagQueryResult {
   std::string file_path;  // Full relative path (folder_path/file_name)
   std::vector<std::string> tags;
 };
-
-
 
 // Sync result codes
 enum class SyncResultCode {
@@ -175,6 +174,15 @@ class MetadataStore {
   // Gets all tags for a file
   virtual std::vector<std::string> GetFileTags(const std::string& file_id) = 0;
 
+  // --- File-Attachment Operations ---
+
+  // Sets all attachments for a file (replaces existing)
+  virtual bool SetFileAttachments(const std::string& file_id,
+                                  const std::vector<std::string>& attachments) = 0;
+
+  // Gets all attachments for a file
+  virtual std::vector<std::string> GetFileAttachments(const std::string& file_id) = 0;
+
   // --- Tag Query Operations ---
 
   // Finds files with ANY of the given tags (OR logic)
@@ -190,7 +198,6 @@ class MetadataStore {
 
   // --- Sync/Recovery Operations ---
   // These methods support rebuilding the store from config files
-
 
   // Rebuilds entire store (drops all data and re-initializes schema)
   // WARNING: This deletes all cached data!

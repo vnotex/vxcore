@@ -37,6 +37,9 @@ FileRecord FileRecord::FromJson(const nlohmann::json &json) {
   if (json.contains("tags") && json["tags"].is_array()) {
     record.tags = json["tags"].get<std::vector<std::string>>();
   }
+  if (json.contains("attachments") && json["attachments"].is_array()) {
+    record.attachments = json["attachments"].get<std::vector<std::string>>();
+  }
   return record;
 }
 
@@ -48,6 +51,9 @@ nlohmann::json FileRecord::ToJson() const {
   json["modifiedUtc"] = modified_utc;
   json["metadata"] = metadata;
   json["tags"] = tags;
+  if (!attachments.empty()) {
+    json["attachments"] = attachments;
+  }
   return json;
 }
 

@@ -10,7 +10,7 @@ namespace db {
 namespace schema {
 
 // Schema version for migration tracking
-constexpr int kCurrentSchemaVersion = 3;
+constexpr int kCurrentSchemaVersion = 4;
 
 // Folders table: stores folder hierarchy
 // parent_id references folders(id) - NULL for root folders
@@ -34,6 +34,7 @@ CREATE INDEX IF NOT EXISTS idx_folders_uuid ON folders(uuid);
 // folder_id references folders(id)
 // uuid is the string ID from JSON files (from FileRecord.id)
 // metadata stores additional JSON data
+// attachments stores JSON array of attachment paths (relative to vx_assets/<file_uuid>/)
 inline constexpr const char* kCreateFilesTable = R"(
 CREATE TABLE IF NOT EXISTS files (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,6 +44,7 @@ CREATE TABLE IF NOT EXISTS files (
   created_utc INTEGER NOT NULL,
   modified_utc INTEGER NOT NULL,
   metadata TEXT,
+  attachments TEXT,
   FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_id);

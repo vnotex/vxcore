@@ -22,6 +22,7 @@ struct DbFileRecord {
   int64_t modified_utc;
   std::string metadata;  // JSON string
   std::vector<std::string> tags;
+  std::vector<std::string> attachments;  // Relative paths within vx_assets/<file_uuid>/
 };
 
 // Folder metadata structure (database layer)
@@ -118,6 +119,12 @@ class FileDb {
   // Updates file metadata, returns true on success
   bool UpdateFile(int64_t file_id, const std::string& name, int64_t modified_utc,
                   const std::vector<std::string>& tags);
+
+  // Gets file attachments
+  std::vector<std::string> GetFileAttachments(int64_t file_id);
+
+  // Sets file attachments (replaces existing attachments)
+  bool SetFileAttachments(int64_t file_id, const std::vector<std::string>& attachments);
 
   // Deletes file, returns true on success
   bool DeleteFile(int64_t file_id);

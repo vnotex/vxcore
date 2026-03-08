@@ -8,8 +8,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "metadata_store.h"
 #include "bundled_notebook.h"
+#include "metadata_store.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -1551,7 +1551,6 @@ void BundledFolderManager::SyncFolderToStore(const std::string &folder_path,
                    config.id.c_str(), folder_path.c_str());
 }
 
-
 std::string BundledFolderManager::GetRecycleBinPath() const {
   return ConcatenatePaths(notebook_->GetMetadataFolder(), "recycle_bin");
 }
@@ -1751,8 +1750,8 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
                                                const std::string &external_folder_path,
                                                const std::string &suffix_allowlist,
                                                std::string &out_folder_id) {
-  VXCORE_LOG_INFO("ImportFolder: dest=%s, external=%s, suffix_allowlist=%s", dest_folder_path.c_str(),
-                  external_folder_path.c_str(), suffix_allowlist.c_str());
+  VXCORE_LOG_INFO("ImportFolder: dest=%s, external=%s, suffix_allowlist=%s",
+                  dest_folder_path.c_str(), external_folder_path.c_str(), suffix_allowlist.c_str());
 
   // Require absolute path for external folder
   fs::path external_path(external_folder_path);
@@ -1933,7 +1932,8 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
           // Recursively index subfolder contents
           VxCoreError err = index_contents(subfolder_rel_path, *subfolder_config);
           if (err != VXCORE_OK) {
-            VXCORE_LOG_WARN("ImportFolder: Failed to index subfolder: %s", subfolder_rel_path.c_str());
+            VXCORE_LOG_WARN("ImportFolder: Failed to index subfolder: %s",
+                            subfolder_rel_path.c_str());
             // Continue with other entries
           }
 
@@ -2013,15 +2013,16 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
     for (const auto &file : new_config->files) {
       StoreFileRecord file_record = ToStoreFileRecord(file, new_config->id);
       if (!store->CreateFile(file_record)) {
-        VXCORE_LOG_WARN("ImportFolder: Failed to write file to MetadataStore: id=%s", file.id.c_str());
+        VXCORE_LOG_WARN("ImportFolder: Failed to write file to MetadataStore: id=%s",
+                        file.id.c_str());
       }
     }
   }
 
   CacheConfig(imported_folder_path, std::move(new_config));
 
-  VXCORE_LOG_INFO("ImportFolder: Successfully imported folder: id=%s, name=%s", out_folder_id.c_str(),
-                  target_name.c_str());
+  VXCORE_LOG_INFO("ImportFolder: Successfully imported folder: id=%s, name=%s",
+                  out_folder_id.c_str(), target_name.c_str());
   return VXCORE_OK;
 }
 
@@ -2187,9 +2188,9 @@ VxCoreError BundledFolderManager::UnindexNode(const std::string &node_path) {
   }
 
   // Check if it's a file
-  auto file_it = std::find_if(
-      parent_config->files.begin(), parent_config->files.end(),
-      [&node_name](const FileRecord &file) { return file.name == node_name; });
+  auto file_it =
+      std::find_if(parent_config->files.begin(), parent_config->files.end(),
+                   [&node_name](const FileRecord &file) { return file.name == node_name; });
   if (file_it != parent_config->files.end()) {
     // Save the file ID before erasing
     std::string file_id = file_it->id;
@@ -2221,7 +2222,7 @@ VxCoreError BundledFolderManager::UnindexNode(const std::string &node_path) {
 }
 
 VxCoreError BundledFolderManager::ListExternalNodes(const std::string &folder_path,
-                                                   FolderContents &out_contents) {
+                                                    FolderContents &out_contents) {
   const auto clean_path = GetCleanRelativePath(folder_path);
 
   // Clear output
@@ -2257,7 +2258,6 @@ VxCoreError BundledFolderManager::ListExternalNodes(const std::string &folder_pa
   // Check if assets/attachments folders should be skipped (only if single name)
   const NotebookConfig &nb_config = notebook_->GetConfig();
   const bool need_check_assets_folder = IsSingleName(nb_config.assets_folder);
-  const bool need_check_attachments_folder = IsSingleName(nb_config.attachments_folder);
 
   const bool is_root = clean_path.empty() || clean_path == ".";
 
@@ -2276,9 +2276,8 @@ VxCoreError BundledFolderManager::ListExternalNodes(const std::string &folder_pa
         continue;
       }
 
-      // Skip assets and attachments folders
-      if ((need_check_assets_folder && entry_name == nb_config.assets_folder) ||
-          (need_check_attachments_folder && entry_name == nb_config.attachments_folder)) {
+      // Skip assets folder (attachments are now stored in assets folder)
+      if (need_check_assets_folder && entry_name == nb_config.assets_folder) {
         continue;
       }
 
@@ -2308,5 +2307,74 @@ VxCoreError BundledFolderManager::ListExternalNodes(const std::string &folder_pa
   }
 
   return VXCORE_OK;
+}
+
+VxCoreError BundledFolderManager::GetFileAttachments(const std::string &file_path,
+                                                     std::string &out_attachments_json) {
+  const auto clean_file_path = GetCleanRelativePath(file_path);
+
+  const auto [folder_path, file_name] = SplitPath(clean_file_path);
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  FileRecord *file = FindFileRecord(*config, file_name);
+  if (!file) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  nlohmann::json attachments_json = file->attachments;
+  out_attachments_json = attachments_json.dump();
+
+  return VXCORE_OK;
+}
+
+VxCoreError BundledFolderManager::UpdateFileAttachments(const std::string &file_path,
+                                                        const std::string &attachments_json) {
+  const auto clean_file_path = GetCleanRelativePath(file_path);
+
+  const auto [folder_path, file_name] = SplitPath(clean_file_path);
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  FileRecord *file = FindFileRecord(*config, file_name);
+  if (!file) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  try {
+    nlohmann::json attachments = nlohmann::json::parse(attachments_json);
+    if (!attachments.is_array()) {
+      return VXCORE_ERR_JSON_PARSE;
+    }
+
+    std::vector<std::string> new_attachments = attachments.get<std::vector<std::string>>();
+
+    file->attachments = new_attachments;
+    file->modified_utc = GetCurrentTimestampMillis();
+
+    config->modified_utc = file->modified_utc;
+
+    error = SaveFolderConfig(folder_path, *config);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+
+    // Write-through to MetadataStore
+    if (auto *store = notebook_->GetMetadataStore()) {
+      if (!store->SetFileAttachments(file->id, file->attachments)) {
+        VXCORE_LOG_WARN("Failed to set file attachments in MetadataStore: id=%s", file->id.c_str());
+      }
+    }
+
+    return VXCORE_OK;
+  } catch (const std::exception &) {
+    return VXCORE_ERR_JSON_PARSE;
+  }
 }
 }  // namespace vxcore

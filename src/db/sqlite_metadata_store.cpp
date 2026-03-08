@@ -133,6 +133,7 @@ StoreFileRecord SqliteMetadataStore::ToStoreFileRecord(const DbFileRecord& db_re
   record.modified_utc = db_record.modified_utc;
   record.metadata = db_record.metadata;
   record.tags = db_record.tags;
+  record.attachments = db_record.attachments;
   return record;
 }
 
@@ -682,6 +683,43 @@ std::vector<std::string> SqliteMetadataStore::GetFileTags(const std::string& fil
   return file_db_->GetFileTags(db_id);
 }
 
+// --- File-Attachment Operations ---
+
+bool SqliteMetadataStore::SetFileAttachments(const std::string& file_id,
+                                             const std::vector<std::string>& attachments) {
+  if (!IsOpen()) {
+    last_error_ = "Store not open";
+    return false;
+  }
+
+  int64_t db_id = GetFileDbId(file_id);
+  if (db_id == -1) {
+    last_error_ = "File not found: " + file_id;
+    return false;
+  }
+
+  if (!file_db_->SetFileAttachments(db_id, attachments)) {
+    last_error_ = "Failed to set file attachments: " + file_db_->GetLastError();
+    return false;
+  }
+
+  return true;
+}
+
+std::vector<std::string> SqliteMetadataStore::GetFileAttachments(const std::string& file_id) {
+  if (!IsOpen()) {
+    last_error_ = "Store not open";
+    return {};
+  }
+
+  int64_t db_id = GetFileDbId(file_id);
+  if (db_id == -1) {
+    return {};
+  }
+
+  return file_db_->GetFileAttachments(db_id);
+}
+
 // --- Tag Query Operations ---
 
 std::vector<StoreTagQueryResult> SqliteMetadataStore::FindFilesByTagsOr(
@@ -756,8 +794,6 @@ std::vector<std::pair<std::string, int>> SqliteMetadataStore::CountFilesByTag() 
 }
 
 // --- Sync/Recovery Operations ---
-
-
 
 bool SqliteMetadataStore::RebuildAll() {
   if (!IsOpen()) {

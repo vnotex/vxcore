@@ -3,6 +3,7 @@
 #include <sqlite3.h>
 
 #include <chrono>
+#include <nlohmann/json.hpp>
 
 #include "tag_db.h"
 
@@ -265,8 +266,7 @@ std::optional<DbFolderRecord> FileDb::GetFolderByPath(const std::string& path) {
 
 bool FileDb::UpdateFolder(int64_t folder_id, const std::string& name, int64_t modified_utc,
                           const std::string& metadata) {
-  const char* sql =
-      "UPDATE folders SET name = ?, modified_utc = ?, metadata = ? WHERE id = ?;";
+  const char* sql = "UPDATE folders SET name = ?, modified_utc = ?, metadata = ? WHERE id = ?;";
 
   sqlite3_stmt* stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -496,8 +496,9 @@ int64_t FileDb::CreateOrUpdateFile(const std::string& uuid, int64_t folder_id,
                                    const std::string& name, int64_t created_utc,
                                    int64_t modified_utc, const std::string& metadata) {
   const char* sql =
-      "INSERT OR REPLACE INTO files (uuid, folder_id, name, created_utc, modified_utc, metadata) "
-      "VALUES (?, ?, ?, ?, ?, ?);";
+      "INSERT OR REPLACE INTO files (uuid, folder_id, name, created_utc, modified_utc, metadata, "
+      "attachments) "
+      "VALUES (?, ?, ?, ?, ?, ?, ?);";
 
   sqlite3_stmt* stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -511,6 +512,7 @@ int64_t FileDb::CreateOrUpdateFile(const std::string& uuid, int64_t folder_id,
   sqlite3_bind_int64(stmt, 4, created_utc);
   sqlite3_bind_int64(stmt, 5, modified_utc);
   sqlite3_bind_text(stmt, 6, metadata.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 7, "[]", -1, SQLITE_TRANSIENT);  // Empty attachments array
 
   rc = sqlite3_step(stmt);
   int64_t file_id = -1;
@@ -524,7 +526,8 @@ int64_t FileDb::CreateOrUpdateFile(const std::string& uuid, int64_t folder_id,
 
 std::optional<DbFileRecord> FileDb::GetFile(int64_t file_id) {
   const char* sql =
-      "SELECT id, uuid, folder_id, name, created_utc, modified_utc, metadata FROM files "
+      "SELECT id, uuid, folder_id, name, created_utc, modified_utc, metadata, attachments FROM "
+      "files "
       "WHERE id = ?;";
 
   sqlite3_stmt* stmt = nullptr;
@@ -550,6 +553,7 @@ std::optional<DbFileRecord> FileDb::GetFile(int64_t file_id) {
   file.modified_utc = sqlite3_column_int64(stmt, 5);
   file.metadata = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
   file.tags = GetFileTags(file_id);
+  file.attachments = GetFileAttachments(file_id);
 
   sqlite3_finalize(stmt);
   return file;
@@ -557,7 +561,8 @@ std::optional<DbFileRecord> FileDb::GetFile(int64_t file_id) {
 
 std::optional<DbFileRecord> FileDb::GetFileByUuid(const std::string& uuid) {
   const char* sql =
-      "SELECT id, uuid, folder_id, name, created_utc, modified_utc, metadata FROM files "
+      "SELECT id, uuid, folder_id, name, created_utc, modified_utc, metadata, attachments FROM "
+      "files "
       "WHERE uuid = ?;";
 
   sqlite3_stmt* stmt = nullptr;
@@ -583,6 +588,7 @@ std::optional<DbFileRecord> FileDb::GetFileByUuid(const std::string& uuid) {
   file.modified_utc = sqlite3_column_int64(stmt, 5);
   file.metadata = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
   file.tags = GetFileTags(file.id);
+  file.attachments = GetFileAttachments(file.id);
 
   sqlite3_finalize(stmt);
   return file;
@@ -590,7 +596,8 @@ std::optional<DbFileRecord> FileDb::GetFileByUuid(const std::string& uuid) {
 
 std::optional<DbFileRecord> FileDb::GetFileByName(int64_t folder_id, const std::string& name) {
   const char* sql =
-      "SELECT id, uuid, folder_id, name, created_utc, modified_utc, metadata FROM files "
+      "SELECT id, uuid, folder_id, name, created_utc, modified_utc, metadata, attachments FROM "
+      "files "
       "WHERE folder_id = ? AND name = ?;";
 
   sqlite3_stmt* stmt = nullptr;
@@ -617,6 +624,7 @@ std::optional<DbFileRecord> FileDb::GetFileByName(int64_t folder_id, const std::
   file.modified_utc = sqlite3_column_int64(stmt, 5);
   file.metadata = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
   file.tags = GetFileTags(file.id);
+  file.attachments = GetFileAttachments(file.id);
 
   sqlite3_finalize(stmt);
   return file;
@@ -666,7 +674,8 @@ bool FileDb::DeleteFile(int64_t file_id) {
 
 std::vector<DbFileRecord> FileDb::ListFiles(int64_t folder_id) {
   const char* sql =
-      "SELECT id, uuid, folder_id, name, created_utc, modified_utc, metadata FROM files "
+      "SELECT id, uuid, folder_id, name, created_utc, modified_utc, metadata, attachments FROM "
+      "files "
       "WHERE folder_id = ? ORDER BY name;";
 
   sqlite3_stmt* stmt = nullptr;
@@ -688,6 +697,7 @@ std::vector<DbFileRecord> FileDb::ListFiles(int64_t folder_id) {
     file.modified_utc = sqlite3_column_int64(stmt, 5);
     file.metadata = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
     file.tags = GetFileTags(file.id);
+    file.attachments = GetFileAttachments(file.id);
     files.push_back(file);
   }
 
@@ -787,6 +797,62 @@ std::vector<std::string> FileDb::GetFileTags(int64_t file_id) {
 
   sqlite3_finalize(stmt);
   return tags;
+}
+
+std::vector<std::string> FileDb::GetFileAttachments(int64_t file_id) {
+  const char* sql = "SELECT attachments FROM files WHERE id = ?;";
+
+  sqlite3_stmt* stmt = nullptr;
+  int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+  if (rc != SQLITE_OK) {
+    return {};
+  }
+
+  sqlite3_bind_int64(stmt, 1, file_id);
+
+  rc = sqlite3_step(stmt);
+  if (rc != SQLITE_ROW) {
+    sqlite3_finalize(stmt);
+    return {};
+  }
+
+  std::vector<std::string> attachments;
+  const char* json_str = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+  if (json_str && json_str[0] != '\0') {
+    try {
+      nlohmann::json j = nlohmann::json::parse(json_str);
+      if (j.is_array()) {
+        attachments = j.get<std::vector<std::string>>();
+      }
+    } catch (...) {
+      // Ignore parse errors, return empty vector
+    }
+  }
+
+  sqlite3_finalize(stmt);
+  return attachments;
+}
+
+bool FileDb::SetFileAttachments(int64_t file_id, const std::vector<std::string>& attachments) {
+  const char* sql = "UPDATE files SET attachments = ? WHERE id = ?;";
+
+  sqlite3_stmt* stmt = nullptr;
+  int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+  if (rc != SQLITE_OK) {
+    return false;
+  }
+
+  // Serialize attachments to JSON array
+  nlohmann::json j = attachments;
+  std::string json_str = j.dump();
+
+  sqlite3_bind_text(stmt, 1, json_str.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt, 2, file_id);
+
+  rc = sqlite3_step(stmt);
+  sqlite3_finalize(stmt);
+
+  return rc == SQLITE_DONE;
 }
 
 }  // namespace db

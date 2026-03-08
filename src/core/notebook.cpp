@@ -44,10 +44,7 @@ nlohmann::json TagNode::ToJson() const {
 }
 
 NotebookConfig::NotebookConfig()
-    : assets_folder("vx_assets"),
-      attachments_folder("vx_attachments"),
-      metadata(nlohmann::json::object()),
-      tags_modified_utc(0) {}
+    : assets_folder("vx_assets"), metadata(nlohmann::json::object()), tags_modified_utc(0) {}
 
 NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
   NotebookConfig config;
@@ -63,9 +60,7 @@ NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
   if (json.contains("assetsFolder") && json["assetsFolder"].is_string()) {
     config.assets_folder = json["assetsFolder"].get<std::string>();
   }
-  if (json.contains("attachmentsFolder") && json["attachmentsFolder"].is_string()) {
-    config.attachments_folder = json["attachmentsFolder"].get<std::string>();
-  }
+  // Note: attachmentsFolder is deprecated - attachments are now stored in assets folder
   if (json.contains("metadata") && json["metadata"].is_object()) {
     config.metadata = json["metadata"];
   }
@@ -86,7 +81,7 @@ nlohmann::json NotebookConfig::ToJson() const {
   json["name"] = name;
   json["description"] = description;
   json["assetsFolder"] = assets_folder;
-  json["attachmentsFolder"] = attachments_folder;
+  // Note: attachmentsFolder is deprecated - attachments are now stored in assets folder
   json["metadata"] = metadata;
   nlohmann::json tags_array = nlohmann::json::array();
   for (const auto &tag : tags) {

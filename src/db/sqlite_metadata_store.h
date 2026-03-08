@@ -81,12 +81,16 @@ class SqliteMetadataStore : public MetadataStore {
   bool RemoveTagFromFile(const std::string& file_id, const std::string& tag_name) override;
   std::vector<std::string> GetFileTags(const std::string& file_id) override;
 
+  // --- File-Attachment Operations ---
+  bool SetFileAttachments(const std::string& file_id,
+                          const std::vector<std::string>& attachments) override;
+  std::vector<std::string> GetFileAttachments(const std::string& file_id) override;
+
   // --- Tag Query Operations ---
   std::vector<StoreTagQueryResult> FindFilesByTagsOr(const std::vector<std::string>& tags) override;
   std::vector<StoreTagQueryResult> FindFilesByTagsAnd(
       const std::vector<std::string>& tags) override;
   std::vector<std::pair<std::string, int>> CountFilesByTag() override;
-
 
   bool RebuildAll() override;
 

@@ -29,9 +29,7 @@ class FolderManager {
 
   // Create all folders in the path if they don't exist.
   // Returns the ID of the final (leaf) folder.
-  virtual VxCoreError CreateFolderPath(const std::string &folder_path,
-                                       std::string &out_folder_id);
-
+  virtual VxCoreError CreateFolderPath(const std::string &folder_path, std::string &out_folder_id);
 
   virtual VxCoreError DeleteFolder(const std::string &folder_path) = 0;
 
@@ -63,6 +61,14 @@ class FolderManager {
   virtual VxCoreError TagFile(const std::string &file_path, const std::string &tag_name) = 0;
 
   virtual VxCoreError UntagFile(const std::string &file_path, const std::string &tag_name) = 0;
+
+  // Get file attachments as JSON array
+  virtual VxCoreError GetFileAttachments(const std::string &file_path,
+                                         std::string &out_attachments_json) = 0;
+
+  // Update file attachments from JSON array
+  virtual VxCoreError UpdateFileAttachments(const std::string &file_path,
+                                            const std::string &attachments_json) = 0;
 
   virtual VxCoreError GetFileInfo(const std::string &file_path,
                                   std::string &out_file_info_json) = 0;
@@ -123,17 +129,9 @@ class FolderManager {
   // Config can be: simple folder name, relative path, or absolute path.
   std::string GetPublicAssetsFolder(const std::string &file_path) const;
 
-  // Get the public attachments folder path for a file.
-  // The path is resolved based on notebook's attachmentsFolder config and file's parent folder.
-  std::string GetPublicAttachmentsFolder(const std::string &file_path) const;
-
   // Get the concrete assets folder path for a file (public folder + file's UUID).
   // Returns empty string if file not found.
   std::string GetAssetsFolder(const std::string &file_path);
-
-  // Get the concrete attachments folder path for a file (public folder + file's UUID).
-  // Returns empty string if file not found.
-  std::string GetAttachmentsFolder(const std::string &file_path);
 
   // Get an available name for a new node (file or folder) in a folder.
   // If new_name is available, returns it directly.

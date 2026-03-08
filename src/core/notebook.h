@@ -32,7 +32,6 @@ struct NotebookConfig {
   std::string name;
   std::string description;
   std::string assets_folder;
-  std::string attachments_folder;
   nlohmann::json metadata;
   std::vector<TagNode> tags;
   int64_t tags_modified_utc;
@@ -80,7 +79,6 @@ class Notebook {
   // Closes the notebook, releasing all resources (DB connections, etc.).
   // Must be called before deleting the notebook's local data folder.
   void Close();
-
 
   VxCoreError CreateTag(const std::string &tag_name, const std::string &parent_tag = "");
   VxCoreError CreateTagPath(const std::string &tag_path);

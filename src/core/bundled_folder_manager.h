@@ -1,8 +1,8 @@
 #ifndef VXCORE_BUNDLED_FOLDER_MANAGER_H
 #define VXCORE_BUNDLED_FOLDER_MANAGER_H
 
-#include <map>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <string>
 
@@ -55,6 +55,12 @@ class BundledFolderManager : public FolderManager {
   VxCoreError TagFile(const std::string &file_path, const std::string &tag_name) override;
 
   VxCoreError UntagFile(const std::string &file_path, const std::string &tag_name) override;
+
+  VxCoreError GetFileAttachments(const std::string &file_path,
+                                 std::string &out_attachments_json) override;
+
+  VxCoreError UpdateFileAttachments(const std::string &file_path,
+                                    const std::string &attachments_json) override;
 
   VxCoreError GetFileInfo(const std::string &file_path, std::string &out_file_info_json) override;
 
