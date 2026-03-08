@@ -13,6 +13,7 @@
 namespace vxcore {
 
 class ConfigManager;
+class IBufferProvider;
 class NotebookManager;
 
 class BufferManager {
@@ -21,6 +22,8 @@ class BufferManager {
   ~BufferManager();
 
   // Open a buffer for a file, returns buffer ID (or existing ID if already open)
+  // For notebook files: notebook_id is the notebook ID, file_path is relative to notebook root
+  // For external files: notebook_id is empty, file_path is absolute path
   std::string OpenBuffer(const std::string &notebook_id, const std::string &file_path);
 
   // Close a buffer and free its content
@@ -30,7 +33,7 @@ class BufferManager {
   Buffer *GetBuffer(const std::string &id);
 
   // List all open buffers
-  std::vector<Buffer> ListBuffers();
+  std::vector<Buffer *> ListBuffers();
 
   // Find buffer by path for de-duplication (returns buffer ID or empty string)
   std::string FindBufferByPath(const std::string &notebook_id, const std::string &file_path);
@@ -57,10 +60,12 @@ class BufferManager {
   int64_t GetAutoSaveInterval() const { return auto_save_interval_ms_; }
   void SetAutoSaveInterval(int64_t interval_ms) { auto_save_interval_ms_ = interval_ms; }
 
+  // Get provider for a buffer (returns nullptr if unsupported or not found)
+  IBufferProvider *GetProvider(const std::string &buffer_id);
+
  private:
   void LoadBuffers();
   void SaveBuffers();
-  std::string ResolveFullPath(const std::string &notebook_id, const std::string &file_path);
 
   ConfigManager *config_manager_ = nullptr;
   NotebookManager *notebook_manager_ = nullptr;

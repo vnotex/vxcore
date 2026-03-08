@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "buffer_provider.h"
 #include "config_manager.h"
 #include "notebook.h"
 #include "notebook_manager.h"
@@ -23,12 +24,34 @@ void BufferManager::LoadBuffers() {
   buffers_.clear();
 
   for (const auto &record : session_config.buffers) {
-    auto buffer = std::make_unique<Buffer>();
-    buffer->id = record.id;
-    buffer->notebook_id = record.notebook_id;
-    buffer->file_path = record.file_path;
-    buffers_[buffer->id] = std::move(buffer);
-    VXCORE_LOG_DEBUG("Loaded buffer: id=%s, notebook_id=%s, file_path=%s", record.id.c_str(),
+    // Resolve notebook pointer if notebook_id is not empty
+    Notebook *notebook = nullptr;
+    if (!record.notebook_id.empty()) {
+      notebook = notebook_manager_->GetNotebook(record.notebook_id);
+      // Note: notebook may be null if it was closed/deleted since last session
+    }
+
+    std::unique_ptr<Buffer> buffer;
+    if (notebook) {
+      buffer = std::make_unique<Buffer>(notebook, record.file_path);
+    } else if (record.notebook_id.empty()) {
+      // External file
+      buffer = std::make_unique<Buffer>(record.file_path);
+    } else {
+      // Notebook not found - skip this buffer
+      VXCORE_LOG_WARN("Skipping buffer: notebook not found: notebook_id=%s, file_path=%s",
+                      record.notebook_id.c_str(), record.file_path.c_str());
+      continue;
+    }
+
+    // Restore the original buffer ID from session config
+    if (!record.id.empty()) {
+      buffer->SetId(record.id);
+    }
+
+    std::string id = buffer->GetId();
+    buffers_[id] = std::move(buffer);
+    VXCORE_LOG_DEBUG("Loaded buffer: id=%s, notebook_id=%s, file_path=%s", id.c_str(),
                      record.notebook_id.c_str(), record.file_path.c_str());
   }
 
@@ -41,9 +64,9 @@ void BufferManager::SaveBuffers() {
 
   for (const auto &pair : buffers_) {
     BufferRecord record;
-    record.id = pair.second->id;
-    record.notebook_id = pair.second->notebook_id;
-    record.file_path = pair.second->file_path;
+    record.id = pair.second->GetId();
+    record.notebook_id = pair.second->GetNotebookId();
+    record.file_path = pair.second->GetFilePath();
     session_config.buffers.push_back(record);
   }
 
@@ -51,29 +74,12 @@ void BufferManager::SaveBuffers() {
   VXCORE_LOG_DEBUG("Saved %zu buffers to session", buffers_.size());
 }
 
-std::string BufferManager::ResolveFullPath(const std::string &notebook_id,
-                                           const std::string &file_path) {
-  if (notebook_id.empty()) {
-    // External file - file_path is absolute
-    return file_path;
-  }
-
-  // Notebook file - resolve relative to notebook root
-  auto *notebook = notebook_manager_->GetNotebook(notebook_id);
-  if (!notebook) {
-    VXCORE_LOG_ERROR("Cannot resolve path: notebook not found: %s", notebook_id.c_str());
-    return "";
-  }
-
-  return ConcatenatePaths(notebook->GetRootFolder(), file_path);
-}
-
 std::string BufferManager::FindBufferByPath(const std::string &notebook_id,
                                             const std::string &file_path) {
   for (const auto &pair : buffers_) {
     const auto &buffer = pair.second;
-    if (buffer->notebook_id == notebook_id && buffer->file_path == file_path) {
-      return buffer->id;
+    if (buffer->GetNotebookId() == notebook_id && buffer->GetFilePath() == file_path) {
+      return buffer->GetId();
     }
   }
   return "";
@@ -88,13 +94,26 @@ std::string BufferManager::OpenBuffer(const std::string &notebook_id,
     return existing_id;
   }
 
-  // Create new buffer (content loaded lazily on first access)
-  auto buffer = std::make_unique<Buffer>();
-  buffer->id = GenerateUUID();
-  buffer->notebook_id = notebook_id;
-  buffer->file_path = file_path;
+  // Resolve notebook pointer for validation
+  Notebook *notebook = nullptr;
+  if (!notebook_id.empty()) {
+    notebook = notebook_manager_->GetNotebook(notebook_id);
+    if (!notebook) {
+      VXCORE_LOG_ERROR("Cannot open buffer: notebook not found: %s", notebook_id.c_str());
+      return "";
+    }
+  }
 
-  std::string id = buffer->id;
+  // Create new buffer (content loaded lazily on first access)
+  std::unique_ptr<Buffer> buffer;
+  if (notebook) {
+    buffer = std::make_unique<Buffer>(notebook, file_path);
+  } else {
+    // External file - file_path is absolute
+    buffer = std::make_unique<Buffer>(file_path);
+  }
+
+  std::string id = buffer->GetId();
   buffers_[id] = std::move(buffer);
 
   SaveBuffers();
@@ -124,11 +143,11 @@ Buffer *BufferManager::GetBuffer(const std::string &id) {
   return it->second.get();
 }
 
-std::vector<Buffer> BufferManager::ListBuffers() {
-  std::vector<Buffer> result;
+std::vector<Buffer *> BufferManager::ListBuffers() {
+  std::vector<Buffer *> result;
   result.reserve(buffers_.size());
   for (const auto &pair : buffers_) {
-    result.push_back(*pair.second);
+    result.push_back(pair.second.get());
   }
   return result;
 }
@@ -141,7 +160,7 @@ VxCoreError BufferManager::SaveBuffer(const std::string &id) {
   }
 
   // Resolve full path for saving
-  std::string full_path = ResolveFullPath(buffer->notebook_id, buffer->file_path);
+  std::string full_path = buffer->ResolveFullPath();
   if (full_path.empty()) {
     VXCORE_LOG_ERROR("Cannot save: failed to resolve path for buffer: id=%s", id.c_str());
     return VXCORE_ERR_IO;
@@ -149,11 +168,11 @@ VxCoreError BufferManager::SaveBuffer(const std::string &id) {
   buffer->SaveContent(full_path);
 
   // Check if save succeeded
-  if (buffer->state == VXCORE_BUFFER_SAVE_FAILED) {
+  if (buffer->GetState() == VXCORE_BUFFER_SAVE_FAILED) {
     return VXCORE_ERR_IO;
   }
 
-  VXCORE_LOG_INFO("Saved buffer: id=%s, revision=%d", id.c_str(), buffer->revision);
+  VXCORE_LOG_INFO("Saved buffer: id=%s, revision=%d", id.c_str(), buffer->GetRevision());
   return VXCORE_OK;
 }
 
@@ -165,7 +184,7 @@ VxCoreError BufferManager::ReloadBuffer(const std::string &id) {
   }
 
   // Resolve full path for loading
-  std::string full_path = ResolveFullPath(buffer->notebook_id, buffer->file_path);
+  std::string full_path = buffer->ResolveFullPath();
   if (full_path.empty()) {
     VXCORE_LOG_ERROR("Cannot reload: failed to resolve path for buffer: id=%s", id.c_str());
     return VXCORE_ERR_NOT_FOUND;
@@ -173,11 +192,11 @@ VxCoreError BufferManager::ReloadBuffer(const std::string &id) {
   buffer->LoadContent(full_path);
 
   // Check if load succeeded
-  if (buffer->state == VXCORE_BUFFER_FILE_MISSING) {
+  if (buffer->GetState() == VXCORE_BUFFER_FILE_MISSING) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
-  VXCORE_LOG_INFO("Reloaded buffer: id=%s, %zu bytes", id.c_str(), buffer->content.size());
+  VXCORE_LOG_INFO("Reloaded buffer: id=%s, %zu bytes", id.c_str(), buffer->GetContent().size());
   return VXCORE_OK;
 }
 
@@ -194,20 +213,20 @@ VxCoreError BufferManager::GetBufferContent(const std::string &id, const void **
   }
 
   // Lazy load content if not yet loaded
-  if (!buffer->content_loaded) {
-    std::string full_path = ResolveFullPath(buffer->notebook_id, buffer->file_path);
+  if (!buffer->IsContentLoaded()) {
+    std::string full_path = buffer->ResolveFullPath();
     if (full_path.empty()) {
       VXCORE_LOG_ERROR("Cannot load content: failed to resolve path for buffer: id=%s", id.c_str());
       return VXCORE_ERR_NOT_FOUND;
     }
     buffer->LoadContent(full_path);
-    if (buffer->state == VXCORE_BUFFER_FILE_MISSING) {
+    if (buffer->GetState() == VXCORE_BUFFER_FILE_MISSING) {
       return VXCORE_ERR_NOT_FOUND;
     }
   }
 
-  *out_data = buffer->content.data();
-  *out_size = buffer->content.size();
+  *out_data = buffer->GetContent().data();
+  *out_size = buffer->GetContent().size();
   return VXCORE_OK;
 }
 
@@ -237,18 +256,19 @@ void BufferManager::AutoSaveTick() {
 
   for (const auto &pair : buffers_) {
     auto *buffer = pair.second.get();
-    if (!buffer->modified) {
+    if (!buffer->IsModified()) {
       continue;
     }
 
     // Check if enough time has passed since last modification
-    int64_t time_since_modification = current_time - buffer->last_modified_time;
+    int64_t time_since_modification = current_time - buffer->GetLastModifiedTime();
     if (time_since_modification >= auto_save_interval_ms_) {
-      VxCoreError err = SaveBuffer(buffer->id);
+      VxCoreError err = SaveBuffer(buffer->GetId());
       if (err == VXCORE_OK) {
         saved_count++;
       } else {
-        VXCORE_LOG_WARN("Auto-save failed for buffer: id=%s, error=%d", buffer->id.c_str(), err);
+        VXCORE_LOG_WARN("Auto-save failed for buffer: id=%s, error=%d", buffer->GetId().c_str(),
+                        err);
       }
     }
   }
@@ -263,7 +283,7 @@ void BufferManager::CloseBuffersForNotebook(const std::string &notebook_id) {
 
   // Collect buffer IDs to close
   for (const auto &pair : buffers_) {
-    if (pair.second->notebook_id == notebook_id) {
+    if (pair.second->GetNotebookId() == notebook_id) {
       to_close.push_back(pair.first);
     }
   }
@@ -276,6 +296,16 @@ void BufferManager::CloseBuffersForNotebook(const std::string &notebook_id) {
   if (!to_close.empty()) {
     VXCORE_LOG_INFO("Closed %zu buffers for notebook: id=%s", to_close.size(), notebook_id.c_str());
   }
+}
+
+IBufferProvider *BufferManager::GetProvider(const std::string &buffer_id) {
+  auto *buffer = GetBuffer(buffer_id);
+  if (!buffer) {
+    VXCORE_LOG_ERROR("Cannot get provider: buffer not found: id=%s", buffer_id.c_str());
+    return nullptr;
+  }
+
+  return buffer->GetProvider();
 }
 
 }  // namespace vxcore

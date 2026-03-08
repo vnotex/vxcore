@@ -417,6 +417,113 @@ VXCORE_API VxCoreError vxcore_buffer_auto_save_tick(VxCoreContextHandle context)
 VXCORE_API VxCoreError vxcore_buffer_set_auto_save_interval(VxCoreContextHandle context,
                                                             int64_t interval_ms);
 
+// ============ Buffer Asset Operations (Filesystem Only) ============
+// Asset operations only touch the filesystem, they do NOT modify attachment metadata.
+// Use these for embedding inline content (images, diagrams) that don't need tracking.
+
+// Insert binary data as an asset file (NO attachment tracking).
+// Creates assets folder lazily if it doesn't exist.
+// If asset_name already exists, a unique name is generated (e.g., image_1.png).
+//
+// buffer_id: ID of an open buffer
+// asset_name: Desired filename (e.g., "screenshot.png")
+// data: Binary content to write
+// data_size: Size of data in bytes
+// out_relative_path: Receives the relative path for embedding in content
+//                    (e.g., "vx_assets/<uuid>/screenshot.png" for notebook files,
+//                     or "<filename>_assets/screenshot.png" for external files)
+//                    Caller must free with vxcore_string_free.
+// Returns VXCORE_ERR_BUFFER_NOT_FOUND if buffer doesn't exist.
+// Returns VXCORE_ERR_UNSUPPORTED for raw notebooks.
+// Returns VXCORE_ERR_IO on filesystem error.
+VXCORE_API VxCoreError vxcore_buffer_insert_asset_raw(VxCoreContextHandle context,
+                                                      const char *buffer_id, const char *asset_name,
+                                                      const void *data, size_t data_size,
+                                                      char **out_relative_path);
+
+// Copy a file to assets folder (NO attachment tracking).
+// Creates assets folder lazily if it doesn't exist.
+// If filename already exists, a unique name is generated.
+//
+// source_path: Absolute path to source file
+// out_relative_path: Receives the relative path for embedding in content
+//                    Caller must free with vxcore_string_free.
+VXCORE_API VxCoreError vxcore_buffer_insert_asset(VxCoreContextHandle context,
+                                                  const char *buffer_id, const char *source_path,
+                                                  char **out_relative_path);
+
+// Delete an asset file from the buffer's assets folder (NO attachment tracking).
+// Does NOT touch attachment metadata.
+//
+// relative_path: Path as returned by vxcore_buffer_insert_asset*
+// Returns VXCORE_ERR_NOT_FOUND if asset doesn't exist.
+VXCORE_API VxCoreError vxcore_buffer_delete_asset(VxCoreContextHandle context,
+                                                  const char *buffer_id, const char *relative_path);
+
+// Get absolute path to the buffer's assets folder.
+// Creates folder lazily if it doesn't exist.
+//
+// out_path: Receives absolute filesystem path.
+//           Caller must free with vxcore_string_free.
+VXCORE_API VxCoreError vxcore_buffer_get_assets_folder(VxCoreContextHandle context,
+                                                       const char *buffer_id, char **out_path);
+
+// ============ Buffer Attachment Operations (Filesystem + Metadata) ============
+// Attachment operations modify both filesystem and attachment metadata.
+// Use these for files that need to be tracked (downloadable attachments).
+
+// Copy a file to attachments folder and add to attachment list.
+// For notebook files: copies file + adds to FileRecord.attachments
+// For external files: copies file only (no metadata tracking available)
+//
+// source_path: Absolute path to source file
+// out_filename: Receives just the filename (not full path)
+//               Caller must free with vxcore_string_free.
+VXCORE_API VxCoreError vxcore_buffer_insert_attachment(VxCoreContextHandle context,
+                                                       const char *buffer_id,
+                                                       const char *source_path,
+                                                       char **out_filename);
+
+// Delete an attachment file and remove from attachment list.
+//
+// filename: Just the filename (not full path)
+// Returns VXCORE_ERR_NOT_FOUND if attachment doesn't exist.
+VXCORE_API VxCoreError vxcore_buffer_delete_attachment(VxCoreContextHandle context,
+                                                       const char *buffer_id, const char *filename);
+
+// Rename an attachment file and update attachment list.
+// If new_filename already exists, a unique name is generated.
+//
+// old_filename: Current filename
+// new_filename: New filename
+// out_new_filename: Receives the actual new filename (may differ if collision)
+//                   Caller must free with vxcore_string_free.
+VXCORE_API VxCoreError vxcore_buffer_rename_attachment(VxCoreContextHandle context,
+                                                       const char *buffer_id,
+                                                       const char *old_filename,
+                                                       const char *new_filename,
+                                                       char **out_new_filename);
+
+// List all attachments (from metadata, not filesystem scan).
+// For notebook files: returns FileRecord.attachments
+// For external files: returns filesystem listing (no metadata)
+// Returns JSON array of filenames (not full paths).
+//
+// out_attachments_json: Receives JSON array (e.g., ["doc.pdf", "data.zip", ...])
+//                       Caller must free with vxcore_string_free.
+VXCORE_API VxCoreError vxcore_buffer_list_attachments(VxCoreContextHandle context,
+                                                      const char *buffer_id,
+                                                      char **out_attachments_json);
+
+// Get absolute path to the buffer's attachments folder.
+// Creates folder lazily if it doesn't exist.
+// (Same folder as assets folder - attachments and assets share location)
+//
+// out_path: Receives absolute filesystem path.
+//           Caller must free with vxcore_string_free.
+VXCORE_API VxCoreError vxcore_buffer_get_attachments_folder(VxCoreContextHandle context,
+                                                            const char *buffer_id, char **out_path);
+
 VXCORE_API void vxcore_string_free(char *str);
 
 #ifdef __cplusplus

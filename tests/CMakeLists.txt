@@ -81,6 +81,8 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/vxcore_session_config.cpp
     ${CMAKE_SOURCE_DIR}/src/core/filetype_config.cpp
     ${CMAKE_SOURCE_DIR}/src/core/buffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/standard_buffer_provider.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/external_buffer_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/core/workspace.cpp
     ${CMAKE_SOURCE_DIR}/src/db/db_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/db/file_db.cpp

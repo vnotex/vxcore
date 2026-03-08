@@ -5,6 +5,7 @@
 
 #include "api/api_utils.h"
 #include "core/buffer_manager.h"
+#include "core/buffer_provider.h"
 #include "core/context.h"
 #include "utils/base64.h"
 #include "vxcore/vxcore.h"
@@ -73,9 +74,19 @@ VXCORE_API VxCoreError vxcore_buffer_get(VxCoreContextHandle context, const char
       return VXCORE_ERR_BUFFER_NOT_FOUND;
     }
 
-    // Return JSON without content (content retrieved separately)
-    nlohmann::json json = buffer->ToJson();
-    json.erase("content");  // Remove large content field
+    // Build JSON manually (Buffer is now a class, not struct with ToJson)
+    nlohmann::json json = nlohmann::json::object();
+    json["id"] = buffer->GetId();
+    json["notebookId"] = buffer->GetNotebookId();
+    json["filePath"] = buffer->GetFilePath();
+    json["revision"] = buffer->GetRevision();
+    json["modified"] = buffer->IsModified();
+    json["state"] = static_cast<int>(buffer->GetState());
+    json["metadata"] = buffer->GetMetadata();
+    json["lastModifiedTime"] = buffer->GetLastModifiedTime();
+    json["contentLoaded"] = buffer->IsContentLoaded();
+    // Note: content field omitted (retrieved separately via get_content APIs)
+
     std::string json_str = json.dump();
     *out_json = vxcore_strdup(json_str.c_str());
     return VXCORE_OK;
@@ -101,9 +112,17 @@ VXCORE_API VxCoreError vxcore_buffer_list(VxCoreContextHandle context, char **ou
   try {
     auto buffers = ctx->buffer_manager->ListBuffers();
     nlohmann::json json = nlohmann::json::array();
-    for (const auto &buf : buffers) {
-      nlohmann::json buf_json = buf.ToJson();
-      buf_json.erase("content");  // Remove large content field
+    for (const auto *buf : buffers) {
+      nlohmann::json buf_json = nlohmann::json::object();
+      buf_json["id"] = buf->GetId();
+      buf_json["notebookId"] = buf->GetNotebookId();
+      buf_json["filePath"] = buf->GetFilePath();
+      buf_json["revision"] = buf->GetRevision();
+      buf_json["modified"] = buf->IsModified();
+      buf_json["state"] = static_cast<int>(buf->GetState());
+      buf_json["metadata"] = buf->GetMetadata();
+      buf_json["lastModifiedTime"] = buf->GetLastModifiedTime();
+      buf_json["contentLoaded"] = buf->IsContentLoaded();
       json.push_back(buf_json);
     }
     std::string json_str = json.dump();
@@ -303,7 +322,7 @@ VXCORE_API VxCoreError vxcore_buffer_get_state(VxCoreContextHandle context, cons
       return VXCORE_ERR_BUFFER_NOT_FOUND;
     }
 
-    *out_state = buffer->state;
+    *out_state = buffer->GetState();
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
@@ -329,7 +348,7 @@ VXCORE_API VxCoreError vxcore_buffer_is_modified(VxCoreContextHandle context, co
       return VXCORE_ERR_BUFFER_NOT_FOUND;
     }
 
-    *out_modified = buffer->modified ? 1 : 0;
+    *out_modified = buffer->IsModified() ? 1 : 0;
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
@@ -372,6 +391,322 @@ VXCORE_API VxCoreError vxcore_buffer_set_auto_save_interval(VxCoreContextHandle 
 
   try {
     ctx->buffer_manager->SetAutoSaveInterval(interval_ms);
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+// ============ Buffer Asset Operations (Filesystem Only) ============
+
+VXCORE_API VxCoreError vxcore_buffer_insert_asset_raw(VxCoreContextHandle context,
+                                                      const char *buffer_id, const char *asset_name,
+                                                      const void *data, size_t data_size,
+                                                      char **out_relative_path) {
+  if (!context || !buffer_id || !asset_name || !data || !out_relative_path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
+    if (!provider) {
+      ctx->last_error = "Buffer provider not available (unsupported notebook type)";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    std::vector<uint8_t> data_vec(static_cast<const uint8_t *>(data),
+                                  static_cast<const uint8_t *>(data) + data_size);
+    std::string relative_path;
+    VxCoreError err = provider->InsertAssetRaw(asset_name, data_vec, relative_path);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to insert asset";
+      return err;
+    }
+
+    *out_relative_path = vxcore_strdup(relative_path.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_buffer_insert_asset(VxCoreContextHandle context,
+                                                  const char *buffer_id, const char *source_path,
+                                                  char **out_relative_path) {
+  if (!context || !buffer_id || !source_path || !out_relative_path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
+    if (!provider) {
+      ctx->last_error = "Buffer provider not available (unsupported notebook type)";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    std::string relative_path;
+    VxCoreError err = provider->InsertAsset(source_path, relative_path);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to insert asset";
+      return err;
+    }
+
+    *out_relative_path = vxcore_strdup(relative_path.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_buffer_delete_asset(VxCoreContextHandle context,
+                                                  const char *buffer_id,
+                                                  const char *relative_path) {
+  if (!context || !buffer_id || !relative_path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
+    if (!provider) {
+      ctx->last_error = "Buffer provider not available (unsupported notebook type)";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    VxCoreError err = provider->DeleteAsset(relative_path);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to delete asset";
+    }
+    return err;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_buffer_get_assets_folder(VxCoreContextHandle context,
+                                                       const char *buffer_id, char **out_path) {
+  if (!context || !buffer_id || !out_path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
+    if (!provider) {
+      ctx->last_error = "Buffer provider not available (unsupported notebook type)";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    std::string path;
+    VxCoreError err = provider->GetAssetsFolder(path);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to get assets folder";
+      return err;
+    }
+
+    *out_path = vxcore_strdup(path.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+// ============ Buffer Attachment Operations (Filesystem + Metadata) ============
+
+VXCORE_API VxCoreError vxcore_buffer_insert_attachment(VxCoreContextHandle context,
+                                                       const char *buffer_id,
+                                                       const char *source_path,
+                                                       char **out_filename) {
+  if (!context || !buffer_id || !source_path || !out_filename) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
+    if (!provider) {
+      ctx->last_error = "Buffer provider not available (unsupported notebook type)";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    std::string filename;
+    VxCoreError err = provider->InsertAttachment(source_path, filename);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to insert attachment";
+      return err;
+    }
+
+    *out_filename = vxcore_strdup(filename.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_buffer_delete_attachment(VxCoreContextHandle context,
+                                                       const char *buffer_id,
+                                                       const char *filename) {
+  if (!context || !buffer_id || !filename) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
+    if (!provider) {
+      ctx->last_error = "Buffer provider not available (unsupported notebook type)";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    VxCoreError err = provider->DeleteAttachment(filename);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to delete attachment";
+    }
+    return err;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_buffer_rename_attachment(VxCoreContextHandle context,
+                                                       const char *buffer_id,
+                                                       const char *old_filename,
+                                                       const char *new_filename,
+                                                       char **out_new_filename) {
+  if (!context || !buffer_id || !old_filename || !new_filename || !out_new_filename) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
+    if (!provider) {
+      ctx->last_error = "Buffer provider not available (unsupported notebook type)";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    std::string actual_new_filename;
+    VxCoreError err = provider->RenameAttachment(old_filename, new_filename, actual_new_filename);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to rename attachment";
+      return err;
+    }
+
+    *out_new_filename = vxcore_strdup(actual_new_filename.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_buffer_list_attachments(VxCoreContextHandle context,
+                                                      const char *buffer_id,
+                                                      char **out_attachments_json) {
+  if (!context || !buffer_id || !out_attachments_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
+    if (!provider) {
+      ctx->last_error = "Buffer provider not available (unsupported notebook type)";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    std::vector<std::string> filenames;
+    VxCoreError err = provider->ListAttachments(filenames);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to list attachments";
+      return err;
+    }
+
+    nlohmann::json json_array = nlohmann::json::array();
+    for (const auto &filename : filenames) {
+      json_array.push_back(filename);
+    }
+
+    std::string json_str = json_array.dump();
+    *out_attachments_json = vxcore_strdup(json_str.c_str());
+    return VXCORE_OK;
+  } catch (const nlohmann::json::exception &e) {
+    ctx->last_error = std::string("JSON error: ") + e.what();
+    return VXCORE_ERR_JSON_SERIALIZE;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_buffer_get_attachments_folder(VxCoreContextHandle context,
+                                                            const char *buffer_id,
+                                                            char **out_path) {
+  if (!context || !buffer_id || !out_path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
+    if (!provider) {
+      ctx->last_error = "Buffer provider not available (unsupported notebook type)";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    std::string path;
+    VxCoreError err = provider->GetAttachmentsFolder(path);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to get attachments folder";
+      return err;
+    }
+
+    *out_path = vxcore_strdup(path.c_str());
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();

@@ -660,8 +660,8 @@ int test_buffer_persistence() {
   std::cout << "  Running test_buffer_persistence..." << std::endl;
   cleanup_test_dir(get_test_path("test_buffer_persist"));
 
-  std::string buffer_id_str;
   std::string notebook_id_str;
+  std::string buffer_id_str;
 
   // Create notebook, file, and buffer
   {
@@ -691,28 +691,27 @@ int test_buffer_persistence() {
     vxcore_context_destroy(ctx);  // Should save session config
   }
 
-  // Reload and verify buffer persisted
+  // Reload and verify buffer persisted with same ID
   {
     VxCoreContextHandle ctx = nullptr;
     VxCoreError err = vxcore_context_create(nullptr, &ctx);
     ASSERT_EQ(err, VXCORE_OK);
 
-    // Open the notebook
-    char *notebook_id = nullptr;
-    err = vxcore_notebook_open(ctx, get_test_path("test_buffer_persist").c_str(), &notebook_id);
-    ASSERT_EQ(err, VXCORE_OK);
-
-    // Check if buffer was restored
+    // Notebook is auto-loaded from session config during context creation.
+    // Buffer ID should be preserved across sessions.
     char *buffer_json = nullptr;
     err = vxcore_buffer_get(ctx, buffer_id_str.c_str(), &buffer_json);
     ASSERT_EQ(err, VXCORE_OK);
 
     nlohmann::json buffer_data = nlohmann::json::parse(buffer_json);
+    ASSERT(buffer_data.contains("id"));
+    ASSERT_EQ(buffer_data["id"].get<std::string>(), buffer_id_str);
     ASSERT(buffer_data.contains("filePath"));
     ASSERT_EQ(buffer_data["filePath"].get<std::string>(), "test.md");
+    ASSERT(buffer_data.contains("notebookId"));
+    ASSERT_EQ(buffer_data["notebookId"].get<std::string>(), notebook_id_str);
 
     vxcore_string_free(buffer_json);
-    vxcore_string_free(notebook_id);
     vxcore_context_destroy(ctx);
   }
 
@@ -784,6 +783,604 @@ int test_buffer_lazy_loading() {
   return 0;
 }
 
+// ============ Buffer Asset Tests (Filesystem Only) ============
+
+int test_buffer_insert_asset_raw() {
+  std::cout << "  Running test_buffer_insert_asset_raw..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_insert_asset_raw"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_insert_asset_raw").c_str(),
+                               "{\"name\":\"Asset Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a test file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Insert asset with raw binary data (does NOT add to attachment list)
+  const uint8_t image_data[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  char *relative_path = nullptr;
+  err = vxcore_buffer_insert_asset_raw(ctx, buffer_id, "screenshot.png", image_data,
+                                       sizeof(image_data), &relative_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(relative_path);
+
+  // Verify relative path format (should contain vx_assets and file uuid)
+  std::string rel_path(relative_path);
+  ASSERT_TRUE(rel_path.find("vx_assets") != std::string::npos);
+  ASSERT_TRUE(rel_path.find("screenshot.png") != std::string::npos);
+
+  // Verify file was created on disk
+  std::string notebook_root = get_test_path("test_buffer_insert_asset_raw");
+  std::string asset_abs_path = notebook_root + "/" + rel_path;
+  ASSERT_TRUE(path_exists(asset_abs_path));
+
+  // Verify NOT added to attachment list (insert_asset_raw doesn't touch metadata)
+  char *attachments_json = nullptr;
+  err = vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto json = nlohmann::json::parse(attachments_json);
+  ASSERT_EQ(json.size(), 0u);  // Should be empty
+  vxcore_string_free(attachments_json);
+
+  vxcore_string_free(relative_path);
+  vxcore_string_free(file_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_insert_asset_raw"));
+  std::cout << "  ✓ test_buffer_insert_asset_raw passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_insert_asset() {
+  std::cout << "  Running test_buffer_insert_asset..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_insert_asset"));
+  create_directory(get_test_path("test_buffer_insert_asset"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_insert_asset").c_str(),
+                               "{\"name\":\"Asset Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a test file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a source file to copy
+  std::string source_path = get_test_path("test_buffer_insert_asset") + "/source_image.png";
+  const uint8_t image_data[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  std::ofstream ofs(source_path, std::ios::binary);
+  ofs.write(reinterpret_cast<const char *>(image_data), sizeof(image_data));
+  ofs.close();
+
+  // Insert asset by copying file (does NOT add to attachment list)
+  char *relative_path = nullptr;
+  err = vxcore_buffer_insert_asset(ctx, buffer_id, source_path.c_str(), &relative_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(relative_path);
+
+  // Verify relative path format
+  std::string rel_path(relative_path);
+  ASSERT_TRUE(rel_path.find("vx_assets") != std::string::npos);
+  ASSERT_TRUE(rel_path.find("source_image.png") != std::string::npos);
+
+  // Verify file was created on disk
+  std::string notebook_root = get_test_path("test_buffer_insert_asset");
+  std::string asset_abs_path = notebook_root + "/" + rel_path;
+  ASSERT_TRUE(path_exists(asset_abs_path));
+
+  vxcore_string_free(relative_path);
+  vxcore_string_free(file_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_insert_asset"));
+  std::cout << "  ✓ test_buffer_insert_asset passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_delete_asset() {
+  std::cout << "  Running test_buffer_delete_asset..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_delete_asset"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_delete_asset").c_str(),
+                               "{\"name\":\"Asset Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a test file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Insert asset (raw - doesn't touch metadata)
+  const uint8_t data[] = {0x89, 'P', 'N', 'G'};
+  char *relative_path = nullptr;
+  err = vxcore_buffer_insert_asset_raw(ctx, buffer_id, "to_delete.png", data, sizeof(data),
+                                       &relative_path);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify file exists
+  std::string notebook_root = get_test_path("test_buffer_delete_asset");
+  std::string asset_abs_path = notebook_root + "/" + relative_path;
+  ASSERT_TRUE(path_exists(asset_abs_path));
+
+  // Delete asset (doesn't touch metadata)
+  err = vxcore_buffer_delete_asset(ctx, buffer_id, relative_path);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify file is gone
+  ASSERT_FALSE(path_exists(asset_abs_path));
+
+  vxcore_string_free(relative_path);
+  vxcore_string_free(file_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_delete_asset"));
+  std::cout << "  ✓ test_buffer_delete_asset passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_get_assets_folder() {
+  std::cout << "  Running test_buffer_get_assets_folder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_assets_folder"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_assets_folder").c_str(),
+                               "{\"name\":\"Asset Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a test file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Get assets folder (should create it lazily)
+  char *assets_folder = nullptr;
+  err = vxcore_buffer_get_assets_folder(ctx, buffer_id, &assets_folder);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(assets_folder);
+
+  // Verify folder exists
+  ASSERT_TRUE(path_exists(assets_folder));
+  ASSERT_TRUE(std::string(assets_folder).find("vx_assets") != std::string::npos);
+
+  vxcore_string_free(assets_folder);
+  vxcore_string_free(file_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_assets_folder"));
+  std::cout << "  ✓ test_buffer_get_assets_folder passed" << std::endl;
+  return 0;
+}
+
+// ============ Buffer Attachment Tests (Filesystem + Metadata) ============
+
+int test_buffer_insert_attachment() {
+  std::cout << "  Running test_buffer_insert_attachment..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_insert_attachment"));
+  create_directory(get_test_path("test_buffer_insert_attachment"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_insert_attachment").c_str(),
+                               "{\"name\":\"Attachment Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a test file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source file
+  std::string source_path = get_test_path("test_buffer_insert_attachment") + "/document.pdf";
+  write_file(source_path, "PDF content");
+
+  // Insert attachment (copies file + adds to metadata)
+  char *filename = nullptr;
+  err = vxcore_buffer_insert_attachment(ctx, buffer_id, source_path.c_str(), &filename);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(filename);
+  ASSERT_EQ(std::string(filename), "document.pdf");
+
+  // Verify attachment is in the list
+  char *attachments_json = nullptr;
+  err = vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto json = nlohmann::json::parse(attachments_json);
+  ASSERT_EQ(json.size(), 1u);
+  ASSERT_EQ(json[0].get<std::string>(), "document.pdf");
+  vxcore_string_free(attachments_json);
+
+  vxcore_string_free(filename);
+  vxcore_string_free(file_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_insert_attachment"));
+  std::cout << "  ✓ test_buffer_insert_attachment passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_delete_attachment() {
+  std::cout << "  Running test_buffer_delete_attachment..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_delete_attachment"));
+  create_directory(get_test_path("test_buffer_delete_attachment"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_delete_attachment").c_str(),
+                               "{\"name\":\"Attachment Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a test file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create and insert attachment
+  std::string source_path = get_test_path("test_buffer_delete_attachment") + "/to_delete.zip";
+  write_file(source_path, "ZIP content");
+
+  char *filename = nullptr;
+  err = vxcore_buffer_insert_attachment(ctx, buffer_id, source_path.c_str(), &filename);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify in list
+  char *attachments_json = nullptr;
+  err = vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto json = nlohmann::json::parse(attachments_json);
+  ASSERT_EQ(json.size(), 1u);
+  vxcore_string_free(attachments_json);
+
+  // Delete attachment
+  err = vxcore_buffer_delete_attachment(ctx, buffer_id, filename);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify removed from list
+  err = vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  json = nlohmann::json::parse(attachments_json);
+  ASSERT_EQ(json.size(), 0u);
+  vxcore_string_free(attachments_json);
+
+  vxcore_string_free(filename);
+  vxcore_string_free(file_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_delete_attachment"));
+  std::cout << "  ✓ test_buffer_delete_attachment passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_rename_attachment() {
+  std::cout << "  Running test_buffer_rename_attachment..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_rename_attachment"));
+  create_directory(get_test_path("test_buffer_rename_attachment"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_rename_attachment").c_str(),
+                               "{\"name\":\"Attachment Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a test file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create and insert attachment
+  std::string source_path = get_test_path("test_buffer_rename_attachment") + "/old_name.pdf";
+  write_file(source_path, "PDF content");
+
+  char *filename = nullptr;
+  err = vxcore_buffer_insert_attachment(ctx, buffer_id, source_path.c_str(), &filename);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(std::string(filename), "old_name.pdf");
+
+  // Rename attachment
+  char *new_filename = nullptr;
+  err = vxcore_buffer_rename_attachment(ctx, buffer_id, filename, "new_name.pdf", &new_filename);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(new_filename);
+  ASSERT_EQ(std::string(new_filename), "new_name.pdf");
+
+  // Verify updated in list
+  char *attachments_json = nullptr;
+  err = vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto json = nlohmann::json::parse(attachments_json);
+  ASSERT_EQ(json.size(), 1u);
+  ASSERT_EQ(json[0].get<std::string>(), "new_name.pdf");
+  vxcore_string_free(attachments_json);
+
+  vxcore_string_free(new_filename);
+  vxcore_string_free(filename);
+  vxcore_string_free(file_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_rename_attachment"));
+  std::cout << "  ✓ test_buffer_rename_attachment passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_list_attachments() {
+  std::cout << "  Running test_buffer_list_attachments..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_list_attachments"));
+  create_directory(get_test_path("test_buffer_list_attachments"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_list_attachments").c_str(),
+                               "{\"name\":\"Attachment Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a test file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create and insert multiple attachments
+  std::string source1 = get_test_path("test_buffer_list_attachments") + "/doc1.pdf";
+  std::string source2 = get_test_path("test_buffer_list_attachments") + "/doc2.zip";
+  write_file(source1, "PDF content");
+  write_file(source2, "ZIP content");
+
+  char *filename1 = nullptr;
+  char *filename2 = nullptr;
+  err = vxcore_buffer_insert_attachment(ctx, buffer_id, source1.c_str(), &filename1);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_insert_attachment(ctx, buffer_id, source2.c_str(), &filename2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // List attachments
+  char *attachments_json = nullptr;
+  err = vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(attachments_json);
+
+  auto json = nlohmann::json::parse(attachments_json);
+  ASSERT_TRUE(json.is_array());
+  ASSERT_EQ(json.size(), 2u);
+
+  vxcore_string_free(attachments_json);
+  vxcore_string_free(filename1);
+  vxcore_string_free(filename2);
+  vxcore_string_free(file_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_list_attachments"));
+  std::cout << "  ✓ test_buffer_list_attachments passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_get_attachments_folder() {
+  std::cout << "  Running test_buffer_get_attachments_folder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_attachments_folder"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_attachments_folder").c_str(),
+                               "{\"name\":\"Attachment Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a test file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Get attachments folder (should create it lazily)
+  char *attachments_folder = nullptr;
+  err = vxcore_buffer_get_attachments_folder(ctx, buffer_id, &attachments_folder);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(attachments_folder);
+
+  // Verify folder exists and is same as assets folder
+  ASSERT_TRUE(path_exists(attachments_folder));
+  ASSERT_TRUE(std::string(attachments_folder).find("vx_assets") != std::string::npos);
+
+  vxcore_string_free(attachments_folder);
+  vxcore_string_free(file_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_attachments_folder"));
+  std::cout << "  ✓ test_buffer_get_attachments_folder passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_external_asset() {
+  std::cout << "  Running test_buffer_external_asset..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_external_asset"));
+  create_directory(get_test_path("test_buffer_external_asset"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create an external file
+  std::string ext_file_path = get_test_path("test_buffer_external_asset") + "/notes.md";
+  write_file(ext_file_path, "# External Notes\n");
+
+  // Open buffer for external file (notebook_id = NULL)
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, nullptr, ext_file_path.c_str(), &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Insert asset (raw binary data)
+  const uint8_t data[] = {0x89, 'P', 'N', 'G'};
+  char *relative_path = nullptr;
+  err = vxcore_buffer_insert_asset_raw(ctx, buffer_id, "image.png", data, sizeof(data),
+                                       &relative_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(relative_path);
+
+  // Verify relative path format (should be notes_assets/image.png)
+  std::string rel_path(relative_path);
+  ASSERT_TRUE(rel_path.find("notes_assets") != std::string::npos);
+  ASSERT_TRUE(rel_path.find("image.png") != std::string::npos);
+
+  // Verify file was created
+  std::string asset_abs_path = get_test_path("test_buffer_external_asset") + "/" + rel_path;
+  ASSERT_TRUE(path_exists(asset_abs_path));
+
+  vxcore_string_free(relative_path);
+  vxcore_string_free(buffer_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_external_asset"));
+  std::cout << "  ✓ test_buffer_external_asset passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_asset_unique_name() {
+  std::cout << "  Running test_buffer_asset_unique_name..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_asset_unique"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_asset_unique").c_str(),
+                               "{\"name\":\"Asset Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a test file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Insert same-named assets multiple times (using raw)
+  const uint8_t data[] = {0x89, 'P', 'N', 'G'};
+  char *path1 = nullptr;
+  char *path2 = nullptr;
+  char *path3 = nullptr;
+
+  err = vxcore_buffer_insert_asset_raw(ctx, buffer_id, "image.png", data, sizeof(data), &path1);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_insert_asset_raw(ctx, buffer_id, "image.png", data, sizeof(data), &path2);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_insert_asset_raw(ctx, buffer_id, "image.png", data, sizeof(data), &path3);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // All paths should be different
+  ASSERT_NE(std::string(path1), std::string(path2));
+  ASSERT_NE(std::string(path2), std::string(path3));
+  ASSERT_NE(std::string(path1), std::string(path3));
+
+  // Should have image.png, image_1.png, image_2.png
+  ASSERT_TRUE(std::string(path1).find("image.png") != std::string::npos);
+  ASSERT_TRUE(std::string(path2).find("image_1.png") != std::string::npos);
+  ASSERT_TRUE(std::string(path3).find("image_2.png") != std::string::npos);
+
+  vxcore_string_free(path1);
+  vxcore_string_free(path2);
+  vxcore_string_free(path3);
+  vxcore_string_free(file_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_asset_unique"));
+  std::cout << "  ✓ test_buffer_asset_unique_name passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running buffer tests..." << std::endl;
 
@@ -804,6 +1401,23 @@ int main() {
   RUN_TEST(test_buffer_notebook_close);
   RUN_TEST(test_buffer_lazy_loading);
   RUN_TEST(test_buffer_persistence);
+
+  // Buffer Asset Tests (Filesystem Only)
+  RUN_TEST(test_buffer_insert_asset_raw);
+  RUN_TEST(test_buffer_insert_asset);
+  RUN_TEST(test_buffer_delete_asset);
+  RUN_TEST(test_buffer_get_assets_folder);
+
+  // Buffer Attachment Tests (Filesystem + Metadata)
+  RUN_TEST(test_buffer_insert_attachment);
+  RUN_TEST(test_buffer_delete_attachment);
+  RUN_TEST(test_buffer_rename_attachment);
+  RUN_TEST(test_buffer_list_attachments);
+  RUN_TEST(test_buffer_get_attachments_folder);
+
+  // External File Asset Tests
+  RUN_TEST(test_buffer_external_asset);
+  RUN_TEST(test_buffer_asset_unique_name);
 
   std::cout << "All buffer tests passed!" << std::endl;
   return 0;
