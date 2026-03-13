@@ -133,7 +133,7 @@ std::string Notebook::GetLocalDataFolder() const {
 }
 
 std::string Notebook::GetDbPath() const {
-  return ConcatenatePaths(GetMetadataFolder(), "metadata.db");
+  return ConcatenatePaths(GetLocalDataFolder(), "metadata.db");
 }
 
 VxCoreError Notebook::InitMetadataStore() {
