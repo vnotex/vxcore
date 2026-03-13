@@ -50,3 +50,5 @@ test_notebook
 .cache
 
 .sisyphus
+
+.claude
