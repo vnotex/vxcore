@@ -50,6 +50,13 @@ class BufferManager {
   // Set buffer content from raw memory
   VxCoreError SetBufferContent(const std::string &id, const void *data, size_t size);
 
+  // Backup file operations
+  VxCoreError WriteBackup(const std::string &id);
+  VxCoreError HasBackup(const std::string &id, bool &out_has_backup);
+  VxCoreError RecoverBackup(const std::string &id);
+  VxCoreError DiscardBackup(const std::string &id);
+  VxCoreError GetBackupPath(const std::string &id, std::string &out_path);
+
   // Close all buffers associated with a notebook
   void CloseBuffersForNotebook(const std::string &notebook_id);
 

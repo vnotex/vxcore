@@ -1,5 +1,6 @@
 #include "buffer.h"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -58,6 +59,121 @@ std::string Buffer::ResolveFullPath() const {
     return file_path_;
   }
   return ConcatenatePaths(notebook_->GetRootFolder(), file_path_);
+}
+
+std::string Buffer::GetBackupFilePath() {
+  if (backup_file_path_.empty()) {
+    backup_file_path_ = CleanFsPath(ResolveFullPath() + ".vswp");
+  }
+  return backup_file_path_;
+}
+
+VxCoreError Buffer::WriteBackup() {
+  if (!content_loaded_) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  try {
+    const std::string backup_path = GetBackupFilePath();
+    const std::string header = "vnotex_backup_file " + ResolveFullPath() + "|";
+
+    std::ofstream file(backup_path, std::ios::binary);
+    if (!file.is_open()) {
+      return VXCORE_ERR_IO;
+    }
+
+    if (!file.write(header.data(), static_cast<std::streamsize>(header.size()))) {
+      return VXCORE_ERR_IO;
+    }
+
+    if (!content_.empty() && !file.write(reinterpret_cast<const char *>(content_.data()),
+                                         static_cast<std::streamsize>(content_.size()))) {
+      return VXCORE_ERR_IO;
+    }
+
+    file.close();
+    if (file.fail()) {
+      return VXCORE_ERR_IO;
+    }
+
+    VXCORE_LOG_DEBUG("Wrote backup file: %s", backup_path.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("Failed to write backup for %s: %s", ResolveFullPath().c_str(), e.what());
+    return VXCORE_ERR_IO;
+  }
+}
+
+bool Buffer::HasBackup() { return std::filesystem::exists(GetBackupFilePath()); }
+
+VxCoreError Buffer::RecoverBackup() {
+  if (!HasBackup()) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  try {
+    const std::string backup_path = GetBackupFilePath();
+    std::filesystem::path fs_path(backup_path);
+
+    // Read backup file content in a scoped block to ensure the file handle is
+    // closed before we attempt to delete the backup file (required on Windows).
+    std::vector<uint8_t> backup_content;
+    {
+      std::ifstream file(fs_path, std::ios::binary | std::ios::ate);
+      if (!file.is_open()) {
+        return VXCORE_ERR_IO;
+      }
+
+      std::streamsize size = file.tellg();
+      if (size < 0) {
+        return VXCORE_ERR_IO;
+      }
+
+      file.seekg(0, std::ios::beg);
+
+      backup_content.resize(static_cast<size_t>(size));
+      if (size > 0 && !file.read(reinterpret_cast<char *>(backup_content.data()), size)) {
+        return VXCORE_ERR_IO;
+      }
+    }  // file handle closed here
+
+    const auto separator_it =
+        std::find(backup_content.begin(), backup_content.end(), static_cast<uint8_t>('|'));
+    if (separator_it == backup_content.end()) {
+      return VXCORE_ERR_IO;
+    }
+
+    content_.assign(separator_it + 1, backup_content.end());
+    content_loaded_ = true;
+    modified_ = true;
+    revision_++;
+
+    SaveContent(ResolveFullPath());
+    if (state_ == VXCORE_BUFFER_SAVE_FAILED) {
+      return VXCORE_ERR_IO;
+    }
+
+    if (!std::filesystem::remove(backup_path)) {
+      return VXCORE_ERR_IO;
+    }
+
+    VXCORE_LOG_INFO("Recovered backup file: %s", backup_path.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("Failed to recover backup for %s: %s", ResolveFullPath().c_str(), e.what());
+    return VXCORE_ERR_IO;
+  }
+}
+
+void Buffer::DiscardBackup() {
+  try {
+    const std::string backup_path = GetBackupFilePath();
+    if (std::filesystem::exists(backup_path) && std::filesystem::remove(backup_path)) {
+      VXCORE_LOG_DEBUG("Discarded backup file: %s", backup_path.c_str());
+    }
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("Failed to discard backup for %s: %s", ResolveFullPath().c_str(), e.what());
+  }
 }
 
 void Buffer::CreateProvider() {

@@ -361,37 +361,111 @@ VXCORE_API VxCoreError vxcore_buffer_is_modified(VxCoreContextHandle context, co
 // ============ Buffer Backup Operations ============
 
 VXCORE_API VxCoreError vxcore_buffer_write_backup(VxCoreContextHandle context, const char *id) {
-  (void)context;
-  (void)id;
-  return VXCORE_ERR_UNSUPPORTED;
+  if (!context || !id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    return ctx->buffer_manager->WriteBackup(id);
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
 }
 
 VXCORE_API VxCoreError vxcore_buffer_has_backup(VxCoreContextHandle context, const char *id,
                                                 int *out_has_backup) {
-  (void)context;
-  (void)id;
-  (void)out_has_backup;
-  return VXCORE_ERR_UNSUPPORTED;
+  if (!context || !id || !out_has_backup) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    bool has_backup = false;
+    VxCoreError err = ctx->buffer_manager->HasBackup(id, has_backup);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to check backup";
+      return err;
+    }
+
+    *out_has_backup = has_backup ? 1 : 0;
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
 }
 
 VXCORE_API VxCoreError vxcore_buffer_recover_backup(VxCoreContextHandle context, const char *id) {
-  (void)context;
-  (void)id;
-  return VXCORE_ERR_UNSUPPORTED;
+  if (!context || !id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    return ctx->buffer_manager->RecoverBackup(id);
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
 }
 
 VXCORE_API VxCoreError vxcore_buffer_discard_backup(VxCoreContextHandle context, const char *id) {
-  (void)context;
-  (void)id;
-  return VXCORE_ERR_UNSUPPORTED;
+  if (!context || !id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    return ctx->buffer_manager->DiscardBackup(id);
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
 }
 
 VXCORE_API VxCoreError vxcore_buffer_get_backup_path(VxCoreContextHandle context, const char *id,
                                                      char **out_path) {
-  (void)context;
-  (void)id;
-  (void)out_path;
-  return VXCORE_ERR_UNSUPPORTED;
+  if (!context || !id || !out_path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    std::string path;
+    VxCoreError err = ctx->buffer_manager->GetBackupPath(id, path);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to get backup path";
+      return err;
+    }
+
+    *out_path = strdup(path.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
 }
 
 // ============ Buffer Asset Operations (Filesystem Only) ============

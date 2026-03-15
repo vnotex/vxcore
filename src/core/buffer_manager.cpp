@@ -284,6 +284,67 @@ VxCoreError BufferManager::SetBufferContent(const std::string &id, const void *d
   return VXCORE_OK;
 }
 
+VxCoreError BufferManager::WriteBackup(const std::string &id) {
+  auto *buffer = GetBuffer(id);
+  if (!buffer) {
+    VXCORE_LOG_ERROR("Cannot write backup: buffer not found: id=%s", id.c_str());
+    return VXCORE_ERR_BUFFER_NOT_FOUND;
+  }
+
+  VxCoreError err = buffer->WriteBackup();
+  VXCORE_LOG_INFO("Write backup for buffer: id=%s, err=%d", id.c_str(), static_cast<int>(err));
+  return err;
+}
+
+VxCoreError BufferManager::HasBackup(const std::string &id, bool &out_has_backup) {
+  auto *buffer = GetBuffer(id);
+  if (!buffer) {
+    VXCORE_LOG_ERROR("Cannot check backup: buffer not found: id=%s", id.c_str());
+    return VXCORE_ERR_BUFFER_NOT_FOUND;
+  }
+
+  out_has_backup = buffer->HasBackup();
+  VXCORE_LOG_DEBUG("Checked backup for buffer: id=%s, has_backup=%d", id.c_str(),
+                   out_has_backup ? 1 : 0);
+  return VXCORE_OK;
+}
+
+VxCoreError BufferManager::RecoverBackup(const std::string &id) {
+  auto *buffer = GetBuffer(id);
+  if (!buffer) {
+    VXCORE_LOG_ERROR("Cannot recover backup: buffer not found: id=%s", id.c_str());
+    return VXCORE_ERR_BUFFER_NOT_FOUND;
+  }
+
+  VxCoreError err = buffer->RecoverBackup();
+  VXCORE_LOG_INFO("Recover backup for buffer: id=%s, err=%d", id.c_str(), static_cast<int>(err));
+  return err;
+}
+
+VxCoreError BufferManager::DiscardBackup(const std::string &id) {
+  auto *buffer = GetBuffer(id);
+  if (!buffer) {
+    VXCORE_LOG_ERROR("Cannot discard backup: buffer not found: id=%s", id.c_str());
+    return VXCORE_ERR_BUFFER_NOT_FOUND;
+  }
+
+  buffer->DiscardBackup();
+  VXCORE_LOG_INFO("Discarded backup for buffer: id=%s", id.c_str());
+  return VXCORE_OK;
+}
+
+VxCoreError BufferManager::GetBackupPath(const std::string &id, std::string &out_path) {
+  auto *buffer = GetBuffer(id);
+  if (!buffer) {
+    VXCORE_LOG_ERROR("Cannot get backup path: buffer not found: id=%s", id.c_str());
+    return VXCORE_ERR_BUFFER_NOT_FOUND;
+  }
+
+  out_path = buffer->GetBackupFilePath();
+  VXCORE_LOG_DEBUG("Got backup path for buffer: id=%s, path=%s", id.c_str(), out_path.c_str());
+  return VXCORE_OK;
+}
+
 void BufferManager::CloseBuffersForNotebook(const std::string &notebook_id) {
   std::vector<std::string> to_close;
 

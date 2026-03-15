@@ -54,6 +54,13 @@ class Buffer {
   // Resolve full path (uses notebook root if available, else file_path as-is)
   std::string ResolveFullPath() const;
 
+  // Backup file operations
+  std::string GetBackupFilePath();
+  VxCoreError WriteBackup();
+  bool HasBackup();
+  VxCoreError RecoverBackup();
+  void DiscardBackup();
+
  private:
   friend class BufferManager;  // Allow BufferManager to set ID during reload
 
@@ -77,6 +84,7 @@ class Buffer {
   int64_t last_modified_time_;    // File timestamp for change detection
   bool content_loaded_;           // True if content has been loaded from disk
   std::unique_ptr<IBufferProvider> provider_;
+  std::string backup_file_path_;  // Cached backup file path (<full_path>.vswp)
 };
 
 struct BufferRecord {
