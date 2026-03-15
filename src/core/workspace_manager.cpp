@@ -42,7 +42,10 @@ void WorkspaceManager::LoadWorkspaces() {
     // Filter buffer_ids to only include IDs that exist in BufferManager
     if (buffer_manager_) {
       for (const auto &buf_id : record.buffer_ids) {
-        if (buffer_manager_->GetBuffer(buf_id) != nullptr) {
+        bool found = (buffer_manager_->GetBuffer(buf_id) != nullptr);
+        VXCORE_LOG_INFO("LoadWorkspaces: ws='%s' checking buffer '%s': found=%d",
+                        record.name.c_str(), buf_id.c_str(), found ? 1 : 0);
+        if (found) {
           workspace->buffer_ids.push_back(buf_id);
         } else {
           VXCORE_LOG_WARN("Workspace '%s': skipping missing buffer: %s", record.name.c_str(),

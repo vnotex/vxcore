@@ -36,6 +36,9 @@ void BufferManager::LoadBuffers() {
   }
 
   for (const auto &record : session_config.buffers) {
+    VXCORE_LOG_INFO("LoadBuffers: processing record id=%s, notebook_id=%s, file_path=%s",
+                    record.id.c_str(), record.notebook_id.c_str(), record.file_path.c_str());
+
     // Resolve notebook pointer if notebook_id is not empty
     Notebook *notebook = nullptr;
     if (!record.notebook_id.empty()) {
@@ -55,7 +58,11 @@ void BufferManager::LoadBuffers() {
       full_path = record.file_path;
     }
 
-    if (!std::filesystem::exists(full_path)) {
+    bool exists = std::filesystem::exists(full_path);
+    VXCORE_LOG_INFO("LoadBuffers: id=%s, full_path=%s, exists=%d",
+                    record.id.c_str(), full_path.c_str(), exists ? 1 : 0);
+
+    if (!exists) {
       VXCORE_LOG_WARN("Skipping buffer: file not found on disk: %s", full_path.c_str());
       continue;
     }
