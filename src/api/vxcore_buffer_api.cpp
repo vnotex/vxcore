@@ -358,6 +358,42 @@ VXCORE_API VxCoreError vxcore_buffer_is_modified(VxCoreContextHandle context, co
   }
 }
 
+// ============ Buffer Backup Operations ============
+
+VXCORE_API VxCoreError vxcore_buffer_write_backup(VxCoreContextHandle context, const char *id) {
+  (void)context;
+  (void)id;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VXCORE_API VxCoreError vxcore_buffer_has_backup(VxCoreContextHandle context, const char *id,
+                                                int *out_has_backup) {
+  (void)context;
+  (void)id;
+  (void)out_has_backup;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VXCORE_API VxCoreError vxcore_buffer_recover_backup(VxCoreContextHandle context, const char *id) {
+  (void)context;
+  (void)id;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VXCORE_API VxCoreError vxcore_buffer_discard_backup(VxCoreContextHandle context, const char *id) {
+  (void)context;
+  (void)id;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VXCORE_API VxCoreError vxcore_buffer_get_backup_path(VxCoreContextHandle context, const char *id,
+                                                     char **out_path) {
+  (void)context;
+  (void)id;
+  (void)out_path;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
 // ============ Buffer Asset Operations (Filesystem Only) ============
 
 VXCORE_API VxCoreError vxcore_buffer_insert_asset_raw(VxCoreContextHandle context,

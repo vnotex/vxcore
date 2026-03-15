@@ -1,4 +1,5 @@
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -562,6 +563,457 @@ int test_buffer_is_modified() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_buffer_modified"));
   std::cout << "  ✓ test_buffer_is_modified passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_write_backup() {
+  std::cout << "  Running test_buffer_write_backup..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_write_backup"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_write_backup");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Backup Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *content = "backup test content";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, content, strlen(content));
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_buffer_write_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string backup_path = notebook_path + "/test.md.vswp";
+  ASSERT_TRUE(std::filesystem::exists(backup_path));
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_write_backup"));
+  std::cout << "  ✓ test_buffer_write_backup passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_has_backup() {
+  std::cout << "  Running test_buffer_has_backup..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_has_backup"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_has_backup").c_str(),
+                               "{\"name\":\"Backup Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *content = "has backup content";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, content, strlen(content));
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_buffer_write_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  int has_backup = 0;
+  err = vxcore_buffer_has_backup(ctx, buffer_id, &has_backup);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(has_backup, 1);
+
+  err = vxcore_buffer_discard_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  has_backup = 1;
+  err = vxcore_buffer_has_backup(ctx, buffer_id, &has_backup);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(has_backup, 0);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_has_backup"));
+  std::cout << "  ✓ test_buffer_has_backup passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_recover_backup() {
+  std::cout << "  Running test_buffer_recover_backup..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_recover_backup"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_recover_backup");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Backup Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *original = "original";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, original, strlen(original));
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_save(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *backup_content = "modified for backup";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, backup_content, strlen(backup_content));
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_write_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *other_content = "some other content";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, other_content, strlen(other_content));
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_buffer_recover_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string file_path = notebook_path + "/test.md";
+  std::string disk_content = read_file_content(file_path);
+  ASSERT_EQ(disk_content, std::string(backup_content));
+
+  std::string backup_path = file_path + ".vswp";
+  ASSERT_FALSE(std::filesystem::exists(backup_path));
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_recover_backup"));
+  std::cout << "  ✓ test_buffer_recover_backup passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_discard_backup() {
+  std::cout << "  Running test_buffer_discard_backup..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_discard_backup"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_discard_backup").c_str(),
+                               "{\"name\":\"Backup Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *content = "discard backup content";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, content, strlen(content));
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_buffer_write_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  int has_backup = 0;
+  err = vxcore_buffer_has_backup(ctx, buffer_id, &has_backup);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(has_backup, 1);
+
+  err = vxcore_buffer_discard_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  has_backup = 1;
+  err = vxcore_buffer_has_backup(ctx, buffer_id, &has_backup);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(has_backup, 0);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_discard_backup"));
+  std::cout << "  ✓ test_buffer_discard_backup passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_get_backup_path() {
+  std::cout << "  Running test_buffer_get_backup_path..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_get_backup_path"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_get_backup_path");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Backup Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *backup_path = nullptr;
+  err = vxcore_buffer_get_backup_path(ctx, buffer_id, &backup_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(backup_path);
+
+  std::string backup_path_str = normalize_path(backup_path);
+  std::string notebook_path_str = normalize_path(notebook_path);
+  ASSERT_TRUE(backup_path_str.size() >= 5 &&
+              backup_path_str.substr(backup_path_str.size() - 5) == ".vswp");
+  ASSERT_TRUE(backup_path_str.rfind(notebook_path_str, 0) == 0);
+
+  vxcore_string_free(backup_path);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_get_backup_path"));
+  std::cout << "  ✓ test_buffer_get_backup_path passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_backup_no_content() {
+  std::cout << "  Running test_buffer_backup_no_content..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_backup_no_content"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_backup_no_content").c_str(),
+                               "{\"name\":\"Backup Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_buffer_write_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_STATE);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_backup_no_content"));
+  std::cout << "  ✓ test_buffer_backup_no_content passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_recover_no_backup() {
+  std::cout << "  Running test_buffer_recover_no_backup..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_recover_no_backup"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_recover_no_backup").c_str(),
+                               "{\"name\":\"Backup Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_buffer_recover_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_recover_no_backup"));
+  std::cout << "  ✓ test_buffer_recover_no_backup passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_discard_no_backup() {
+  std::cout << "  Running test_buffer_discard_no_backup..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_discard_no_backup"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_discard_no_backup").c_str(),
+                               "{\"name\":\"Backup Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_buffer_discard_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_discard_no_backup"));
+  std::cout << "  ✓ test_buffer_discard_no_backup passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_backup_format() {
+  std::cout << "  Running test_buffer_backup_format..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_backup_format"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_backup_format").c_str(),
+                               "{\"name\":\"Backup Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *content = "format test content";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, content, strlen(content));
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_buffer_write_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *backup_path = nullptr;
+  err = vxcore_buffer_get_backup_path(ctx, buffer_id, &backup_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(backup_path);
+
+  std::string backup_raw = read_file_content(backup_path);
+  ASSERT_TRUE(backup_raw.rfind("vnotex_backup_file ", 0) == 0);
+  size_t sep_pos = backup_raw.find('|');
+  ASSERT_NE(sep_pos, std::string::npos);
+  ASSERT_EQ(backup_raw.substr(sep_pos + 1), std::string(content));
+
+  vxcore_string_free(backup_path);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_backup_format"));
+  std::cout << "  ✓ test_buffer_backup_format passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_backup_overwrite() {
+  std::cout << "  Running test_buffer_backup_overwrite..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_backup_overwrite"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_backup_overwrite");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Backup Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *first_content = "first backup";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, first_content, strlen(first_content));
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_write_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *second_content = "second backup";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, second_content, strlen(second_content));
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_write_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *backup_path = nullptr;
+  err = vxcore_buffer_get_backup_path(ctx, buffer_id, &backup_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(backup_path);
+
+  std::string backup_raw = read_file_content(backup_path);
+  size_t sep_pos = backup_raw.find('|');
+  ASSERT_NE(sep_pos, std::string::npos);
+  ASSERT_EQ(backup_raw.substr(sep_pos + 1), std::string(second_content));
+
+  size_t vswp_count = 0;
+  for (const auto &entry : std::filesystem::directory_iterator(notebook_path)) {
+    if (entry.is_regular_file() && entry.path().extension() == ".vswp") {
+      ++vswp_count;
+    }
+  }
+  ASSERT_EQ(vswp_count, 1u);
+
+  vxcore_string_free(backup_path);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_backup_overwrite"));
+  std::cout << "  ✓ test_buffer_backup_overwrite passed" << std::endl;
   return 0;
 }
 
@@ -1345,6 +1797,18 @@ int main() {
   RUN_TEST(test_buffer_external_file);
   RUN_TEST(test_buffer_state);
   RUN_TEST(test_buffer_is_modified);
+
+  // Buffer Backup Tests
+  RUN_TEST(test_buffer_write_backup);
+  RUN_TEST(test_buffer_has_backup);
+  RUN_TEST(test_buffer_recover_backup);
+  RUN_TEST(test_buffer_discard_backup);
+  RUN_TEST(test_buffer_get_backup_path);
+  RUN_TEST(test_buffer_backup_no_content);
+  RUN_TEST(test_buffer_recover_no_backup);
+  RUN_TEST(test_buffer_discard_no_backup);
+  RUN_TEST(test_buffer_backup_format);
+  RUN_TEST(test_buffer_backup_overwrite);
 
   RUN_TEST(test_buffer_notebook_close);
   RUN_TEST(test_buffer_lazy_loading);

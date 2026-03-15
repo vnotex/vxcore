@@ -421,6 +421,32 @@ VXCORE_API VxCoreError vxcore_buffer_get_state(VxCoreContextHandle context, cons
 VXCORE_API VxCoreError vxcore_buffer_is_modified(VxCoreContextHandle context, const char *id,
                                                  int *out_modified);
 
+// ============ Buffer Backup Operations ============
+
+// Write buffer's in-memory content to a backup file (.vswp).
+// The backup file is created in the same directory as the content file.
+// Returns VXCORE_ERR_INVALID_STATE if content has not been loaded.
+// Returns VXCORE_ERR_IO on write failure.
+VXCORE_API VxCoreError vxcore_buffer_write_backup(VxCoreContextHandle context, const char *id);
+
+// Check if a backup file exists for this buffer.
+// out_has_backup: receives 1 if backup exists, 0 otherwise.
+VXCORE_API VxCoreError vxcore_buffer_has_backup(VxCoreContextHandle context, const char *id,
+                                                int *out_has_backup);
+
+// Recover buffer content from backup file, write to original file, and delete backup.
+// Returns VXCORE_ERR_NOT_FOUND if no backup file exists.
+VXCORE_API VxCoreError vxcore_buffer_recover_backup(VxCoreContextHandle context, const char *id);
+
+// Discard (delete) the backup file without recovering.
+// Returns VXCORE_OK even if no backup file exists (idempotent).
+VXCORE_API VxCoreError vxcore_buffer_discard_backup(VxCoreContextHandle context, const char *id);
+
+// Get the backup file path for this buffer.
+// out_path: receives the backup file path. Caller must free with vxcore_string_free().
+VXCORE_API VxCoreError vxcore_buffer_get_backup_path(VxCoreContextHandle context, const char *id,
+                                                     char **out_path);
+
 // ============ Buffer Asset Operations (Filesystem Only) ============
 // Asset operations only touch the filesystem, they do NOT modify attachment metadata.
 // Use these for embedding inline content (images, diagrams) that don't need tracking.
