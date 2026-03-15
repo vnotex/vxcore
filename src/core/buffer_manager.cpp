@@ -164,6 +164,9 @@ bool BufferManager::CloseBuffer(const std::string &id) {
     return false;
   }
 
+  // Clean up backup file before closing buffer
+  it->second->DiscardBackup();
+
   buffers_.erase(it);
   VXCORE_LOG_INFO("Closed buffer: id=%s", id.c_str());
   return true;
@@ -207,6 +210,12 @@ VxCoreError BufferManager::SaveBuffer(const std::string &id) {
   }
 
   VXCORE_LOG_INFO("Saved buffer: id=%s, revision=%d", id.c_str(), buffer->GetRevision());
+
+  // Clean up backup file after successful save
+  if (buffer->GetState() == VXCORE_BUFFER_NORMAL) {
+    buffer->DiscardBackup();
+  }
+
   return VXCORE_OK;
 }
 

@@ -1781,6 +1781,109 @@ int test_buffer_asset_unique_name() {
   return 0;
 }
 
+int test_buffer_backup_cleanup_on_save() {
+  std::cout << "  Running test_buffer_backup_cleanup_on_save..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_backup_cleanup_on_save"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_backup_cleanup_on_save");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Backup Cleanup Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *content = "cleanup save test";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, content, strlen(content));
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Write backup and verify it exists
+  err = vxcore_buffer_write_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string backup_path = notebook_path + "/test.md.vswp";
+  ASSERT_TRUE(std::filesystem::exists(backup_path));
+
+  // Save buffer — should auto-delete backup
+  err = vxcore_buffer_save(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify backup was auto-deleted
+  ASSERT_FALSE(std::filesystem::exists(backup_path));
+
+  // Verify original file has the saved content
+  std::string file_path = notebook_path + "/test.md";
+  std::string disk_content = read_file_content(file_path);
+  ASSERT_EQ(disk_content, std::string(content));
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_backup_cleanup_on_save"));
+  std::cout << "  ✓ test_buffer_backup_cleanup_on_save passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_backup_cleanup_on_close() {
+  std::cout << "  Running test_buffer_backup_cleanup_on_close..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_backup_cleanup_on_close"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_backup_cleanup_on_close");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Backup Cleanup Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *content = "cleanup close test";
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, content, strlen(content));
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Write backup and verify it exists
+  err = vxcore_buffer_write_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string backup_path = notebook_path + "/test.md.vswp";
+  ASSERT_TRUE(std::filesystem::exists(backup_path));
+
+  // Close buffer — should auto-delete backup
+  err = vxcore_buffer_close(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify backup was auto-deleted
+  ASSERT_FALSE(std::filesystem::exists(backup_path));
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_backup_cleanup_on_close"));
+  std::cout << "  ✓ test_buffer_backup_cleanup_on_close passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running buffer tests..." << std::endl;
 
@@ -1809,6 +1912,8 @@ int main() {
   RUN_TEST(test_buffer_discard_no_backup);
   RUN_TEST(test_buffer_backup_format);
   RUN_TEST(test_buffer_backup_overwrite);
+  RUN_TEST(test_buffer_backup_cleanup_on_save);
+  RUN_TEST(test_buffer_backup_cleanup_on_close);
 
   RUN_TEST(test_buffer_notebook_close);
   RUN_TEST(test_buffer_lazy_loading);
