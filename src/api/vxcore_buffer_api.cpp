@@ -26,6 +26,7 @@ VXCORE_API VxCoreError vxcore_buffer_open(VxCoreContextHandle context, const cha
     std::string nb_id = notebook_id ? notebook_id : "";
     std::string id = ctx->buffer_manager->OpenBuffer(nb_id, file_path);
     *out_id = vxcore_strdup(id.c_str());
+    vxcore::PersistSession(ctx);
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
@@ -49,6 +50,7 @@ VXCORE_API VxCoreError vxcore_buffer_close(VxCoreContextHandle context, const ch
       ctx->last_error = "Buffer not found";
       return VXCORE_ERR_BUFFER_NOT_FOUND;
     }
+    vxcore::PersistSession(ctx);
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();

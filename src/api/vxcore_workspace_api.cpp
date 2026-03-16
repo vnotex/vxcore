@@ -22,6 +22,7 @@ VXCORE_API VxCoreError vxcore_workspace_create(VxCoreContextHandle context, cons
   try {
     std::string id = ctx->workspace_manager->CreateWorkspace(name);
     *out_id = vxcore_strdup(id.c_str());
+    vxcore::PersistSession(ctx);
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
@@ -45,6 +46,7 @@ VXCORE_API VxCoreError vxcore_workspace_delete(VxCoreContextHandle context, cons
       ctx->last_error = "Workspace not found";
       return VXCORE_ERR_WORKSPACE_NOT_FOUND;
     }
+    vxcore::PersistSession(ctx);
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
@@ -128,6 +130,7 @@ VXCORE_API VxCoreError vxcore_workspace_rename(VxCoreContextHandle context, cons
       ctx->last_error = "Workspace not found";
       return VXCORE_ERR_WORKSPACE_NOT_FOUND;
     }
+    vxcore::PersistSession(ctx);
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
@@ -171,6 +174,7 @@ VXCORE_API VxCoreError vxcore_workspace_set_current(VxCoreContextHandle context,
       ctx->last_error = "Workspace not found";
       return VXCORE_ERR_WORKSPACE_NOT_FOUND;
     }
+    vxcore::PersistSession(ctx);
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
@@ -196,6 +200,7 @@ VXCORE_API VxCoreError vxcore_workspace_add_buffer(VxCoreContextHandle context,
       ctx->last_error = "Workspace not found or buffer already added";
       return VXCORE_ERR_WORKSPACE_NOT_FOUND;
     }
+    vxcore::PersistSession(ctx);
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
@@ -221,6 +226,7 @@ VXCORE_API VxCoreError vxcore_workspace_remove_buffer(VxCoreContextHandle contex
       ctx->last_error = "Workspace not found or buffer not in workspace";
       return VXCORE_ERR_WORKSPACE_NOT_FOUND;
     }
+    vxcore::PersistSession(ctx);
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
@@ -248,6 +254,7 @@ VXCORE_API VxCoreError vxcore_workspace_set_current_buffer(VxCoreContextHandle c
       ctx->last_error = "Workspace not found";
       return VXCORE_ERR_WORKSPACE_NOT_FOUND;
     }
+    vxcore::PersistSession(ctx);
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
@@ -287,6 +294,7 @@ VXCORE_API VxCoreError vxcore_workspace_set_buffer_order(VxCoreContextHandle con
       ctx->last_error = "Workspace not found";
       return VXCORE_ERR_WORKSPACE_NOT_FOUND;
     }
+    vxcore::PersistSession(ctx);
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &e) {
     ctx->last_error = std::string("JSON error: ") + e.what();

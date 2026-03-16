@@ -114,7 +114,6 @@ std::string WorkspaceManager::CreateWorkspace(const std::string &name) {
   std::string id = workspace->id;
   workspaces_[id] = std::move(workspace);
 
-  SaveWorkspaces();
   VXCORE_LOG_INFO("Created workspace: id=%s, name=%s", id.c_str(), name.c_str());
   return id;
 }
@@ -229,7 +228,29 @@ bool WorkspaceManager::RemoveBufferFromWorkspace(const std::string &ws_id,
 
   VXCORE_LOG_INFO("Removed buffer from workspace: ws_id=%s, buf_id=%s", ws_id.c_str(),
                   buf_id.c_str());
+
+  // Auto-close orphaned buffer (not in any workspace).
+  // Core-layer CloseBuffer does not persist to disk; the API-layer
+  // PersistSession() call after this method returns captures both
+  // the removal and the auto-close atomically.
+  if (!IsBufferInAnyWorkspace(buf_id) && buffer_manager_) {
+    VXCORE_LOG_INFO("Buffer orphaned, auto-closing: buf_id=%s", buf_id.c_str());
+    if (!buffer_manager_->CloseBuffer(buf_id)) {
+      VXCORE_LOG_WARN("Auto-close failed for orphaned buffer: buf_id=%s", buf_id.c_str());
+    }
+  }
+
   return true;
+}
+
+bool WorkspaceManager::IsBufferInAnyWorkspace(const std::string &buf_id) const {
+  for (const auto &pair : workspaces_) {
+    const auto &ids = pair.second->buffer_ids;
+    if (std::find(ids.begin(), ids.end(), buf_id) != ids.end()) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool WorkspaceManager::SetCurrentBufferInWorkspace(const std::string &ws_id,

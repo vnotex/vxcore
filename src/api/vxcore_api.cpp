@@ -413,3 +413,21 @@ VXCORE_API VxCoreError vxcore_log_enable_console(int enable) {
   vxcore::Logger::GetInstance().EnableConsole(enable != 0);
   return VXCORE_OK;
 }
+
+VXCORE_API VxCoreError vxcore_session_set_skip_sync(VxCoreContextHandle context, int skip) {
+  if (!context) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  ctx->skip_sync_to_session = (skip != 0);
+  return VXCORE_OK;
+}
+
+VXCORE_API VxCoreError vxcore_session_get_skip_sync(VxCoreContextHandle context, int *out_skip) {
+  if (!context || !out_skip) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  *out_skip = ctx->skip_sync_to_session ? 1 : 0;
+  return VXCORE_OK;
+}

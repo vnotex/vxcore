@@ -537,6 +537,17 @@ VXCORE_API VxCoreError vxcore_buffer_list_attachments(VxCoreContextHandle contex
 VXCORE_API VxCoreError vxcore_buffer_get_attachments_folder(VxCoreContextHandle context,
                                                             const char *buffer_id, char **out_path);
 
+// ============ Session Sync Control ============
+
+// Set whether session sync should be skipped after each mutation.
+// Used during shutdown to avoid N disk writes when closing N buffers.
+// skip: 1 to suppress session writes, 0 to enable (default).
+VXCORE_API VxCoreError vxcore_session_set_skip_sync(VxCoreContextHandle context, int skip);
+
+// Get current skip_sync_to_session state.
+// out_skip: receives 1 if sync is skipped, 0 otherwise.
+VXCORE_API VxCoreError vxcore_session_get_skip_sync(VxCoreContextHandle context, int *out_skip);
+
 VXCORE_API void vxcore_string_free(char *str);
 
 #ifdef __cplusplus

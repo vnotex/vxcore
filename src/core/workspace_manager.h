@@ -45,6 +45,9 @@ class WorkspaceManager {
   // Remove a buffer from a workspace, returns true if successful
   bool RemoveBufferFromWorkspace(const std::string &ws_id, const std::string &buf_id);
 
+  // Check if a buffer exists in any workspace's buffer_ids list
+  bool IsBufferInAnyWorkspace(const std::string &buf_id) const;
+
   // Set the current buffer in a workspace, returns true if successful
   bool SetCurrentBufferInWorkspace(const std::string &ws_id, const std::string &buf_id);
 

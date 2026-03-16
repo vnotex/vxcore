@@ -145,7 +145,6 @@ std::string BufferManager::OpenBuffer(const std::string &notebook_id,
   std::string id = buffer->GetId();
   buffers_[id] = std::move(buffer);
 
-  SaveBuffers();
   VXCORE_LOG_INFO("Opened buffer: id=%s, notebook_id=%s, file_path=%s", id.c_str(),
                   notebook_id.c_str(), file_path.c_str());
   return id;
