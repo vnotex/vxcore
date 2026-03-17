@@ -264,6 +264,36 @@ VXCORE_API VxCoreError vxcore_context_get_config(VxCoreContextHandle context, ch
   }
 }
 
+VXCORE_API VxCoreError vxcore_context_update_config(VxCoreContextHandle context,
+                                                     const char *config_json) {
+  if (!context || !config_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->config_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    auto json = nlohmann::json::parse(config_json);
+    auto &config = ctx->config_manager->GetConfig();
+
+    if (json.contains("recoverLastSession") && json["recoverLastSession"].is_boolean()) {
+      config.recover_last_session = json["recoverLastSession"].get<bool>();
+    }
+    // Add other top-level config fields here as needed.
+
+    return ctx->config_manager->SaveConfig();
+  } catch (const nlohmann::json::parse_error &e) {
+    ctx->last_error = std::string("JSON parse error: ") + e.what();
+    return VXCORE_ERR_JSON_PARSE;
+  } catch (...) {
+    ctx->last_error = "Unknown error updating config";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_context_get_session_config(VxCoreContextHandle context,
                                                          char **out_json) {
   if (!context || !out_json) {

@@ -47,6 +47,13 @@ VXCORE_API VxCoreError vxcore_context_get_session_config_path(VxCoreContextHandl
 
 VXCORE_API VxCoreError vxcore_context_get_config(VxCoreContextHandle context, char **out_json);
 
+// Update main configuration with the provided JSON object.
+// Merges the provided fields into the existing config and persists to disk.
+// Only recognized top-level keys are updated; unmentioned keys are preserved.
+// Currently supports: "recoverLastSession" (boolean).
+VXCORE_API VxCoreError vxcore_context_update_config(VxCoreContextHandle context,
+                                                     const char *config_json);
+
 VXCORE_API VxCoreError vxcore_context_get_session_config(VxCoreContextHandle context,
                                                          char **out_json);
 
