@@ -2289,9 +2289,8 @@ int test_buffer_rename_provider_functional() {
   ASSERT_TRUE(path_exists(post_assets_folder_str));
   ASSERT_TRUE(post_assets_folder_str.find("vx_assets") != std::string::npos);
 
-  // Assets folder should differ from pre-rename (path changed from notes/test.md to
-  // notes/renamed.md)
-  ASSERT_NE(pre_assets_folder_str, post_assets_folder_str);
+  // Assets folder uses UUID-based path, so it should NOT change on file rename
+  ASSERT_EQ(pre_assets_folder_str, post_assets_folder_str);
 
   vxcore_string_free(post_assets_folder);
 
