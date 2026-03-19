@@ -302,3 +302,34 @@ VXCORE_API VxCoreError vxcore_path_resolve(VxCoreContextHandle context, const ch
     return VXCORE_ERR_UNKNOWN;
   }
 }
+
+VXCORE_API VxCoreError vxcore_path_build_absolute(VxCoreContextHandle context,
+                                                  const char *notebook_id,
+                                                  const char *relative_path,
+                                                  char **out_absolute_path) {
+  if (!context || !notebook_id || !relative_path || !out_absolute_path) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found: " + std::string(notebook_id);
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    std::string abs_path = notebook->GetAbsolutePath(relative_path);
+    char *path_copy = vxcore_strdup(abs_path.c_str());
+    if (!path_copy) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+
+    *out_absolute_path = path_copy;
+    return VXCORE_OK;
+  } catch (...) {
+    ctx->last_error = "Unknown error building absolute path";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}

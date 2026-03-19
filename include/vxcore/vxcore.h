@@ -318,6 +318,16 @@ VXCORE_API VxCoreError vxcore_search_by_tags(VxCoreContextHandle context, const 
 VXCORE_API VxCoreError vxcore_path_resolve(VxCoreContextHandle context, const char *absolute_path,
                                            char **out_notebook_id, char **out_relative_path);
 
+// Build an absolute path from a notebook ID and a relative path within that notebook.
+// notebook_id: ID of an open notebook.
+// relative_path: Path relative to notebook root (e.g., "folder/file.pdf").
+// out_absolute_path: receives the absolute path (caller must free with vxcore_string_free).
+// Returns VXCORE_ERR_NOT_FOUND if the notebook is not open.
+VXCORE_API VxCoreError vxcore_path_build_absolute(VxCoreContextHandle context,
+                                                  const char *notebook_id,
+                                                  const char *relative_path,
+                                                  char **out_absolute_path);
+
 // ============ Workspace Operations ============
 
 // Create a new workspace with the given name.

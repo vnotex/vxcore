@@ -1287,6 +1287,114 @@ int test_path_resolve_null_params() {
   return 0;
 }
 
+int test_path_build_absolute_basic() {
+  std::cout << "  Running test_path_build_absolute_basic..." << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_build_abs"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a bundled notebook
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_build_abs").c_str(),
+                               "{\"name\":\"Build Abs Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Create a folder and file
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "docs", "readme.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  std::string root_path = normalize_path(get_test_path("test_nb_build_abs"));
+
+  // Build absolute path for a file
+  char *abs_path = nullptr;
+  err = vxcore_path_build_absolute(ctx, notebook_id, "docs/readme.md", &abs_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(abs_path);
+  ASSERT_EQ(normalize_path(abs_path), root_path + "/docs/readme.md");
+  vxcore_string_free(abs_path);
+
+  // Build absolute path for a folder
+  err = vxcore_path_build_absolute(ctx, notebook_id, "docs", &abs_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(abs_path);
+  ASSERT_EQ(normalize_path(abs_path), root_path + "/docs");
+  vxcore_string_free(abs_path);
+
+  // Build absolute path for root (empty relative path)
+  err = vxcore_path_build_absolute(ctx, notebook_id, "", &abs_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(abs_path);
+  // ConcatenatePaths may append trailing separator for empty relative path.
+  {
+    std::string abs_root = normalize_path(abs_path);
+    if (!abs_root.empty() && abs_root.back() == '/') {
+      abs_root.pop_back();
+    }
+    ASSERT_EQ(abs_root, root_path);
+  }
+  vxcore_string_free(abs_path);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_nb_build_abs"));
+  std::cout << "  \xE2\x9C\x93 test_path_build_absolute_basic passed" << std::endl;
+  return 0;
+}
+
+int test_path_build_absolute_not_found() {
+  std::cout << "  Running test_path_build_absolute_not_found..." << std::endl;
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Non-existent notebook ID
+  char *abs_path = nullptr;
+  err = vxcore_path_build_absolute(ctx, "non-existent-id", "some/file.md", &abs_path);
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  vxcore_context_destroy(ctx);
+  std::cout << "  \xE2\x9C\x93 test_path_build_absolute_not_found passed" << std::endl;
+  return 0;
+}
+
+int test_path_build_absolute_null_params() {
+  std::cout << "  Running test_path_build_absolute_null_params..." << std::endl;
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *abs_path = nullptr;
+
+  err = vxcore_path_build_absolute(nullptr, "id", "path", &abs_path);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  err = vxcore_path_build_absolute(ctx, nullptr, "path", &abs_path);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  err = vxcore_path_build_absolute(ctx, "id", nullptr, &abs_path);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  err = vxcore_path_build_absolute(ctx, "id", "path", nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  vxcore_context_destroy(ctx);
+  std::cout << "  \xE2\x9C\x93 test_path_build_absolute_null_params passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
 
@@ -1328,6 +1436,10 @@ int main() {
   RUN_TEST(test_path_resolve_multiple_notebooks);
   RUN_TEST(test_path_resolve_null_params);
 
-  std::cout << "âœ“ All notebook tests passed" << std::endl;
+  RUN_TEST(test_path_build_absolute_basic);
+  RUN_TEST(test_path_build_absolute_not_found);
+  RUN_TEST(test_path_build_absolute_null_params);
+
+  std::cout << "All notebook tests passed!" << std::endl;
   return 0;
 }
