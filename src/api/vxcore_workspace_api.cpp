@@ -1,6 +1,3 @@
-#include <stdlib.h>
-#include <string.h>
-
 #include <nlohmann/json.hpp>
 
 #include "api/api_utils.h"
@@ -290,6 +287,41 @@ VXCORE_API VxCoreError vxcore_workspace_set_buffer_order(VxCoreContextHandle con
     }
 
     bool success = ctx->workspace_manager->SetBufferOrder(workspace_id, ids);
+    if (!success) {
+      ctx->last_error = "Workspace not found";
+      return VXCORE_ERR_WORKSPACE_NOT_FOUND;
+    }
+    vxcore::PersistSession(ctx);
+    return VXCORE_OK;
+  } catch (const nlohmann::json::exception &e) {
+    ctx->last_error = std::string("JSON error: ") + e.what();
+    return VXCORE_ERR_JSON_PARSE;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_workspace_set_metadata(VxCoreContextHandle context,
+                                                     const char *workspace_id,
+                                                     const char *metadata_json) {
+  if (!context || !workspace_id || !metadata_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->workspace_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    auto json = nlohmann::json::parse(metadata_json);
+    if (!json.is_object()) {
+      ctx->last_error = "metadata_json must be a JSON object";
+      return VXCORE_ERR_JSON_PARSE;
+    }
+
+    bool success = ctx->workspace_manager->SetWorkspaceMetadata(workspace_id, json);
     if (!success) {
       ctx->last_error = "Workspace not found";
       return VXCORE_ERR_WORKSPACE_NOT_FOUND;

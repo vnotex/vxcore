@@ -321,4 +321,17 @@ bool WorkspaceManager::SetBufferOrder(const std::string &ws_id,
   return true;
 }
 
+bool WorkspaceManager::SetWorkspaceMetadata(const std::string &ws_id,
+                                            const nlohmann::json &metadata) {
+  auto it = workspaces_.find(ws_id);
+  if (it == workspaces_.end()) {
+    VXCORE_LOG_WARN("Cannot set metadata on non-existent workspace: ws_id=%s", ws_id.c_str());
+    return false;
+  }
+
+  it->second->metadata = metadata;
+  VXCORE_LOG_INFO("Set metadata on workspace: ws_id=%s", ws_id.c_str());
+  return true;
+}
+
 }  // namespace vxcore

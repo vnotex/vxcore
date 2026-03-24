@@ -55,6 +55,9 @@ class WorkspaceManager {
   // Only buffers already in the workspace are kept; unknown IDs are ignored.
   bool SetBufferOrder(const std::string &ws_id, const std::vector<std::string> &buffer_ids);
 
+  // Set workspace metadata (arbitrary JSON object), returns true if successful
+  bool SetWorkspaceMetadata(const std::string &ws_id, const nlohmann::json &metadata);
+
   // Mark that shutdown has been called (prevents destructor from saving)
   void SetShutdownCalled(bool called) { shutdown_called_ = called; }
 

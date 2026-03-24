@@ -382,6 +382,12 @@ VXCORE_API VxCoreError vxcore_workspace_set_buffer_order(VxCoreContextHandle con
                                                          const char *workspace_id,
                                                          const char *buffer_ids_json);
 
+// Set workspace metadata (arbitrary JSON object).
+// metadata_json: JSON object string to replace the workspace's metadata field.
+VXCORE_API VxCoreError vxcore_workspace_set_metadata(VxCoreContextHandle context,
+                                                     const char *workspace_id,
+                                                     const char *metadata_json);
+
 // ============ Buffer Operations ============
 
 // Open a file as a buffer.
