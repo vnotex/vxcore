@@ -388,6 +388,21 @@ VXCORE_API VxCoreError vxcore_workspace_set_metadata(VxCoreContextHandle context
                                                      const char *workspace_id,
                                                      const char *metadata_json);
 
+// Get per-buffer metadata within a workspace.
+// Returns JSON object string (caller frees with vxcore_string_free).
+// Returns empty object "{}" if buffer has no metadata.
+VXCORE_API VxCoreError vxcore_workspace_get_buffer_metadata(VxCoreContextHandle context,
+                                                             const char *workspace_id,
+                                                             const char *buffer_id,
+                                                             char **out_json);
+
+// Set per-buffer metadata within a workspace.
+// metadata_json: JSON object string.
+VXCORE_API VxCoreError vxcore_workspace_set_buffer_metadata(VxCoreContextHandle context,
+                                                             const char *workspace_id,
+                                                             const char *buffer_id,
+                                                             const char *metadata_json);
+
 // ============ Buffer Operations ============
 
 // Open a file as a buffer.

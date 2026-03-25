@@ -38,6 +38,7 @@ void WorkspaceManager::LoadWorkspaces() {
     workspace->id = record.id;
     workspace->name = record.name;
     workspace->metadata = record.metadata;
+    workspace->buffer_metadata = record.buffer_metadata;
 
     // Filter buffer_ids to only include IDs that exist in BufferManager
     if (buffer_manager_) {
@@ -95,6 +96,7 @@ void WorkspaceManager::UpdateSessionWorkspaces() {
     record.buffer_ids = pair.second->buffer_ids;
     record.current_buffer_id = pair.second->current_buffer_id;
     record.metadata = pair.second->metadata;
+    record.buffer_metadata = pair.second->buffer_metadata;
     session_config.workspaces.push_back(record);
   }
 
@@ -224,6 +226,9 @@ bool WorkspaceManager::RemoveBufferFromWorkspace(const std::string &ws_id,
 
   buffer_ids.erase(buf_it);
 
+  // Clean up per-buffer metadata for the removed buffer.
+  it->second->buffer_metadata.erase(buf_id);
+
   // If removing current buffer, clear current buffer
   if (it->second->current_buffer_id == buf_id) {
     it->second->current_buffer_id.clear();
@@ -331,6 +336,36 @@ bool WorkspaceManager::SetWorkspaceMetadata(const std::string &ws_id,
 
   it->second->metadata = metadata;
   VXCORE_LOG_INFO("Set metadata on workspace: ws_id=%s", ws_id.c_str());
+  return true;
+}
+
+nlohmann::json WorkspaceManager::GetBufferMetadata(const std::string &ws_id,
+                                                    const std::string &buf_id) {
+  auto it = workspaces_.find(ws_id);
+  if (it == workspaces_.end()) {
+    VXCORE_LOG_WARN("Cannot get buffer metadata from non-existent workspace: ws_id=%s",
+                    ws_id.c_str());
+    return nlohmann::json::object();
+  }
+
+  auto bm_it = it->second->buffer_metadata.find(buf_id);
+  if (bm_it == it->second->buffer_metadata.end()) {
+    return nlohmann::json::object();
+  }
+  return bm_it->second;
+}
+
+bool WorkspaceManager::SetBufferMetadata(const std::string &ws_id, const std::string &buf_id,
+                                          const nlohmann::json &metadata) {
+  auto it = workspaces_.find(ws_id);
+  if (it == workspaces_.end()) {
+    VXCORE_LOG_WARN("Cannot set buffer metadata on non-existent workspace: ws_id=%s",
+                    ws_id.c_str());
+    return false;
+  }
+
+  it->second->buffer_metadata[buf_id] = metadata;
+  VXCORE_LOG_INFO("Set buffer metadata: ws_id=%s, buf_id=%s", ws_id.c_str(), buf_id.c_str());
   return true;
 }
 

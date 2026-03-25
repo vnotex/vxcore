@@ -1,6 +1,7 @@
 #ifndef VXCORE_WORKSPACE_H
 #define VXCORE_WORKSPACE_H
 
+#include <map>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -13,6 +14,7 @@ struct WorkspaceConfig {
   std::vector<std::string> buffer_ids;
   std::string current_buffer_id;
   nlohmann::json metadata;
+  std::map<std::string, nlohmann::json> buffer_metadata;
 
   WorkspaceConfig();
 
@@ -26,6 +28,7 @@ struct WorkspaceRecord {
   std::vector<std::string> buffer_ids;
   std::string current_buffer_id;
   nlohmann::json metadata;
+  std::map<std::string, nlohmann::json> buffer_metadata;
 
   WorkspaceRecord();
 

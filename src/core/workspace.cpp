@@ -25,6 +25,13 @@ WorkspaceConfig WorkspaceConfig::FromJson(const nlohmann::json &json) {
   if (json.contains("metadata") && json["metadata"].is_object()) {
     config.metadata = json["metadata"];
   }
+  if (json.contains("bufferMetadata") && json["bufferMetadata"].is_object()) {
+    for (auto it = json["bufferMetadata"].begin(); it != json["bufferMetadata"].end(); ++it) {
+      if (it.value().is_object()) {
+        config.buffer_metadata[it.key()] = it.value();
+      }
+    }
+  }
   return config;
 }
 
@@ -39,6 +46,11 @@ nlohmann::json WorkspaceConfig::ToJson() const {
   json["bufferIds"] = std::move(buffer_ids_array);
   json["currentBufferId"] = current_buffer_id;
   json["metadata"] = metadata;
+  nlohmann::json bm = nlohmann::json::object();
+  for (const auto &pair : buffer_metadata) {
+    bm[pair.first] = pair.second;
+  }
+  json["bufferMetadata"] = std::move(bm);
   return json;
 }
 
@@ -65,6 +77,13 @@ WorkspaceRecord WorkspaceRecord::FromJson(const nlohmann::json &json) {
   if (json.contains("metadata") && json["metadata"].is_object()) {
     record.metadata = json["metadata"];
   }
+  if (json.contains("bufferMetadata") && json["bufferMetadata"].is_object()) {
+    for (auto it = json["bufferMetadata"].begin(); it != json["bufferMetadata"].end(); ++it) {
+      if (it.value().is_object()) {
+        record.buffer_metadata[it.key()] = it.value();
+      }
+    }
+  }
   return record;
 }
 
@@ -79,6 +98,11 @@ nlohmann::json WorkspaceRecord::ToJson() const {
   json["bufferIds"] = std::move(buffer_ids_array);
   json["currentBufferId"] = current_buffer_id;
   json["metadata"] = metadata;
+  nlohmann::json bm = nlohmann::json::object();
+  for (const auto &pair : buffer_metadata) {
+    bm[pair.first] = pair.second;
+  }
+  json["bufferMetadata"] = std::move(bm);
   return json;
 }
 

@@ -58,6 +58,14 @@ class WorkspaceManager {
   // Set workspace metadata (arbitrary JSON object), returns true if successful
   bool SetWorkspaceMetadata(const std::string &ws_id, const nlohmann::json &metadata);
 
+  // Get per-buffer metadata within a workspace.
+  // Returns JSON object for the buffer, or empty object if not found.
+  nlohmann::json GetBufferMetadata(const std::string &ws_id, const std::string &buf_id);
+
+  // Set per-buffer metadata within a workspace, returns true if successful.
+  bool SetBufferMetadata(const std::string &ws_id, const std::string &buf_id,
+                         const nlohmann::json &metadata);
+
   // Mark that shutdown has been called (prevents destructor from saving)
   void SetShutdownCalled(bool called) { shutdown_called_ = called; }
 

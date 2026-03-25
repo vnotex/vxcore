@@ -530,6 +530,226 @@ int test_workspace_buffer_removal_then_shutdown() {
   return 0;
 }
 
+int test_workspace_buffer_metadata_set_get() {
+  std::cout << "  Running test_workspace_buffer_metadata_set_get..." << std::endl;
+
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *ws_id = nullptr;
+  err = vxcore_workspace_create(ctx, "MetaTest", &ws_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *buf_id = "buf-meta-1";
+  err = vxcore_workspace_add_buffer(ctx, ws_id, buf_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Set per-buffer metadata.
+  const char *meta_json = R"({"mode":"Edit","cursorPosition":42,"scrollPosition":150})";
+  err = vxcore_workspace_set_buffer_metadata(ctx, ws_id, buf_id, meta_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Get it back.
+  char *out_json = nullptr;
+  err = vxcore_workspace_get_buffer_metadata(ctx, ws_id, buf_id, &out_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(out_json);
+
+  auto parsed = nlohmann::json::parse(out_json);
+  ASSERT_EQ(parsed["mode"].get<std::string>(), std::string("Edit"));
+  ASSERT_EQ(parsed["cursorPosition"].get<int>(), 42);
+  ASSERT_EQ(parsed["scrollPosition"].get<int>(), 150);
+
+  vxcore_string_free(out_json);
+  vxcore_string_free(ws_id);
+  vxcore_context_destroy(ctx);
+  std::cout << "  ✓ test_workspace_buffer_metadata_set_get passed" << std::endl;
+  return 0;
+}
+
+int test_workspace_buffer_metadata_missing_buffer() {
+  std::cout << "  Running test_workspace_buffer_metadata_missing_buffer..." << std::endl;
+
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *ws_id = nullptr;
+  err = vxcore_workspace_create(ctx, "MetaMissing", &ws_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Get metadata for a buffer that has none — should return empty object.
+  char *out_json = nullptr;
+  err = vxcore_workspace_get_buffer_metadata(ctx, ws_id, "no-such-buffer", &out_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(out_json);
+
+  auto parsed = nlohmann::json::parse(out_json);
+  ASSERT_TRUE(parsed.is_object());
+  ASSERT_TRUE(parsed.empty());
+
+  vxcore_string_free(out_json);
+  vxcore_string_free(ws_id);
+  vxcore_context_destroy(ctx);
+  std::cout << "  ✓ test_workspace_buffer_metadata_missing_buffer passed" << std::endl;
+  return 0;
+}
+
+int test_workspace_buffer_metadata_cleanup_on_remove() {
+  std::cout << "  Running test_workspace_buffer_metadata_cleanup_on_remove..." << std::endl;
+
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *ws_id = nullptr;
+  err = vxcore_workspace_create(ctx, "MetaCleanup", &ws_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *buf_id = "buf-cleanup-1";
+  err = vxcore_workspace_add_buffer(ctx, ws_id, buf_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Set metadata.
+  err = vxcore_workspace_set_buffer_metadata(ctx, ws_id, buf_id,
+                                             R"({"mode":"Edit"})");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify it exists.
+  char *out_json = nullptr;
+  err = vxcore_workspace_get_buffer_metadata(ctx, ws_id, buf_id, &out_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto parsed = nlohmann::json::parse(out_json);
+  ASSERT_EQ(parsed["mode"].get<std::string>(), std::string("Edit"));
+  vxcore_string_free(out_json);
+
+  // Remove buffer from workspace — metadata should be cleaned up.
+  err = vxcore_workspace_remove_buffer(ctx, ws_id, buf_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Metadata should now be empty.
+  char *out_json2 = nullptr;
+  err = vxcore_workspace_get_buffer_metadata(ctx, ws_id, buf_id, &out_json2);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto parsed2 = nlohmann::json::parse(out_json2);
+  ASSERT_TRUE(parsed2.empty());
+  vxcore_string_free(out_json2);
+
+  vxcore_string_free(ws_id);
+  vxcore_context_destroy(ctx);
+  std::cout << "  ✓ test_workspace_buffer_metadata_cleanup_on_remove passed" << std::endl;
+  return 0;
+}
+
+int test_workspace_buffer_metadata_persistence() {
+  std::cout << "  Running test_workspace_buffer_metadata_persistence..." << std::endl;
+
+  vxcore_clear_test_directory();
+
+  std::string ws_id_str;
+  const std::string buf_id = "buf-persist-1";
+
+  // Session 1: Create workspace, add buffer with metadata, shutdown.
+  {
+    VxCoreContextHandle ctx = nullptr;
+    VxCoreError err = vxcore_context_create(nullptr, &ctx);
+    ASSERT_EQ(err, VXCORE_OK);
+
+    char *ws_id = nullptr;
+    err = vxcore_workspace_create(ctx, "MetaPersist", &ws_id);
+    ASSERT_EQ(err, VXCORE_OK);
+    ws_id_str = ws_id;
+
+    err = vxcore_workspace_add_buffer(ctx, ws_id, buf_id.c_str());
+    ASSERT_EQ(err, VXCORE_OK);
+
+    err = vxcore_workspace_set_buffer_metadata(
+        ctx, ws_id, buf_id.c_str(),
+        R"({"mode":"Edit","cursorPosition":99})");
+    ASSERT_EQ(err, VXCORE_OK);
+
+    err = vxcore_prepare_shutdown(ctx);
+    ASSERT_EQ(err, VXCORE_OK);
+
+    vxcore_string_free(ws_id);
+    vxcore_context_destroy(ctx);
+  }
+
+  // Session 2: Reload and verify metadata survived.
+  {
+    VxCoreContextHandle ctx = nullptr;
+    VxCoreError err = vxcore_context_create(nullptr, &ctx);
+    ASSERT_EQ(err, VXCORE_OK);
+
+    char *out_json = nullptr;
+    err = vxcore_workspace_get_buffer_metadata(
+        ctx, ws_id_str.c_str(), buf_id.c_str(), &out_json);
+    ASSERT_EQ(err, VXCORE_OK);
+    ASSERT_NOT_NULL(out_json);
+
+    auto parsed = nlohmann::json::parse(out_json);
+    ASSERT_EQ(parsed["mode"].get<std::string>(), std::string("Edit"));
+    ASSERT_EQ(parsed["cursorPosition"].get<int>(), 99);
+
+    vxcore_string_free(out_json);
+    vxcore_context_destroy(ctx);
+  }
+
+  std::cout << "  ✓ test_workspace_buffer_metadata_persistence passed" << std::endl;
+  return 0;
+}
+
+int test_workspace_buffer_metadata_in_workspace_json() {
+  std::cout << "  Running test_workspace_buffer_metadata_in_workspace_json..." << std::endl;
+
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *ws_id = nullptr;
+  err = vxcore_workspace_create(ctx, "MetaInJson", &ws_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_workspace_add_buffer(ctx, ws_id, "b1");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_workspace_add_buffer(ctx, ws_id, "b2");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_workspace_set_buffer_metadata(ctx, ws_id, "b1",
+                                             R"({"mode":"Edit"})");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_workspace_set_buffer_metadata(ctx, ws_id, "b2",
+                                             R"({"mode":"Read","cursorPosition":10})");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Get full workspace JSON and verify bufferMetadata is present.
+  char *ws_json = nullptr;
+  err = vxcore_workspace_get(ctx, ws_id, &ws_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto parsed = nlohmann::json::parse(ws_json);
+  ASSERT_TRUE(parsed.contains("bufferMetadata"));
+  ASSERT_TRUE(parsed["bufferMetadata"].is_object());
+  ASSERT_EQ(parsed["bufferMetadata"]["b1"]["mode"].get<std::string>(), std::string("Edit"));
+  ASSERT_EQ(parsed["bufferMetadata"]["b2"]["mode"].get<std::string>(), std::string("Read"));
+  ASSERT_EQ(parsed["bufferMetadata"]["b2"]["cursorPosition"].get<int>(), 10);
+
+  vxcore_string_free(ws_json);
+  vxcore_string_free(ws_id);
+  vxcore_context_destroy(ctx);
+  std::cout << "  ✓ test_workspace_buffer_metadata_in_workspace_json passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running workspace tests..." << std::endl;
 
@@ -548,6 +768,11 @@ int main() {
   RUN_TEST(test_workspace_persistence);
   RUN_TEST(test_workspace_shutdown_saves_buffers);
   RUN_TEST(test_workspace_buffer_removal_then_shutdown);
+  RUN_TEST(test_workspace_buffer_metadata_set_get);
+  RUN_TEST(test_workspace_buffer_metadata_missing_buffer);
+  RUN_TEST(test_workspace_buffer_metadata_cleanup_on_remove);
+  RUN_TEST(test_workspace_buffer_metadata_persistence);
+  RUN_TEST(test_workspace_buffer_metadata_in_workspace_json);
 
   std::cout << "All workspace tests passed!" << std::endl;
   return 0;
