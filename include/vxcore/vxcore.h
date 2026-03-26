@@ -56,7 +56,7 @@ VXCORE_API VxCoreError vxcore_context_get_config(VxCoreContextHandle context, ch
 // Only recognized top-level keys are updated; unmentioned keys are preserved.
 // Currently supports: "recoverLastSession" (boolean).
 VXCORE_API VxCoreError vxcore_context_update_config(VxCoreContextHandle context,
-                                                     const char *config_json);
+                                                    const char *config_json);
 
 VXCORE_API VxCoreError vxcore_context_get_session_config(VxCoreContextHandle context,
                                                          char **out_json);
@@ -299,6 +299,25 @@ VXCORE_API VxCoreError vxcore_tag_list(VxCoreContextHandle context, const char *
 VXCORE_API VxCoreError vxcore_tag_move(VxCoreContextHandle context, const char *notebook_id,
                                        const char *tag_name, const char *parent_tag);
 
+// Find files by tags using efficient database lookup.
+// tags_json: JSON array of tag name strings (e.g., ["important", "todo"])
+// op: "AND" to match files with ALL tags, "OR" to match files with ANY tag
+// out_results_json: receives JSON with results:
+//   {"matchCount": N, "matches": [{"filePath": "...", "fileName": "...", "tags": ["...", ...]},
+//   ...]}
+// Caller must free out_results_json with vxcore_string_free().
+VXCORE_API VxCoreError vxcore_tag_find_files(VxCoreContextHandle context, const char *notebook_id,
+                                             const char *tags_json, const char *op,
+                                             char **out_results_json);
+
+// Count files per tag using efficient database lookup.
+// out_results_json: receives JSON array of {tag, count} objects:
+//   [{"tag": "important", "count": 5}, {"tag": "todo", "count": 3}, ...]
+// Caller must free out_results_json with vxcore_string_free().
+VXCORE_API VxCoreError vxcore_tag_count_files_by_tag(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     char **out_results_json);
+
 VXCORE_API VxCoreError vxcore_search_files(VxCoreContextHandle context, const char *notebook_id,
                                            const char *query_json, const char *input_files_json,
                                            char **out_results_json);
@@ -392,16 +411,15 @@ VXCORE_API VxCoreError vxcore_workspace_set_metadata(VxCoreContextHandle context
 // Returns JSON object string (caller frees with vxcore_string_free).
 // Returns empty object "{}" if buffer has no metadata.
 VXCORE_API VxCoreError vxcore_workspace_get_buffer_metadata(VxCoreContextHandle context,
-                                                             const char *workspace_id,
-                                                             const char *buffer_id,
-                                                             char **out_json);
+                                                            const char *workspace_id,
+                                                            const char *buffer_id, char **out_json);
 
 // Set per-buffer metadata within a workspace.
 // metadata_json: JSON object string.
 VXCORE_API VxCoreError vxcore_workspace_set_buffer_metadata(VxCoreContextHandle context,
-                                                             const char *workspace_id,
-                                                             const char *buffer_id,
-                                                             const char *metadata_json);
+                                                            const char *workspace_id,
+                                                            const char *buffer_id,
+                                                            const char *metadata_json);
 
 // ============ Buffer Operations ============
 
@@ -468,7 +486,7 @@ VXCORE_API VxCoreError vxcore_buffer_is_modified(VxCoreContextHandle context, co
 // The revision is incremented on content changes (SetContent, Save, Reload).
 // out_revision: receives current revision counter.
 VXCORE_API VxCoreError vxcore_buffer_get_revision(VxCoreContextHandle context, const char *id,
-                                                   int *out_revision);
+                                                  int *out_revision);
 
 // ============ Buffer Backup Operations ============
 
@@ -553,8 +571,7 @@ VXCORE_API VxCoreError vxcore_buffer_get_assets_folder(VxCoreContextHandle conte
 // out_path: Receives absolute filesystem path.
 //           Caller must free with vxcore_string_free.
 VXCORE_API VxCoreError vxcore_buffer_get_resource_base_path(VxCoreContextHandle context,
-                                                             const char *buffer_id,
-                                                             char **out_path);
+                                                            const char *buffer_id, char **out_path);
 
 // ============ Buffer Attachment Operations (Filesystem + Metadata) ============
 // Attachment operations modify both filesystem and attachment metadata.

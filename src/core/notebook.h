@@ -87,6 +87,11 @@ class Notebook {
   VxCoreError GetTags(std::string &out_tags_json) const;
   TagNode *FindTag(const std::string &tag_name);
 
+  // Direct DB-backed tag queries (bypasses SearchManager for efficiency)
+  VxCoreError FindFilesByTags(const std::vector<std::string> &tags, bool use_and,
+                              std::string &out_results_json);
+  VxCoreError CountFilesByTag(std::string &out_results_json);
+
   // Rebuild the metadata cache from ground truth (config files).
   // Returns VXCORE_OK on success.
   virtual VxCoreError RebuildCache() = 0;

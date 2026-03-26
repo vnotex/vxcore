@@ -499,4 +499,48 @@ std::string Notebook::GetAbsolutePath(const std::string &relative_path) const {
   return ConcatenatePaths(root_folder_, relative_path);
 }
 
+VxCoreError Notebook::FindFilesByTags(const std::vector<std::string> &tags, bool use_and,
+                                      std::string &out_results_json) {
+  if (!metadata_store_ || !metadata_store_->IsOpen()) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  auto results = use_and ? metadata_store_->FindFilesByTagsAnd(tags)
+                         : metadata_store_->FindFilesByTagsOr(tags);
+
+  nlohmann::json matches = nlohmann::json::array();
+  for (const auto &result : results) {
+    nlohmann::json match = nlohmann::json::object();
+    match["filePath"] = result.file_path;
+    match["fileName"] = result.file_name;
+    match["tags"] = result.tags;
+    matches.push_back(std::move(match));
+  }
+
+  nlohmann::json output = nlohmann::json::object();
+  output["matchCount"] = static_cast<int>(matches.size());
+  output["matches"] = std::move(matches);
+  out_results_json = output.dump();
+  return VXCORE_OK;
+}
+
+VxCoreError Notebook::CountFilesByTag(std::string &out_results_json) {
+  if (!metadata_store_ || !metadata_store_->IsOpen()) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  auto counts = metadata_store_->CountFilesByTag();
+
+  nlohmann::json results = nlohmann::json::array();
+  for (const auto &pair : counts) {
+    nlohmann::json entry = nlohmann::json::object();
+    entry["tag"] = pair.first;
+    entry["count"] = pair.second;
+    results.push_back(std::move(entry));
+  }
+
+  out_results_json = results.dump();
+  return VXCORE_OK;
+}
+
 }  // namespace vxcore

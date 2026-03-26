@@ -1,4 +1,5 @@
 ﻿#include <iostream>
+#include <map>
 #include <string>
 
 #include "nlohmann/json.hpp"
@@ -1343,6 +1344,377 @@ int test_search_by_tags_with_exclude_tags() {
   return 0;
 }
 
+// ============================================================================
+// vxcore_tag_find_files Tests (Direct DB-backed tag queries)
+// ============================================================================
+
+int test_tag_find_files_and() {
+  std::cout << "  Running test_tag_find_files_and..." << std::endl;
+  cleanup_test_dir(get_test_path("test_tag_find_and"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_tag_find_and").c_str(),
+                               "{\"name\":\"Test Tag Find AND\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create files
+  char *f1 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "file1.md", &f1);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(f1);
+
+  char *f2 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "file2.md", &f2);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(f2);
+
+  char *f3 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "file3.md", &f3);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(f3);
+
+  // Create tags and assign
+  err = vxcore_tag_create(ctx, notebook_id, "important");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "todo");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // file1: important + todo, file2: important, file3: todo
+  err = vxcore_file_tag(ctx, notebook_id, "file1.md", "important");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_file_tag(ctx, notebook_id, "file1.md", "todo");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_file_tag(ctx, notebook_id, "file2.md", "important");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_file_tag(ctx, notebook_id, "file3.md", "todo");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // AND query: files with BOTH "important" AND "todo" -> only file1
+  char *results = nullptr;
+  err = vxcore_tag_find_files(ctx, notebook_id, "[\"important\", \"todo\"]", "AND", &results);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+
+  auto json = nlohmann::json::parse(results);
+  ASSERT_EQ(json["matchCount"].get<int>(), 1);
+  ASSERT(json["matches"].size() == 1);
+  ASSERT(json["matches"][0]["fileName"].get<std::string>() == "file1.md");
+  ASSERT(json["matches"][0]["filePath"].is_string());
+  ASSERT(json["matches"][0]["tags"].is_array());
+
+  vxcore_string_free(results);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_tag_find_and"));
+  std::cout << "  \xE2\x9C\x93 test_tag_find_files_and passed" << std::endl;
+  return 0;
+}
+
+int test_tag_find_files_or() {
+  std::cout << "  Running test_tag_find_files_or..." << std::endl;
+  cleanup_test_dir(get_test_path("test_tag_find_or"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_tag_find_or").c_str(),
+                               "{\"name\":\"Test Tag Find OR\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create files
+  char *f1 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "alpha.md", &f1);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(f1);
+
+  char *f2 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "beta.md", &f2);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(f2);
+
+  char *f3 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "gamma.md", &f3);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(f3);
+
+  // Create tags
+  err = vxcore_tag_create(ctx, notebook_id, "work");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "personal");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // alpha: work, beta: personal, gamma: no tags
+  err = vxcore_file_tag(ctx, notebook_id, "alpha.md", "work");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_file_tag(ctx, notebook_id, "beta.md", "personal");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // OR query: files with "work" OR "personal" -> alpha + beta
+  char *results = nullptr;
+  err = vxcore_tag_find_files(ctx, notebook_id, "[\"work\", \"personal\"]", "OR", &results);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+
+  auto json = nlohmann::json::parse(results);
+  ASSERT_EQ(json["matchCount"].get<int>(), 2);
+  ASSERT(json["matches"].size() == 2);
+
+  // Verify both files are present
+  bool found_alpha = false, found_beta = false;
+  for (const auto &match : json["matches"]) {
+    std::string name = match["fileName"].get<std::string>();
+    if (name == "alpha.md") found_alpha = true;
+    if (name == "beta.md") found_beta = true;
+  }
+  ASSERT(found_alpha);
+  ASSERT(found_beta);
+
+  vxcore_string_free(results);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_tag_find_or"));
+  std::cout << "  \xE2\x9C\x93 test_tag_find_files_or passed" << std::endl;
+  return 0;
+}
+
+int test_tag_find_files_empty_results() {
+  std::cout << "  Running test_tag_find_files_empty_results..." << std::endl;
+  cleanup_test_dir(get_test_path("test_tag_find_empty"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_tag_find_empty").c_str(),
+                               "{\"name\":\"Test Tag Find Empty\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file with no tags
+  char *f1 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "lonely.md", &f1);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(f1);
+
+  // Search for non-existent tag
+  char *results = nullptr;
+  err = vxcore_tag_find_files(ctx, notebook_id, "[\"nonexistent\"]", "AND", &results);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+
+  auto json = nlohmann::json::parse(results);
+  ASSERT_EQ(json["matchCount"].get<int>(), 0);
+  ASSERT(json["matches"].size() == 0);
+
+  vxcore_string_free(results);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_tag_find_empty"));
+  std::cout << "  \xE2\x9C\x93 test_tag_find_files_empty_results passed" << std::endl;
+  return 0;
+}
+
+int test_tag_find_files_in_subfolder() {
+  std::cout << "  Running test_tag_find_files_in_subfolder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_tag_find_subfolder"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_tag_find_subfolder").c_str(),
+                               "{\"name\":\"Test Tag Find Subfolder\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create subfolder and files
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *f1 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "root_file.md", &f1);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(f1);
+
+  char *f2 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "docs", "nested_file.md", &f2);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(f2);
+
+  // Create tag and assign to both
+  err = vxcore_tag_create(ctx, notebook_id, "review");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_file_tag(ctx, notebook_id, "root_file.md", "review");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_file_tag(ctx, notebook_id, "docs/nested_file.md", "review");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Find files with "review" tag - should include both root and nested
+  char *results = nullptr;
+  err = vxcore_tag_find_files(ctx, notebook_id, "[\"review\"]", "OR", &results);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+
+  auto json = nlohmann::json::parse(results);
+  ASSERT_EQ(json["matchCount"].get<int>(), 2);
+
+  // Verify file paths are present and the nested file has proper path
+  bool found_root = false, found_nested = false;
+  for (const auto &match : json["matches"]) {
+    std::string path = match["filePath"].get<std::string>();
+    if (path == "root_file.md") found_root = true;
+    if (path == "docs/nested_file.md") found_nested = true;
+  }
+  ASSERT(found_root);
+  ASSERT(found_nested);
+
+  vxcore_string_free(results);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_tag_find_subfolder"));
+  std::cout << "  \xE2\x9C\x93 test_tag_find_files_in_subfolder passed" << std::endl;
+  return 0;
+}
+
+int test_tag_find_files_invalid_params() {
+  std::cout << "  Running test_tag_find_files_invalid_params..." << std::endl;
+  cleanup_test_dir(get_test_path("test_tag_find_invalid"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_tag_find_invalid").c_str(),
+                               "{\"name\":\"Test Tag Find Invalid\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *results = nullptr;
+
+  // Null pointer checks
+  err = vxcore_tag_find_files(nullptr, notebook_id, "[\"a\"]", "AND", &results);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  err = vxcore_tag_find_files(ctx, nullptr, "[\"a\"]", "AND", &results);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  err = vxcore_tag_find_files(ctx, notebook_id, nullptr, "AND", &results);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  err = vxcore_tag_find_files(ctx, notebook_id, "[\"a\"]", nullptr, &results);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  err = vxcore_tag_find_files(ctx, notebook_id, "[\"a\"]", "AND", nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  // Invalid JSON
+  err = vxcore_tag_find_files(ctx, notebook_id, "not json", "AND", &results);
+  ASSERT_EQ(err, VXCORE_ERR_JSON_PARSE);
+
+  // Not an array
+  err = vxcore_tag_find_files(ctx, notebook_id, "\"single_string\"", "AND", &results);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Invalid operator
+  err = vxcore_tag_find_files(ctx, notebook_id, "[\"a\"]", "XOR", &results);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  // Invalid notebook
+  err = vxcore_tag_find_files(ctx, "nonexistent_id", "[\"a\"]", "AND", &results);
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_tag_find_invalid"));
+  std::cout << "  \xE2\x9C\x93 test_tag_find_files_invalid_params passed" << std::endl;
+  return 0;
+}
+
+int test_tag_count_files_by_tag() {
+  std::cout << "  Running test_tag_count_files_by_tag..." << std::endl;
+  cleanup_test_dir(get_test_path("test_tag_count"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_tag_count").c_str(),
+                               "{\"name\":\"Test Tag Count\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create files
+  char *f1 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "a.md", &f1);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(f1);
+
+  char *f2 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "b.md", &f2);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(f2);
+
+  char *f3 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "c.md", &f3);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(f3);
+
+  // Create tags
+  err = vxcore_tag_create(ctx, notebook_id, "urgent");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "draft");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // a.md: urgent + draft, b.md: urgent, c.md: draft
+  err = vxcore_file_tag(ctx, notebook_id, "a.md", "urgent");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_file_tag(ctx, notebook_id, "a.md", "draft");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_file_tag(ctx, notebook_id, "b.md", "urgent");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_file_tag(ctx, notebook_id, "c.md", "draft");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Count files by tag: urgent=2, draft=2
+  char *results = nullptr;
+  err = vxcore_tag_count_files_by_tag(ctx, notebook_id, &results);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+
+  auto json = nlohmann::json::parse(results);
+  ASSERT(json.is_array());
+  ASSERT(json.size() >= 2);
+
+  // Build a map for easier checking
+  std::map<std::string, int> counts;
+  for (const auto &entry : json) {
+    counts[entry["tag"].get<std::string>()] = entry["count"].get<int>();
+  }
+  ASSERT_EQ(counts["urgent"], 2);
+  ASSERT_EQ(counts["draft"], 2);
+
+  vxcore_string_free(results);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_tag_count"));
+  std::cout << "  \xE2\x9C\x93 test_tag_count_files_by_tag passed" << std::endl;
+  return 0;
+}
+
 int main() {
   vxcore_set_test_mode(1);
   vxcore_clear_test_directory();
@@ -1370,6 +1742,13 @@ int main() {
 
   RUN_TEST(test_search_content_exclude_patterns);
   RUN_TEST(test_search_by_tags_with_exclude_tags);
+
+  RUN_TEST(test_tag_find_files_and);
+  RUN_TEST(test_tag_find_files_or);
+  RUN_TEST(test_tag_find_files_empty_results);
+  RUN_TEST(test_tag_find_files_in_subfolder);
+  RUN_TEST(test_tag_find_files_invalid_params);
+  RUN_TEST(test_tag_count_files_by_tag);
 
   std::cout << "All search tests passed!" << std::endl;
   return 0;

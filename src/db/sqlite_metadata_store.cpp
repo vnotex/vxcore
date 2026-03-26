@@ -12,6 +12,19 @@
 namespace vxcore {
 namespace db {
 
+// Strips the root folder prefix ("." or "./") from paths returned by FileDb::GetFolderPath().
+// The root folder is stored with name "." in the database, so paths for root-level items
+// start with "." or "./" which must be removed to produce clean relative paths.
+static std::string StripRootPrefix(const std::string &path) {
+  if (path.size() >= 2 && path[0] == '.' && path[1] == '/') {
+    return path.substr(2);
+  }
+  if (path == ".") {
+    return "";  // Root folder itself
+  }
+  return path;
+}
+
 SqliteMetadataStore::SqliteMetadataStore()
     : db_manager_(std::make_unique<DbManager>()),
       file_db_(nullptr),
@@ -22,7 +35,7 @@ SqliteMetadataStore::~SqliteMetadataStore() { Close(); }
 
 // --- Lifecycle ---
 
-bool SqliteMetadataStore::Open(const std::string& db_path) {
+bool SqliteMetadataStore::Open(const std::string &db_path) {
   if (IsOpen()) {
     Close();
   }
@@ -87,7 +100,7 @@ bool SqliteMetadataStore::RollbackTransaction() {
 
 // --- Internal Helpers ---
 
-int64_t SqliteMetadataStore::GetFolderDbId(const std::string& folder_uuid) {
+int64_t SqliteMetadataStore::GetFolderDbId(const std::string &folder_uuid) {
   if (folder_uuid.empty()) {
     return -1;  // Root folder
   }
@@ -95,7 +108,7 @@ int64_t SqliteMetadataStore::GetFolderDbId(const std::string& folder_uuid) {
   return folder ? folder->id : -1;
 }
 
-int64_t SqliteMetadataStore::GetFileDbId(const std::string& file_uuid) {
+int64_t SqliteMetadataStore::GetFileDbId(const std::string &file_uuid) {
   auto file = file_db_->GetFileByUuid(file_uuid);
   return file ? file->id : -1;
 }
@@ -113,7 +126,7 @@ std::string SqliteMetadataStore::GetFileUuid(int64_t file_db_id) {
   return file ? file->uuid : "";
 }
 
-StoreFolderRecord SqliteMetadataStore::ToStoreFolderRecord(const DbFolderRecord& db_record) {
+StoreFolderRecord SqliteMetadataStore::ToStoreFolderRecord(const DbFolderRecord &db_record) {
   StoreFolderRecord record;
   record.id = db_record.uuid;
   record.parent_id = GetFolderUuid(db_record.parent_id);
@@ -124,7 +137,7 @@ StoreFolderRecord SqliteMetadataStore::ToStoreFolderRecord(const DbFolderRecord&
   return record;
 }
 
-StoreFileRecord SqliteMetadataStore::ToStoreFileRecord(const DbFileRecord& db_record) {
+StoreFileRecord SqliteMetadataStore::ToStoreFileRecord(const DbFileRecord &db_record) {
   StoreFileRecord record;
   record.id = db_record.uuid;
   record.folder_id = GetFolderUuid(db_record.folder_id);
@@ -139,7 +152,7 @@ StoreFileRecord SqliteMetadataStore::ToStoreFileRecord(const DbFileRecord& db_re
 
 // --- Folder Operations ---
 
-bool SqliteMetadataStore::CreateFolder(const StoreFolderRecord& folder) {
+bool SqliteMetadataStore::CreateFolder(const StoreFolderRecord &folder) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -158,8 +171,8 @@ bool SqliteMetadataStore::CreateFolder(const StoreFolderRecord& folder) {
   return true;
 }
 
-bool SqliteMetadataStore::UpdateFolder(const std::string& folder_id, const std::string& name,
-                                       int64_t modified_utc, const std::string& metadata) {
+bool SqliteMetadataStore::UpdateFolder(const std::string &folder_id, const std::string &name,
+                                       int64_t modified_utc, const std::string &metadata) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -187,7 +200,7 @@ bool SqliteMetadataStore::UpdateFolder(const std::string& folder_id, const std::
   return true;
 }
 
-bool SqliteMetadataStore::DeleteFolder(const std::string& folder_id) {
+bool SqliteMetadataStore::DeleteFolder(const std::string &folder_id) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -207,7 +220,7 @@ bool SqliteMetadataStore::DeleteFolder(const std::string& folder_id) {
   return true;
 }
 
-std::optional<StoreFolderRecord> SqliteMetadataStore::GetFolder(const std::string& folder_id) {
+std::optional<StoreFolderRecord> SqliteMetadataStore::GetFolder(const std::string &folder_id) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return std::nullopt;
@@ -221,7 +234,7 @@ std::optional<StoreFolderRecord> SqliteMetadataStore::GetFolder(const std::strin
   return ToStoreFolderRecord(*db_folder);
 }
 
-std::optional<StoreFolderRecord> SqliteMetadataStore::GetFolderByPath(const std::string& path) {
+std::optional<StoreFolderRecord> SqliteMetadataStore::GetFolderByPath(const std::string &path) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return std::nullopt;
@@ -235,7 +248,7 @@ std::optional<StoreFolderRecord> SqliteMetadataStore::GetFolderByPath(const std:
   return ToStoreFolderRecord(*db_folder);
 }
 
-std::vector<StoreFolderRecord> SqliteMetadataStore::ListFolders(const std::string& parent_id) {
+std::vector<StoreFolderRecord> SqliteMetadataStore::ListFolders(const std::string &parent_id) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return {};
@@ -246,13 +259,13 @@ std::vector<StoreFolderRecord> SqliteMetadataStore::ListFolders(const std::strin
 
   std::vector<StoreFolderRecord> result;
   result.reserve(db_folders.size());
-  for (const auto& db_folder : db_folders) {
+  for (const auto &db_folder : db_folders) {
     result.push_back(ToStoreFolderRecord(db_folder));
   }
   return result;
 }
 
-std::string SqliteMetadataStore::GetFolderPath(const std::string& folder_id) {
+std::string SqliteMetadataStore::GetFolderPath(const std::string &folder_id) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return "";
@@ -266,33 +279,22 @@ std::string SqliteMetadataStore::GetFolderPath(const std::string& folder_id) {
   return file_db_->GetFolderPath(db_id);
 }
 
-std::string SqliteMetadataStore::GetNodePathById(const std::string& node_id) {
+std::string SqliteMetadataStore::GetNodePathById(const std::string &node_id) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return "";
   }
 
-  // Helper to strip leading './' from path
-  auto strip_root_prefix = [](const std::string& path) -> std::string {
-    if (path.size() >= 2 && path[0] == '.' && path[1] == '/') {
-      return path.substr(2);
-    }
-    if (path == ".") {
-      return "";  // Root folder itself
-    }
-    return path;
-  };
-
   // Try folder first
   auto folder = file_db_->GetFolderByUuid(node_id);
   if (folder) {
-    return strip_root_prefix(file_db_->GetFolderPath(folder->id));
+    return StripRootPrefix(file_db_->GetFolderPath(folder->id));
   }
 
   // Try file
   auto file = file_db_->GetFileByUuid(node_id);
   if (file) {
-    std::string folder_path = strip_root_prefix(file_db_->GetFolderPath(file->folder_id));
+    std::string folder_path = StripRootPrefix(file_db_->GetFolderPath(file->folder_id));
     if (folder_path.empty()) {
       return file->name;  // File in root
     }
@@ -302,8 +304,8 @@ std::string SqliteMetadataStore::GetNodePathById(const std::string& node_id) {
   return "";  // Not found
 }
 
-bool SqliteMetadataStore::MoveFolder(const std::string& folder_id,
-                                     const std::string& new_parent_id) {
+bool SqliteMetadataStore::MoveFolder(const std::string &folder_id,
+                                     const std::string &new_parent_id) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -327,7 +329,7 @@ bool SqliteMetadataStore::MoveFolder(const std::string& folder_id,
 
 // --- File Operations ---
 
-bool SqliteMetadataStore::CreateFile(const StoreFileRecord& file) {
+bool SqliteMetadataStore::CreateFile(const StoreFileRecord &file) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -357,8 +359,8 @@ bool SqliteMetadataStore::CreateFile(const StoreFileRecord& file) {
   return true;
 }
 
-bool SqliteMetadataStore::UpdateFile(const std::string& file_id, const std::string& name,
-                                     int64_t modified_utc, const std::string& metadata) {
+bool SqliteMetadataStore::UpdateFile(const std::string &file_id, const std::string &name,
+                                     int64_t modified_utc, const std::string &metadata) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -388,7 +390,7 @@ bool SqliteMetadataStore::UpdateFile(const std::string& file_id, const std::stri
   return true;
 }
 
-bool SqliteMetadataStore::DeleteFile(const std::string& file_id) {
+bool SqliteMetadataStore::DeleteFile(const std::string &file_id) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -408,7 +410,7 @@ bool SqliteMetadataStore::DeleteFile(const std::string& file_id) {
   return true;
 }
 
-std::optional<StoreFileRecord> SqliteMetadataStore::GetFile(const std::string& file_id) {
+std::optional<StoreFileRecord> SqliteMetadataStore::GetFile(const std::string &file_id) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return std::nullopt;
@@ -422,7 +424,7 @@ std::optional<StoreFileRecord> SqliteMetadataStore::GetFile(const std::string& f
   return ToStoreFileRecord(*db_file);
 }
 
-std::optional<StoreFileRecord> SqliteMetadataStore::GetFileByPath(const std::string& path) {
+std::optional<StoreFileRecord> SqliteMetadataStore::GetFileByPath(const std::string &path) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return std::nullopt;
@@ -451,7 +453,7 @@ std::optional<StoreFileRecord> SqliteMetadataStore::GetFileByPath(const std::str
   return ToStoreFileRecord(*db_file);
 }
 
-std::vector<StoreFileRecord> SqliteMetadataStore::ListFiles(const std::string& folder_id) {
+std::vector<StoreFileRecord> SqliteMetadataStore::ListFiles(const std::string &folder_id) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return {};
@@ -462,13 +464,13 @@ std::vector<StoreFileRecord> SqliteMetadataStore::ListFiles(const std::string& f
 
   std::vector<StoreFileRecord> result;
   result.reserve(db_files.size());
-  for (const auto& db_file : db_files) {
+  for (const auto &db_file : db_files) {
     result.push_back(ToStoreFileRecord(db_file));
   }
   return result;
 }
 
-bool SqliteMetadataStore::MoveFile(const std::string& file_id, const std::string& new_folder_id) {
+bool SqliteMetadataStore::MoveFile(const std::string &file_id, const std::string &new_folder_id) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -492,7 +494,7 @@ bool SqliteMetadataStore::MoveFile(const std::string& file_id, const std::string
 
 // --- Tag Definition Operations ---
 
-bool SqliteMetadataStore::CreateOrUpdateTag(const StoreTagRecord& tag) {
+bool SqliteMetadataStore::CreateOrUpdateTag(const StoreTagRecord &tag) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -516,7 +518,7 @@ bool SqliteMetadataStore::CreateOrUpdateTag(const StoreTagRecord& tag) {
   return true;
 }
 
-bool SqliteMetadataStore::DeleteTag(const std::string& tag_name) {
+bool SqliteMetadataStore::DeleteTag(const std::string &tag_name) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -536,7 +538,7 @@ bool SqliteMetadataStore::DeleteTag(const std::string& tag_name) {
   return true;
 }
 
-std::optional<StoreTagRecord> SqliteMetadataStore::GetTag(const std::string& tag_name) {
+std::optional<StoreTagRecord> SqliteMetadataStore::GetTag(const std::string &tag_name) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return std::nullopt;
@@ -572,13 +574,13 @@ std::vector<StoreTagRecord> SqliteMetadataStore::ListTags() {
 
   // Build a map of id -> name for parent lookup
   std::unordered_map<int64_t, std::string> id_to_name;
-  for (const auto& db_tag : db_tags) {
+  for (const auto &db_tag : db_tags) {
     id_to_name[db_tag.id] = db_tag.name;
   }
 
   std::vector<StoreTagRecord> result;
   result.reserve(db_tags.size());
-  for (const auto& db_tag : db_tags) {
+  for (const auto &db_tag : db_tags) {
     StoreTagRecord record;
     record.name = db_tag.name;
     record.metadata = db_tag.metadata;
@@ -595,8 +597,8 @@ std::vector<StoreTagRecord> SqliteMetadataStore::ListTags() {
 
 // --- File-Tag Association Operations ---
 
-bool SqliteMetadataStore::SetFileTags(const std::string& file_id,
-                                      const std::vector<std::string>& tags) {
+bool SqliteMetadataStore::SetFileTags(const std::string &file_id,
+                                      const std::vector<std::string> &tags) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -616,7 +618,7 @@ bool SqliteMetadataStore::SetFileTags(const std::string& file_id,
   return true;
 }
 
-bool SqliteMetadataStore::AddTagToFile(const std::string& file_id, const std::string& tag_name) {
+bool SqliteMetadataStore::AddTagToFile(const std::string &file_id, const std::string &tag_name) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -636,8 +638,8 @@ bool SqliteMetadataStore::AddTagToFile(const std::string& file_id, const std::st
   return true;
 }
 
-bool SqliteMetadataStore::RemoveTagFromFile(const std::string& file_id,
-                                            const std::string& tag_name) {
+bool SqliteMetadataStore::RemoveTagFromFile(const std::string &file_id,
+                                            const std::string &tag_name) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -654,7 +656,7 @@ bool SqliteMetadataStore::RemoveTagFromFile(const std::string& file_id,
 
   // Remove the specified tag
   std::vector<std::string> new_tags;
-  for (const auto& tag : current_tags) {
+  for (const auto &tag : current_tags) {
     if (tag != tag_name) {
       new_tags.push_back(tag);
     }
@@ -669,7 +671,7 @@ bool SqliteMetadataStore::RemoveTagFromFile(const std::string& file_id,
   return true;
 }
 
-std::vector<std::string> SqliteMetadataStore::GetFileTags(const std::string& file_id) {
+std::vector<std::string> SqliteMetadataStore::GetFileTags(const std::string &file_id) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return {};
@@ -685,8 +687,8 @@ std::vector<std::string> SqliteMetadataStore::GetFileTags(const std::string& fil
 
 // --- File-Attachment Operations ---
 
-bool SqliteMetadataStore::SetFileAttachments(const std::string& file_id,
-                                             const std::vector<std::string>& attachments) {
+bool SqliteMetadataStore::SetFileAttachments(const std::string &file_id,
+                                             const std::vector<std::string> &attachments) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -706,7 +708,7 @@ bool SqliteMetadataStore::SetFileAttachments(const std::string& file_id,
   return true;
 }
 
-std::vector<std::string> SqliteMetadataStore::GetFileAttachments(const std::string& file_id) {
+std::vector<std::string> SqliteMetadataStore::GetFileAttachments(const std::string &file_id) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return {};
@@ -723,7 +725,7 @@ std::vector<std::string> SqliteMetadataStore::GetFileAttachments(const std::stri
 // --- Tag Query Operations ---
 
 std::vector<StoreTagQueryResult> SqliteMetadataStore::FindFilesByTagsOr(
-    const std::vector<std::string>& tags) {
+    const std::vector<std::string> &tags) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return {};
@@ -733,7 +735,7 @@ std::vector<StoreTagQueryResult> SqliteMetadataStore::FindFilesByTagsOr(
 
   std::vector<StoreTagQueryResult> results;
   results.reserve(db_results.size());
-  for (const auto& db_result : db_results) {
+  for (const auto &db_result : db_results) {
     StoreTagQueryResult result;
     result.file_id = GetFileUuid(db_result.file_id);
     result.folder_id = GetFolderUuid(db_result.folder_id);
@@ -741,7 +743,7 @@ std::vector<StoreTagQueryResult> SqliteMetadataStore::FindFilesByTagsOr(
     result.tags = db_result.tags;
 
     // Compute file_path
-    std::string folder_path = file_db_->GetFolderPath(db_result.folder_id);
+    std::string folder_path = StripRootPrefix(file_db_->GetFolderPath(db_result.folder_id));
     if (folder_path.empty()) {
       result.file_path = result.file_name;
     } else {
@@ -754,7 +756,7 @@ std::vector<StoreTagQueryResult> SqliteMetadataStore::FindFilesByTagsOr(
 }
 
 std::vector<StoreTagQueryResult> SqliteMetadataStore::FindFilesByTagsAnd(
-    const std::vector<std::string>& tags) {
+    const std::vector<std::string> &tags) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return {};
@@ -764,7 +766,7 @@ std::vector<StoreTagQueryResult> SqliteMetadataStore::FindFilesByTagsAnd(
 
   std::vector<StoreTagQueryResult> results;
   results.reserve(db_results.size());
-  for (const auto& db_result : db_results) {
+  for (const auto &db_result : db_results) {
     StoreTagQueryResult result;
     result.file_id = GetFileUuid(db_result.file_id);
     result.folder_id = GetFolderUuid(db_result.folder_id);
@@ -772,7 +774,7 @@ std::vector<StoreTagQueryResult> SqliteMetadataStore::FindFilesByTagsAnd(
     result.tags = db_result.tags;
 
     // Compute file_path
-    std::string folder_path = file_db_->GetFolderPath(db_result.folder_id);
+    std::string folder_path = StripRootPrefix(file_db_->GetFolderPath(db_result.folder_id));
     if (folder_path.empty()) {
       result.file_path = result.file_name;
     } else {
@@ -813,7 +815,7 @@ bool SqliteMetadataStore::RebuildAll() {
 // --- Iteration ---
 
 void SqliteMetadataStore::IterateAllFiles(
-    std::function<bool(const std::string&, const StoreFileRecord&)> callback) {
+    std::function<bool(const std::string &, const StoreFileRecord &)> callback) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return;
@@ -826,7 +828,7 @@ void SqliteMetadataStore::IterateAllFiles(
 
     // Iterate files in this folder
     auto files = file_db_->ListFiles(folder_db_id);
-    for (const auto& db_file : files) {
+    for (const auto &db_file : files) {
       StoreFileRecord record = ToStoreFileRecord(db_file);
       std::string file_path = folder_path.empty() ? record.name : folder_path + "/" + record.name;
 
@@ -837,7 +839,7 @@ void SqliteMetadataStore::IterateAllFiles(
 
     // Recurse into subfolders
     auto subfolders = file_db_->ListFolders(folder_db_id);
-    for (const auto& subfolder : subfolders) {
+    for (const auto &subfolder : subfolders) {
       iterate_folder(subfolder.id);
     }
   };
@@ -846,11 +848,11 @@ void SqliteMetadataStore::IterateAllFiles(
   iterate_folder(-1);
 }
 
-std::optional<std::string> SqliteMetadataStore::GetNotebookMetadata(const std::string& key) {
+std::optional<std::string> SqliteMetadataStore::GetNotebookMetadata(const std::string &key) {
   return notebook_db_->GetMetadata(key);
 }
 
-bool SqliteMetadataStore::SetNotebookMetadata(const std::string& key, const std::string& value) {
+bool SqliteMetadataStore::SetNotebookMetadata(const std::string &key, const std::string &value) {
   return notebook_db_->SetMetadata(key, value);
 }
 

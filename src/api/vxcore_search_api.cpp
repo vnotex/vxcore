@@ -124,7 +124,9 @@ VXCORE_API VxCoreError vxcore_search_by_tags(VxCoreContextHandle context, const 
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    auto search_manager = CreateSearchManager(ctx, notebook);
+    // SearchByTags never uses the search backend (no content search), so always
+    // use "simple" to avoid initializing ripgrep unnecessarily.
+    auto search_manager = std::make_unique<vxcore::SearchManager>(notebook, std::string("simple"));
 
     std::string results_json;
     std::string input_files_str = input_files_json ? input_files_json : "";
