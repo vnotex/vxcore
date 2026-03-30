@@ -5,6 +5,7 @@
 #include "core/config_manager.h"
 #include "core/context.h"
 #include "core/notebook_manager.h"
+#include "core/template_manager.h"
 #include "core/workspace_manager.h"
 #include "platform/path_provider.h"
 #include "utils/logger.h"
@@ -114,6 +115,7 @@ VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
                                                                   ctx->notebook_manager.get());
     ctx->workspace_manager = std::make_unique<vxcore::WorkspaceManager>(ctx->config_manager.get(),
                                                                         ctx->buffer_manager.get());
+    ctx->template_manager = std::make_unique<vxcore::TemplateManager>(ctx->config_manager.get());
 
     *out_context = reinterpret_cast<VxCoreContextHandle>(ctx);
     return VXCORE_OK;

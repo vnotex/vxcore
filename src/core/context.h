@@ -10,6 +10,7 @@ class ConfigManager;
 class NotebookManager;
 class WorkspaceManager;
 class BufferManager;
+class TemplateManager;
 
 struct VxCoreContext {
   // IMPORTANT: Member order determines destruction order (reverse of declaration).
@@ -20,6 +21,7 @@ struct VxCoreContext {
   std::unique_ptr<NotebookManager> notebook_manager;
   std::unique_ptr<BufferManager> buffer_manager;
   std::unique_ptr<WorkspaceManager> workspace_manager;
+  std::unique_ptr<TemplateManager> template_manager;
   std::string last_error;
   bool shutdown_called = false;
 };

@@ -14,6 +14,7 @@ set(VXCORE_SOURCES
     api/vxcore_filetype_api.cpp
     api/vxcore_workspace_api.cpp
     api/vxcore_buffer_api.cpp
+    api/vxcore_template_api.cpp
     api/handle_manager.cpp
     api/error_handler.cpp
     core/config_manager.cpp
@@ -35,6 +36,7 @@ set(VXCORE_SOURCES
     core/bundled_folder_manager.cpp
     core/folder_manager.cpp
     core/raw_folder_manager.cpp
+    core/template_manager.cpp
     db/db_manager.cpp
     db/file_db.cpp
     db/tag_db.cpp

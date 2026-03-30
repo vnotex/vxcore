@@ -629,6 +629,50 @@ VXCORE_API VxCoreError vxcore_buffer_list_attachments(VxCoreContextHandle contex
 VXCORE_API VxCoreError vxcore_buffer_get_attachments_folder(VxCoreContextHandle context,
                                                             const char *buffer_id, char **out_path);
 
+/* ============ Template Operations ============ */
+
+// Get the absolute path to the templates folder.
+// Creates the folder if it doesn't exist.
+// out_path: Caller must free with vxcore_string_free.
+VXCORE_API VxCoreError vxcore_template_get_folder_path(VxCoreContextHandle context,
+                                                       char **out_path);
+
+// List all templates as a JSON array of filename strings.
+// Example: ["report.md", "todo.md", "notes.txt"]
+// out_json: Caller must free with vxcore_string_free.
+VXCORE_API VxCoreError vxcore_template_list(VxCoreContextHandle context, char **out_json);
+
+// List templates matching a file suffix (case-insensitive).
+// suffix: Including dot, e.g. ".md", ".txt"
+// out_json: JSON array of matching filenames. Caller must free with vxcore_string_free.
+VXCORE_API VxCoreError vxcore_template_list_by_suffix(VxCoreContextHandle context,
+                                                      const char *suffix, char **out_json);
+
+// Get the full content of a template file.
+// name: Template filename including extension, e.g. "report.md"
+// out_content: Caller must free with vxcore_string_free.
+VXCORE_API VxCoreError vxcore_template_get_content(VxCoreContextHandle context, const char *name,
+                                                   char **out_content);
+
+// Create a new template with the given name and text content.
+// name: Template filename including extension, e.g. "report.md"
+// content: Text content to write.
+// Returns VXCORE_ERR_ALREADY_EXISTS if a template with this name exists.
+// Returns VXCORE_ERR_INVALID_PARAM if name contains path separators.
+VXCORE_API VxCoreError vxcore_template_create(VxCoreContextHandle context, const char *name,
+                                              const char *content);
+
+// Delete a template by name.
+// Returns VXCORE_ERR_NOT_FOUND if template doesn't exist.
+VXCORE_API VxCoreError vxcore_template_delete(VxCoreContextHandle context, const char *name);
+
+// Rename a template.
+// Returns VXCORE_ERR_NOT_FOUND if old_name doesn't exist.
+// Returns VXCORE_ERR_ALREADY_EXISTS if new_name already exists.
+// Returns VXCORE_ERR_INVALID_PARAM if new_name contains path separators.
+VXCORE_API VxCoreError vxcore_template_rename(VxCoreContextHandle context, const char *old_name,
+                                              const char *new_name);
+
 VXCORE_API void vxcore_string_free(char *str);
 
 #ifdef __cplusplus
