@@ -50,7 +50,8 @@ add_test(NAME test_rg_search_backend COMMAND test_rg_search_backend)
 add_executable(test_simple_search_backend test_simple_search_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/search/simple_search_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/search/search_file_info.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp)
 target_include_directories(test_simple_search_backend PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(test_simple_search_backend PRIVATE nlohmann_json)
 add_test(NAME test_simple_search_backend COMMAND test_simple_search_backend)

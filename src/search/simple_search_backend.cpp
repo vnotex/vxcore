@@ -6,6 +6,7 @@
 #include <future>
 
 #include "search_file_info.h"
+#include "utils/logger.h"
 #include "utils/string_utils.h"
 #include "utils/utils.h"
 
@@ -333,10 +334,13 @@ VxCoreError SimpleSearchBackend::Search(const std::vector<SearchFileInfo> &files
   }
 
   if (!thread_pool_ || static_cast<int>(files.size()) < kParallelSearchThreshold) {
+    VXCORE_LOG_DEBUG("Content search: using sequential path (%zu files)", files.size());
     return SearchSequential(files, do_match, content_exclude_patterns, lowercased_exclude_patterns,
                             exclude_regexes, max_results, out_result);
   }
 
+  VXCORE_LOG_DEBUG("Content search: using parallel path (%zu files, %u threads)", files.size(),
+                   thread_pool_->get_thread_count());
   return SearchParallel(files, do_match, content_exclude_patterns, lowercased_exclude_patterns,
                         exclude_regexes, max_results, out_result);
 }
