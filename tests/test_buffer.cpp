@@ -2461,6 +2461,242 @@ int test_buffer_get_resource_base_path_external() {
   return 0;
 }
 
+// ============ Buffer Auto-Resolve Tests ============
+
+int test_buffer_open_auto_resolve_notebook() {
+  std::cout << "  Running test_buffer_open_auto_resolve_notebook..." << std::endl;
+  cleanup_test_dir(get_test_path("buf_auto_resolve"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("buf_auto_resolve").c_str(),
+                               "{\"name\":\"Auto Resolve Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "auto_test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Build absolute path to the file inside the notebook
+  std::string abs_path = normalize_path(get_test_path("buf_auto_resolve") + "/auto_test.md");
+
+  // Open buffer with absolute path and NULL notebook_id
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, nullptr, abs_path.c_str(), &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_id);
+  ASSERT_NE(std::string(buffer_id), std::string(""));
+
+  // Verify buffer was resolved to notebook context
+  char *buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_json);
+
+  nlohmann::json buf_data = nlohmann::json::parse(buffer_json);
+  ASSERT_EQ(buf_data["notebookId"].get<std::string>(), std::string(notebook_id));
+  ASSERT_EQ(buf_data["filePath"].get<std::string>(), std::string("auto_test.md"));
+
+  vxcore_string_free(buffer_json);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("buf_auto_resolve"));
+  std::cout << "  ✓ test_buffer_open_auto_resolve_notebook passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_open_auto_resolve_dedup() {
+  std::cout << "  Running test_buffer_open_auto_resolve_dedup..." << std::endl;
+  cleanup_test_dir(get_test_path("buf_auto_dedup"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("buf_auto_dedup").c_str(),
+                               "{\"name\":\"Auto Dedup Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "dedup_test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string abs_path = normalize_path(get_test_path("buf_auto_dedup") + "/dedup_test.md");
+
+  // Open buffer via absolute path (nullptr notebook_id)
+  char *buffer_id1 = nullptr;
+  err = vxcore_buffer_open(ctx, nullptr, abs_path.c_str(), &buffer_id1);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_id1);
+
+  // Open buffer via relative path (with notebook_id)
+  char *buffer_id2 = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "dedup_test.md", &buffer_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_id2);
+
+  // Same buffer — IDs must match
+  ASSERT_EQ(std::string(buffer_id1), std::string(buffer_id2));
+
+  vxcore_string_free(buffer_id1);
+  vxcore_string_free(buffer_id2);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("buf_auto_dedup"));
+
+  // Reverse order: relative first, then absolute
+  cleanup_test_dir(get_test_path("buf_auto_dedup2"));
+
+  err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("buf_auto_dedup2").c_str(),
+                               "{\"name\":\"Auto Dedup Test 2\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "dedup_test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open relative first
+  buffer_id1 = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "dedup_test.md", &buffer_id1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open absolute second
+  std::string abs_path2 = normalize_path(get_test_path("buf_auto_dedup2") + "/dedup_test.md");
+  buffer_id2 = nullptr;
+  err = vxcore_buffer_open(ctx, nullptr, abs_path2.c_str(), &buffer_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Same buffer — IDs must match
+  ASSERT_EQ(std::string(buffer_id1), std::string(buffer_id2));
+
+  vxcore_string_free(buffer_id1);
+  vxcore_string_free(buffer_id2);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("buf_auto_dedup2"));
+
+  std::cout << "  ✓ test_buffer_open_auto_resolve_dedup passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_open_auto_resolve_not_in_notebook() {
+  std::cout << "  Running test_buffer_open_auto_resolve_not_in_notebook..." << std::endl;
+  cleanup_test_dir(get_test_path("buf_auto_outside_nb"));
+  cleanup_test_dir(get_test_path("buf_external_outside"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a notebook at one path
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("buf_auto_outside_nb").c_str(),
+                             "{\"name\":\"Outside Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file outside the notebook
+  create_directory(get_test_path("buf_external_outside"));
+  std::string outside_path = normalize_path(get_test_path("buf_external_outside") + "/external.md");
+  write_file(outside_path, "external content");
+
+  // Open buffer with absolute path to external file, nullptr notebook_id
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, nullptr, outside_path.c_str(), &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_id);
+  ASSERT_NE(std::string(buffer_id), std::string(""));
+
+  // Verify it's an external buffer (no notebook association)
+  char *buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_json);
+
+  nlohmann::json buf_data = nlohmann::json::parse(buffer_json);
+  ASSERT_EQ(buf_data["notebookId"].get<std::string>(), std::string(""));
+  // filePath should be the absolute path (normalized)
+  ASSERT_EQ(normalize_path(buf_data["filePath"].get<std::string>()), outside_path);
+
+  vxcore_string_free(buffer_json);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("buf_auto_outside_nb"));
+  cleanup_test_dir(get_test_path("buf_external_outside"));
+  std::cout << "  ✓ test_buffer_open_auto_resolve_not_in_notebook passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_open_auto_resolve_unindexed_file() {
+  std::cout << "  Running test_buffer_open_auto_resolve_unindexed_file..." << std::endl;
+  cleanup_test_dir(get_test_path("buf_auto_unindexed"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("buf_auto_unindexed").c_str(),
+                               "{\"name\":\"Unindexed Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Write a file directly on disk inside notebook root (NOT through vxcore API)
+  write_file(get_test_path("buf_auto_unindexed") + "/unindexed.md", "unindexed content");
+
+  // Build absolute path
+  std::string abs_path = normalize_path(get_test_path("buf_auto_unindexed") + "/unindexed.md");
+
+  // Open buffer with absolute path, nullptr notebook_id
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, nullptr, abs_path.c_str(), &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_id);
+
+  // Verify buffer was resolved to notebook context with relative path
+  char *buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_json);
+
+  nlohmann::json buf_data = nlohmann::json::parse(buffer_json);
+  ASSERT_EQ(buf_data["notebookId"].get<std::string>(), std::string(notebook_id));
+  ASSERT_EQ(buf_data["filePath"].get<std::string>(), std::string("unindexed.md"));
+
+  // Verify content can be read (buffer works despite file being unindexed)
+  const void *content_ptr = nullptr;
+  size_t content_size = 0;
+  err = vxcore_buffer_get_content_raw(ctx, buffer_id, &content_ptr, &content_size);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(content_ptr);
+  std::string retrieved(static_cast<const char *>(content_ptr), content_size);
+  ASSERT_EQ(retrieved, std::string("unindexed content"));
+
+  vxcore_string_free(buffer_json);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("buf_auto_unindexed"));
+  std::cout << "  ✓ test_buffer_open_auto_resolve_unindexed_file passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running buffer tests..." << std::endl;
 
@@ -2524,6 +2760,12 @@ int main() {
   RUN_TEST(test_buffer_get_resource_base_path);
   RUN_TEST(test_buffer_get_resource_base_path_subfolder);
   RUN_TEST(test_buffer_get_resource_base_path_external);
+
+  // Buffer Auto-Resolve Tests
+  RUN_TEST(test_buffer_open_auto_resolve_notebook);
+  RUN_TEST(test_buffer_open_auto_resolve_dedup);
+  RUN_TEST(test_buffer_open_auto_resolve_not_in_notebook);
+  RUN_TEST(test_buffer_open_auto_resolve_unindexed_file);
 
   std::cout << "All buffer tests passed!" << std::endl;
   return 0;

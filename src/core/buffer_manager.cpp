@@ -7,11 +7,10 @@
 #include "config_manager.h"
 #include "notebook.h"
 #include "notebook_manager.h"
+#include "standard_buffer_provider.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
-
-#include "standard_buffer_provider.h"
 
 namespace vxcore {
 
@@ -124,8 +123,8 @@ std::string BufferManager::FindBufferByPath(const std::string &notebook_id,
 }
 
 void BufferManager::UpdatePathsAfterRename(const std::string &notebook_id,
-                                           const std::string &old_path,
-                                           const std::string &new_path, bool is_folder) {
+                                           const std::string &old_path, const std::string &new_path,
+                                           bool is_folder) {
   bool updated = false;
   std::string prefix = is_folder ? old_path + "/" : "";
 
@@ -146,8 +145,7 @@ void BufferManager::UpdatePathsAfterRename(const std::string &notebook_id,
       updated_path = new_path;
     } else {
       // Folder rename: match prefix (files inside the renamed folder).
-      if (buf_path.size() > prefix.size() &&
-          buf_path.compare(0, prefix.size(), prefix) == 0) {
+      if (buf_path.size() > prefix.size() && buf_path.compare(0, prefix.size(), prefix) == 0) {
         updated_path = new_path + "/" + buf_path.substr(prefix.size());
       } else {
         continue;
@@ -177,19 +175,36 @@ void BufferManager::UpdatePathsAfterRename(const std::string &notebook_id,
 
 std::string BufferManager::OpenBuffer(const std::string &notebook_id,
                                       const std::string &file_path) {
+  std::string effective_notebook_id = notebook_id;
+  std::string effective_path = file_path;
+
+  // Auto-resolve absolute paths to notebook-relative paths
+  if (effective_notebook_id.empty() && !IsRelativePath(effective_path)) {
+    std::string resolved_nb_id;
+    std::string resolved_rel_path;
+    if (notebook_manager_->ResolvePathToNotebook(effective_path, resolved_nb_id,
+                                                 resolved_rel_path) == VXCORE_OK) {
+      VXCORE_LOG_INFO("Auto-resolved absolute path to notebook: notebook_id=%s, relative_path=%s",
+                      resolved_nb_id.c_str(), resolved_rel_path.c_str());
+      effective_notebook_id = resolved_nb_id;
+      effective_path = resolved_rel_path;
+    }
+  }
+
   // Check if buffer already exists (de-duplication)
-  std::string existing_id = FindBufferByPath(notebook_id, file_path);
+  std::string existing_id = FindBufferByPath(effective_notebook_id, effective_path);
   if (!existing_id.empty()) {
-    VXCORE_LOG_DEBUG("Buffer already open: id=%s, path=%s", existing_id.c_str(), file_path.c_str());
+    VXCORE_LOG_DEBUG("Buffer already open: id=%s, path=%s", existing_id.c_str(),
+                     effective_path.c_str());
     return existing_id;
   }
 
   // Resolve notebook pointer for validation
   Notebook *notebook = nullptr;
-  if (!notebook_id.empty()) {
-    notebook = notebook_manager_->GetNotebook(notebook_id);
+  if (!effective_notebook_id.empty()) {
+    notebook = notebook_manager_->GetNotebook(effective_notebook_id);
     if (!notebook) {
-      VXCORE_LOG_ERROR("Cannot open buffer: notebook not found: %s", notebook_id.c_str());
+      VXCORE_LOG_ERROR("Cannot open buffer: notebook not found: %s", effective_notebook_id.c_str());
       return "";
     }
   }
@@ -197,17 +212,17 @@ std::string BufferManager::OpenBuffer(const std::string &notebook_id,
   // Create new buffer (content loaded lazily on first access)
   std::unique_ptr<Buffer> buffer;
   if (notebook) {
-    buffer = std::make_unique<Buffer>(notebook, file_path);
+    buffer = std::make_unique<Buffer>(notebook, effective_path);
   } else {
     // External file - file_path is absolute
-    buffer = std::make_unique<Buffer>(file_path);
+    buffer = std::make_unique<Buffer>(effective_path);
   }
 
   std::string id = buffer->GetId();
   buffers_[id] = std::move(buffer);
 
   VXCORE_LOG_INFO("Opened buffer: id=%s, notebook_id=%s, file_path=%s", id.c_str(),
-                  notebook_id.c_str(), file_path.c_str());
+                  effective_notebook_id.c_str(), effective_path.c_str());
   return id;
 }
 
