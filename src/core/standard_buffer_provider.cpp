@@ -165,13 +165,30 @@ VxCoreError StandardBufferProvider::DeleteAsset(const std::string &relative_path
   std::string notebook_root = notebook_->GetRootFolder();
   std::string abs_path = CleanPath(notebook_root + "/" + relative_path);
 
-  // Delete the file
+  // Check existence first
   try {
     if (!std::filesystem::exists(abs_path)) {
       VXCORE_LOG_WARN("Asset file does not exist: %s", abs_path.c_str());
       return VXCORE_ERR_NOT_FOUND;
     }
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("Exception checking asset existence: %s", e.what());
+    return VXCORE_ERR_IO;
+  }
 
+  // Prefer recycle bin (bundled notebooks), fallback to permanent delete (raw notebooks).
+  auto folder_manager = notebook_->GetFolderManager();
+  if (folder_manager) {
+    VxCoreError move_err = folder_manager->MoveToRecycleBin(std::filesystem::path(abs_path));
+    if (move_err == VXCORE_OK) {
+      return VXCORE_OK;
+    }
+    VXCORE_LOG_WARN("Failed to move asset to recycle bin, fallback to permanent delete: %s",
+                    abs_path.c_str());
+  }
+
+  // Permanent delete fallback
+  try {
     if (!std::filesystem::remove(abs_path)) {
       VXCORE_LOG_ERROR("Failed to delete asset file: %s", abs_path.c_str());
       return VXCORE_ERR_IO;

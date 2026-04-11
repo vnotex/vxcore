@@ -56,6 +56,8 @@ class IBufferProvider {
 
   // Delete an asset file from the assets folder.
   // Does NOT touch attachment metadata.
+  // For notebook-backed files: prefers recycle bin, falls back to permanent delete.
+  // For external files: always permanently deletes.
   //
   // relative_path: path as returned by InsertAsset/InsertAssetRaw
   virtual VxCoreError DeleteAsset(const std::string &relative_path) = 0;
