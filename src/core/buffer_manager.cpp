@@ -5,9 +5,9 @@
 
 #include "buffer_provider.h"
 #include "config_manager.h"
+#include "metadata_store.h"
 #include "notebook.h"
 #include "notebook_manager.h"
-#include "standard_buffer_provider.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -122,11 +122,8 @@ std::string BufferManager::FindBufferByPath(const std::string &notebook_id,
   return "";
 }
 
-void BufferManager::UpdatePathsAfterRename(const std::string &notebook_id,
-                                           const std::string &old_path, const std::string &new_path,
-                                           bool is_folder) {
+void BufferManager::UpdatePaths(const std::string &notebook_id) {
   bool updated = false;
-  std::string prefix = is_folder ? old_path + "/" : "";
 
   for (auto &pair : buffers_) {
     auto *buffer = pair.second.get();
@@ -134,37 +131,39 @@ void BufferManager::UpdatePathsAfterRename(const std::string &notebook_id,
       continue;
     }
 
-    const std::string &buf_path = buffer->GetFilePath();
-    std::string updated_path;
-
-    if (!is_folder) {
-      // File rename: exact match only.
-      if (buf_path != old_path) {
-        continue;
-      }
-      updated_path = new_path;
-    } else {
-      // Folder rename: match prefix (files inside the renamed folder).
-      if (buf_path.size() > prefix.size() && buf_path.compare(0, prefix.size(), prefix) == 0) {
-        updated_path = new_path + "/" + buf_path.substr(prefix.size());
-      } else {
-        continue;
-      }
+    auto *provider = buffer->GetProvider();
+    if (!provider) {
+      continue;
     }
 
-    std::string old_buf_path = buf_path;
-    buffer->SetFilePath(updated_path);
+    std::string file_id = provider->GetFileId();
+    if (file_id.empty()) {
+      continue;
+    }
+
+    auto *notebook = buffer->GetNotebook();
+    if (!notebook) {
+      continue;
+    }
+
+    auto *store = notebook->GetMetadataStore();
+    if (!store) {
+      continue;
+    }
+
+    std::string current_path = store->GetNodePathById(file_id);
+    if (current_path.empty() || current_path == buffer->GetFilePath()) {
+      continue;
+    }
+
+    std::string old_path = buffer->GetFilePath();
+    buffer->SetFilePath(current_path);
     buffer->ClearBackupPathCache();
     buffer->DiscardBackup();
+    provider->SetFilePath(current_path);
 
-    // Update provider's cached path if it's a StandardBufferProvider.
-    auto *provider = dynamic_cast<StandardBufferProvider *>(buffer->GetProvider());
-    if (provider) {
-      provider->SetFilePath(updated_path);
-    }
-
-    VXCORE_LOG_INFO("UpdatePathsAfterRename: buffer id=%s, old=%s, new=%s", buffer->GetId().c_str(),
-                    old_buf_path.c_str(), updated_path.c_str());
+    VXCORE_LOG_INFO("UpdatePaths: buffer id=%s, old=%s, new=%s", buffer->GetId().c_str(),
+                    old_path.c_str(), current_path.c_str());
     updated = true;
   }
 

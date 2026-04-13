@@ -78,6 +78,16 @@ class IBufferProvider {
   // For TextBundle (future): the bundle directory itself
   virtual VxCoreError GetResourceBasePath(std::string &out_path) = 0;
 
+  // ============ Path Identity ============
+  // These methods support BufferManager's ID-based path refresh after move/rename.
+
+  // Get the stable file UUID for this buffer's file (empty if not applicable).
+  // Used by BufferManager to refresh paths from MetadataStore after move/rename.
+  virtual std::string GetFileId() const { return ""; }
+
+  // Update cached file path after move/rename.
+  virtual void SetFilePath(const std::string &path) { (void)path; }
+
   // ============ Attachment Operations (Filesystem + Metadata) ============
   // These methods operate on both filesystem and attachment metadata.
   // For ExternalBufferProvider, metadata operations return VXCORE_ERR_UNSUPPORTED.

@@ -55,6 +55,10 @@ class StandardBufferProvider : public IBufferProvider {
 
   VxCoreError GetAttachmentsFolder(std::string &out_path) override;
 
+  // Path identity overrides
+  std::string GetFileId() const override { return file_id_; }
+  void SetFilePath(const std::string &path) override { file_path_ = path; }
+
  private:
   // Ensures the assets folder exists, creating it if necessary.
   VxCoreError EnsureAssetsFolderExists();
@@ -72,10 +76,6 @@ class StandardBufferProvider : public IBufferProvider {
   Notebook *notebook_;     // Not owned
   std::string file_path_;  // Relative path within notebook
   std::string file_id_;    // Cached file UUID
-
-  // Allow BufferManager to update cached path after rename.
-  friend class BufferManager;
-  void SetFilePath(const std::string &path) { file_path_ = path; }
 };
 
 }  // namespace vxcore

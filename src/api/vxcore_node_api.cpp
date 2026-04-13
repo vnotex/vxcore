@@ -1,3 +1,5 @@
+#include <nlohmann/json.hpp>
+
 #include "api/api_utils.h"
 #include "core/buffer_manager.h"
 #include "core/context.h"
@@ -5,7 +7,6 @@
 #include "core/notebook_manager.h"
 #include "vxcore/vxcore.h"
 #include "vxcore/vxcore_types.h"
-#include <nlohmann/json.hpp>
 
 // Helper function to detect whether a path refers to a file or folder
 static VxCoreError DetectNodeType(vxcore::Notebook *notebook, const std::string &path,
@@ -171,21 +172,9 @@ VXCORE_API VxCoreError vxcore_node_rename(VxCoreContextHandle context, const cha
       return err;
     }
 
-    // Update open buffer paths to reflect the rename.
+    // Refresh open buffer paths from metadata store.
     if (ctx->buffer_manager) {
-      bool is_folder = (node_type == vxcore::NodeType::Folder);
-      std::string old_path = node_path;
-
-      // Derive the new path: replace the last component with new_name.
-      std::string new_path;
-      size_t last_slash = old_path.rfind('/');
-      if (last_slash != std::string::npos) {
-        new_path = old_path.substr(0, last_slash + 1) + new_name;
-      } else {
-        new_path = new_name;
-      }
-
-      ctx->buffer_manager->UpdatePathsAfterRename(notebook_id, old_path, new_path, is_folder);
+      ctx->buffer_manager->UpdatePaths(notebook_id);
     }
 
     return VXCORE_OK;
@@ -230,11 +219,23 @@ VXCORE_API VxCoreError vxcore_node_move(VxCoreContextHandle context, const char 
     }
 
     // Move based on type
+    VxCoreError move_err;
     if (node_type == vxcore::NodeType::File) {
-      return folder_manager->MoveFile(src_path, dest_path);
+      move_err = folder_manager->MoveFile(src_path, dest_path);
     } else {
-      return folder_manager->MoveFolder(src_path, dest_path);
+      move_err = folder_manager->MoveFolder(src_path, dest_path);
     }
+
+    if (move_err != VXCORE_OK) {
+      return move_err;
+    }
+
+    // Refresh open buffer paths from metadata store.
+    if (ctx->buffer_manager) {
+      ctx->buffer_manager->UpdatePaths(notebook_id);
+    }
+
+    return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
