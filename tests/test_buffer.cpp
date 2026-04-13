@@ -2328,6 +2328,302 @@ int test_buffer_rename_provider_functional() {
   return 0;
 }
 
+// ============ Buffer Path Update on Move Tests ============
+
+int test_buffer_move_file_updates_path() {
+  std::cout << "  Running test_buffer_move_file_updates_path..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_move_file_updates_path"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_move_file_updates_path").c_str(),
+                               "{\"name\":\"Move File Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create subfolder "sub" and file "sub/test.md"
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "sub", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "sub", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer for "sub/test.md"
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "sub/test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_id);
+
+  // Verify initial filePath is "sub/test.md"
+  char *buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json buf_data = nlohmann::json::parse(buffer_json);
+  ASSERT_EQ(buf_data["filePath"].get<std::string>(), std::string("sub/test.md"));
+  vxcore_string_free(buffer_json);
+
+  // Save the buffer ID for later comparison
+  std::string original_buffer_id(buffer_id);
+
+  // Move file from "sub/test.md" to root
+  err = vxcore_node_move(ctx, notebook_id, "sub/test.md", ".");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify buffer's filePath is now "test.md"
+  buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  buf_data = nlohmann::json::parse(buffer_json);
+  ASSERT_EQ(buf_data["filePath"].get<std::string>(), std::string("test.md"));
+  vxcore_string_free(buffer_json);
+
+  // Verify buffer ID is unchanged
+  ASSERT_EQ(buf_data["id"].get<std::string>(), original_buffer_id);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_move_file_updates_path"));
+  std::cout << "  ✓ test_buffer_move_file_updates_path passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_move_folder_updates_paths() {
+  std::cout << "  Running test_buffer_move_folder_updates_paths..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_move_folder_updates_paths"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_move_folder_updates_paths").c_str(),
+                               "{\"name\":\"Move Folder Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create folder "src" with two files
+  char *src_folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "src", &src_folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id1 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "src", "a.md", &file_id1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id2 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "src", "b.md", &file_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create destination folder "dest"
+  char *dest_folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "dest", &dest_folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffers for both files
+  char *buffer_id1 = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "src/a.md", &buffer_id1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id2 = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "src/b.md", &buffer_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Save buffer IDs for later comparison
+  std::string original_buffer_id1(buffer_id1);
+  std::string original_buffer_id2(buffer_id2);
+
+  // Move folder "src" under "dest"
+  err = vxcore_node_move(ctx, notebook_id, "src", "dest");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify first buffer's filePath is "dest/src/a.md"
+  char *buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id1, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json buf_data1 = nlohmann::json::parse(buffer_json);
+  ASSERT_EQ(buf_data1["filePath"].get<std::string>(), std::string("dest/src/a.md"));
+  vxcore_string_free(buffer_json);
+
+  // Verify second buffer's filePath is "dest/src/b.md"
+  buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id2, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json buf_data2 = nlohmann::json::parse(buffer_json);
+  ASSERT_EQ(buf_data2["filePath"].get<std::string>(), std::string("dest/src/b.md"));
+  vxcore_string_free(buffer_json);
+
+  // Verify buffer IDs are unchanged
+  ASSERT_EQ(buf_data1["id"].get<std::string>(), original_buffer_id1);
+  ASSERT_EQ(buf_data2["id"].get<std::string>(), original_buffer_id2);
+
+  vxcore_string_free(buffer_id1);
+  vxcore_string_free(buffer_id2);
+  vxcore_string_free(file_id1);
+  vxcore_string_free(file_id2);
+  vxcore_string_free(src_folder_id);
+  vxcore_string_free(dest_folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_move_folder_updates_paths"));
+  std::cout << "  ✓ test_buffer_move_folder_updates_paths passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_move_no_affect_other_buffers() {
+  std::cout << "  Running test_buffer_move_no_affect_other_buffers..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_move_no_affect_other"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_move_no_affect_other").c_str(),
+                               "{\"name\":\"Move Isolation Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create folder "a" with file "a/file1.md"
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "a", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id1 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "a", "file1.md", &file_id1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create file in root "file2.md"
+  char *file_id2 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "file2.md", &file_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffers for both
+  char *buffer_id1 = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "a/file1.md", &buffer_id1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id2 = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "file2.md", &buffer_id2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Move only file1 from "a/file1.md" to root
+  err = vxcore_node_move(ctx, notebook_id, "a/file1.md", ".");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify moved buffer path == "file1.md"
+  char *buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id1, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json buf_data1 = nlohmann::json::parse(buffer_json);
+  ASSERT_EQ(buf_data1["filePath"].get<std::string>(), std::string("file1.md"));
+  vxcore_string_free(buffer_json);
+
+  // Verify other buffer path == "file2.md" (unchanged)
+  buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id2, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json buf_data2 = nlohmann::json::parse(buffer_json);
+  ASSERT_EQ(buf_data2["filePath"].get<std::string>(), std::string("file2.md"));
+  vxcore_string_free(buffer_json);
+
+  vxcore_string_free(buffer_id1);
+  vxcore_string_free(buffer_id2);
+  vxcore_string_free(file_id1);
+  vxcore_string_free(file_id2);
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_move_no_affect_other"));
+  std::cout << "  ✓ test_buffer_move_no_affect_other_buffers passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_move_provider_functional() {
+  std::cout << "  Running test_buffer_move_provider_functional..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_move_provider"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buffer_move_provider").c_str(),
+                               "{\"name\":\"Provider Move Test\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create folder "from" and file "from/note.md"
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "from", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "from", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Open buffer for "from/note.md"
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "from/note.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_id);
+
+  // Verify initial filePath
+  char *buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json buf_data = nlohmann::json::parse(buffer_json);
+  ASSERT_EQ(buf_data["filePath"].get<std::string>(), std::string("from/note.md"));
+  vxcore_string_free(buffer_json);
+
+  // Move file from "from/note.md" to root
+  err = vxcore_node_move(ctx, notebook_id, "from/note.md", ".");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify buffer filePath updated
+  buffer_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id, &buffer_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  buf_data = nlohmann::json::parse(buffer_json);
+  ASSERT_EQ(buf_data["filePath"].get<std::string>(), std::string("note.md"));
+  vxcore_string_free(buffer_json);
+
+  // Insert asset after move — proves provider path was updated
+  const uint8_t asset_data[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  char *relative_path = nullptr;
+  err = vxcore_buffer_insert_asset_raw(ctx, buffer_id, "test.png", asset_data, sizeof(asset_data),
+                                       &relative_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(relative_path);
+
+  // Verify asset path format
+  std::string rel_path(relative_path);
+  ASSERT_TRUE(rel_path.find("vx_assets") != std::string::npos);
+  ASSERT_TRUE(rel_path.find("test.png") != std::string::npos);
+
+  // Verify the asset file exists on disk
+  std::string notebook_root = get_test_path("test_buffer_move_provider");
+  std::string asset_abs_path = notebook_root + "/" + rel_path;
+  ASSERT_TRUE(path_exists(asset_abs_path));
+
+  vxcore_string_free(relative_path);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_move_provider"));
+  std::cout << "  ✓ test_buffer_move_provider_functional passed" << std::endl;
+  return 0;
+}
+
 // ============ Buffer Resource Base Path Tests ============
 
 int test_buffer_get_resource_base_path() {
@@ -2858,6 +3154,12 @@ int main() {
   RUN_TEST(test_buffer_rename_folder_updates_paths);
   RUN_TEST(test_buffer_rename_no_affect_other_buffers);
   RUN_TEST(test_buffer_rename_provider_functional);
+
+  // Buffer Path Update on Move Tests
+  RUN_TEST(test_buffer_move_file_updates_path);
+  RUN_TEST(test_buffer_move_folder_updates_paths);
+  RUN_TEST(test_buffer_move_no_affect_other_buffers);
+  RUN_TEST(test_buffer_move_provider_functional);
 
   // Buffer Resource Base Path Tests
   RUN_TEST(test_buffer_get_resource_base_path);
