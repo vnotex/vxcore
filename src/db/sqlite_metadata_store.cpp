@@ -434,14 +434,20 @@ std::optional<StoreFileRecord> SqliteMetadataStore::GetFileByPath(const std::str
   std::string clean_path = CleanPath(path);
   auto [folder_path, file_name] = SplitPath(clean_path);
 
-  // Get folder (empty folder_path means root)
+  // Get folder DB ID
   int64_t folder_db_id = -1;
-  if (!folder_path.empty()) {
+  if (!folder_path.empty() && folder_path != ".") {
     auto folder = file_db_->GetFolderByPath(folder_path);
     if (!folder) {
       return std::nullopt;  // Folder not found
     }
     folder_db_id = folder->id;
+  } else {
+    // Root folder: find the folder with parent_id IS NULL
+    auto root_folders = file_db_->ListFolders(-1);
+    if (!root_folders.empty()) {
+      folder_db_id = root_folders[0].id;
+    }
   }
 
   // Get file by name in folder

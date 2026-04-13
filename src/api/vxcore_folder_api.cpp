@@ -1,3 +1,4 @@
+#include <filesystem>
 #include <nlohmann/json.hpp>
 
 #include "api/api_utils.h"
@@ -538,7 +539,23 @@ VXCORE_API VxCoreError vxcore_node_list_attachments(VxCoreContextHandle context,
       return error;
     }
 
-    *out_attachments_json = vxcore_strdup(attachments_json.c_str());
+    // Extract just the filenames from relative paths (e.g., "vx_assets/uuid/doc.pdf" -> "doc.pdf")
+    try {
+      nlohmann::json j = nlohmann::json::parse(attachments_json);
+      if (j.is_array()) {
+        nlohmann::json filenames = nlohmann::json::array();
+        for (const auto &rel_path : j) {
+          std::string path_str = rel_path.get<std::string>();
+          std::filesystem::path p(path_str);
+          filenames.push_back(p.filename().string());
+        }
+        *out_attachments_json = vxcore_strdup(filenames.dump().c_str());
+      } else {
+        *out_attachments_json = vxcore_strdup(attachments_json.c_str());
+      }
+    } catch (const std::exception &) {
+      *out_attachments_json = vxcore_strdup(attachments_json.c_str());
+    }
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();

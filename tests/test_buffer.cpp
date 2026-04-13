@@ -2768,7 +2768,7 @@ int test_buffer_open_by_node_id() {
   err = vxcore_context_create(nullptr, &ctx_no_notebook);
   ASSERT_EQ(err, VXCORE_OK);
   auto *vctx_no_notebook = reinterpret_cast<vxcore::VxCoreContext *>(ctx_no_notebook);
-  vctx_no_notebook->notebook_manager.reset();
+  (void)vctx_no_notebook->notebook_manager.release();  // leak ok in test
 
   char *uninitialized_buffer_id = reinterpret_cast<char *>(1);
   err = vxcore_buffer_open_by_node_id(ctx_no_notebook, file_id, &uninitialized_buffer_id);
@@ -2780,7 +2780,7 @@ int test_buffer_open_by_node_id() {
   err = vxcore_context_create(nullptr, &ctx_no_buffer);
   ASSERT_EQ(err, VXCORE_OK);
   auto *vctx_no_buffer = reinterpret_cast<vxcore::VxCoreContext *>(ctx_no_buffer);
-  vctx_no_buffer->buffer_manager.reset();
+  (void)vctx_no_buffer->buffer_manager.release();  // leak ok in test
 
   uninitialized_buffer_id = reinterpret_cast<char *>(1);
   err = vxcore_buffer_open_by_node_id(ctx_no_buffer, file_id, &uninitialized_buffer_id);
