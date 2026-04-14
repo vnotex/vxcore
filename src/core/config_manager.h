@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "utils/file_utils.h"
 #include "vxcore/vxcore_types.h"
 #include "vxcore_config.h"
 #include "vxcore_session_config.h"
@@ -23,10 +24,10 @@ class ConfigManager {
   VxCoreSessionConfig &GetSessionConfig() { return session_config_; }
 
   std::string GetDataPath(VxCoreDataLocation location) const;
-  std::string GetLocalDataPath() const { return local_data_path_.string(); }
-  std::string GetAppDataPath() const { return app_data_path_.string(); }
-  std::string GetConfigPath() const { return (app_data_path_ / "vxcore.json").string(); }
-  std::string GetSessionConfigPath() const { return (local_data_path_ / "session.json").string(); }
+  std::string GetLocalDataPath() const { return PathToUtf8(local_data_path_); }
+  std::string GetAppDataPath() const { return PathToUtf8(app_data_path_); }
+  std::string GetConfigPath() const { return PathToUtf8(app_data_path_ / "vxcore.json"); }
+  std::string GetSessionConfigPath() const { return PathToUtf8(local_data_path_ / "session.json"); }
 
   VxCoreError SaveConfig();
   VxCoreError SaveSessionConfig();

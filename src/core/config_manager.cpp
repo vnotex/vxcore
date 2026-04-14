@@ -19,7 +19,7 @@ std::string ConfigManager::app_name_ = "vxcore";
 
 ConfigManager::ConfigManager() : config_(), session_config_() {
   if (test_mode_) {
-    std::filesystem::path temp_path(GetDataPathInTestMode());
+    auto temp_path = PathFromUtf8(GetDataPathInTestMode());
     app_data_path_ = temp_path;
     local_data_path_ = temp_path;
   } else {
@@ -35,7 +35,7 @@ ConfigManager::ConfigManager() : config_(), session_config_() {
 }
 
 std::string ConfigManager::GetDataPathInTestMode() {
-  return (std::filesystem::temp_directory_path() / kTestConfigFolderName).string();
+  return PathToUtf8(std::filesystem::temp_directory_path() / kTestConfigFolderName);
 }
 
 VxCoreError ConfigManager::LoadConfigs() {
@@ -52,7 +52,7 @@ VxCoreError ConfigManager::LoadConfigs() {
   nlohmann::json user_json = nlohmann::json::object();
   auto user_config_path = app_data_path_ / kCoreConfigFileName;
   if (std::filesystem::exists(user_config_path)) {
-    VXCORE_LOG_DEBUG("Loading user config: %s", user_config_path.string().c_str());
+    VXCORE_LOG_DEBUG("Loading user config: %s", PathToUtf8(user_config_path).c_str());
     err = LoadJsonFile(user_config_path, user_json);
     if (err != VXCORE_OK) {
       VXCORE_LOG_ERROR("Failed to load user config: error=%d", err);
@@ -63,7 +63,7 @@ VxCoreError ConfigManager::LoadConfigs() {
   nlohmann::json session_json = nlohmann::json::object();
   auto session_config_path = local_data_path_ / kSessionConfigFileName;
   if (std::filesystem::exists(session_config_path)) {
-    VXCORE_LOG_DEBUG("Loading session config: %s", session_config_path.string().c_str());
+    VXCORE_LOG_DEBUG("Loading session config: %s", PathToUtf8(session_config_path).c_str());
     err = LoadJsonFile(session_config_path, session_json);
     if (err != VXCORE_OK) {
       VXCORE_LOG_ERROR("Failed to load session config: error=%d", err);
@@ -101,7 +101,7 @@ VxCoreError ConfigManager::SaveConfig() {
 
   try {
     auto config_path = app_data_path_ / kCoreConfigFileName;
-    VXCORE_LOG_DEBUG("Saving config: %s", config_path.string().c_str());
+    VXCORE_LOG_DEBUG("Saving config: %s", PathToUtf8(config_path).c_str());
     std::ofstream file(config_path);
     if (!file.is_open()) {
       VXCORE_LOG_ERROR("Failed to open config file for writing");
@@ -128,7 +128,7 @@ VxCoreError ConfigManager::SaveSessionConfig() {
 
   try {
     auto session_config_path = local_data_path_ / kSessionConfigFileName;
-    VXCORE_LOG_DEBUG("Saving session config: %s", session_config_path.string().c_str());
+    VXCORE_LOG_DEBUG("Saving session config: %s", PathToUtf8(session_config_path).c_str());
     std::ofstream file(session_config_path);
     if (!file.is_open()) {
       VXCORE_LOG_ERROR("Failed to open session config file for writing");
@@ -156,7 +156,7 @@ void ConfigManager::ClearTestDirectory() {
     VXCORE_LOG_WARN("ClearTestDirectory called but test mode is not enabled");
     return;
   }
-  std::filesystem::path temp_path(GetDataPathInTestMode());
+  auto temp_path = PathFromUtf8(GetDataPathInTestMode());
   std::error_code ec;
   std::filesystem::remove_all(temp_path, ec);
   if (ec) {
@@ -172,9 +172,9 @@ void ConfigManager::SetAppInfo(const std::string &org_name, const std::string &a
 std::string ConfigManager::GetDataPath(VxCoreDataLocation location) const {
   switch (location) {
     case VXCORE_DATA_APP:
-      return app_data_path_.string();
+      return PathToUtf8(app_data_path_);
     case VXCORE_DATA_LOCAL:
-      return local_data_path_.string();
+      return PathToUtf8(local_data_path_);
     default:
       return std::string();
   }
@@ -205,14 +205,14 @@ VxCoreError ConfigManager::LoadConfigByName(VxCoreDataLocation location,
   std::filesystem::path config_path = base_path / (base_name + ".json");
 
   if (!std::filesystem::exists(config_path)) {
-    VXCORE_LOG_DEBUG("Config file not found: %s", config_path.string().c_str());
+    VXCORE_LOG_DEBUG("Config file not found: %s", PathToUtf8(config_path).c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
 
-  VXCORE_LOG_DEBUG("Loading config by name: %s", config_path.string().c_str());
+  VXCORE_LOG_DEBUG("Loading config by name: %s", PathToUtf8(config_path).c_str());
   VxCoreError err = ReadFile(config_path, out_content);
   if (err != VXCORE_OK) {
-    VXCORE_LOG_ERROR("Failed to read config file: %s", config_path.string().c_str());
+    VXCORE_LOG_ERROR("Failed to read config file: %s", PathToUtf8(config_path).c_str());
   }
   return err;
 }
@@ -231,16 +231,16 @@ VxCoreError ConfigManager::SaveConfigByName(VxCoreDataLocation location,
   try {
     std::filesystem::create_directories(base_path);
   } catch (...) {
-    VXCORE_LOG_ERROR("Failed to create directory: %s", base_path.string().c_str());
+    VXCORE_LOG_ERROR("Failed to create directory: %s", PathToUtf8(base_path).c_str());
     return VXCORE_ERR_IO;
   }
 
   std::filesystem::path config_path = base_path / (base_name + ".json");
-  VXCORE_LOG_DEBUG("Saving config by name: %s", config_path.string().c_str());
+  VXCORE_LOG_DEBUG("Saving config by name: %s", PathToUtf8(config_path).c_str());
 
   VxCoreError err = WriteFile(config_path, content);
   if (err != VXCORE_OK) {
-    VXCORE_LOG_ERROR("Failed to write config file: %s", config_path.string().c_str());
+    VXCORE_LOG_ERROR("Failed to write config file: %s", PathToUtf8(config_path).c_str());
   }
   return err;
 }
