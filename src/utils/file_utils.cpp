@@ -4,9 +4,87 @@
 #include <fstream>
 #include <sstream>
 
+#if defined(VXCORE_BUILD_DLL)
+#include "logger.h"
+#endif
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+#ifndef VXCORE_LOG_DEBUG
+#define VXCORE_LOG_DEBUG(...) ((void)0)
+#endif
+
 namespace vxcore {
 
 static constexpr char kPathSeparator = '/';
+
+#ifdef _WIN32
+static std::string WideToUtf8(const std::wstring &wide_str) {
+  if (wide_str.empty()) {
+    return {};
+  }
+
+  int utf8_size =
+      WideCharToMultiByte(CP_UTF8, 0, wide_str.c_str(), -1, nullptr, 0, nullptr, nullptr);
+  if (utf8_size <= 0) {
+    return {};
+  }
+
+  std::string utf8_str(static_cast<size_t>(utf8_size), '\0');
+  int converted = WideCharToMultiByte(CP_UTF8, 0, wide_str.c_str(), -1, utf8_str.data(), utf8_size,
+                                      nullptr, nullptr);
+  if (converted <= 0) {
+    return {};
+  }
+
+  utf8_str.resize(static_cast<size_t>(utf8_size - 1));
+  return utf8_str;
+}
+#endif
+
+std::filesystem::path PathFromUtf8(const std::string &utf8_str) {
+  if (utf8_str.empty()) {
+    return {};
+  }
+
+#ifdef _WIN32
+  int wide_size = MultiByteToWideChar(CP_UTF8, 0, utf8_str.c_str(), -1, nullptr, 0);
+  if (wide_size <= 0) {
+    return {};
+  }
+
+  int wide_len = wide_size - 1;
+  std::wstring wide_str(static_cast<size_t>(wide_size), L'\0');
+  int converted = MultiByteToWideChar(CP_UTF8, 0, utf8_str.c_str(), -1, wide_str.data(), wide_size);
+  if (converted <= 0) {
+    return {};
+  }
+
+  wide_str.resize(static_cast<size_t>(wide_len));
+  VXCORE_LOG_DEBUG("PathFromUtf8: input_bytes=%zu, wide_chars=%d", utf8_str.size(), wide_len);
+  return std::filesystem::path(wide_str);
+#else
+  return std::filesystem::path(utf8_str);
+#endif
+}
+
+std::string PathToUtf8(const std::filesystem::path &path) {
+#ifdef _WIN32
+  return WideToUtf8(path.wstring());
+#else
+  return path.string();
+#endif
+}
+
+std::string PathToGenericUtf8(const std::filesystem::path &path) {
+#ifdef _WIN32
+  return WideToUtf8(path.generic_wstring());
+#else
+  return path.generic_string();
+#endif
+}
 
 std::string ConcatenatePaths(const std::string &parent_path, const std::string &child_name) {
   if (parent_path.empty() || parent_path == ".") {
@@ -53,8 +131,7 @@ bool IsSingleName(const std::string &path) {
   if (!std::filesystem::path(path).is_relative()) {
     return false;
   }
-  return path.find(kPathSeparator) == std::string::npos &&
-         path.find('\\') == std::string::npos;
+  return path.find(kPathSeparator) == std::string::npos && path.find('\\') == std::string::npos;
 }
 
 std::string RelativePath(const std::string &base, const std::string &path) {

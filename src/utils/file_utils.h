@@ -10,18 +10,24 @@
 
 namespace vxcore {
 
+std::filesystem::path PathFromUtf8(const std::string &utf8_str);
+
+std::string PathToUtf8(const std::filesystem::path &path);
+
+std::string PathToGenericUtf8(const std::filesystem::path &path);
+
 inline std::string CleanFsPath(const std::filesystem::path &path) {
   if (path.empty()) {
     return ".";
   }
-  return path.lexically_normal().generic_string();
+  return PathToGenericUtf8(path.lexically_normal());
 }
 
 inline std::string CleanPath(const std::string &path) {
   if (path.empty()) {
     return ".";
   }
-  return CleanFsPath(std::filesystem::path(path));
+  return CleanFsPath(PathFromUtf8(path));
 }
 
 bool IsRelativePath(const std::string &path);
