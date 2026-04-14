@@ -1,9 +1,70 @@
+#include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "test_utils.h"
+#include "utils/file_utils.h"
 #include "vxcore/vxcore.h"
+
+namespace {
+
+std::filesystem::path PathFromUtf8ForTest(const std::string &utf8_str) {
+  if (utf8_str.empty()) {
+    return {};
+  }
+
+#ifdef _WIN32
+  int wide_size = MultiByteToWideChar(CP_UTF8, 0, utf8_str.c_str(), -1, nullptr, 0);
+  if (wide_size <= 0) {
+    return {};
+  }
+
+  std::wstring wide_str(static_cast<size_t>(wide_size), L'\0');
+  int converted = MultiByteToWideChar(CP_UTF8, 0, utf8_str.c_str(), -1, wide_str.data(), wide_size);
+  if (converted <= 0) {
+    return {};
+  }
+
+  wide_str.resize(static_cast<size_t>(wide_size - 1));
+  return std::filesystem::path(wide_str);
+#else
+  return std::filesystem::path(utf8_str);
+#endif
+}
+
+std::string PathToUtf8ForTest(const std::filesystem::path &path) {
+#ifdef _WIN32
+  std::wstring wide_str = path.wstring();
+  if (wide_str.empty()) {
+    return {};
+  }
+
+  int utf8_size =
+      WideCharToMultiByte(CP_UTF8, 0, wide_str.c_str(), -1, nullptr, 0, nullptr, nullptr);
+  if (utf8_size <= 0) {
+    return {};
+  }
+
+  std::string utf8_str(static_cast<size_t>(utf8_size), '\0');
+  int converted = WideCharToMultiByte(CP_UTF8, 0, wide_str.c_str(), -1, utf8_str.data(), utf8_size,
+                                      nullptr, nullptr);
+  if (converted <= 0) {
+    return {};
+  }
+
+  utf8_str.resize(static_cast<size_t>(utf8_size - 1));
+  return utf8_str;
+#else
+  return path.string();
+#endif
+}
+
+}  // namespace
 
 int test_folder_create() {
   std::cout << "  Running test_folder_create..." << std::endl;
@@ -4276,6 +4337,133 @@ int test_file_peek() {
   return 0;
 }
 
+// This test specifically verifies UTF-8 filename handling on Windows.
+// Chinese characters in filenames should survive the full create->list->rename->delete cycle.
+int test_utf8_filename_roundtrip() {
+  std::cout << "  Running test_utf8_filename_roundtrip..." << std::endl;
+  cleanup_test_dir(get_test_path("test_utf8_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_utf8_nb").c_str(),
+                               "{\"name\":\"UTF8 Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".",
+                             "\xe6\xb5\x8b\xe8\xaf\x95\xe6\x96\x87\xe4\xbb\xb6\xe5\xa4\xb9",
+                             &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id);
+
+  {
+    namespace fs = std::filesystem;
+    auto folder_path =
+        PathFromUtf8ForTest(get_test_path("test_utf8_nb")) /
+        PathFromUtf8ForTest("\xe6\xb5\x8b\xe8\xaf\x95\xe6\x96\x87\xe4\xbb\xb6\xe5\xa4\xb9");
+    ASSERT_TRUE(fs::exists(folder_path));
+  }
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id,
+                           "\xe6\xb5\x8b\xe8\xaf\x95\xe6\x96\x87\xe4\xbb\xb6\xe5\xa4\xb9",
+                           "0501-\xe5\xb1\xb1\xe4\xb8\x9c.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(file_id);
+
+  {
+    namespace fs = std::filesystem;
+    auto file_path =
+        PathFromUtf8ForTest(get_test_path("test_utf8_nb")) /
+        PathFromUtf8ForTest("\xe6\xb5\x8b\xe8\xaf\x95\xe6\x96\x87\xe4\xbb\xb6\xe5\xa4\xb9") /
+        PathFromUtf8ForTest("0501-\xe5\xb1\xb1\xe4\xb8\x9c.md");
+    if (!fs::exists(file_path)) {
+      std::ofstream(file_path).close();
+    }
+    ASSERT_TRUE(fs::exists(file_path));
+  }
+
+  {
+    char *children_json = nullptr;
+    err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+    ASSERT_EQ(err, VXCORE_OK);
+    ASSERT_NOT_NULL(children_json);
+    std::string json_str(children_json);
+    ASSERT_TRUE(json_str.find("\xe6\xb5\x8b\xe8\xaf\x95\xe6\x96\x87\xe4\xbb\xb6\xe5\xa4\xb9") !=
+                std::string::npos);
+    vxcore_string_free(children_json);
+  }
+
+  {
+    namespace fs = std::filesystem;
+    auto folder_on_disk =
+        PathFromUtf8ForTest(get_test_path("test_utf8_nb")) /
+        PathFromUtf8ForTest("\xe6\xb5\x8b\xe8\xaf\x95\xe6\x96\x87\xe4\xbb\xb6\xe5\xa4\xb9");
+    bool found = false;
+    for (const auto &entry : fs::directory_iterator(folder_on_disk)) {
+      std::string name = PathToUtf8ForTest(entry.path().filename());
+      if (name == "0501-\xe5\xb1\xb1\xe4\xb8\x9c.md") {
+        found = true;
+        break;
+      }
+    }
+    ASSERT_TRUE(found);
+  }
+
+  // Step 6: Rename via vxcore API
+  {
+    err = vxcore_node_rename(ctx, notebook_id,
+                             "\xe6\xb5\x8b\xe8\xaf\x95\xe6\x96\x87\xe4\xbb\xb6\xe5\xa4\xb9/"
+                             "0501-\xe5\xb1\xb1\xe4\xb8\x9c.md",
+                             "0501-\xe5\xb9\xbf\xe4\xb8\x9c.md");
+    ASSERT_EQ(err, VXCORE_OK);
+
+    // Verify old file gone, new file present on disk
+    namespace fs = std::filesystem;
+    auto old_path =
+        PathFromUtf8ForTest(get_test_path("test_utf8_nb")) /
+        PathFromUtf8ForTest("\xe6\xb5\x8b\xe8\xaf\x95\xe6\x96\x87\xe4\xbb\xb6\xe5\xa4\xb9") /
+        PathFromUtf8ForTest("0501-\xe5\xb1\xb1\xe4\xb8\x9c.md");
+    auto new_path =
+        PathFromUtf8ForTest(get_test_path("test_utf8_nb")) /
+        PathFromUtf8ForTest("\xe6\xb5\x8b\xe8\xaf\x95\xe6\x96\x87\xe4\xbb\xb6\xe5\xa4\xb9") /
+        PathFromUtf8ForTest("0501-\xe5\xb9\xbf\xe4\xb8\x9c.md");
+    ASSERT_FALSE(fs::exists(old_path));
+    ASSERT_TRUE(fs::exists(new_path));
+  }
+
+  // Step 7: Delete via vxcore API (file first, then folder)
+  {
+    err = vxcore_node_delete(ctx, notebook_id,
+                             "\xe6\xb5\x8b\xe8\xaf\x95\xe6\x96\x87\xe4\xbb\xb6\xe5\xa4\xb9/"
+                             "0501-\xe5\xb9\xbf\xe4\xb8\x9c.md");
+    ASSERT_EQ(err, VXCORE_OK);
+
+    err = vxcore_node_delete(ctx, notebook_id,
+                             "\xe6\xb5\x8b\xe8\xaf\x95\xe6\x96\x87\xe4\xbb\xb6\xe5\xa4\xb9");
+    ASSERT_EQ(err, VXCORE_OK);
+
+    // Verify cleanup on disk
+    namespace fs = std::filesystem;
+    auto folder_path =
+        PathFromUtf8ForTest(get_test_path("test_utf8_nb")) /
+        PathFromUtf8ForTest("\xe6\xb5\x8b\xe8\xaf\x95\xe6\x96\x87\xe4\xbb\xb6\xe5\xa4\xb9");
+    ASSERT_FALSE(fs::exists(folder_path));
+  }
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_utf8_nb"));
+  std::cout << "  ✓ test_utf8_filename_roundtrip passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -4385,6 +4573,9 @@ int main() {
   RUN_TEST(test_folder_get_available_name_with_extension);
   RUN_TEST(test_folder_get_available_name_in_subfolder);
   RUN_TEST(test_folder_get_available_name_invalid_params);
+
+  // UTF-8 filename tests
+  RUN_TEST(test_utf8_filename_roundtrip);
 
   // Node attachments tests
   RUN_TEST(test_node_attachments_basic);
