@@ -49,11 +49,27 @@ Buffer::Buffer(const std::string &absolute_path)
   CreateProvider();
 }
 
+Buffer::Buffer(const std::string &address, bool virtual_flag)
+    : notebook_(nullptr),
+      file_path_(address),
+      revision_(0),
+      modified_(false),
+      state_(VXCORE_BUFFER_NORMAL),
+      last_modified_time_(0),
+      content_loaded_(true),
+      is_virtual_(virtual_flag) {
+  id_ = GenerateUUID();
+}
+
 Buffer::~Buffer() = default;
 
 std::string Buffer::GetNotebookId() const { return notebook_ ? notebook_->GetId() : ""; }
 
 std::string Buffer::ResolveFullPath() const {
+  if (is_virtual_) {
+    return file_path_;
+  }
+
   if (!notebook_) {
     // External file - file_path is absolute
     return file_path_;
@@ -62,6 +78,10 @@ std::string Buffer::ResolveFullPath() const {
 }
 
 std::string Buffer::GetBackupFilePath() {
+  if (is_virtual_) {
+    return "";
+  }
+
   if (backup_file_path_.empty()) {
     backup_file_path_ = CleanFsPath(ResolveFullPath() + ".vswp");
   }
@@ -69,6 +89,10 @@ std::string Buffer::GetBackupFilePath() {
 }
 
 VxCoreError Buffer::WriteBackup() {
+  if (is_virtual_) {
+    return VXCORE_OK;
+  }
+
   if (!content_loaded_) {
     return VXCORE_ERR_INVALID_STATE;
   }
@@ -105,9 +129,19 @@ VxCoreError Buffer::WriteBackup() {
   }
 }
 
-bool Buffer::HasBackup() { return std::filesystem::exists(PathFromUtf8(GetBackupFilePath())); }
+bool Buffer::HasBackup() {
+  if (is_virtual_) {
+    return false;
+  }
+
+  return std::filesystem::exists(PathFromUtf8(GetBackupFilePath()));
+}
 
 VxCoreError Buffer::RecoverBackup() {
+  if (is_virtual_) {
+    return VXCORE_OK;
+  }
+
   if (!HasBackup()) {
     return VXCORE_ERR_NOT_FOUND;
   }
@@ -167,6 +201,10 @@ VxCoreError Buffer::RecoverBackup() {
 }
 
 void Buffer::DiscardBackup() {
+  if (is_virtual_) {
+    return;
+  }
+
   try {
     const std::string backup_path = GetBackupFilePath();
     if (std::filesystem::exists(PathFromUtf8(backup_path)) &&
@@ -206,6 +244,10 @@ void Buffer::CreateProvider() {
 }
 
 void Buffer::LoadContent(const std::string &full_path) {
+  if (is_virtual_) {
+    return;
+  }
+
   try {
     std::filesystem::path fs_path = PathFromUtf8(full_path);
     if (!std::filesystem::exists(fs_path)) {
@@ -252,6 +294,10 @@ void Buffer::LoadContent(const std::string &full_path) {
 }
 
 void Buffer::SaveContent(const std::string &full_path) {
+  if (is_virtual_) {
+    return;
+  }
+
   try {
     std::filesystem::path fs_path = PathFromUtf8(full_path);
 
@@ -306,6 +352,10 @@ void Buffer::SetContent(const std::vector<uint8_t> &data) {
 }
 
 void Buffer::CheckExternalChanges(const std::string &full_path) {
+  if (is_virtual_) {
+    return;
+  }
+
   try {
     std::filesystem::path fs_path = PathFromUtf8(full_path);
     if (!std::filesystem::exists(fs_path)) {

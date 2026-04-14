@@ -37,6 +37,27 @@ VXCORE_API VxCoreError vxcore_buffer_open(VxCoreContextHandle context, const cha
   }
 }
 
+VXCORE_API VxCoreError vxcore_buffer_open_virtual(VxCoreContextHandle context, const char *address,
+                                                  char **out_id) {
+  if (!context || !address || !out_id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    std::string id = ctx->buffer_manager->OpenVirtualBuffer(address);
+    *out_id = vxcore_strdup(id.c_str());
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_buffer_open_by_node_id(VxCoreContextHandle context,
                                                      const char *node_id, char **out_id) {
   if (!context || !node_id || !out_id) {

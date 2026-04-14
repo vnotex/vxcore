@@ -26,11 +26,17 @@ class BufferManager {
   // For external files: notebook_id is empty, file_path is absolute path
   std::string OpenBuffer(const std::string &notebook_id, const std::string &file_path);
 
+  // Open a virtual buffer for a non-file-backed address, returns buffer ID
+  std::string OpenVirtualBuffer(const std::string &address);
+
   // Close a buffer and free its content
   bool CloseBuffer(const std::string &id);
 
   // Get buffer by ID, returns nullptr if not found
   Buffer *GetBuffer(const std::string &id);
+
+  // Check whether a buffer is virtual
+  bool IsVirtualBuffer(const std::string &id) const;
 
   // List all open buffers
   std::vector<Buffer *> ListBuffers();

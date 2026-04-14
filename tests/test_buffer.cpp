@@ -3096,6 +3096,231 @@ int test_buffer_open_by_node_id() {
   return 0;
 }
 
+int test_virtual_buffer_open() {
+  std::cout << "  Running test_virtual_buffer_open..." << std::endl;
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *id = nullptr;
+  err = vxcore_buffer_open_virtual(ctx, "vx://settings", &id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(id);
+
+  char *list_json = nullptr;
+  err = vxcore_buffer_list(ctx, &list_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(list_json);
+
+  nlohmann::json buffer_list = nlohmann::json::parse(list_json);
+  ASSERT(buffer_list.is_array());
+
+  bool found = false;
+  for (const auto &buf : buffer_list) {
+    if (buf.contains("id") && buf["id"].is_string() && buf["id"].get<std::string>() == id) {
+      found = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found);
+
+  vxcore_string_free(list_json);
+  vxcore_string_free(id);
+  vxcore_context_destroy(ctx);
+  std::cout << "  ✓ test_virtual_buffer_open passed" << std::endl;
+  return 0;
+}
+
+int test_virtual_buffer_save_noop() {
+  std::cout << "  Running test_virtual_buffer_save_noop..." << std::endl;
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *id = nullptr;
+  err = vxcore_buffer_open_virtual(ctx, "vx://settings", &id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(id);
+
+  err = vxcore_buffer_save(ctx, id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  vxcore_string_free(id);
+  vxcore_context_destroy(ctx);
+  std::cout << "  ✓ test_virtual_buffer_save_noop passed" << std::endl;
+  return 0;
+}
+
+int test_virtual_buffer_content_empty() {
+  std::cout << "  Running test_virtual_buffer_content_empty..." << std::endl;
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *id = nullptr;
+  err = vxcore_buffer_open_virtual(ctx, "vx://settings", &id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(id);
+
+  char *content_json = nullptr;
+  err = vxcore_buffer_get_content(ctx, id, &content_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(content_json);
+
+  nlohmann::json content_data = nlohmann::json::parse(content_json);
+  ASSERT(content_data.contains("content"));
+  std::vector<uint8_t> decoded = test_base64_decode(content_data["content"].get<std::string>());
+  ASSERT_TRUE(decoded.empty());
+
+  vxcore_string_free(content_json);
+  vxcore_string_free(id);
+  vxcore_context_destroy(ctx);
+  std::cout << "  ✓ test_virtual_buffer_content_empty passed" << std::endl;
+  return 0;
+}
+
+int test_virtual_buffer_state_normal() {
+  std::cout << "  Running test_virtual_buffer_state_normal..." << std::endl;
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *id = nullptr;
+  err = vxcore_buffer_open_virtual(ctx, "vx://settings", &id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(id);
+
+  char *json = nullptr;
+  err = vxcore_buffer_get(ctx, id, &json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(json);
+
+  nlohmann::json buffer_data = nlohmann::json::parse(json);
+  ASSERT(buffer_data.contains("state"));
+  ASSERT_EQ(buffer_data["state"].get<int>(), 0);
+
+  vxcore_string_free(json);
+  vxcore_string_free(id);
+  vxcore_context_destroy(ctx);
+  std::cout << "  ✓ test_virtual_buffer_state_normal passed" << std::endl;
+  return 0;
+}
+
+int test_virtual_buffer_close() {
+  std::cout << "  Running test_virtual_buffer_close..." << std::endl;
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *id = nullptr;
+  err = vxcore_buffer_open_virtual(ctx, "vx://settings", &id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(id);
+
+  err = vxcore_buffer_close(ctx, id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *list_json = nullptr;
+  err = vxcore_buffer_list(ctx, &list_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(list_json);
+
+  nlohmann::json buffer_list = nlohmann::json::parse(list_json);
+  ASSERT(buffer_list.is_array());
+  for (const auto &buf : buffer_list) {
+    if (buf.contains("id") && buf["id"].is_string()) {
+      ASSERT_NE(buf["id"].get<std::string>(), std::string(id));
+    }
+  }
+
+  vxcore_string_free(list_json);
+  vxcore_string_free(id);
+  vxcore_context_destroy(ctx);
+  std::cout << "  ✓ test_virtual_buffer_close passed" << std::endl;
+  return 0;
+}
+
+int test_virtual_buffer_dedup() {
+  std::cout << "  Running test_virtual_buffer_dedup..." << std::endl;
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *id1 = nullptr;
+  char *id2 = nullptr;
+  err = vxcore_buffer_open_virtual(ctx, "vx://settings", &id1);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(id1);
+  err = vxcore_buffer_open_virtual(ctx, "vx://settings", &id2);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(id2);
+  ASSERT_EQ(std::string(id1), std::string(id2));
+
+  vxcore_string_free(id2);
+  vxcore_string_free(id1);
+  vxcore_context_destroy(ctx);
+  std::cout << "  ✓ test_virtual_buffer_dedup passed" << std::endl;
+  return 0;
+}
+
+int test_virtual_buffer_not_in_session() {
+  std::cout << "  Running test_virtual_buffer_not_in_session..." << std::endl;
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *id = nullptr;
+  err = vxcore_buffer_open_virtual(ctx, "vx://settings", &id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(id);
+
+  char *session_json = nullptr;
+  err = vxcore_context_get_session_config(ctx, &session_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(session_json);
+
+  nlohmann::json session = nlohmann::json::parse(session_json);
+  if (session.contains("buffers") && session["buffers"].is_array()) {
+    for (const auto &buf : session["buffers"]) {
+      if (buf.is_object()) {
+        ASSERT_NE(buf.value("id", ""), std::string(id));
+      }
+    }
+  }
+
+  vxcore_string_free(session_json);
+  vxcore_string_free(id);
+  vxcore_context_destroy(ctx);
+  std::cout << "  ✓ test_virtual_buffer_not_in_session passed" << std::endl;
+  return 0;
+}
+
+int test_virtual_buffer_rejected_by_regular_open() {
+  std::cout << "  Running test_virtual_buffer_rejected_by_regular_open..." << std::endl;
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *id = nullptr;
+  err = vxcore_buffer_open(ctx, "", "vx://settings", &id);
+  ASSERT_NE(err, VXCORE_OK);
+
+  if (id) {
+    vxcore_string_free(id);
+  }
+  vxcore_context_destroy(ctx);
+  std::cout << "  ✓ test_virtual_buffer_rejected_by_regular_open passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running buffer tests..." << std::endl;
 
@@ -3172,6 +3397,16 @@ int main() {
   RUN_TEST(test_buffer_open_auto_resolve_not_in_notebook);
   RUN_TEST(test_buffer_open_auto_resolve_unindexed_file);
   RUN_TEST(test_buffer_open_by_node_id);
+
+  // Virtual Buffer Tests
+  RUN_TEST(test_virtual_buffer_open);
+  RUN_TEST(test_virtual_buffer_save_noop);
+  RUN_TEST(test_virtual_buffer_content_empty);
+  RUN_TEST(test_virtual_buffer_state_normal);
+  RUN_TEST(test_virtual_buffer_close);
+  RUN_TEST(test_virtual_buffer_dedup);
+  RUN_TEST(test_virtual_buffer_not_in_session);
+  RUN_TEST(test_virtual_buffer_rejected_by_regular_open);
 
   std::cout << "All buffer tests passed!" << std::endl;
   return 0;

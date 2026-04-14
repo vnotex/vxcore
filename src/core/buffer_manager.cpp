@@ -95,6 +95,10 @@ void BufferManager::UpdateSessionBuffers() {
   session_config.buffers.clear();
 
   for (const auto &pair : buffers_) {
+    if (pair.second->IsVirtual()) {
+      continue;
+    }
+
     BufferRecord record;
     record.id = pair.second->GetId();
     record.notebook_id = pair.second->GetNotebookId();
@@ -102,13 +106,14 @@ void BufferManager::UpdateSessionBuffers() {
     session_config.buffers.push_back(record);
   }
 
-  VXCORE_LOG_DEBUG("Updated %zu buffer records in session config", buffers_.size());
+  VXCORE_LOG_DEBUG("Updated %zu buffer records in session config", session_config.buffers.size());
 }
 
 void BufferManager::SaveBuffers() {
   UpdateSessionBuffers();
   config_manager_->SaveSessionConfig();
-  VXCORE_LOG_DEBUG("Saved %zu buffers to session", buffers_.size());
+  VXCORE_LOG_DEBUG("Saved %zu buffers to session",
+                   config_manager_->GetSessionConfig().buffers.size());
 }
 
 std::string BufferManager::FindBufferByPath(const std::string &notebook_id,
@@ -177,6 +182,11 @@ std::string BufferManager::OpenBuffer(const std::string &notebook_id,
   std::string effective_notebook_id = notebook_id;
   std::string effective_path = file_path;
 
+  if (effective_path.rfind("vx://", 0) == 0) {
+    VXCORE_LOG_WARN("Cannot open virtual URI via OpenBuffer: %s", effective_path.c_str());
+    return "";
+  }
+
   // Auto-resolve absolute paths to notebook-relative paths
   if (effective_notebook_id.empty() && !IsRelativePath(effective_path)) {
     std::string resolved_nb_id;
@@ -225,6 +235,22 @@ std::string BufferManager::OpenBuffer(const std::string &notebook_id,
   return id;
 }
 
+std::string BufferManager::OpenVirtualBuffer(const std::string &address) {
+  std::string existing_id = FindBufferByPath("", address);
+  if (!existing_id.empty()) {
+    VXCORE_LOG_DEBUG("Virtual buffer already open: id=%s, address=%s", existing_id.c_str(),
+                     address.c_str());
+    return existing_id;
+  }
+
+  auto buffer = std::make_unique<Buffer>(address, true);
+  std::string id = buffer->GetId();
+  buffers_[id] = std::move(buffer);
+
+  VXCORE_LOG_INFO("Opened virtual buffer: id=%s, address=%s", id.c_str(), address.c_str());
+  return id;
+}
+
 bool BufferManager::CloseBuffer(const std::string &id) {
   auto it = buffers_.find(id);
   if (it == buffers_.end()) {
@@ -248,6 +274,15 @@ Buffer *BufferManager::GetBuffer(const std::string &id) {
   return it->second.get();
 }
 
+bool BufferManager::IsVirtualBuffer(const std::string &id) const {
+  auto it = buffers_.find(id);
+  if (it == buffers_.end()) {
+    return false;
+  }
+
+  return it->second->IsVirtual();
+}
+
 std::vector<Buffer *> BufferManager::ListBuffers() {
   std::vector<Buffer *> result;
   result.reserve(buffers_.size());
@@ -262,6 +297,10 @@ VxCoreError BufferManager::SaveBuffer(const std::string &id) {
   if (!buffer) {
     VXCORE_LOG_ERROR("Cannot save: buffer not found: id=%s", id.c_str());
     return VXCORE_ERR_BUFFER_NOT_FOUND;
+  }
+
+  if (buffer->IsVirtual()) {
+    return VXCORE_OK;
   }
 
   // Resolve full path for saving
@@ -292,6 +331,10 @@ VxCoreError BufferManager::ReloadBuffer(const std::string &id) {
   if (!buffer) {
     VXCORE_LOG_ERROR("Cannot reload: buffer not found: id=%s", id.c_str());
     return VXCORE_ERR_BUFFER_NOT_FOUND;
+  }
+
+  if (buffer->IsVirtual()) {
+    return VXCORE_OK;
   }
 
   // Resolve full path for loading

@@ -459,6 +459,13 @@ VXCORE_API VxCoreError vxcore_buffer_open(VxCoreContextHandle context, const cha
 VXCORE_API VxCoreError vxcore_buffer_open_by_node_id(VxCoreContextHandle context,
                                                      const char *node_id, char **out_id);
 
+// Open a virtual buffer (no filesystem backing).
+// address: Virtual address (e.g., "vx://settings"). Must not be NULL.
+// Returns the buffer ID in out_id (caller must free with vxcore_string_free).
+// If the buffer is already open, returns the existing buffer ID (dedup).
+VXCORE_API VxCoreError vxcore_buffer_open_virtual(VxCoreContextHandle context, const char *address,
+                                                  char **out_id);
+
 // Close a buffer by ID.
 VXCORE_API VxCoreError vxcore_buffer_close(VxCoreContextHandle context, const char *id);
 

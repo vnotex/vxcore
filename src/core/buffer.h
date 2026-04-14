@@ -24,6 +24,9 @@ class Buffer {
   // Constructor for external files (absolute path)
   explicit Buffer(const std::string &absolute_path);
 
+  // Constructor for virtual buffers (non-file-backed address)
+  explicit Buffer(const std::string &address, bool virtual_flag);
+
   ~Buffer();
 
   // Accessors
@@ -33,6 +36,7 @@ class Buffer {
   const std::string &GetFilePath() const { return file_path_; }
   int GetRevision() const { return revision_; }
   bool IsModified() const { return modified_; }
+  bool IsVirtual() const { return is_virtual_; }
   VxCoreBufferState GetState() const { return state_; }
   const nlohmann::json &GetMetadata() const { return metadata_; }
   int64_t GetLastModifiedTime() const { return last_modified_time_; }
@@ -89,6 +93,7 @@ class Buffer {
   std::vector<uint8_t> content_;  // Cached file content as raw bytes
   int64_t last_modified_time_;    // File timestamp for change detection
   bool content_loaded_;           // True if content has been loaded from disk
+  bool is_virtual_ = false;       // True if this buffer has no filesystem backing
   std::unique_ptr<IBufferProvider> provider_;
   std::string backup_file_path_;  // Cached backup file path (<full_path>.vswp)
 };
