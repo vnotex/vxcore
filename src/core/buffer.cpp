@@ -75,9 +75,10 @@ VxCoreError Buffer::WriteBackup() {
 
   try {
     const std::string backup_path = GetBackupFilePath();
+    const auto backup_fs_path = PathFromUtf8(backup_path);
     const std::string header = "vnotex_backup_file " + ResolveFullPath() + "|";
 
-    std::ofstream file(backup_path, std::ios::binary);
+    std::ofstream file(backup_fs_path, std::ios::binary);
     if (!file.is_open()) {
       return VXCORE_ERR_IO;
     }
@@ -104,7 +105,7 @@ VxCoreError Buffer::WriteBackup() {
   }
 }
 
-bool Buffer::HasBackup() { return std::filesystem::exists(GetBackupFilePath()); }
+bool Buffer::HasBackup() { return std::filesystem::exists(PathFromUtf8(GetBackupFilePath())); }
 
 VxCoreError Buffer::RecoverBackup() {
   if (!HasBackup()) {
@@ -113,7 +114,7 @@ VxCoreError Buffer::RecoverBackup() {
 
   try {
     const std::string backup_path = GetBackupFilePath();
-    std::filesystem::path fs_path(backup_path);
+    std::filesystem::path fs_path = PathFromUtf8(backup_path);
 
     // Read backup file content in a scoped block to ensure the file handle is
     // closed before we attempt to delete the backup file (required on Windows).
@@ -153,7 +154,7 @@ VxCoreError Buffer::RecoverBackup() {
       return VXCORE_ERR_IO;
     }
 
-    if (!std::filesystem::remove(backup_path)) {
+    if (!std::filesystem::remove(PathFromUtf8(backup_path))) {
       return VXCORE_ERR_IO;
     }
 
@@ -168,7 +169,8 @@ VxCoreError Buffer::RecoverBackup() {
 void Buffer::DiscardBackup() {
   try {
     const std::string backup_path = GetBackupFilePath();
-    if (std::filesystem::exists(backup_path) && std::filesystem::remove(backup_path)) {
+    if (std::filesystem::exists(PathFromUtf8(backup_path)) &&
+        std::filesystem::remove(PathFromUtf8(backup_path))) {
       VXCORE_LOG_DEBUG("Discarded backup file: %s", backup_path.c_str());
     }
   } catch (const std::exception &e) {
@@ -205,7 +207,7 @@ void Buffer::CreateProvider() {
 
 void Buffer::LoadContent(const std::string &full_path) {
   try {
-    std::filesystem::path fs_path(full_path);
+    std::filesystem::path fs_path = PathFromUtf8(full_path);
     if (!std::filesystem::exists(fs_path)) {
       state_ = VXCORE_BUFFER_FILE_MISSING;
       VXCORE_LOG_ERROR("File not found: %s", full_path.c_str());
@@ -251,7 +253,7 @@ void Buffer::LoadContent(const std::string &full_path) {
 
 void Buffer::SaveContent(const std::string &full_path) {
   try {
-    std::filesystem::path fs_path(full_path);
+    std::filesystem::path fs_path = PathFromUtf8(full_path);
 
     // Ensure parent directory exists
     std::filesystem::path parent = fs_path.parent_path();
@@ -305,7 +307,7 @@ void Buffer::SetContent(const std::vector<uint8_t> &data) {
 
 void Buffer::CheckExternalChanges(const std::string &full_path) {
   try {
-    std::filesystem::path fs_path(full_path);
+    std::filesystem::path fs_path = PathFromUtf8(full_path);
     if (!std::filesystem::exists(fs_path)) {
       if (state_ != VXCORE_BUFFER_FILE_MISSING) {
         state_ = VXCORE_BUFFER_FILE_MISSING;

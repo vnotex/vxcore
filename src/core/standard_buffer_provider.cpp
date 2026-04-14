@@ -61,7 +61,7 @@ VxCoreError StandardBufferProvider::InsertAssetRaw(const std::string &name,
 
   // Write binary data to file
   try {
-    std::ofstream ofs(asset_abs_path, std::ios::binary);
+    std::ofstream ofs(PathFromUtf8(asset_abs_path), std::ios::binary);
     if (!ofs) {
       VXCORE_LOG_ERROR("Failed to open file for writing: %s", asset_abs_path.c_str());
       return VXCORE_ERR_IO;
@@ -83,9 +83,9 @@ VxCoreError StandardBufferProvider::InsertAssetRaw(const std::string &name,
   std::string notebook_root = notebook_->GetRootFolder();
   std::string relative_path;
   try {
-    std::filesystem::path abs_path(asset_abs_path);
-    std::filesystem::path root_path(notebook_root);
-    relative_path = std::filesystem::relative(abs_path, root_path).string();
+    std::filesystem::path abs_path = PathFromUtf8(asset_abs_path);
+    std::filesystem::path root_path = PathFromUtf8(notebook_root);
+    relative_path = PathToUtf8(std::filesystem::relative(abs_path, root_path));
     relative_path = CleanPath(relative_path);
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Failed to compute relative path: %s", e.what());
@@ -105,7 +105,7 @@ VxCoreError StandardBufferProvider::InsertAsset(const std::string &source_path,
   }
 
   // Check source file exists
-  if (!std::filesystem::exists(source_path)) {
+  if (!std::filesystem::exists(PathFromUtf8(source_path))) {
     VXCORE_LOG_ERROR("Source file does not exist: %s", source_path.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
@@ -120,8 +120,8 @@ VxCoreError StandardBufferProvider::InsertAsset(const std::string &source_path,
   std::string assets_folder_path = GetAssetsFolderPath();
 
   // Extract filename from source path
-  std::filesystem::path src_path(source_path);
-  std::string filename = src_path.filename().string();
+  std::filesystem::path src_path = PathFromUtf8(source_path);
+  std::string filename = PathToUtf8(src_path.filename());
 
   // Generate unique name if collision
   std::string unique_name = GetUniqueAssetName(filename, assets_folder_path);
@@ -131,7 +131,7 @@ VxCoreError StandardBufferProvider::InsertAsset(const std::string &source_path,
 
   // Copy file
   try {
-    std::filesystem::copy_file(source_path, dest_path,
+    std::filesystem::copy_file(PathFromUtf8(source_path), PathFromUtf8(dest_path),
                                std::filesystem::copy_options::overwrite_existing);
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Failed to copy file: %s", e.what());
@@ -142,9 +142,9 @@ VxCoreError StandardBufferProvider::InsertAsset(const std::string &source_path,
   std::string notebook_root = notebook_->GetRootFolder();
   std::string relative_path;
   try {
-    std::filesystem::path abs_path(dest_path);
-    std::filesystem::path root_path(notebook_root);
-    relative_path = std::filesystem::relative(abs_path, root_path).string();
+    std::filesystem::path abs_path = PathFromUtf8(dest_path);
+    std::filesystem::path root_path = PathFromUtf8(notebook_root);
+    relative_path = PathToUtf8(std::filesystem::relative(abs_path, root_path));
     relative_path = CleanPath(relative_path);
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Failed to compute relative path: %s", e.what());
@@ -167,7 +167,7 @@ VxCoreError StandardBufferProvider::DeleteAsset(const std::string &relative_path
 
   // Check existence first
   try {
-    if (!std::filesystem::exists(abs_path)) {
+    if (!std::filesystem::exists(PathFromUtf8(abs_path))) {
       VXCORE_LOG_WARN("Asset file does not exist: %s", abs_path.c_str());
       return VXCORE_ERR_NOT_FOUND;
     }
@@ -179,7 +179,7 @@ VxCoreError StandardBufferProvider::DeleteAsset(const std::string &relative_path
   // Prefer recycle bin (bundled notebooks), fallback to permanent delete (raw notebooks).
   auto folder_manager = notebook_->GetFolderManager();
   if (folder_manager) {
-    VxCoreError move_err = folder_manager->MoveToRecycleBin(std::filesystem::path(abs_path));
+    VxCoreError move_err = folder_manager->MoveToRecycleBin(PathFromUtf8(abs_path));
     if (move_err == VXCORE_OK) {
       return VXCORE_OK;
     }
@@ -189,7 +189,7 @@ VxCoreError StandardBufferProvider::DeleteAsset(const std::string &relative_path
 
   // Permanent delete fallback
   try {
-    if (!std::filesystem::remove(abs_path)) {
+    if (!std::filesystem::remove(PathFromUtf8(abs_path))) {
       VXCORE_LOG_ERROR("Failed to delete asset file: %s", abs_path.c_str());
       return VXCORE_ERR_IO;
     }
@@ -220,7 +220,7 @@ VxCoreError StandardBufferProvider::InsertAttachment(const std::string &source_p
     std::string notebook_root = notebook_->GetRootFolder();
     std::string abs_path = CleanPath(notebook_root + "/" + relative_path);
     try {
-      std::filesystem::remove(abs_path);
+      std::filesystem::remove(PathFromUtf8(abs_path));
     } catch (...) {
       // Ignore cleanup errors
     }
@@ -228,8 +228,8 @@ VxCoreError StandardBufferProvider::InsertAttachment(const std::string &source_p
   }
 
   // Extract just the filename from relative path
-  std::filesystem::path rel(relative_path);
-  out_filename = rel.filename().string();
+  std::filesystem::path rel = PathFromUtf8(relative_path);
+  out_filename = PathToUtf8(rel.filename());
   return VXCORE_OK;
 }
 
@@ -247,9 +247,9 @@ VxCoreError StandardBufferProvider::DeleteAttachment(const std::string &filename
   std::string abs_path = CleanPath(assets_folder_path + "/" + filename);
   std::string relative_path;
   try {
-    std::filesystem::path abs(abs_path);
-    std::filesystem::path root(notebook_root);
-    relative_path = std::filesystem::relative(abs, root).string();
+    std::filesystem::path abs = PathFromUtf8(abs_path);
+    std::filesystem::path root = PathFromUtf8(notebook_root);
+    relative_path = PathToUtf8(std::filesystem::relative(abs, root));
     relative_path = CleanPath(relative_path);
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Failed to compute relative path: %s", e.what());
@@ -264,7 +264,7 @@ VxCoreError StandardBufferProvider::DeleteAttachment(const std::string &filename
   }
 
   // Delete from filesystem: prefer recycle bin, fallback to permanent delete.
-  VxCoreError move_err = folder_manager->MoveToRecycleBin(std::filesystem::path(abs_path));
+  VxCoreError move_err = folder_manager->MoveToRecycleBin(PathFromUtf8(abs_path));
   if (move_err != VXCORE_OK) {
     VXCORE_LOG_WARN("Failed to move attachment to recycle bin, fallback to permanent delete: %s",
                     abs_path.c_str());
@@ -290,7 +290,7 @@ VxCoreError StandardBufferProvider::RenameAttachment(const std::string &old_file
   // Build old absolute path
   std::string old_abs_path = CleanPath(assets_folder_path + "/" + old_filename);
 
-  if (!std::filesystem::exists(old_abs_path)) {
+  if (!std::filesystem::exists(PathFromUtf8(old_abs_path))) {
     VXCORE_LOG_ERROR("Attachment does not exist: %s", old_abs_path.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
@@ -303,7 +303,7 @@ VxCoreError StandardBufferProvider::RenameAttachment(const std::string &old_file
 
   try {
     // Rename the file
-    std::filesystem::rename(old_abs_path, new_abs_path);
+    std::filesystem::rename(PathFromUtf8(old_abs_path), PathFromUtf8(new_abs_path));
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Failed to rename attachment: %s", e.what());
     return VXCORE_ERR_IO;
@@ -312,8 +312,10 @@ VxCoreError StandardBufferProvider::RenameAttachment(const std::string &old_file
   // Compute old and new relative paths
   std::string old_relative_path, new_relative_path;
   try {
-    old_relative_path = CleanPath(std::filesystem::relative(old_abs_path, notebook_root).string());
-    new_relative_path = CleanPath(std::filesystem::relative(new_abs_path, notebook_root).string());
+    old_relative_path = CleanPath(PathToUtf8(
+        std::filesystem::relative(PathFromUtf8(old_abs_path), PathFromUtf8(notebook_root))));
+    new_relative_path = CleanPath(PathToUtf8(
+        std::filesystem::relative(PathFromUtf8(new_abs_path), PathFromUtf8(notebook_root))));
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Failed to compute relative path: %s", e.what());
     return VXCORE_ERR_UNKNOWN;
@@ -357,8 +359,8 @@ VxCoreError StandardBufferProvider::ListAttachments(std::vector<std::string> &ou
       // Extract filenames from relative paths
       for (const auto &rel_path : j) {
         std::string path = rel_path.get<std::string>();
-        std::filesystem::path p(path);
-        out_filenames.push_back(p.filename().string());
+        std::filesystem::path p = PathFromUtf8(path);
+        out_filenames.push_back(PathToUtf8(p.filename()));
       }
     }
     return VXCORE_OK;
@@ -413,7 +415,7 @@ VxCoreError StandardBufferProvider::GetAssetAbsolutePath(const std::string &rela
 
 VxCoreError StandardBufferProvider::GetResourceBasePath(std::string &out_path) {
   std::string abs_path = CleanPath(notebook_->GetRootFolder() + "/" + file_path_);
-  std::filesystem::path p(abs_path);
+  std::filesystem::path p = PathFromUtf8(abs_path);
   out_path = CleanFsPath(p.parent_path());
   return VXCORE_OK;
 }
@@ -426,8 +428,8 @@ VxCoreError StandardBufferProvider::EnsureAssetsFolderExists() {
   }
 
   try {
-    if (!std::filesystem::exists(assets_folder)) {
-      if (!std::filesystem::create_directories(assets_folder)) {
+    if (!std::filesystem::exists(PathFromUtf8(assets_folder))) {
+      if (!std::filesystem::create_directories(PathFromUtf8(assets_folder))) {
         VXCORE_LOG_ERROR("Failed to create assets folder: %s", assets_folder.c_str());
         return VXCORE_ERR_IO;
       }
@@ -446,7 +448,7 @@ std::string StandardBufferProvider::GetUniqueAssetName(const std::string &base_n
   std::string full_path = CleanPath(assets_folder_path + "/" + candidate);
 
   int counter = 1;
-  while (std::filesystem::exists(full_path)) {
+  while (std::filesystem::exists(PathFromUtf8(full_path))) {
     // Extract extension
     size_t dot_pos = base_name.find_last_of('.');
     std::string name_part;
