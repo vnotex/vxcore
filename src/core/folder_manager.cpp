@@ -2,6 +2,8 @@
 
 #include <filesystem>
 
+#include "utils/file_utils.h"
+
 namespace vxcore {
 
 VxCoreError FolderManager::MoveToRecycleBin(const std::filesystem::path &source_path) {
@@ -94,10 +96,10 @@ VxCoreError FolderManager::GetAvailableName(const std::string &folder_path,
 
   const std::string clean_folder_path = GetCleanRelativePath(folder_path);
   std::string abs_folder_path = notebook_->GetAbsolutePath(clean_folder_path);
-  fs::path folder_fs_path(abs_folder_path);
+  fs::path folder_fs_path = PathFromUtf8(abs_folder_path);
 
   // Check if the original name is available
-  fs::path dest_path = folder_fs_path / new_name;
+  fs::path dest_path = folder_fs_path / PathFromUtf8(new_name);
   if (!fs::exists(dest_path)) {
     out_available_name = new_name;
     return VXCORE_OK;
@@ -116,7 +118,7 @@ VxCoreError FolderManager::GetAvailableName(const std::string &folder_path,
   int suffix = 1;
   while (true) {
     std::string candidate = base_name + "_" + std::to_string(suffix) + extension;
-    dest_path = folder_fs_path / candidate;
+    dest_path = folder_fs_path / PathFromUtf8(candidate);
     if (!fs::exists(dest_path)) {
       out_available_name = candidate;
       return VXCORE_OK;

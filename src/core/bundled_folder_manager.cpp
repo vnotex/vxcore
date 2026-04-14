@@ -140,25 +140,25 @@ VxCoreError BundledFolderManager::InitOnCreation() {
 }
 
 std::string BundledFolderManager::GetConfigPath(const std::string &folder_path) const {
-  fs::path metadata_folder = notebook_->GetMetadataFolder();
+  fs::path metadata_folder = PathFromUtf8(notebook_->GetMetadataFolder());
   fs::path config_path = metadata_folder / "contents";
 
   if (!folder_path.empty() && folder_path != ".") {
-    config_path /= folder_path;
+    config_path /= PathFromUtf8(folder_path);
   }
 
   config_path /= "vx.json";
-  return config_path.string();
+  return PathToUtf8(config_path);
 }
 
 std::string BundledFolderManager::GetContentPath(const std::string &folder_path) const {
-  fs::path content_path = notebook_->GetRootFolder();
+  fs::path content_path = PathFromUtf8(notebook_->GetRootFolder());
 
   if (!folder_path.empty() && folder_path != ".") {
-    content_path /= folder_path;
+    content_path /= PathFromUtf8(folder_path);
   }
 
-  return content_path.string();
+  return PathToUtf8(content_path);
 }
 
 FolderConfig *BundledFolderManager::GetCachedConfig(const std::string &folder_path) {
@@ -193,12 +193,13 @@ VxCoreError BundledFolderManager::LoadFolderConfig(const std::string &folder_pat
   out_config.reset();
 
   std::string config_path = GetConfigPath(folder_path);
+  fs::path config_file_path = PathFromUtf8(config_path);
 
-  if (!fs::exists(config_path)) {
+  if (!fs::exists(config_file_path)) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
-  std::ifstream file(config_path);
+  std::ifstream file(config_file_path);
   if (!file.is_open()) {
     return VXCORE_ERR_IO;
   }
@@ -217,7 +218,7 @@ VxCoreError BundledFolderManager::SaveFolderConfig(const std::string &folder_pat
                                                    const FolderConfig &config) {
   std::string config_path = GetConfigPath(folder_path);
 
-  fs::path config_file_path(config_path);
+  fs::path config_file_path = PathFromUtf8(config_path);
   fs::path config_dir = config_file_path.parent_path();
 
   try {
@@ -225,7 +226,7 @@ VxCoreError BundledFolderManager::SaveFolderConfig(const std::string &folder_pat
       fs::create_directories(config_dir);
     }
 
-    std::ofstream file(config_path);
+    std::ofstream file(config_file_path);
     if (!file.is_open()) {
       return VXCORE_ERR_IO;
     }
@@ -282,14 +283,16 @@ VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
                                                const std::string &folder_name,
                                                std::string &out_folder_id) {
   VXCORE_LOG_INFO("Creating folder: parent=%s, name=%s", parent_path.c_str(), folder_name.c_str());
+  VXCORE_LOG_DEBUG("CreateFolder: folder_name bytes=[%s] len=%zu", folder_name.c_str(),
+                   folder_name.size());
 
   const auto clean_parent_path = GetCleanRelativePath(parent_path);
 
   std::string content_path = GetContentPath(clean_parent_path);
-  fs::path folder_path = fs::path(content_path) / folder_name;
+  fs::path folder_path = PathFromUtf8(content_path) / PathFromUtf8(folder_name);
 
   if (fs::exists(folder_path)) {
-    VXCORE_LOG_WARN("Folder already exists: %s", folder_path.string().c_str());
+    VXCORE_LOG_WARN("Folder already exists: %s", PathToUtf8(folder_path).c_str());
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
@@ -309,7 +312,7 @@ VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
 
   try {
     fs::create_directories(folder_path);
-    VXCORE_LOG_DEBUG("Created folder directory: %s", folder_path.string().c_str());
+    VXCORE_LOG_DEBUG("Created folder directory: %s", PathToUtf8(folder_path).c_str());
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Failed to create folder directory: %s", e.what());
     return VXCORE_ERR_IO;
@@ -354,8 +357,10 @@ VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
 
   const std::string content_path = GetContentPath(clean_folder_path);
   const std::string config_path = GetConfigPath(clean_folder_path);
+  const fs::path content_fs_path = PathFromUtf8(content_path);
+  const fs::path config_fs_path = PathFromUtf8(config_path);
 
-  if (!fs::exists(content_path)) {
+  if (!fs::exists(content_fs_path)) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
@@ -386,16 +391,16 @@ VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
 
   try {
     // Move content folder to recycle bin instead of permanent delete
-    VxCoreError move_error = MoveToRecycleBin(fs::path(content_path));
+    VxCoreError move_error = MoveToRecycleBin(content_fs_path);
     if (move_error != VXCORE_OK) {
       VXCORE_LOG_WARN("Failed to move folder to recycle bin, falling back to delete: %s",
                       content_path.c_str());
-      fs::remove_all(content_path);
+      fs::remove_all(content_fs_path);
     }
 
     // Always permanently delete the config folder (vx.json metadata)
-    if (fs::exists(config_path)) {
-      fs::remove_all(fs::path(config_path).parent_path());
+    if (fs::exists(config_fs_path)) {
+      fs::remove_all(config_fs_path.parent_path());
     }
 
     // Write-through to MetadataStore
@@ -468,22 +473,27 @@ VxCoreError BundledFolderManager::RenameFolder(const std::string &folder_path,
                                                const std::string &new_name) {
   VXCORE_LOG_INFO("RenameFolder: folder_path=%s, new_name=%s", folder_path.c_str(),
                   new_name.c_str());
+  VXCORE_LOG_DEBUG("RenameFolder: new_name bytes=[%s] len=%zu", new_name.c_str(), new_name.size());
 
   const auto clean_folder_path = GetCleanRelativePath(folder_path);
 
   const auto [parent_path, old_name] = SplitPath(clean_folder_path);
   const std::string old_content_path = GetContentPath(clean_folder_path);
   const std::string old_config_path = GetConfigPath(clean_folder_path);
+  const fs::path old_content_path_fs = PathFromUtf8(old_content_path);
+  const fs::path old_config_path_fs = PathFromUtf8(old_config_path);
 
-  if (!fs::exists(old_content_path)) {
+  if (!fs::exists(old_content_path_fs)) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
   const std::string new_folder_path = ConcatenatePaths(parent_path, new_name);
   const std::string new_content_path = GetContentPath(new_folder_path);
   const std::string new_config_path = GetConfigPath(new_folder_path);
+  const fs::path new_content_path_fs = PathFromUtf8(new_content_path);
+  const fs::path new_config_path_fs = PathFromUtf8(new_config_path);
 
-  if (fs::exists(new_content_path)) {
+  if (fs::exists(new_content_path_fs)) {
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
@@ -505,12 +515,12 @@ VxCoreError BundledFolderManager::RenameFolder(const std::string &folder_path,
   }
 
   try {
-    fs::rename(old_content_path, new_content_path);
+    fs::rename(old_content_path_fs, new_content_path_fs);
 
-    if (fs::exists(old_config_path)) {
-      fs::create_directories(fs::path(new_config_path).parent_path());
-      fs::rename(old_config_path, new_config_path);
-      fs::remove_all(fs::path(old_config_path).parent_path());
+    if (fs::exists(old_config_path_fs)) {
+      fs::create_directories(new_config_path_fs.parent_path());
+      fs::rename(old_config_path_fs, new_config_path_fs);
+      fs::remove_all(old_config_path_fs.parent_path());
     }
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
@@ -557,16 +567,20 @@ VxCoreError BundledFolderManager::MoveFolder(const std::string &src_path,
   const auto [src_parent_path, folder_name] = SplitPath(clean_src_path);
   const std::string src_content_path = GetContentPath(clean_src_path);
   const std::string src_config_path = GetConfigPath(clean_src_path);
+  const fs::path src_content_path_fs = PathFromUtf8(src_content_path);
+  const fs::path src_config_path_fs = PathFromUtf8(src_config_path);
 
-  if (!fs::exists(src_content_path)) {
+  if (!fs::exists(src_content_path_fs)) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
   const std::string dest_path = ConcatenatePaths(clean_dest_parent_path, folder_name);
   const std::string dest_content_path = GetContentPath(dest_path);
   const std::string dest_config_path = GetConfigPath(dest_path);
+  const fs::path dest_content_path_fs = PathFromUtf8(dest_content_path);
+  const fs::path dest_config_path_fs = PathFromUtf8(dest_config_path);
 
-  if (fs::exists(dest_content_path)) {
+  if (fs::exists(dest_content_path_fs)) {
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
@@ -602,12 +616,12 @@ VxCoreError BundledFolderManager::MoveFolder(const std::string &src_path,
   }
 
   try {
-    fs::create_directories(fs::path(dest_content_path).parent_path());
-    fs::rename(src_content_path, dest_content_path);
+    fs::create_directories(dest_content_path_fs.parent_path());
+    fs::rename(src_content_path_fs, dest_content_path_fs);
 
-    if (fs::exists(src_config_path)) {
-      const fs::path src_config_dir = fs::path(src_config_path).parent_path();
-      const fs::path dest_config_dir = fs::path(dest_config_path).parent_path();
+    if (fs::exists(src_config_path_fs)) {
+      const fs::path src_config_dir = src_config_path_fs.parent_path();
+      const fs::path dest_config_dir = dest_config_path_fs.parent_path();
       fs::create_directories(dest_config_dir.parent_path());
       fs::rename(src_config_dir, dest_config_dir);
     }
@@ -655,18 +669,20 @@ VxCoreError BundledFolderManager::CopyFolder(const std::string &src_path,
   const auto [src_parent_path, src_folder_name] = SplitPath(clean_src_path);
   const std::string src_content_path = GetContentPath(clean_src_path);
   const std::string folder_name = new_name.empty() ? src_folder_name : new_name;
+  const fs::path src_content_path_fs = PathFromUtf8(src_content_path);
 
   VXCORE_LOG_INFO("Copying folder: src=%s, dest=%s, new_name=%s", clean_src_path.c_str(),
                   clean_dest_parent_path.c_str(), folder_name.c_str());
 
-  if (!fs::exists(src_content_path)) {
+  if (!fs::exists(src_content_path_fs)) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
   const std::string dest_path = ConcatenatePaths(clean_dest_parent_path, folder_name);
   const std::string dest_content_path = GetContentPath(dest_path);
+  const fs::path dest_content_path_fs = PathFromUtf8(dest_content_path);
 
-  if (fs::exists(dest_content_path)) {
+  if (fs::exists(dest_content_path_fs)) {
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
@@ -689,7 +705,7 @@ VxCoreError BundledFolderManager::CopyFolder(const std::string &src_path,
   }
 
   try {
-    fs::copy(src_content_path, dest_content_path, fs::copy_options::recursive);
+    fs::copy(src_content_path_fs, dest_content_path_fs, fs::copy_options::recursive);
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
   }
@@ -747,14 +763,15 @@ VxCoreError BundledFolderManager::CreateFile(const std::string &folder_path,
                                              const std::string &file_name,
                                              std::string &out_file_id) {
   VXCORE_LOG_INFO("Creating file: folder=%s, name=%s", folder_path.c_str(), file_name.c_str());
+  VXCORE_LOG_DEBUG("CreateFile: file_name bytes=[%s] len=%zu", file_name.c_str(), file_name.size());
 
   const auto clean_folder_path = GetCleanRelativePath(folder_path);
 
   std::string content_path = GetContentPath(clean_folder_path);
-  fs::path file_path = fs::path(content_path) / file_name;
+  fs::path file_path = PathFromUtf8(content_path) / PathFromUtf8(file_name);
 
   if (fs::exists(file_path)) {
-    VXCORE_LOG_WARN("File already exists: %s", file_path.string().c_str());
+    VXCORE_LOG_WARN("File already exists: %s", PathToUtf8(file_path).c_str());
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
@@ -773,7 +790,7 @@ VxCoreError BundledFolderManager::CreateFile(const std::string &folder_path,
 
   try {
     std::ofstream(file_path).close();
-    VXCORE_LOG_DEBUG("Created file: %s", file_path.string().c_str());
+    VXCORE_LOG_DEBUG("Created file: %s", PathToUtf8(file_path).c_str());
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Failed to create file: %s", e.what());
     return VXCORE_ERR_IO;
@@ -834,13 +851,13 @@ VxCoreError BundledFolderManager::DeleteFile(const std::string &file_path) {
 
   try {
     std::string content_path = GetContentPath(folder_path);
-    fs::path fs_file_path = fs::path(content_path) / file_name;
+    fs::path fs_file_path = PathFromUtf8(content_path) / PathFromUtf8(file_name);
 
     // Move to recycle bin instead of permanent delete
     VxCoreError move_error = MoveToRecycleBin(fs_file_path);
     if (move_error != VXCORE_OK) {
       VXCORE_LOG_WARN("Failed to move file to recycle bin, falling back to delete: %s",
-                      fs_file_path.string().c_str());
+                      PathToUtf8(fs_file_path).c_str());
       fs::remove(fs_file_path);
     }
 
@@ -1102,6 +1119,7 @@ VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
   const auto [folder_path, old_name] = SplitPath(clean_file_path);
   VXCORE_LOG_INFO("RenameFile: file_path=%s, new_name=%s", clean_file_path.c_str(),
                   new_name.c_str());
+  VXCORE_LOG_DEBUG("RenameFile: new_name bytes=[%s] len=%zu", new_name.c_str(), new_name.size());
 
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
@@ -1120,8 +1138,8 @@ VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
   }
 
   const std::string content_path = GetContentPath(folder_path);
-  fs::path old_file_path = fs::path(content_path) / old_name;
-  fs::path new_file_path = fs::path(content_path) / new_name;
+  fs::path old_file_path = PathFromUtf8(content_path) / PathFromUtf8(old_name);
+  fs::path new_file_path = PathFromUtf8(content_path) / PathFromUtf8(new_name);
 
   if (!fs::exists(old_file_path)) {
     return VXCORE_ERR_NOT_FOUND;
@@ -1191,8 +1209,8 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
 
   const std::string src_content_path = GetContentPath(src_folder_path);
   const std::string dest_content_path = GetContentPath(dest_folder_path);
-  fs::path src_fs_path = fs::path(src_content_path) / file_name;
-  fs::path dest_fs_path = fs::path(dest_content_path) / file_name;
+  fs::path src_fs_path = PathFromUtf8(src_content_path) / PathFromUtf8(file_name);
+  fs::path dest_fs_path = PathFromUtf8(dest_content_path) / PathFromUtf8(file_name);
 
   if (!fs::exists(src_fs_path)) {
     return VXCORE_ERR_NOT_FOUND;
@@ -1274,8 +1292,8 @@ VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
 
   const std::string src_content_path = GetContentPath(src_folder_path);
   const std::string dest_content_path = GetContentPath(clean_dest_folder_path);
-  fs::path src_fs_path = fs::path(src_content_path) / file_name;
-  fs::path dest_fs_path = fs::path(dest_content_path) / target_name;
+  fs::path src_fs_path = PathFromUtf8(src_content_path) / PathFromUtf8(file_name);
+  fs::path dest_fs_path = PathFromUtf8(dest_content_path) / PathFromUtf8(target_name);
 
   if (!fs::exists(src_fs_path)) {
     return VXCORE_ERR_NOT_FOUND;
@@ -1556,8 +1574,8 @@ std::string BundledFolderManager::GetRecycleBinPath() const {
 }
 
 std::string BundledFolderManager::GenerateUniqueRecycleBinName(const std::string &name) const {
-  fs::path recycle_bin_path(GetRecycleBinPath());
-  fs::path dest_path = recycle_bin_path / name;
+  fs::path recycle_bin_path = PathFromUtf8(GetRecycleBinPath());
+  fs::path dest_path = recycle_bin_path / PathFromUtf8(name);
 
   if (!fs::exists(dest_path)) {
     return name;
@@ -1576,7 +1594,7 @@ std::string BundledFolderManager::GenerateUniqueRecycleBinName(const std::string
   int suffix = 1;
   while (true) {
     std::string new_name = base_name + "_" + std::to_string(suffix) + extension;
-    dest_path = recycle_bin_path / new_name;
+    dest_path = recycle_bin_path / PathFromUtf8(new_name);
     if (!fs::exists(dest_path)) {
       return new_name;
     }
@@ -1591,18 +1609,18 @@ std::string BundledFolderManager::GenerateUniqueRecycleBinName(const std::string
 
 VxCoreError BundledFolderManager::MoveToRecycleBin(const std::filesystem::path &source_path) {
   if (!fs::exists(source_path)) {
-    VXCORE_LOG_WARN("MoveToRecycleBin: Source does not exist: %s", source_path.string().c_str());
+    VXCORE_LOG_WARN("MoveToRecycleBin: Source does not exist: %s", PathToUtf8(source_path).c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
 
-  fs::path recycle_bin_path(GetRecycleBinPath());
+  fs::path recycle_bin_path = PathFromUtf8(GetRecycleBinPath());
 
   // Ensure recycle bin directory exists
   try {
     if (!fs::exists(recycle_bin_path)) {
       fs::create_directories(recycle_bin_path);
       VXCORE_LOG_INFO("MoveToRecycleBin: Created recycle bin at %s",
-                      recycle_bin_path.string().c_str());
+                      PathToUtf8(recycle_bin_path).c_str());
     }
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("MoveToRecycleBin: Failed to create recycle bin: %s", e.what());
@@ -1610,18 +1628,18 @@ VxCoreError BundledFolderManager::MoveToRecycleBin(const std::filesystem::path &
   }
 
   // Generate unique name in recycle bin
-  std::string original_name = source_path.filename().string();
+  std::string original_name = PathToUtf8(source_path.filename());
   std::string unique_name = GenerateUniqueRecycleBinName(original_name);
-  fs::path dest_path = recycle_bin_path / unique_name;
+  fs::path dest_path = recycle_bin_path / PathFromUtf8(unique_name);
 
   // Move the file/folder to recycle bin
   try {
     fs::rename(source_path, dest_path);
-    VXCORE_LOG_INFO("MoveToRecycleBin: Moved %s to %s", source_path.string().c_str(),
-                    dest_path.string().c_str());
+    VXCORE_LOG_INFO("MoveToRecycleBin: Moved %s to %s", PathToUtf8(source_path).c_str(),
+                    PathToUtf8(dest_path).c_str());
     return VXCORE_OK;
   } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("MoveToRecycleBin: Failed to move %s: %s", source_path.string().c_str(),
+    VXCORE_LOG_ERROR("MoveToRecycleBin: Failed to move %s: %s", PathToUtf8(source_path).c_str(),
                      e.what());
     return VXCORE_ERR_IO;
   }
@@ -1629,8 +1647,8 @@ VxCoreError BundledFolderManager::MoveToRecycleBin(const std::filesystem::path &
 
 std::string BundledFolderManager::GenerateUniqueFileName(const std::string &folder_abs_path,
                                                          const std::string &desired_name) const {
-  fs::path folder_path(folder_abs_path);
-  fs::path dest_path = folder_path / desired_name;
+  fs::path folder_path = PathFromUtf8(folder_abs_path);
+  fs::path dest_path = folder_path / PathFromUtf8(desired_name);
 
   if (!fs::exists(dest_path)) {
     return desired_name;
@@ -1649,7 +1667,7 @@ std::string BundledFolderManager::GenerateUniqueFileName(const std::string &fold
   int suffix = 1;
   while (true) {
     std::string new_name = base_name + "_" + std::to_string(suffix) + extension;
-    dest_path = folder_path / new_name;
+    dest_path = folder_path / PathFromUtf8(new_name);
     if (!fs::exists(dest_path)) {
       return new_name;
     }
@@ -1667,14 +1685,15 @@ VxCoreError BundledFolderManager::ImportFile(const std::string &folder_path,
                                              std::string &out_file_id) {
   VXCORE_LOG_INFO("ImportFile: folder=%s, external_file=%s", folder_path.c_str(),
                   external_file_path.c_str());
+  const fs::path external_file_path_fs = PathFromUtf8(external_file_path);
 
   // Validate external file exists
-  if (!fs::exists(external_file_path)) {
+  if (!fs::exists(external_file_path_fs)) {
     VXCORE_LOG_ERROR("ImportFile: External file not found: %s", external_file_path.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
 
-  if (!fs::is_regular_file(external_file_path)) {
+  if (!fs::is_regular_file(external_file_path_fs)) {
     VXCORE_LOG_ERROR("ImportFile: Path is not a regular file: %s", external_file_path.c_str());
     return VXCORE_ERR_INVALID_PARAM;
   }
@@ -1692,10 +1711,10 @@ VxCoreError BundledFolderManager::ImportFile(const std::string &folder_path,
 
   // Get destination content path and determine unique file name
   std::string content_path = GetContentPath(clean_folder_path);
-  fs::path source_path(external_file_path);
-  std::string original_name = source_path.filename().string();
+  fs::path source_path = external_file_path_fs;
+  std::string original_name = PathToUtf8(source_path.filename());
   std::string target_name = GenerateUniqueFileName(content_path, original_name);
-  fs::path dest_path = fs::path(content_path) / target_name;
+  fs::path dest_path = PathFromUtf8(content_path) / PathFromUtf8(target_name);
 
   // Check if file with this name already exists in config (shouldn't happen after unique name gen)
   if (FindFileRecord(*config, target_name)) {
@@ -1705,8 +1724,8 @@ VxCoreError BundledFolderManager::ImportFile(const std::string &folder_path,
 
   // Copy the external file to notebook folder
   try {
-    fs::copy_file(external_file_path, dest_path);
-    VXCORE_LOG_DEBUG("ImportFile: Copied file to: %s", dest_path.string().c_str());
+    fs::copy_file(external_file_path_fs, dest_path);
+    VXCORE_LOG_DEBUG("ImportFile: Copied file to: %s", PathToUtf8(dest_path).c_str());
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("ImportFile: Failed to copy file: %s", e.what());
     return VXCORE_ERR_IO;
@@ -1754,7 +1773,7 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
                   dest_folder_path.c_str(), external_folder_path.c_str(), suffix_allowlist.c_str());
 
   // Require absolute path for external folder
-  fs::path external_path(external_folder_path);
+  fs::path external_path = PathFromUtf8(external_folder_path);
   if (!external_path.is_absolute()) {
     VXCORE_LOG_ERROR("ImportFolder: External folder path must be absolute: %s",
                      external_folder_path.c_str());
@@ -1762,20 +1781,20 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
   }
 
   // Validate external folder exists and is a directory
-  if (!fs::exists(external_folder_path)) {
+  if (!fs::exists(external_path)) {
     VXCORE_LOG_ERROR("ImportFolder: External folder not found: %s", external_folder_path.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
 
-  if (!fs::is_directory(external_folder_path)) {
+  if (!fs::is_directory(external_path)) {
     VXCORE_LOG_ERROR("ImportFolder: Path is not a directory: %s", external_folder_path.c_str());
     return VXCORE_ERR_INVALID_PARAM;
   }
 
   // Reject importing a folder from within the notebook root to prevent circular copies
   try {
-    fs::path canonical_external = fs::canonical(external_folder_path);
-    fs::path root_path(notebook_->GetRootFolder());
+    fs::path canonical_external = fs::canonical(external_path);
+    fs::path root_path = PathFromUtf8(notebook_->GetRootFolder());
     // Check if external path starts with (is under) notebook root
     auto mismatch_pair = std::mismatch(root_path.begin(), root_path.end(),
                                        canonical_external.begin(), canonical_external.end());
@@ -1821,17 +1840,18 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
 
   // Get destination content path and determine unique folder name
   std::string dest_content_path = GetContentPath(clean_dest_path);
-  fs::path source_path(external_folder_path);
-  std::string original_name = source_path.filename().string();
+  fs::path dest_content_fs_path = PathFromUtf8(dest_content_path);
+  fs::path source_path = external_path;
+  std::string original_name = PathToUtf8(source_path.filename());
   std::string target_name = original_name;
 
   // Generate unique name if folder already exists
-  fs::path target_path = fs::path(dest_content_path) / target_name;
+  fs::path target_path = dest_content_fs_path / PathFromUtf8(target_name);
   if (fs::exists(target_path)) {
     int suffix = 1;
     while (suffix <= 10000) {
       target_name = original_name + "_" + std::to_string(suffix);
-      target_path = fs::path(dest_content_path) / target_name;
+      target_path = dest_content_fs_path / PathFromUtf8(target_name);
       if (!fs::exists(target_path)) {
         break;
       }
@@ -1839,7 +1859,7 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
     }
     if (suffix > 10000) {
       target_name = original_name + "_" + std::to_string(GetCurrentTimestampMillis());
-      target_path = fs::path(dest_content_path) / target_name;
+      target_path = dest_content_fs_path / PathFromUtf8(target_name);
     }
   }
 
@@ -1855,17 +1875,17 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
       [&](const fs::path &src, const fs::path &dest) {
         fs::create_directories(dest);
         for (const auto &entry : fs::directory_iterator(src)) {
-          const std::string entry_name = entry.path().filename().string();
+          const std::string entry_name = PathToUtf8(entry.path().filename());
           // Skip hidden files/folders
           if (entry_name.empty() || entry_name[0] == '.') {
             continue;
           }
           if (entry.is_directory()) {
-            copy_filtered(entry.path(), dest / entry_name);
+            copy_filtered(entry.path(), dest / PathFromUtf8(entry_name));
           } else if (entry.is_regular_file()) {
             // Apply suffix filter if allowlist is specified
             if (!allowed_suffixes.empty()) {
-              std::string ext = entry.path().extension().string();
+              std::string ext = PathToUtf8(entry.path().extension());
               if (!ext.empty() && ext[0] == '.') {
                 ext = ext.substr(1);
               }
@@ -1875,14 +1895,15 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
                 continue;  // Skip files not in allowlist
               }
             }
-            fs::copy_file(entry.path(), dest / entry_name, fs::copy_options::overwrite_existing);
+            fs::copy_file(entry.path(), dest / PathFromUtf8(entry_name),
+                          fs::copy_options::overwrite_existing);
           }
         }
       };
 
   try {
-    copy_filtered(fs::path(external_folder_path), target_path);
-    VXCORE_LOG_DEBUG("ImportFolder: Copied folder to: %s", target_path.string().c_str());
+    copy_filtered(external_path, target_path);
+    VXCORE_LOG_DEBUG("ImportFolder: Copied folder to: %s", PathToUtf8(target_path).c_str());
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("ImportFolder: Failed to copy folder: %s", e.what());
     return VXCORE_ERR_IO;
@@ -1910,11 +1931,12 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
   std::function<VxCoreError(const std::string &, FolderConfig &)> index_contents =
       [&](const std::string &rel_path, FolderConfig &config) -> VxCoreError {
     std::string abs_path = GetContentPath(rel_path);
+    fs::path abs_fs_path = PathFromUtf8(abs_path);
     const bool is_root = (rel_path.empty() || rel_path == ".");
 
     try {
-      for (const auto &entry : fs::directory_iterator(abs_path)) {
-        std::string entry_name = entry.path().filename().string();
+      for (const auto &entry : fs::directory_iterator(abs_fs_path)) {
+        std::string entry_name = PathToUtf8(entry.path().filename());
 
         if (entry.is_directory()) {
           if (entry_name.empty() || entry_name[0] == '.' ||
@@ -2035,9 +2057,10 @@ VxCoreError BundledFolderManager::IndexNode(const std::string &node_path) {
 
   // Get content path to check filesystem
   std::string content_path = GetContentPath(clean_path);
+  fs::path content_fs_path = PathFromUtf8(content_path);
 
   // Check if node exists on filesystem
-  if (!fs::exists(content_path)) {
+  if (!fs::exists(content_fs_path)) {
     VXCORE_LOG_WARN("IndexNode: Node does not exist on filesystem: %s", content_path.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
@@ -2052,7 +2075,7 @@ VxCoreError BundledFolderManager::IndexNode(const std::string &node_path) {
   }
 
   // Determine if it's a file or folder
-  bool is_directory = fs::is_directory(content_path);
+  bool is_directory = fs::is_directory(content_fs_path);
 
   if (is_directory) {
     // Check if folder is already indexed
@@ -2166,9 +2189,10 @@ VxCoreError BundledFolderManager::UnindexNode(const std::string &node_path) {
 
     // Delete the folder's vx.json config file (metadata only, not filesystem content)
     std::string config_path = GetConfigPath(clean_path);
+    fs::path config_fs_path = PathFromUtf8(config_path);
     try {
-      if (fs::exists(config_path)) {
-        fs::remove_all(fs::path(config_path).parent_path());
+      if (fs::exists(config_fs_path)) {
+        fs::remove_all(config_fs_path.parent_path());
       }
     } catch (const std::exception &e) {
       VXCORE_LOG_WARN("UnindexNode: Failed to delete folder config: %s", e.what());
@@ -2250,7 +2274,8 @@ VxCoreError BundledFolderManager::ListExternalNodes(const std::string &folder_pa
 
   // Get filesystem content path
   std::string content_path = GetContentPath(clean_path);
-  if (!fs::exists(content_path)) {
+  fs::path content_fs_path = PathFromUtf8(content_path);
+  if (!fs::exists(content_fs_path)) {
     VXCORE_LOG_WARN("ListExternalNodes: Content path does not exist: %s", content_path.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
@@ -2263,8 +2288,8 @@ VxCoreError BundledFolderManager::ListExternalNodes(const std::string &folder_pa
 
   // Scan filesystem and find unindexed items
   try {
-    for (const auto &entry : fs::directory_iterator(content_path)) {
-      std::string entry_name = entry.path().filename().string();
+    for (const auto &entry : fs::directory_iterator(content_fs_path)) {
+      std::string entry_name = PathToUtf8(entry.path().filename());
 
       // Skip hidden files/folders (starting with '.')
       if (entry_name.empty() || entry_name[0] == '.') {
