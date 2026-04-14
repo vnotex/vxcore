@@ -6,6 +6,8 @@
 #include <iomanip>
 #include <sstream>
 
+#include "file_utils.h"
+
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -70,7 +72,11 @@ void Logger::SetLogFile(const std::string &path) {
   }
   log_file_path_ = path;
   if (!path.empty()) {
+#ifdef _WIN32
+    log_file_ = _wfopen(PathFromUtf8(path).wstring().c_str(), L"a");
+#else
     log_file_ = fopen(path.c_str(), "a");
+#endif
   }
 }
 

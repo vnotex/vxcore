@@ -9,6 +9,7 @@
 #include "core/template_manager.h"
 #include "core/workspace_manager.h"
 #include "platform/path_provider.h"
+#include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "vxcore/vxcore.h"
 #include "vxcore/vxcore_log.h"
@@ -39,7 +40,7 @@ VXCORE_API void vxcore_get_execution_file_path(char **out_path) {
   }
   try {
     std::filesystem::path exe_path = vxcore::PathProvider::GetExecutionFilePath();
-    *out_path = vxcore_strdup(exe_path.string().c_str());
+    *out_path = vxcore_strdup(vxcore::PathToUtf8(exe_path).c_str());
   } catch (...) {
     *out_path = nullptr;
   }
@@ -51,7 +52,7 @@ VXCORE_API void vxcore_get_execution_folder_path(char **out_path) {
   }
   try {
     std::filesystem::path exe_path = vxcore::PathProvider::GetExecutionFolderPath();
-    *out_path = vxcore_strdup(exe_path.string().c_str());
+    *out_path = vxcore_strdup(vxcore::PathToUtf8(exe_path).c_str());
   } catch (...) {
     *out_path = nullptr;
   }

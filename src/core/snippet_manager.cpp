@@ -188,7 +188,7 @@ void SnippetManager::LoadBuiltInSnippets() {
 
 VxCoreError SnippetManager::EnsureSnippetFolderExists() const {
   std::error_code ec;
-  std::filesystem::create_directories(snippet_folder_path_, ec);
+  std::filesystem::create_directories(PathFromUtf8(snippet_folder_path_), ec);
   if (ec) {
     return VXCORE_ERR_IO;
   }
@@ -236,15 +236,16 @@ VxCoreError SnippetManager::ListSnippets(std::vector<SnippetData> &out_snippets)
 
   // Iterate snippet folder for user *.json files.
   std::error_code ec;
-  for (const auto &entry : std::filesystem::directory_iterator(snippet_folder_path_, ec)) {
+  for (const auto &entry :
+       std::filesystem::directory_iterator(PathFromUtf8(snippet_folder_path_), ec)) {
     if (!entry.is_regular_file(ec)) continue;
-    std::string filename = entry.path().filename().string();
+    std::string filename = PathToUtf8(entry.path().filename());
     if (filename.empty() || filename[0] == '.') continue;
 
-    std::string ext = entry.path().extension().string();
+    std::string ext = PathToUtf8(entry.path().extension());
     if (ext != ".json") continue;
 
-    std::string stem = entry.path().stem().string();
+    std::string stem = PathToUtf8(entry.path().stem());
 
     // Skip if name collides with a built-in (shouldn't happen, but be safe).
     if (FindSnippet(stem) != nullptr) continue;
@@ -296,7 +297,7 @@ VxCoreError SnippetManager::GetSnippet(const std::string &name, SnippetData &out
   std::string file_path = GetSnippetFilePath(name);
 
   std::error_code ec;
-  bool exists = std::filesystem::exists(file_path, ec);
+  bool exists = std::filesystem::exists(PathFromUtf8(file_path), ec);
   if (!exists) return VXCORE_ERR_NOT_FOUND;
 
   std::string content;
@@ -340,7 +341,7 @@ VxCoreError SnippetManager::CreateSnippet(const std::string &name,
   std::string file_path = GetSnippetFilePath(name);
 
   std::error_code ec;
-  bool exists = std::filesystem::exists(file_path, ec);
+  bool exists = std::filesystem::exists(PathFromUtf8(file_path), ec);
   if (exists) return VXCORE_ERR_ALREADY_EXISTS;
 
   // Validate that json_content is parseable.
@@ -363,10 +364,10 @@ VxCoreError SnippetManager::DeleteSnippet(const std::string &name) {
   std::string file_path = GetSnippetFilePath(name);
 
   std::error_code ec;
-  bool exists = std::filesystem::exists(file_path, ec);
+  bool exists = std::filesystem::exists(PathFromUtf8(file_path), ec);
   if (!exists) return VXCORE_ERR_NOT_FOUND;
 
-  std::filesystem::remove(file_path, ec);
+  std::filesystem::remove(PathFromUtf8(file_path), ec);
   if (ec) return VXCORE_ERR_IO;
 
   return VXCORE_OK;
@@ -388,15 +389,15 @@ VxCoreError SnippetManager::RenameSnippet(const std::string &old_name,
   std::string new_path = GetSnippetFilePath(new_name);
 
   std::error_code ec;
-  bool old_exists = std::filesystem::exists(old_path, ec);
+  bool old_exists = std::filesystem::exists(PathFromUtf8(old_path), ec);
   if (!old_exists) return VXCORE_ERR_NOT_FOUND;
 
   if (old_name == new_name) return VXCORE_OK;
 
-  bool new_exists = std::filesystem::exists(new_path, ec);
+  bool new_exists = std::filesystem::exists(PathFromUtf8(new_path), ec);
   if (new_exists) return VXCORE_ERR_ALREADY_EXISTS;
 
-  std::filesystem::rename(old_path, new_path, ec);
+  std::filesystem::rename(PathFromUtf8(old_path), PathFromUtf8(new_path), ec);
   if (ec) return VXCORE_ERR_IO;
 
   return VXCORE_OK;
@@ -412,7 +413,7 @@ VxCoreError SnippetManager::UpdateSnippet(const std::string &name,
   std::string file_path = GetSnippetFilePath(name);
 
   std::error_code ec;
-  bool exists = std::filesystem::exists(file_path, ec);
+  bool exists = std::filesystem::exists(PathFromUtf8(file_path), ec);
   if (!exists) return VXCORE_ERR_NOT_FOUND;
 
   // Validate that json_content is parseable.

@@ -15,7 +15,7 @@ TemplateManager::TemplateManager(ConfigManager *config_manager)
 
 VxCoreError TemplateManager::EnsureTemplateFolderExists() const {
   std::error_code ec;
-  std::filesystem::create_directories(template_folder_path_, ec);
+  std::filesystem::create_directories(PathFromUtf8(template_folder_path_), ec);
   if (ec) {
     return VXCORE_ERR_IO;
   }
@@ -43,9 +43,10 @@ VxCoreError TemplateManager::ListTemplates(std::vector<std::string> &out_names) 
   out_names.clear();
 
   std::error_code ec;
-  for (const auto &entry : std::filesystem::directory_iterator(template_folder_path_, ec)) {
+  for (const auto &entry :
+       std::filesystem::directory_iterator(PathFromUtf8(template_folder_path_), ec)) {
     if (!entry.is_regular_file(ec)) continue;
-    std::string filename = entry.path().filename().string();
+    std::string filename = PathToUtf8(entry.path().filename());
     if (!filename.empty() && filename[0] == '.') continue;
     out_names.push_back(filename);
   }
@@ -65,12 +66,13 @@ VxCoreError TemplateManager::ListTemplatesBySuffix(const std::string &suffix,
                  [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
   std::error_code ec;
-  for (const auto &entry : std::filesystem::directory_iterator(template_folder_path_, ec)) {
+  for (const auto &entry :
+       std::filesystem::directory_iterator(PathFromUtf8(template_folder_path_), ec)) {
     if (!entry.is_regular_file(ec)) continue;
-    std::string filename = entry.path().filename().string();
+    std::string filename = PathToUtf8(entry.path().filename());
     if (!filename.empty() && filename[0] == '.') continue;
 
-    std::string entry_ext = entry.path().extension().string();
+    std::string entry_ext = PathToUtf8(entry.path().extension());
     std::transform(entry_ext.begin(), entry_ext.end(), entry_ext.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
@@ -92,7 +94,7 @@ VxCoreError TemplateManager::GetTemplateContent(const std::string &name,
   std::string full_path = template_folder_path_ + "/" + name;
 
   std::error_code ec;
-  bool exists = std::filesystem::exists(full_path, ec);
+  bool exists = std::filesystem::exists(PathFromUtf8(full_path), ec);
   if (!exists) return VXCORE_ERR_NOT_FOUND;
 
   return ReadFile(full_path, out_content);
@@ -107,7 +109,7 @@ VxCoreError TemplateManager::CreateTemplate(const std::string &name, const std::
   std::string full_path = template_folder_path_ + "/" + name;
 
   std::error_code ec;
-  bool exists = std::filesystem::exists(full_path, ec);
+  bool exists = std::filesystem::exists(PathFromUtf8(full_path), ec);
   if (exists) return VXCORE_ERR_ALREADY_EXISTS;
 
   return WriteFile(full_path, content);
@@ -122,10 +124,10 @@ VxCoreError TemplateManager::DeleteTemplate(const std::string &name) {
   std::string full_path = template_folder_path_ + "/" + name;
 
   std::error_code ec;
-  bool exists = std::filesystem::exists(full_path, ec);
+  bool exists = std::filesystem::exists(PathFromUtf8(full_path), ec);
   if (!exists) return VXCORE_ERR_NOT_FOUND;
 
-  std::filesystem::remove(full_path, ec);
+  std::filesystem::remove(PathFromUtf8(full_path), ec);
   if (ec) return VXCORE_ERR_IO;
 
   return VXCORE_OK;
@@ -143,15 +145,15 @@ VxCoreError TemplateManager::RenameTemplate(const std::string &old_name,
   std::string new_path = template_folder_path_ + "/" + new_name;
 
   std::error_code ec;
-  bool old_exists = std::filesystem::exists(old_path, ec);
+  bool old_exists = std::filesystem::exists(PathFromUtf8(old_path), ec);
   if (!old_exists) return VXCORE_ERR_NOT_FOUND;
 
   if (old_name == new_name) return VXCORE_OK;
 
-  bool new_exists = std::filesystem::exists(new_path, ec);
+  bool new_exists = std::filesystem::exists(PathFromUtf8(new_path), ec);
   if (new_exists) return VXCORE_ERR_ALREADY_EXISTS;
 
-  std::filesystem::rename(old_path, new_path, ec);
+  std::filesystem::rename(PathFromUtf8(old_path), PathFromUtf8(new_path), ec);
   if (ec) return VXCORE_ERR_IO;
 
   return VXCORE_OK;
