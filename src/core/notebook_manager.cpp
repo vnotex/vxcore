@@ -68,7 +68,7 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
   const auto root_folder_clean = CleanPath(root_folder);
 
   try {
-    std::filesystem::path rootPath(root_folder_clean);
+    auto rootPath = PathFromUtf8(root_folder_clean);
     if (!std::filesystem::exists(rootPath)) {
       std::filesystem::create_directories(rootPath);
       VXCORE_LOG_DEBUG("Created root directory: %s", root_folder_clean.c_str());
@@ -143,7 +143,7 @@ VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
     return VXCORE_OK;
   }
 
-  std::filesystem::path rootPath(root_folder_clean);
+  auto rootPath = PathFromUtf8(root_folder_clean);
   if (!std::filesystem::exists(rootPath)) {
     VXCORE_LOG_WARN("Notebook root folder not found: %s", root_folder_clean.c_str());
     return VXCORE_ERR_NOT_FOUND;
@@ -206,11 +206,11 @@ VxCoreError NotebookManager::CloseNotebook(const std::string &notebook_id) {
 void NotebookManager::DeleteNotebookLocalData(const Notebook &notebook) {
   const auto local_data_folder = notebook.GetLocalDataFolder();
 
-  if (std::filesystem::exists(local_data_folder)) {
+  if (std::filesystem::exists(PathFromUtf8(local_data_folder))) {
     VXCORE_LOG_INFO("Deleting notebook local data: id=%s, path=%s", notebook.GetId().c_str(),
                     local_data_folder.c_str());
     std::error_code ec;
-    std::filesystem::remove_all(local_data_folder, ec);
+    std::filesystem::remove_all(PathFromUtf8(local_data_folder), ec);
     if (ec) {
       VXCORE_LOG_ERROR("Failed to delete notebook local data: id=%s, path=%s, error=%s",
                        notebook.GetId().c_str(), local_data_folder.c_str(), ec.message().c_str());
@@ -346,12 +346,12 @@ VxCoreError NotebookManager::ResolvePathToNotebook(const std::string &absolute_p
                                                    std::string &out_notebook_id,
                                                    std::string &out_relative_path) {
   const std::string clean_path = CleanPath(absolute_path);
-  std::filesystem::path abs_path(clean_path);
+  auto abs_path = PathFromUtf8(clean_path);
 
   // Iterate through all open notebooks and find which one contains this path.
   for (const auto &pair : notebooks_) {
     const std::string &root_folder = pair.second->GetRootFolder();
-    std::filesystem::path root_path(root_folder);
+    auto root_path = PathFromUtf8(root_folder);
 
     // Check if absolute_path starts with root_folder.
     auto [root_end, path_pos] = std::mismatch(root_path.begin(), root_path.end(), abs_path.begin());

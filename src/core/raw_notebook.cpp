@@ -5,6 +5,7 @@
 
 #include "metadata_store.h"
 #include "raw_folder_manager.h"
+#include "utils/file_utils.h"
 #include "utils/logger.h"
 
 namespace vxcore {
@@ -33,7 +34,7 @@ VxCoreError RawNotebook::Create(const std::string &local_data_folder,
 }
 
 VxCoreError RawNotebook::LoadConfig() {
-  std::ifstream file(GetConfigPath());
+  std::ifstream file(PathFromUtf8(GetConfigPath()));
   if (!file.is_open()) {
     return VXCORE_ERR_IO;
   }
@@ -58,7 +59,7 @@ VxCoreError RawNotebook::InitOnCreation() {
   EnsureId();
 
   try {
-    std::filesystem::path localDataPath(GetLocalDataFolder());
+    auto localDataPath = PathFromUtf8(GetLocalDataFolder());
     std::filesystem::create_directories(localDataPath);
   } catch (const std::filesystem::filesystem_error &) {
     VXCORE_LOG_ERROR("Failed to create raw notebook meta folders: root=%s", root_folder_.c_str());
@@ -133,7 +134,7 @@ VxCoreError RawNotebook::UpdateConfig(const NotebookConfig &config) {
   config_ = config;
 
   try {
-    std::ofstream file(GetConfigPath());
+    std::ofstream file(PathFromUtf8(GetConfigPath()));
     if (!file.is_open()) {
       return VXCORE_ERR_IO;
     }

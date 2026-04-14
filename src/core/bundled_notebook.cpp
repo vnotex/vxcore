@@ -5,6 +5,7 @@
 
 #include "bundled_folder_manager.h"
 #include "metadata_store.h"
+#include "utils/file_utils.h"
 #include "utils/logger.h"
 
 namespace vxcore {
@@ -40,10 +41,10 @@ VxCoreError BundledNotebook::InitOnCreation() {
   EnsureId();
 
   try {
-    std::filesystem::path localDataPath(GetLocalDataFolder());
+    auto localDataPath = PathFromUtf8(GetLocalDataFolder());
     std::filesystem::create_directories(localDataPath);
 
-    std::filesystem::path metadataPath(GetMetadataFolder());
+    auto metadataPath = PathFromUtf8(GetMetadataFolder());
     std::filesystem::create_directories(metadataPath);
   } catch (const std::filesystem::filesystem_error &) {
     VXCORE_LOG_ERROR("Failed to create bundled notebook meta folders: root=%s",
@@ -94,10 +95,10 @@ VxCoreError BundledNotebook::Open(const std::string &local_data_folder,
   }
 
   try {
-    std::filesystem::path localDataPath(notebook->GetLocalDataFolder());
+    auto localDataPath = PathFromUtf8(notebook->GetLocalDataFolder());
     std::filesystem::create_directories(localDataPath);
 
-    std::filesystem::path metadataPath(notebook->GetMetadataFolder());
+    auto metadataPath = PathFromUtf8(notebook->GetMetadataFolder());
     std::filesystem::create_directories(metadataPath);
   } catch (const std::filesystem::filesystem_error &) {
     VXCORE_LOG_ERROR("Failed to create bundled notebook meta folders: root=%s",
@@ -137,7 +138,7 @@ std::string BundledNotebook::GetConfigPath() const {
 }
 
 VxCoreError BundledNotebook::LoadConfig() {
-  std::ifstream file(GetConfigPath());
+  std::ifstream file(PathFromUtf8(GetConfigPath()));
   if (!file.is_open()) {
     return VXCORE_ERR_IO;
   }
@@ -164,7 +165,7 @@ VxCoreError BundledNotebook::UpdateConfig(const NotebookConfig &config) {
   config_ = config;
 
   try {
-    std::ofstream file(GetConfigPath());
+    std::ofstream file(PathFromUtf8(GetConfigPath()));
     if (!file.is_open()) {
       return VXCORE_ERR_IO;
     }
@@ -200,7 +201,7 @@ std::string BundledNotebook::GetRecycleBinPath() const {
 VxCoreError BundledNotebook::EmptyRecycleBin() {
   std::string recycle_bin_path = GetRecycleBinPath();
   try {
-    std::filesystem::path rb_path(recycle_bin_path);
+    auto rb_path = PathFromUtf8(recycle_bin_path);
     if (!std::filesystem::exists(rb_path)) {
       return VXCORE_OK;  // Nothing to empty
     }
