@@ -4464,6 +4464,472 @@ int test_utf8_filename_roundtrip() {
   return 0;
 }
 
+// ============================================================================
+// Timestamp update tests
+// ============================================================================
+
+int test_node_update_timestamps_file() {
+  std::cout << "  Running test_node_update_timestamps_file..." << std::endl;
+  cleanup_test_dir(get_test_path("test_ts_file_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_ts_file_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Update timestamps
+  int64_t new_created = 1705318200000;
+  int64_t new_modified = 1705404600000;
+  err = vxcore_node_update_timestamps(ctx, notebook_id, "note.md", new_created, new_modified);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Re-read file config and verify
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "note.md", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT_EQ(config["createdUtc"].get<int64_t>(), new_created);
+  ASSERT_EQ(config["modifiedUtc"].get<int64_t>(), new_modified);
+
+  vxcore_string_free(config_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_ts_file_nb"));
+  std::cout << "  \xe2\x9c\x93 test_node_update_timestamps_file passed" << std::endl;
+  return 0;
+}
+
+int test_node_update_timestamps_folder() {
+  std::cout << "  Running test_node_update_timestamps_folder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_ts_folder_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_ts_folder_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Update timestamps
+  int64_t new_created = 1705318200000;
+  int64_t new_modified = 1705404600000;
+  err = vxcore_node_update_timestamps(ctx, notebook_id, "docs", new_created, new_modified);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Re-read folder config and verify
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "docs", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT_EQ(config["createdUtc"].get<int64_t>(), new_created);
+  ASSERT_EQ(config["modifiedUtc"].get<int64_t>(), new_modified);
+
+  vxcore_string_free(config_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_ts_folder_nb"));
+  std::cout << "  \xe2\x9c\x93 test_node_update_timestamps_folder passed" << std::endl;
+  return 0;
+}
+
+int test_node_update_timestamps_partial() {
+  std::cout << "  Running test_node_update_timestamps_partial..." << std::endl;
+  cleanup_test_dir(get_test_path("test_ts_partial_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_ts_partial_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Set both timestamps first
+  int64_t initial_created = 1705318200000;
+  int64_t initial_modified = 1705404600000;
+  err = vxcore_node_update_timestamps(ctx, notebook_id, "note.md", initial_created,
+                                      initial_modified);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Now update only modified (pass 0 for created to skip)
+  int64_t new_modified = 1705491000000;
+  err = vxcore_node_update_timestamps(ctx, notebook_id, "note.md", 0, new_modified);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify created unchanged, modified updated
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "note.md", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT_EQ(config["createdUtc"].get<int64_t>(), initial_created);
+  ASSERT_EQ(config["modifiedUtc"].get<int64_t>(), new_modified);
+
+  vxcore_string_free(config_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_ts_partial_nb"));
+  std::cout << "  \xe2\x9c\x93 test_node_update_timestamps_partial passed" << std::endl;
+  return 0;
+}
+
+int test_node_update_timestamps_not_found() {
+  std::cout << "  Running test_node_update_timestamps_not_found..." << std::endl;
+  cleanup_test_dir(get_test_path("test_ts_notfound_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_ts_notfound_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Call with non-existent path
+  err = vxcore_node_update_timestamps(ctx, notebook_id, "nonexistent.md", 1705318200000,
+                                      1705404600000);
+  ASSERT_NE(err, VXCORE_OK);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_ts_notfound_nb"));
+  std::cout << "  \xe2\x9c\x93 test_node_update_timestamps_not_found passed" << std::endl;
+  return 0;
+}
+
+// ============================================================================
+// File attachment update tests
+// ============================================================================
+
+int test_file_update_attachments_basic() {
+  std::cout << "  Running test_file_update_attachments_basic..." << std::endl;
+  cleanup_test_dir(get_test_path("test_upd_attach_basic_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_upd_attach_basic_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Set attachments
+  err = vxcore_file_update_attachments(ctx, notebook_id, "note.md",
+                                       R"(["report.pdf","data.csv"])");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // List attachments and verify
+  char *attachments_json = nullptr;
+  err = vxcore_node_list_attachments(ctx, notebook_id, "note.md", &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(attachments_json);
+
+  nlohmann::json attachments = nlohmann::json::parse(attachments_json);
+  ASSERT_TRUE(attachments.is_array());
+  ASSERT_EQ(attachments.size(), 2u);
+  ASSERT_EQ(attachments[0].get<std::string>(), "report.pdf");
+  ASSERT_EQ(attachments[1].get<std::string>(), "data.csv");
+
+  vxcore_string_free(attachments_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_upd_attach_basic_nb"));
+  std::cout << "  \xe2\x9c\x93 test_file_update_attachments_basic passed" << std::endl;
+  return 0;
+}
+
+int test_file_update_attachments_replace() {
+  std::cout << "  Running test_file_update_attachments_replace..." << std::endl;
+  cleanup_test_dir(get_test_path("test_upd_attach_replace_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_upd_attach_replace_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Set initial attachments
+  err = vxcore_file_update_attachments(ctx, notebook_id, "note.md",
+                                       R"(["old1.pdf","old2.pdf"])");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Replace with different attachments
+  err = vxcore_file_update_attachments(ctx, notebook_id, "note.md",
+                                       R"(["new1.zip","new2.doc","new3.png"])");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify only new ones exist
+  char *attachments_json = nullptr;
+  err = vxcore_node_list_attachments(ctx, notebook_id, "note.md", &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(attachments_json);
+
+  nlohmann::json attachments = nlohmann::json::parse(attachments_json);
+  ASSERT_TRUE(attachments.is_array());
+  ASSERT_EQ(attachments.size(), 3u);
+  ASSERT_EQ(attachments[0].get<std::string>(), "new1.zip");
+  ASSERT_EQ(attachments[1].get<std::string>(), "new2.doc");
+  ASSERT_EQ(attachments[2].get<std::string>(), "new3.png");
+
+  vxcore_string_free(attachments_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_upd_attach_replace_nb"));
+  std::cout << "  \xe2\x9c\x93 test_file_update_attachments_replace passed" << std::endl;
+  return 0;
+}
+
+int test_file_update_attachments_not_found() {
+  std::cout << "  Running test_file_update_attachments_not_found..." << std::endl;
+  cleanup_test_dir(get_test_path("test_upd_attach_nf_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_upd_attach_nf_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Call with non-existent file
+  err = vxcore_file_update_attachments(ctx, notebook_id, "nonexistent.md",
+                                       R"(["file.pdf"])");
+  ASSERT_NE(err, VXCORE_OK);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_upd_attach_nf_nb"));
+  std::cout << "  \xe2\x9c\x93 test_file_update_attachments_not_found passed" << std::endl;
+  return 0;
+}
+
+// ============================================================================
+// External node exclusion tests (vx_images / vx_attachments)
+// ============================================================================
+
+int test_list_external_nodes_excludes_vx_images() {
+  std::cout << "  Running test_list_external_nodes_excludes_vx_images..." << std::endl;
+  cleanup_test_dir(get_test_path("test_ext_excl_images_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_ext_excl_images_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Create vx_images directory directly on filesystem (not via API)
+  create_directory(get_test_path("test_ext_excl_images_nb") + "/vx_images");
+  ASSERT(path_exists(get_test_path("test_ext_excl_images_nb") + "/vx_images"));
+
+  // Also create a regular external folder for contrast
+  create_directory(get_test_path("test_ext_excl_images_nb") + "/my_stuff");
+  ASSERT(path_exists(get_test_path("test_ext_excl_images_nb") + "/my_stuff"));
+
+  // List external nodes
+  char *external_json = nullptr;
+  err = vxcore_folder_list_external(ctx, notebook_id, ".", &external_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(external_json);
+
+  nlohmann::json result = nlohmann::json::parse(external_json);
+
+  // vx_images should NOT appear in external folders
+  for (const auto &folder : result["folders"]) {
+    ASSERT_NE(folder["name"].get<std::string>(), std::string("vx_images"));
+  }
+
+  // my_stuff SHOULD appear
+  bool found_my_stuff = false;
+  for (const auto &folder : result["folders"]) {
+    if (folder["name"].get<std::string>() == "my_stuff") {
+      found_my_stuff = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found_my_stuff);
+
+  vxcore_string_free(external_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_ext_excl_images_nb"));
+  std::cout << "  \xe2\x9c\x93 test_list_external_nodes_excludes_vx_images passed" << std::endl;
+  return 0;
+}
+
+int test_list_external_nodes_excludes_vx_attachments() {
+  std::cout << "  Running test_list_external_nodes_excludes_vx_attachments..." << std::endl;
+  cleanup_test_dir(get_test_path("test_ext_excl_attach_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_ext_excl_attach_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Create vx_attachments directory directly on filesystem (not via API)
+  create_directory(get_test_path("test_ext_excl_attach_nb") + "/vx_attachments");
+  ASSERT(path_exists(get_test_path("test_ext_excl_attach_nb") + "/vx_attachments"));
+
+  // Also create a regular external folder for contrast
+  create_directory(get_test_path("test_ext_excl_attach_nb") + "/my_data");
+  ASSERT(path_exists(get_test_path("test_ext_excl_attach_nb") + "/my_data"));
+
+  // List external nodes
+  char *external_json = nullptr;
+  err = vxcore_folder_list_external(ctx, notebook_id, ".", &external_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(external_json);
+
+  nlohmann::json result = nlohmann::json::parse(external_json);
+
+  // vx_attachments should NOT appear in external folders
+  for (const auto &folder : result["folders"]) {
+    ASSERT_NE(folder["name"].get<std::string>(), std::string("vx_attachments"));
+  }
+
+  // my_data SHOULD appear
+  bool found_my_data = false;
+  for (const auto &folder : result["folders"]) {
+    if (folder["name"].get<std::string>() == "my_data") {
+      found_my_data = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found_my_data);
+
+  vxcore_string_free(external_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_ext_excl_attach_nb"));
+  std::cout << "  \xe2\x9c\x93 test_list_external_nodes_excludes_vx_attachments passed"
+            << std::endl;
+  return 0;
+}
+
+int test_list_external_nodes_excludes_nested() {
+  std::cout << "  Running test_list_external_nodes_excludes_nested..." << std::endl;
+  cleanup_test_dir(get_test_path("test_ext_excl_nested_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_ext_excl_nested_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Create a subfolder via API
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "subfolder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Create vx_images inside subfolder directly on filesystem
+  create_directory(get_test_path("test_ext_excl_nested_nb") + "/subfolder/vx_images");
+  ASSERT(path_exists(get_test_path("test_ext_excl_nested_nb") + "/subfolder/vx_images"));
+
+  // Also create a regular external folder in subfolder for contrast
+  create_directory(get_test_path("test_ext_excl_nested_nb") + "/subfolder/regular_dir");
+  ASSERT(path_exists(get_test_path("test_ext_excl_nested_nb") + "/subfolder/regular_dir"));
+
+  // List external nodes for subfolder
+  char *external_json = nullptr;
+  err = vxcore_folder_list_external(ctx, notebook_id, "subfolder", &external_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(external_json);
+
+  nlohmann::json result = nlohmann::json::parse(external_json);
+
+  // vx_images should NOT appear
+  for (const auto &folder : result["folders"]) {
+    ASSERT_NE(folder["name"].get<std::string>(), std::string("vx_images"));
+  }
+
+  // regular_dir SHOULD appear
+  bool found_regular = false;
+  for (const auto &folder : result["folders"]) {
+    if (folder["name"].get<std::string>() == "regular_dir") {
+      found_regular = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found_regular);
+
+  vxcore_string_free(external_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_ext_excl_nested_nb"));
+  std::cout << "  \xe2\x9c\x93 test_list_external_nodes_excludes_nested passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -4583,6 +5049,22 @@ int main() {
 
   // File peek tests
   RUN_TEST(test_file_peek);
+
+  // Timestamp update tests
+  RUN_TEST(test_node_update_timestamps_file);
+  RUN_TEST(test_node_update_timestamps_folder);
+  RUN_TEST(test_node_update_timestamps_partial);
+  RUN_TEST(test_node_update_timestamps_not_found);
+
+  // File attachment update tests
+  RUN_TEST(test_file_update_attachments_basic);
+  RUN_TEST(test_file_update_attachments_replace);
+  RUN_TEST(test_file_update_attachments_not_found);
+
+  // External node exclusion tests
+  RUN_TEST(test_list_external_nodes_excludes_vx_images);
+  RUN_TEST(test_list_external_nodes_excludes_vx_attachments);
+  RUN_TEST(test_list_external_nodes_excludes_nested);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;
