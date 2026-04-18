@@ -19,6 +19,8 @@ class RawFolderManager : public FolderManager {
   VxCoreError DeleteFolder(const std::string &folder_path) override;
   VxCoreError UpdateFolderMetadata(const std::string &folder_path,
                                    const std::string &metadata_json) override;
+  VxCoreError UpdateNodeTimestamps(const std::string &node_path, int64_t created_utc,
+                                   int64_t modified_utc) override;
   VxCoreError GetFolderMetadata(const std::string &folder_path,
                                 std::string &out_metadata_json) override;
   VxCoreError RenameFolder(const std::string &folder_path, const std::string &new_name) override;

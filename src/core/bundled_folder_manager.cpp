@@ -455,6 +455,79 @@ VxCoreError BundledFolderManager::UpdateFolderMetadata(const std::string &folder
   }
 }
 
+VxCoreError BundledFolderManager::UpdateNodeTimestamps(const std::string &node_path,
+                                                       int64_t created_utc, int64_t modified_utc) {
+  if (created_utc <= 0 && modified_utc <= 0) {
+    return VXCORE_OK;  // Nothing to update
+  }
+
+  const auto clean_path = GetCleanRelativePath(node_path);
+
+  // Try as file first (files are more common)
+  const auto [folder_path, file_name] = SplitPath(clean_path);
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(folder_path, &config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  FileRecord *file = FindFileRecord(*config, file_name);
+  if (file) {
+    // It's a file
+    if (created_utc > 0) {
+      file->created_utc = created_utc;
+    }
+    if (modified_utc > 0) {
+      file->modified_utc = modified_utc;
+    }
+
+    error = SaveFolderConfig(folder_path, *config);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+
+    // Write-through to MetadataStore
+    if (auto *store = notebook_->GetMetadataStore()) {
+      if (!store->UpdateFile(file->id, file->name, file->modified_utc, file->metadata.dump())) {
+        VXCORE_LOG_WARN("Failed to update file timestamps in MetadataStore: id=%s",
+                        file->id.c_str());
+      }
+    }
+
+    return VXCORE_OK;
+  }
+
+  // Try as folder — clean_path itself is the folder
+  config = nullptr;
+  error = GetFolderConfig(clean_path, &config);
+  if (error != VXCORE_OK) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  if (created_utc > 0) {
+    config->created_utc = created_utc;
+  }
+  if (modified_utc > 0) {
+    config->modified_utc = modified_utc;
+  }
+
+  error = SaveFolderConfig(clean_path, *config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    if (!store->UpdateFolder(config->id, config->name, config->modified_utc,
+                             config->metadata.dump())) {
+      VXCORE_LOG_WARN("Failed to update folder timestamps in MetadataStore: id=%s",
+                      config->id.c_str());
+    }
+  }
+
+  return VXCORE_OK;
+}
+
 VxCoreError BundledFolderManager::GetFolderMetadata(const std::string &folder_path,
                                                     std::string &out_metadata_json) {
   const auto clean_folder_path = GetCleanRelativePath(folder_path);
@@ -2303,6 +2376,12 @@ VxCoreError BundledFolderManager::ListExternalNodes(const std::string &folder_pa
 
       // Skip assets folder (attachments are now stored in assets folder)
       if (need_check_assets_folder && entry_name == nb_config.assets_folder) {
+        continue;
+      }
+
+      // Skip legacy VNote3 metadata directories at any level
+      if (entry.is_directory() &&
+          (entry_name == "vx_images" || entry_name == "vx_attachments")) {
         continue;
       }
 

@@ -38,6 +38,14 @@ VxCoreError RawFolderManager::UpdateFolderMetadata(const std::string &folder_pat
   return VXCORE_ERR_UNSUPPORTED;
 }
 
+VxCoreError RawFolderManager::UpdateNodeTimestamps(const std::string &node_path,
+                                                   int64_t created_utc, int64_t modified_utc) {
+  (void)node_path;
+  (void)created_utc;
+  (void)modified_utc;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
 VxCoreError RawFolderManager::GetFolderMetadata(const std::string &folder_path,
                                                 std::string &out_metadata_json) {
   (void)folder_path;

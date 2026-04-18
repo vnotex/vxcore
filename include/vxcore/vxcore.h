@@ -179,6 +179,13 @@ VXCORE_API VxCoreError vxcore_folder_import(VxCoreContextHandle context, const c
 VXCORE_API VxCoreError vxcore_file_update_tags(VxCoreContextHandle context, const char *notebook_id,
                                                const char *file_path, const char *tags_json);
 
+// Update the list of attachments for a file node (bundled notebooks).
+// attachments_json: JSON array of relative filenames, e.g. ["doc.pdf", "data.zip"]
+VXCORE_API VxCoreError vxcore_file_update_attachments(VxCoreContextHandle context,
+                                                      const char *notebook_id,
+                                                      const char *file_path,
+                                                      const char *attachments_json);
+
 VXCORE_API VxCoreError vxcore_file_tag(VxCoreContextHandle context, const char *notebook_id,
                                        const char *file_path, const char *tag_name);
 
@@ -228,6 +235,17 @@ VXCORE_API VxCoreError vxcore_node_get_metadata(VxCoreContextHandle context,
 VXCORE_API VxCoreError vxcore_node_update_metadata(VxCoreContextHandle context,
                                                    const char *notebook_id, const char *node_path,
                                                    const char *metadata_json);
+
+// Update timestamps on a node (file or folder).
+// Timestamps are millisecond epoch values stored in vx.json metadata.
+// If created_utc <= 0, the existing created_utc is preserved.
+// If modified_utc <= 0, the existing modified_utc is preserved.
+// Returns VXCORE_ERR_UNSUPPORTED for raw notebooks (no vx.json metadata).
+VXCORE_API VxCoreError vxcore_node_update_timestamps(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     const char *node_path,
+                                                     int64_t created_utc,
+                                                     int64_t modified_utc);
 
 // Index a filesystem node (file or folder) into the metadata store.
 // The node must exist on filesystem but not be tracked in metadata.

@@ -37,6 +37,12 @@ class FolderManager {
   virtual VxCoreError UpdateFolderMetadata(const std::string &folder_path,
                                            const std::string &metadata_json) = 0;
 
+  // Update timestamps on a node (file or folder).
+  // If created_utc <= 0, the existing created_utc is preserved.
+  // If modified_utc <= 0, the existing modified_utc is preserved.
+  virtual VxCoreError UpdateNodeTimestamps(const std::string &node_path, int64_t created_utc,
+                                           int64_t modified_utc) = 0;
+
   virtual VxCoreError GetFolderMetadata(const std::string &folder_path,
                                         std::string &out_metadata_json) = 0;
 
