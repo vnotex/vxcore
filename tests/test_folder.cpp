@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -6983,6 +6984,727 @@ int test_raw_iterate_skips_hidden() {
   return 0;
 }
 
+// ============ Raw Notebook UNSUPPORTED Operation Tests ============
+
+int test_raw_tag_file_unsupported() {
+  std::cout << "  Running test_raw_tag_file_unsupported..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_tag_file_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_tag_file_nb").c_str(),
+                               "{\"name\":\"Raw TagFile\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file first
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // vxcore_file_tag should return UNSUPPORTED
+  err = vxcore_file_tag(ctx, notebook_id, "test.md", "mytag");
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_tag_file_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_tag_file_unsupported passed" << std::endl;
+  return 0;
+}
+
+int test_raw_untag_file_unsupported() {
+  std::cout << "  Running test_raw_untag_file_unsupported..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_untag_file_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_untag_file_nb").c_str(),
+                               "{\"name\":\"Raw UntagFile\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // vxcore_file_untag should return UNSUPPORTED
+  err = vxcore_file_untag(ctx, notebook_id, "test.md", "mytag");
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_untag_file_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_untag_file_unsupported passed" << std::endl;
+  return 0;
+}
+
+int test_raw_update_file_tags_unsupported() {
+  std::cout << "  Running test_raw_update_file_tags_unsupported..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_upd_tags_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_upd_tags_nb").c_str(),
+                               "{\"name\":\"Raw UpdTags\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // vxcore_file_update_tags should return UNSUPPORTED
+  err = vxcore_file_update_tags(ctx, notebook_id, "test.md", "[\"tag1\",\"tag2\"]");
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_upd_tags_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_update_file_tags_unsupported passed" << std::endl;
+  return 0;
+}
+
+int test_raw_find_files_by_tag_unsupported() {
+  std::cout << "  Running test_raw_find_files_by_tag_unsupported..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_find_tag_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_find_tag_nb").c_str(),
+                               "{\"name\":\"Raw FindTag\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // vxcore_tag_find_files should return UNSUPPORTED
+  char *results_json = nullptr;
+  err = vxcore_tag_find_files(ctx, notebook_id, "[\"tag1\"]", "AND", &results_json);
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(results_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_find_tag_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_find_files_by_tag_unsupported passed" << std::endl;
+  return 0;
+}
+
+int test_raw_get_attachments_unsupported() {
+  std::cout << "  Running test_raw_get_attachments_unsupported..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_get_attach_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_get_attach_nb").c_str(),
+                               "{\"name\":\"Raw GetAttach\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // vxcore_node_list_attachments should return UNSUPPORTED
+  char *attachments_json = nullptr;
+  err = vxcore_node_list_attachments(ctx, notebook_id, "test.md", &attachments_json);
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_get_attach_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_get_attachments_unsupported passed" << std::endl;
+  return 0;
+}
+
+int test_raw_update_attachments_unsupported() {
+  std::cout << "  Running test_raw_update_attachments_unsupported..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_upd_attach_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_upd_attach_nb").c_str(),
+                               "{\"name\":\"Raw UpdAttach\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // vxcore_file_update_attachments should return UNSUPPORTED
+  err = vxcore_file_update_attachments(ctx, notebook_id, "test.md", "[\"doc.pdf\"]");
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_upd_attach_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_update_attachments_unsupported passed" << std::endl;
+  return 0;
+}
+
+int test_raw_index_node_unsupported() {
+  std::cout << "  Running test_raw_index_node_unsupported..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_index_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_index_nb").c_str(),
+                               "{\"name\":\"Raw Index\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file on disk to attempt indexing
+  write_file(get_test_path("test_raw_index_nb") + "/manual.md", "# Manual");
+
+  // vxcore_node_index should return UNSUPPORTED
+  err = vxcore_node_index(ctx, notebook_id, "manual.md");
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_index_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_index_node_unsupported passed" << std::endl;
+  return 0;
+}
+
+int test_raw_unindex_node_unsupported() {
+  std::cout << "  Running test_raw_unindex_node_unsupported..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_unindex_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_unindex_nb").c_str(),
+                               "{\"name\":\"Raw Unindex\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // vxcore_node_unindex should return UNSUPPORTED
+  err = vxcore_node_unindex(ctx, notebook_id, "test.md");
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_unindex_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_unindex_node_unsupported passed" << std::endl;
+  return 0;
+}
+
+int test_raw_search_by_tags_returns_empty() {
+  std::cout << "  Running test_raw_search_by_tags_returns_empty..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_search_tags_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_search_tags_nb").c_str(),
+                               "{\"name\":\"Raw SearchTags\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file so the notebook isn't empty
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // vxcore_search_by_tags returns OK with empty matches (raw notebooks have no tags)
+  char *results_json = nullptr;
+  err = vxcore_search_by_tags(
+      ctx, notebook_id,
+      "{\"tags\":[\"mytag\"],\"operator\":\"AND\",\"scope\":{},\"maxResults\":100}", nullptr,
+      &results_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(results_json);
+
+  auto j = nlohmann::json::parse(results_json);
+  ASSERT_EQ(j["matchCount"].get<int>(), 0);
+  ASSERT_TRUE(j["matches"].empty());
+
+  vxcore_string_free(results_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_search_tags_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_search_by_tags_returns_empty passed" << std::endl;
+  return 0;
+}
+
+// ============ Raw Notebook Edge Case Tests ============
+
+int test_raw_unicode_filename() {
+  std::cout << "  Running test_raw_unicode_filename..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_unicode_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_unicode_nb").c_str(),
+                               "{\"name\":\"Raw Unicode\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file with unicode name (Chinese characters)
+  std::string unicode_name = "\xe4\xb8\xad\xe6\x96\x87\xe7\xac\x94\xe8\xae\xb0.md";  // 中文笔记.md
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", unicode_name.c_str(), &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(file_id);
+  vxcore_string_free(file_id);
+
+  // Verify the file appears in listing
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(children_json);
+
+  auto j = nlohmann::json::parse(children_json);
+  ASSERT_EQ(j["files"].size(), (size_t)1);
+  ASSERT_EQ(j["files"][0]["name"].get<std::string>(), unicode_name);
+
+  // Verify via filesystem
+  auto fs_path = PathFromUtf8ForTest(get_test_path("test_raw_unicode_nb") + "/" + unicode_name);
+  ASSERT_TRUE(std::filesystem::exists(fs_path));
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_unicode_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_unicode_filename passed" << std::endl;
+  return 0;
+}
+
+int test_raw_deeply_nested_path() {
+  std::cout << "  Running test_raw_deeply_nested_path..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_deep_nest_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_deep_nest_nb").c_str(),
+                               "{\"name\":\"Raw DeepNest\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create deeply nested folder path: a/b/c/d/e/f/g
+  char *folder_id = nullptr;
+  err = vxcore_folder_create_path(ctx, notebook_id, "a/b/c/d/e/f/g", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Create file at the deepest level
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "a/b/c/d/e/f/g", "h.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(file_id);
+  vxcore_string_free(file_id);
+
+  // Verify the file exists on disk
+  ASSERT(path_exists(get_test_path("test_raw_deep_nest_nb") + "/a/b/c/d/e/f/g/h.md"));
+
+  // Verify listing at deepest folder
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, "a/b/c/d/e/f/g", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto j = nlohmann::json::parse(children_json);
+  ASSERT_EQ(j["files"].size(), (size_t)1);
+  ASSERT_EQ(j["files"][0]["name"].get<std::string>(), std::string("h.md"));
+
+  // Verify intermediate folder hierarchy
+  vxcore_string_free(children_json);
+  err = vxcore_folder_list_children(ctx, notebook_id, "a/b/c", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto j2 = nlohmann::json::parse(children_json);
+  ASSERT_EQ(j2["folders"].size(), (size_t)1);
+  ASSERT_EQ(j2["folders"][0]["name"].get<std::string>(), std::string("d"));
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_deep_nest_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_deeply_nested_path passed" << std::endl;
+  return 0;
+}
+
+int test_raw_empty_notebook_operations() {
+  std::cout << "  Running test_raw_empty_notebook_operations..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_empty_ops_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_empty_ops_nb").c_str(),
+                               "{\"name\":\"Raw EmptyOps\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // List root on empty notebook — should return empty arrays
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto j = nlohmann::json::parse(children_json);
+  ASSERT_TRUE(j["files"].empty());
+  ASSERT_TRUE(j["folders"].empty());
+  vxcore_string_free(children_json);
+
+  // Get config for root folder on empty notebook
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, ".", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(config_json);
+
+  auto jc = nlohmann::json::parse(config_json);
+  ASSERT_EQ(jc["type"].get<std::string>(), std::string("folder"));
+  ASSERT_EQ(jc["name"].get<std::string>(), std::string("."));
+  vxcore_string_free(config_json);
+
+  // Notebook config should be valid
+  char *nb_config_json = nullptr;
+  err = vxcore_notebook_get_config(ctx, notebook_id, &nb_config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto jnb = nlohmann::json::parse(nb_config_json);
+  ASSERT_EQ(jnb["name"].get<std::string>(), std::string("Raw EmptyOps"));
+  vxcore_string_free(nb_config_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_empty_ops_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_empty_notebook_operations passed" << std::endl;
+  return 0;
+}
+
+int test_raw_file_without_extension() {
+  std::cout << "  Running test_raw_file_without_extension..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_no_ext_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_no_ext_nb").c_str(),
+                               "{\"name\":\"Raw NoExt\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create file without extension
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "Makefile", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(file_id);
+  std::string saved_id(file_id);
+  vxcore_string_free(file_id);
+
+  // Verify UUID is valid (non-empty)
+  ASSERT_FALSE(saved_id.empty());
+
+  // Verify file appears in listing
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto j = nlohmann::json::parse(children_json);
+  ASSERT_EQ(j["files"].size(), (size_t)1);
+  ASSERT_EQ(j["files"][0]["name"].get<std::string>(), std::string("Makefile"));
+  // Verify it has a UUID
+  ASSERT_FALSE(j["files"][0]["id"].get<std::string>().empty());
+
+  vxcore_string_free(children_json);
+
+  // Verify on filesystem
+  ASSERT(path_exists(get_test_path("test_raw_no_ext_nb") + "/Makefile"));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_no_ext_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_file_without_extension passed" << std::endl;
+  return 0;
+}
+
+int test_raw_close_deletes_metadata() {
+  std::cout << "  Running test_raw_close_deletes_metadata..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_close_meta_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Get local data path to locate metadata directory
+  char *local_data_path = nullptr;
+  err = vxcore_context_get_data_path(ctx, VXCORE_DATA_LOCAL, &local_data_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(local_data_path);
+  std::string local_data(local_data_path);
+  vxcore_string_free(local_data_path);
+
+  // Create a raw notebook
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_close_meta_nb").c_str(),
+                               "{\"name\":\"Raw CloseMeta\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string first_id(notebook_id);
+
+  // Create some content
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "data.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Verify metadata directory exists
+  std::string metadata_dir = local_data + "/notebooks/" + first_id;
+  ASSERT(path_exists(metadata_dir));
+
+  // Close the notebook
+  err = vxcore_notebook_close(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(notebook_id);
+
+  // Verify metadata directory is deleted
+  ASSERT_FALSE(path_exists(metadata_dir));
+
+  // Reopen the same root path as a new raw notebook
+  char *new_notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_close_meta_nb").c_str(),
+                               "{\"name\":\"Raw CloseMeta Reopened\"}", VXCORE_NOTEBOOK_RAW,
+                               &new_notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string second_id(new_notebook_id);
+
+  // Verify the new notebook has a DIFFERENT ID
+  ASSERT_NE(first_id, second_id);
+
+  vxcore_string_free(new_notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_close_meta_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_close_deletes_metadata passed" << std::endl;
+  return 0;
+}
+
+int test_raw_concurrent_filesystem_modification() {
+  std::cout << "  Running test_raw_concurrent_filesystem_modification..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_concurrent_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_concurrent_nb").c_str(),
+                               "{\"name\":\"Raw Concurrent\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create file via API
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "tracked.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string original_id(file_id);
+  vxcore_string_free(file_id);
+
+  // Modify file content directly on disk (external modification)
+  write_file(get_test_path("test_raw_concurrent_nb") + "/tracked.md", "# Modified externally");
+
+  // List contents — file should still be tracked with same UUID
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto j = nlohmann::json::parse(children_json);
+  ASSERT_EQ(j["files"].size(), (size_t)1);
+  ASSERT_EQ(j["files"][0]["name"].get<std::string>(), std::string("tracked.md"));
+  ASSERT_EQ(j["files"][0]["id"].get<std::string>(), original_id);
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_concurrent_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_concurrent_filesystem_modification passed" << std::endl;
+  return 0;
+}
+
+int test_raw_external_nodes_returns_empty() {
+  std::cout << "  Running test_raw_external_nodes_returns_empty..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_ext_empty_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_ext_empty_nb").c_str(),
+                               "{\"name\":\"Raw ExtEmpty\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create some files and folders
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "subfolder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Also write a file directly to disk (not via API)
+  write_file(get_test_path("test_raw_ext_empty_nb") + "/external.txt", "external content");
+
+  // Trigger a list so sync happens
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(children_json);
+
+  // List external nodes — should always return empty for raw notebooks
+  char *external_json = nullptr;
+  err = vxcore_folder_list_external(ctx, notebook_id, ".", &external_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(external_json);
+
+  auto j = nlohmann::json::parse(external_json);
+  ASSERT_TRUE(j["files"].empty());
+  ASSERT_TRUE(j["folders"].empty());
+
+  vxcore_string_free(external_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_ext_empty_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_external_nodes_returns_empty passed" << std::endl;
+  return 0;
+}
+
+int test_raw_full_lifecycle_flow() {
+  std::cout << "  Running test_raw_full_lifecycle_flow..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_lifecycle_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Step 1: Create notebook
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_lifecycle_nb").c_str(),
+                               "{\"name\":\"Raw Lifecycle\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Step 2: Create folder structure
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  err = vxcore_folder_create(ctx, notebook_id, "docs", "archive", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Step 3: Create files
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "docs", "readme.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_create(ctx, notebook_id, "docs", "notes.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_file_create(ctx, notebook_id, "docs/archive", "old.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Step 4: Rename file (use distinct name to avoid case-insensitive FS conflicts on Windows)
+  err = vxcore_node_rename(ctx, notebook_id, "docs/readme.md", "guide.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Step 5: Move file to archive
+  err = vxcore_node_move(ctx, notebook_id, "docs/notes.md", "docs/archive");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Step 6: Copy file
+  char *copy_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "docs/guide.md", "docs/archive", "guide_copy.md",
+                         &copy_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(copy_id);
+
+  // Step 7: Delete the original
+  err = vxcore_node_delete(ctx, notebook_id, "docs/guide.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Step 8: Verify final state
+  // docs/ should be empty of files (guide.md deleted, notes.md moved)
+  char *docs_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, "docs", &docs_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto jdocs = nlohmann::json::parse(docs_json);
+  ASSERT_TRUE(jdocs["files"].empty());
+  ASSERT_EQ(jdocs["folders"].size(), (size_t)1);
+  ASSERT_EQ(jdocs["folders"][0]["name"].get<std::string>(), std::string("archive"));
+  vxcore_string_free(docs_json);
+
+  // docs/archive/ should have: old.md, notes.md, guide_copy.md
+  char *archive_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, "docs/archive", &archive_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto jarch = nlohmann::json::parse(archive_json);
+  ASSERT_EQ(jarch["files"].size(), (size_t)3);
+
+  // Collect filenames
+  std::vector<std::string> archive_files;
+  for (const auto &f : jarch["files"]) {
+    archive_files.push_back(f["name"].get<std::string>());
+  }
+  std::sort(archive_files.begin(), archive_files.end());
+  ASSERT_EQ(archive_files[0], std::string("guide_copy.md"));
+  ASSERT_EQ(archive_files[1], std::string("notes.md"));
+  ASSERT_EQ(archive_files[2], std::string("old.md"));
+
+  vxcore_string_free(archive_json);
+
+  // Verify filesystem state
+  ASSERT_FALSE(path_exists(get_test_path("test_raw_lifecycle_nb") + "/docs/guide.md"));
+  ASSERT(path_exists(get_test_path("test_raw_lifecycle_nb") + "/docs/archive/guide_copy.md"));
+  ASSERT(path_exists(get_test_path("test_raw_lifecycle_nb") + "/docs/archive/notes.md"));
+  ASSERT(path_exists(get_test_path("test_raw_lifecycle_nb") + "/docs/archive/old.md"));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_lifecycle_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_full_lifecycle_flow passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -7176,6 +7898,27 @@ int main() {
   RUN_TEST(test_raw_iterate_all_files);
   RUN_TEST(test_raw_iterate_empty_notebook);
   RUN_TEST(test_raw_iterate_skips_hidden);
+
+  // Raw notebook UNSUPPORTED operation tests
+  RUN_TEST(test_raw_tag_file_unsupported);
+  RUN_TEST(test_raw_untag_file_unsupported);
+  RUN_TEST(test_raw_update_file_tags_unsupported);
+  RUN_TEST(test_raw_find_files_by_tag_unsupported);
+  RUN_TEST(test_raw_get_attachments_unsupported);
+  RUN_TEST(test_raw_update_attachments_unsupported);
+  RUN_TEST(test_raw_index_node_unsupported);
+  RUN_TEST(test_raw_unindex_node_unsupported);
+  RUN_TEST(test_raw_search_by_tags_returns_empty);
+
+  // Raw notebook edge case tests
+  RUN_TEST(test_raw_unicode_filename);
+  RUN_TEST(test_raw_deeply_nested_path);
+  RUN_TEST(test_raw_empty_notebook_operations);
+  RUN_TEST(test_raw_file_without_extension);
+  RUN_TEST(test_raw_close_deletes_metadata);
+  RUN_TEST(test_raw_concurrent_filesystem_modification);
+  RUN_TEST(test_raw_external_nodes_returns_empty);
+  RUN_TEST(test_raw_full_lifecycle_flow);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;
