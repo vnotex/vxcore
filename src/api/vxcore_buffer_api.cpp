@@ -28,6 +28,9 @@ VXCORE_API VxCoreError vxcore_buffer_open(VxCoreContextHandle context, const cha
   try {
     std::string nb_id = notebook_id ? notebook_id : "";
     std::string id = ctx->buffer_manager->OpenBuffer(nb_id, file_path);
+    if (id.empty()) {
+      return VXCORE_ERR_INVALID_PARAM;
+    }
     *out_id = vxcore_strdup(id.c_str());
     vxcore::PersistSession(ctx);
     return VXCORE_OK;
