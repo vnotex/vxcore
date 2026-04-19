@@ -5521,7 +5521,8 @@ int test_raw_create_folder() {
   auto j = nlohmann::json::parse(children_json);
   bool found = false;
   for (const auto &f : j["folders"]) {
-    if (f.get<std::string>() == "my_folder") {
+    // Folder entries are JSON objects with "name" field
+    if (f["name"].get<std::string>() == "my_folder") {
       found = true;
       break;
     }
@@ -5571,7 +5572,8 @@ int test_raw_create_nested_folder() {
   auto j = nlohmann::json::parse(children_json);
   bool found = false;
   for (const auto &f : j["folders"]) {
-    if (f.get<std::string>() == "child") {
+    // Folder entries are JSON objects with "name" field
+    if (f["name"].get<std::string>() == "child") {
       found = true;
       break;
     }
@@ -5649,7 +5651,8 @@ int test_raw_delete_folder() {
   ASSERT_EQ(err, VXCORE_OK);
   auto j = nlohmann::json::parse(children_json);
   for (const auto &f : j["folders"]) {
-    ASSERT_NE(f.get<std::string>(), std::string("to_delete"));
+    // Folder entries are JSON objects with "name" field
+    ASSERT_NE(f["name"].get<std::string>(), std::string("to_delete"));
   }
 
   vxcore_string_free(children_json);
@@ -5734,8 +5737,10 @@ int test_raw_rename_folder() {
   auto j = nlohmann::json::parse(children_json);
   bool found_new = false;
   for (const auto &f : j["folders"]) {
-    ASSERT_NE(f.get<std::string>(), std::string("old_name"));
-    if (f.get<std::string>() == "new_name") found_new = true;
+    // Folder entries are JSON objects with "name" field
+    auto name = f["name"].get<std::string>();
+    ASSERT_NE(name, std::string("old_name"));
+    if (name == "new_name") found_new = true;
   }
   ASSERT_TRUE(found_new);
 
@@ -5790,7 +5795,8 @@ int test_raw_move_folder() {
   auto j = nlohmann::json::parse(children_json);
   bool found = false;
   for (const auto &f : j["folders"]) {
-    if (f.get<std::string>() == "src_folder") {
+    // Folder entries are JSON objects with "name" field
+    if (f["name"].get<std::string>() == "src_folder") {
       found = true;
       break;
     }
