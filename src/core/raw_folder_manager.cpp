@@ -1,6 +1,7 @@
 #include "raw_folder_manager.h"
 
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <set>
 
@@ -323,6 +324,18 @@ std::string FindFolderIdByPath(MetadataStore *store, const std::string &root_fol
     }
   }
   return parent_id;
+}
+
+std::string FindFileIdByPath(MetadataStore *store, const std::string &root_folder_id,
+                             const std::string &file_path) {
+  auto [folder_path, file_name] = SplitPath(file_path);
+  std::string folder_id = FindFolderIdByPath(store, root_folder_id, folder_path);
+  if (folder_id.empty()) return "";
+  auto files = store->ListFiles(folder_id);
+  for (const auto &f : files) {
+    if (f.name == file_name) return f.id;
+  }
+  return "";
 }
 
 }  // namespace
@@ -731,15 +744,108 @@ VxCoreError RawFolderManager::CopyFolder(const std::string &src_path,
 VxCoreError RawFolderManager::CreateFile(const std::string &folder_path,
                                          const std::string &file_name,
                                          std::string &out_file_id) {
-  (void)folder_path;
-  (void)file_name;
-  (void)out_file_id;
-  return VXCORE_ERR_UNSUPPORTED;
+  VxCoreError err = InitRootFolder();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const auto clean_folder = GetCleanRelativePath(folder_path);
+  const bool is_root = clean_folder.empty() || clean_folder == ".";
+  const std::string folder_abs =
+      is_root ? notebook_->GetRootFolder()
+              : ConcatenatePaths(notebook_->GetRootFolder(), clean_folder);
+  const std::string file_abs = ConcatenatePaths(folder_abs, file_name);
+  auto fs_file = PathFromUtf8(file_abs);
+
+  if (fs::exists(fs_file)) {
+    VXCORE_LOG_WARN("File already exists: %s", file_abs.c_str());
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+
+  // Filesystem first
+  try {
+    std::ofstream(fs_file).close();
+    VXCORE_LOG_DEBUG("Created file: %s", file_abs.c_str());
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("Failed to create file: %s", e.what());
+    return VXCORE_ERR_IO;
+  }
+
+  // DB second
+  auto *store = notebook_->GetMetadataStore();
+  if (store) {
+    err = EnsureFolderAncestorChain(clean_folder);
+    if (err != VXCORE_OK) {
+      VXCORE_LOG_WARN("Failed to ensure ancestor chain for: %s", clean_folder.c_str());
+    } else {
+      std::string folder_id = FindFolderIdByPath(store, root_folder_id_, clean_folder);
+      if (!folder_id.empty()) {
+        auto now = GetCurrentTimestampMillis();
+        out_file_id = GenerateUUID();
+        StoreFileRecord record;
+        record.id = out_file_id;
+        record.folder_id = folder_id;
+        record.name = file_name;
+        record.created_utc = now;
+        record.modified_utc = now;
+        record.metadata = "{}";
+        if (!store->CreateFile(record)) {
+          VXCORE_LOG_WARN("Failed to create file in MetadataStore: id=%s", out_file_id.c_str());
+        }
+      }
+    }
+  }
+
+  if (out_file_id.empty()) {
+    out_file_id = GenerateUUID();
+  }
+
+  return VXCORE_OK;
 }
 
 VxCoreError RawFolderManager::DeleteFile(const std::string &file_path) {
-  (void)file_path;
-  return VXCORE_ERR_UNSUPPORTED;
+  VxCoreError err = InitRootFolder();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const auto clean_path = GetCleanRelativePath(file_path);
+  const auto [folder_path, file_name] = SplitPath(clean_path);
+  VXCORE_LOG_INFO("DeleteFile: file_path=%s", clean_path.c_str());
+
+  const bool is_root = folder_path.empty() || folder_path == ".";
+  const std::string folder_abs =
+      is_root ? notebook_->GetRootFolder()
+              : ConcatenatePaths(notebook_->GetRootFolder(), folder_path);
+  const std::string file_abs = ConcatenatePaths(folder_abs, file_name);
+  auto fs_file = PathFromUtf8(file_abs);
+
+  if (!fs::exists(fs_file)) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  // Filesystem first — permanent delete
+  try {
+    fs::remove(fs_file);
+    VXCORE_LOG_DEBUG("Deleted file: %s", file_abs.c_str());
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("Failed to delete file: %s", e.what());
+    return VXCORE_ERR_IO;
+  }
+
+  // DB second
+  auto *store = notebook_->GetMetadataStore();
+  if (store) {
+    std::string file_id = FindFileIdByPath(store, root_folder_id_, clean_path);
+    if (!file_id.empty()) {
+      if (!store->DeleteFile(file_id)) {
+        VXCORE_LOG_WARN("Failed to delete file from MetadataStore: id=%s", file_id.c_str());
+      }
+    }
+  }
+
+  VXCORE_LOG_INFO("DeleteFile successful: %s", clean_path.c_str());
+  return VXCORE_OK;
 }
 
 VxCoreError RawFolderManager::UpdateFileMetadata(const std::string &file_path,
@@ -826,26 +932,191 @@ VxCoreError RawFolderManager::GetFileMetadata(const std::string &file_path,
 
 VxCoreError RawFolderManager::RenameFile(const std::string &file_path,
                                          const std::string &new_name) {
-  (void)file_path;
-  (void)new_name;
-  return VXCORE_ERR_UNSUPPORTED;
+  VxCoreError err = InitRootFolder();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const auto clean_path = GetCleanRelativePath(file_path);
+  const auto [folder_path, old_name] = SplitPath(clean_path);
+  VXCORE_LOG_INFO("RenameFile: file_path=%s, new_name=%s", clean_path.c_str(), new_name.c_str());
+
+  const bool is_root = folder_path.empty() || folder_path == ".";
+  const std::string folder_abs =
+      is_root ? notebook_->GetRootFolder()
+              : ConcatenatePaths(notebook_->GetRootFolder(), folder_path);
+  const std::string old_abs = ConcatenatePaths(folder_abs, old_name);
+  const std::string new_abs = ConcatenatePaths(folder_abs, new_name);
+  auto fs_old = PathFromUtf8(old_abs);
+  auto fs_new = PathFromUtf8(new_abs);
+
+  if (!fs::exists(fs_old)) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  if (fs::exists(fs_new)) {
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+
+  // Filesystem first
+  try {
+    fs::rename(fs_old, fs_new);
+  } catch (const std::exception &) {
+    return VXCORE_ERR_IO;
+  }
+
+  // DB second — UUID preserved
+  auto *store = notebook_->GetMetadataStore();
+  if (store) {
+    std::string file_id = FindFileIdByPath(store, root_folder_id_, clean_path);
+    if (!file_id.empty()) {
+      auto now = GetCurrentTimestampMillis();
+      if (!store->UpdateFile(file_id, new_name, now, "{}")) {
+        VXCORE_LOG_WARN("Failed to update file in MetadataStore: id=%s", file_id.c_str());
+      }
+    }
+  }
+
+  VXCORE_LOG_INFO("RenameFile successful: %s -> %s", clean_path.c_str(),
+                  ConcatenatePaths(folder_path, new_name).c_str());
+  return VXCORE_OK;
 }
 
 VxCoreError RawFolderManager::MoveFile(const std::string &file_path,
                                        const std::string &dest_folder_path) {
-  (void)file_path;
-  (void)dest_folder_path;
-  return VXCORE_ERR_UNSUPPORTED;
+  VxCoreError err = InitRootFolder();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const auto clean_src = GetCleanRelativePath(file_path);
+  const auto clean_dest = GetCleanRelativePath(dest_folder_path);
+  const auto [src_folder, file_name] = SplitPath(clean_src);
+  VXCORE_LOG_INFO("MoveFile: src=%s, dest=%s", clean_src.c_str(), clean_dest.c_str());
+
+  const bool src_is_root = src_folder.empty() || src_folder == ".";
+  const std::string src_folder_abs =
+      src_is_root ? notebook_->GetRootFolder()
+                  : ConcatenatePaths(notebook_->GetRootFolder(), src_folder);
+  const std::string src_abs = ConcatenatePaths(src_folder_abs, file_name);
+
+  const bool dest_is_root = clean_dest.empty() || clean_dest == ".";
+  const std::string dest_folder_abs =
+      dest_is_root ? notebook_->GetRootFolder()
+                   : ConcatenatePaths(notebook_->GetRootFolder(), clean_dest);
+  const std::string dest_abs = ConcatenatePaths(dest_folder_abs, file_name);
+
+  auto fs_src = PathFromUtf8(src_abs);
+  auto fs_dest = PathFromUtf8(dest_abs);
+
+  if (!fs::exists(fs_src)) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  if (fs::exists(fs_dest)) {
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+
+  // Filesystem first
+  try {
+    fs::rename(fs_src, fs_dest);
+  } catch (const std::exception &) {
+    return VXCORE_ERR_IO;
+  }
+
+  // DB second — UUID preserved, move to new parent
+  auto *store = notebook_->GetMetadataStore();
+  if (store) {
+    std::string file_id = FindFileIdByPath(store, root_folder_id_, clean_src);
+    if (!file_id.empty()) {
+      err = EnsureFolderAncestorChain(clean_dest);
+      if (err == VXCORE_OK) {
+        std::string dest_folder_id = FindFolderIdByPath(store, root_folder_id_, clean_dest);
+        if (!dest_folder_id.empty()) {
+          if (!store->MoveFile(file_id, dest_folder_id)) {
+            VXCORE_LOG_WARN("Failed to move file in MetadataStore: id=%s", file_id.c_str());
+          }
+        }
+      }
+    }
+  }
+
+  VXCORE_LOG_INFO("MoveFile successful: %s -> %s/%s", clean_src.c_str(), clean_dest.c_str(),
+                  file_name.c_str());
+  return VXCORE_OK;
 }
 
 VxCoreError RawFolderManager::CopyFile(const std::string &file_path,
                                        const std::string &dest_folder_path,
                                        const std::string &new_name, std::string &out_file_id) {
-  (void)file_path;
-  (void)dest_folder_path;
-  (void)new_name;
-  (void)out_file_id;
-  return VXCORE_ERR_UNSUPPORTED;
+  VxCoreError err = InitRootFolder();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const auto clean_src = GetCleanRelativePath(file_path);
+  const auto clean_dest = GetCleanRelativePath(dest_folder_path);
+  const auto [src_folder, file_name] = SplitPath(clean_src);
+  const std::string target_name = new_name.empty() ? file_name : new_name;
+  VXCORE_LOG_INFO("CopyFile: src=%s, dest=%s, target=%s", clean_src.c_str(), clean_dest.c_str(),
+                  target_name.c_str());
+
+  const bool src_is_root = src_folder.empty() || src_folder == ".";
+  const std::string src_folder_abs =
+      src_is_root ? notebook_->GetRootFolder()
+                  : ConcatenatePaths(notebook_->GetRootFolder(), src_folder);
+  const std::string src_abs = ConcatenatePaths(src_folder_abs, file_name);
+
+  const bool dest_is_root = clean_dest.empty() || clean_dest == ".";
+  const std::string dest_folder_abs =
+      dest_is_root ? notebook_->GetRootFolder()
+                   : ConcatenatePaths(notebook_->GetRootFolder(), clean_dest);
+  const std::string dest_abs = ConcatenatePaths(dest_folder_abs, target_name);
+
+  auto fs_src = PathFromUtf8(src_abs);
+  auto fs_dest = PathFromUtf8(dest_abs);
+
+  if (!fs::exists(fs_src)) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  if (fs::exists(fs_dest)) {
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+
+  // Filesystem first
+  try {
+    fs::copy_file(fs_src, fs_dest);
+  } catch (const std::exception &) {
+    return VXCORE_ERR_IO;
+  }
+
+  // DB second — FRESH UUID
+  out_file_id = GenerateUUID();
+  auto *store = notebook_->GetMetadataStore();
+  if (store) {
+    err = EnsureFolderAncestorChain(clean_dest);
+    if (err == VXCORE_OK) {
+      std::string dest_folder_id = FindFolderIdByPath(store, root_folder_id_, clean_dest);
+      if (!dest_folder_id.empty()) {
+        auto now = GetCurrentTimestampMillis();
+        StoreFileRecord record;
+        record.id = out_file_id;
+        record.folder_id = dest_folder_id;
+        record.name = target_name;
+        record.created_utc = now;
+        record.modified_utc = now;
+        record.metadata = "{}";
+        if (!store->CreateFile(record)) {
+          VXCORE_LOG_WARN("Failed to create copied file in MetadataStore: id=%s",
+                          out_file_id.c_str());
+        }
+      }
+    }
+  }
+
+  VXCORE_LOG_INFO("CopyFile successful: id=%s", out_file_id.c_str());
+  return VXCORE_OK;
 }
 
 VxCoreError RawFolderManager::ImportFile(const std::string &folder_path,

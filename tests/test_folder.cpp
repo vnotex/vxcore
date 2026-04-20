@@ -5901,6 +5901,463 @@ int test_raw_copy_folder_recursive() {
   return 0;
 }
 
+// =========================================================================
+// Raw notebook File CRUD tests
+// =========================================================================
+
+int test_raw_create_file() {
+  std::cout << "  Running test_raw_create_file..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_create_file_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_create_file_nb").c_str(),
+                               "{\"name\":\"Raw CreateFile\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a subfolder first
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Create a file in the subfolder
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "docs", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(file_id);
+
+  // Verify filesystem
+  ASSERT(path_exists(get_test_path("test_raw_create_file_nb") + "/docs/note.md"));
+
+  // Verify via list children
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, "docs", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(children_json);
+  bool found = false;
+  for (const auto &f : j["files"]) {
+    if (f["name"].get<std::string>() == "note.md") {
+      found = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found);
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_create_file_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_create_file passed" << std::endl;
+  return 0;
+}
+
+int test_raw_create_file_in_root() {
+  std::cout << "  Running test_raw_create_file_in_root..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_create_file_root_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_create_file_root_nb").c_str(),
+                               "{\"name\":\"Raw CreateFileRoot\"}", VXCORE_NOTEBOOK_RAW,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file in root
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "root_note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(file_id);
+
+  // Verify filesystem
+  ASSERT(path_exists(get_test_path("test_raw_create_file_root_nb") + "/root_note.md"));
+
+  // Verify via list children at root
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(children_json);
+  bool found = false;
+  for (const auto &f : j["files"]) {
+    if (f["name"].get<std::string>() == "root_note.md") {
+      found = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found);
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_create_file_root_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_create_file_in_root passed" << std::endl;
+  return 0;
+}
+
+int test_raw_create_file_duplicate() {
+  std::cout << "  Running test_raw_create_file_duplicate..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_create_file_dup_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_create_file_dup_nb").c_str(),
+                               "{\"name\":\"Raw CreateFileDup\"}", VXCORE_NOTEBOOK_RAW,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "dup.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Try to create the same file again
+  char *file_id2 = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "dup.md", &file_id2);
+  ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_create_file_dup_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_create_file_duplicate passed" << std::endl;
+  return 0;
+}
+
+int test_raw_delete_file() {
+  std::cout << "  Running test_raw_delete_file..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_delete_file_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_delete_file_nb").c_str(),
+                               "{\"name\":\"Raw DeleteFile\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "to_delete.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT(path_exists(get_test_path("test_raw_delete_file_nb") + "/to_delete.md"));
+  vxcore_string_free(file_id);
+
+  // Delete the file
+  err = vxcore_node_delete(ctx, notebook_id, "to_delete.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify filesystem
+  ASSERT_FALSE(path_exists(get_test_path("test_raw_delete_file_nb") + "/to_delete.md"));
+
+  // Verify via list children
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(children_json);
+  ASSERT_EQ(j["files"].size(), (size_t)0);
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_delete_file_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_delete_file passed" << std::endl;
+  return 0;
+}
+
+int test_raw_rename_file() {
+  std::cout << "  Running test_raw_rename_file..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_rename_file_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_rename_file_nb").c_str(),
+                               "{\"name\":\"Raw RenameFile\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "old_name.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Rename the file
+  err = vxcore_node_rename(ctx, notebook_id, "old_name.md", "new_name.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify filesystem
+  ASSERT_FALSE(path_exists(get_test_path("test_raw_rename_file_nb") + "/old_name.md"));
+  ASSERT(path_exists(get_test_path("test_raw_rename_file_nb") + "/new_name.md"));
+
+  // Verify via list children
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(children_json);
+  bool found_new = false;
+  bool found_old = false;
+  for (const auto &f : j["files"]) {
+    std::string name = f["name"].get<std::string>();
+    if (name == "new_name.md") found_new = true;
+    if (name == "old_name.md") found_old = true;
+  }
+  ASSERT_TRUE(found_new);
+  ASSERT_FALSE(found_old);
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_rename_file_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_rename_file passed" << std::endl;
+  return 0;
+}
+
+int test_raw_rename_file_preserves_uuid() {
+  std::cout << "  Running test_raw_rename_file_preserves_uuid..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_rename_uuid_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_rename_uuid_nb").c_str(),
+                               "{\"name\":\"Raw RenameUUID\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "before.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Get the file info before rename to capture UUID
+  char *info_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "before.md", &info_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto info_before = nlohmann::json::parse(info_json);
+  std::string uuid_before = info_before["id"].get<std::string>();
+  vxcore_string_free(info_json);
+
+  // Rename the file
+  err = vxcore_node_rename(ctx, notebook_id, "before.md", "after.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Get the file info after rename
+  char *info_json2 = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "after.md", &info_json2);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto info_after = nlohmann::json::parse(info_json2);
+  std::string uuid_after = info_after["id"].get<std::string>();
+  vxcore_string_free(info_json2);
+
+  // UUID must be preserved
+  ASSERT_EQ(uuid_before, uuid_after);
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_rename_uuid_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_rename_file_preserves_uuid passed" << std::endl;
+  return 0;
+}
+
+int test_raw_move_file() {
+  std::cout << "  Running test_raw_move_file..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_move_file_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_move_file_nb").c_str(),
+                               "{\"name\":\"Raw MoveFile\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source file in root
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "moveme.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Create destination folder
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "dest", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Move the file
+  err = vxcore_node_move(ctx, notebook_id, "moveme.md", "dest");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify filesystem
+  ASSERT_FALSE(path_exists(get_test_path("test_raw_move_file_nb") + "/moveme.md"));
+  ASSERT(path_exists(get_test_path("test_raw_move_file_nb") + "/dest/moveme.md"));
+
+  // Verify via list children of dest
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, "dest", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(children_json);
+  bool found = false;
+  for (const auto &f : j["files"]) {
+    if (f["name"].get<std::string>() == "moveme.md") {
+      found = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found);
+
+  // Verify root no longer has the file
+  vxcore_string_free(children_json);
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  j = nlohmann::json::parse(children_json);
+  bool found_in_root = false;
+  for (const auto &f : j["files"]) {
+    if (f["name"].get<std::string>() == "moveme.md") {
+      found_in_root = true;
+      break;
+    }
+  }
+  ASSERT_FALSE(found_in_root);
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_move_file_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_move_file passed" << std::endl;
+  return 0;
+}
+
+int test_raw_copy_file() {
+  std::cout << "  Running test_raw_copy_file..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_copy_file_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_copy_file_nb").c_str(),
+                               "{\"name\":\"Raw CopyFile\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "original.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Create destination folder
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "backup", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Copy the file (same name)
+  char *copy_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "original.md", "backup", "", &copy_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(copy_id);
+
+  // Verify both files exist
+  ASSERT(path_exists(get_test_path("test_raw_copy_file_nb") + "/original.md"));
+  ASSERT(path_exists(get_test_path("test_raw_copy_file_nb") + "/backup/original.md"));
+
+  // Verify copy in dest via list children
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, "backup", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(children_json);
+  bool found = false;
+  for (const auto &f : j["files"]) {
+    if (f["name"].get<std::string>() == "original.md") {
+      found = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found);
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(copy_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_copy_file_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_copy_file passed" << std::endl;
+  return 0;
+}
+
+int test_raw_copy_file_with_new_name() {
+  std::cout << "  Running test_raw_copy_file_with_new_name..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_copy_file_name_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_copy_file_name_nb").c_str(),
+                               "{\"name\":\"Raw CopyFileName\"}", VXCORE_NOTEBOOK_RAW,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "source.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Get source UUID
+  char *info_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "source.md", &info_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto src_info = nlohmann::json::parse(info_json);
+  std::string src_uuid = src_info["id"].get<std::string>();
+  vxcore_string_free(info_json);
+  vxcore_string_free(file_id);
+
+  // Copy with new name to root
+  char *copy_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "source.md", ".", "copied.md", &copy_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(copy_id);
+
+  // Verify both files exist
+  ASSERT(path_exists(get_test_path("test_raw_copy_file_name_nb") + "/source.md"));
+  ASSERT(path_exists(get_test_path("test_raw_copy_file_name_nb") + "/copied.md"));
+
+  // Verify copy has a different UUID (FRESH UUID)
+  char *copy_info_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "copied.md", &copy_info_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto copy_info = nlohmann::json::parse(copy_info_json);
+  std::string copy_uuid = copy_info["id"].get<std::string>();
+  vxcore_string_free(copy_info_json);
+
+  ASSERT_NE(src_uuid, copy_uuid);
+
+  vxcore_string_free(copy_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_copy_file_name_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_copy_file_with_new_name passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -6066,6 +6523,17 @@ int main() {
   RUN_TEST(test_raw_move_folder);
   RUN_TEST(test_raw_copy_folder);
   RUN_TEST(test_raw_copy_folder_recursive);
+
+  // Raw notebook File CRUD tests
+  RUN_TEST(test_raw_create_file);
+  RUN_TEST(test_raw_create_file_in_root);
+  RUN_TEST(test_raw_create_file_duplicate);
+  RUN_TEST(test_raw_delete_file);
+  RUN_TEST(test_raw_rename_file);
+  RUN_TEST(test_raw_rename_file_preserves_uuid);
+  RUN_TEST(test_raw_move_file);
+  RUN_TEST(test_raw_copy_file);
+  RUN_TEST(test_raw_copy_file_with_new_name);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;
