@@ -238,10 +238,8 @@ int test_sync_tags_parent_ordering() {
 // Raw Notebook Tag Sync Tests
 // =============================================================================
 
-// Note: Raw notebooks store their config in the session folder, which is cleared
-// when a new context is created in test mode. Unlike bundled notebooks (which store
-// config in notebook root), raw notebooks cannot survive context recreation in tests.
-// These tests verify tag sync works within a single context session.
+// Raw notebooks do not support tag operations — they return VXCORE_ERR_UNSUPPORTED.
+// These tests verify that behavior.
 
 int test_raw_notebook_sync_tags_on_create() {
   std::cout << "  Running test_raw_notebook_sync_tags_on_create..." << std::endl;
@@ -251,29 +249,26 @@ int test_raw_notebook_sync_tags_on_create() {
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
-  // Create a raw notebook
   char *notebook_id = nullptr;
   err = vxcore_notebook_create(ctx, get_test_path("test_raw_tag_sync_create").c_str(),
                                "{\"name\":\"Test Raw Sync\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  // Create hierarchical tags - this triggers SyncTagsToMetadataStore on tag creation
+  // Tag creation is unsupported on raw notebooks
   err = vxcore_tag_create_path(ctx, notebook_id, "Parent/Child");
-  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
 
-  // Verify tags are available immediately (sync happened during create)
+  // Tag list returns empty array
   char *tags_json = nullptr;
   err = vxcore_tag_list(ctx, notebook_id, &tags_json);
   ASSERT_EQ(err, VXCORE_OK);
-  std::string tags_str(tags_json);
-  ASSERT_NE(tags_str.find("Parent"), std::string::npos);
-  ASSERT_NE(tags_str.find("Child"), std::string::npos);
+  ASSERT_EQ(std::string(tags_json), "[]");
   vxcore_string_free(tags_json);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_raw_tag_sync_create"));
-  std::cout << "  ✓ test_raw_notebook_sync_tags_on_create passed" << std::endl;
+  std::cout << "  \xE2\x9C\x93 test_raw_notebook_sync_tags_on_create passed" << std::endl;
   return 0;
 }
 
@@ -290,25 +285,21 @@ int test_raw_notebook_sync_deep_hierarchy_on_create() {
                                "{\"name\":\"Test Raw Deep\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  // Create deep tag hierarchy
+  // Deep tag hierarchy creation is unsupported
   err = vxcore_tag_create_path(ctx, notebook_id, "Root/Level1/Level2/Level3");
-  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
 
-  // Verify all hierarchy levels are synced
+  // Tag list returns empty
   char *tags_json = nullptr;
   err = vxcore_tag_list(ctx, notebook_id, &tags_json);
   ASSERT_EQ(err, VXCORE_OK);
-  std::string tags_str(tags_json);
-  ASSERT_NE(tags_str.find("Root"), std::string::npos);
-  ASSERT_NE(tags_str.find("Level1"), std::string::npos);
-  ASSERT_NE(tags_str.find("Level2"), std::string::npos);
-  ASSERT_NE(tags_str.find("Level3"), std::string::npos);
+  ASSERT_EQ(std::string(tags_json), "[]");
   vxcore_string_free(tags_json);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_raw_tag_sync_deep"));
-  std::cout << "  ✓ test_raw_notebook_sync_deep_hierarchy_on_create passed" << std::endl;
+  std::cout << "  \xE2\x9C\x93 test_raw_notebook_sync_deep_hierarchy_on_create passed" << std::endl;
   return 0;
 }
 
@@ -325,30 +316,27 @@ int test_raw_notebook_tag_operations() {
                                "{\"name\":\"Test Raw Ops\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  // Create, delete, and verify tag operations work correctly
+  // All tag mutation operations return UNSUPPORTED
   err = vxcore_tag_create(ctx, notebook_id, "Tag1");
-  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
 
-  err = vxcore_tag_create(ctx, notebook_id, "Tag2");
-  ASSERT_EQ(err, VXCORE_OK);
-
-  // Delete Tag1
   err = vxcore_tag_delete(ctx, notebook_id, "Tag1");
-  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
 
-  // Verify Tag1 is gone, Tag2 remains
+  err = vxcore_tag_move(ctx, notebook_id, "Tag1", "Tag2");
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+
+  // Tag list always returns empty
   char *tags_json = nullptr;
   err = vxcore_tag_list(ctx, notebook_id, &tags_json);
   ASSERT_EQ(err, VXCORE_OK);
-  std::string tags_str(tags_json);
-  ASSERT_EQ(tags_str.find("Tag1"), std::string::npos);  // Tag1 should NOT be found
-  ASSERT_NE(tags_str.find("Tag2"), std::string::npos);  // Tag2 should be found
+  ASSERT_EQ(std::string(tags_json), "[]");
   vxcore_string_free(tags_json);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_raw_tag_ops"));
-  std::cout << "  ✓ test_raw_notebook_tag_operations passed" << std::endl;
+  std::cout << "  \xE2\x9C\x93 test_raw_notebook_tag_operations passed" << std::endl;
   return 0;
 }
 

@@ -1,7 +1,6 @@
 #include "raw_notebook.h"
 
 #include <filesystem>
-#include <fstream>
 
 #include "metadata_store.h"
 #include "raw_folder_manager.h"
@@ -9,6 +8,13 @@
 #include "utils/logger.h"
 
 namespace vxcore {
+
+namespace {
+const char *kMetaKeyName = "config.name";
+const char *kMetaKeyDescription = "config.description";
+const char *kMetaKeyAssetsFolder = "config.assetsFolder";
+const char *kMetaKeyMetadata = "config.metadata";
+}  // namespace
 
 RawNotebook::RawNotebook(const std::string &local_data_folder, const std::string &root_folder)
     : Notebook(local_data_folder, root_folder, NotebookType::Raw) {
@@ -34,25 +40,57 @@ VxCoreError RawNotebook::Create(const std::string &local_data_folder,
 }
 
 VxCoreError RawNotebook::LoadConfig() {
-  std::ifstream file(PathFromUtf8(GetConfigPath()));
-  if (!file.is_open()) {
-    return VXCORE_ERR_IO;
+  if (!metadata_store_ || !metadata_store_->IsOpen()) {
+    return VXCORE_ERR_INVALID_STATE;
   }
 
-  try {
-    nlohmann::json json;
-    file >> json;
-    auto config = NotebookConfig::FromJson(json);
-    if (config.id != config_.id) {
-      return VXCORE_ERR_INVALID_STATE;
-    }
-    config_ = config;
-    return VXCORE_OK;
-  } catch (const nlohmann::json::exception &) {
-    return VXCORE_ERR_JSON_PARSE;
-  } catch (...) {
-    return VXCORE_ERR_UNKNOWN;
+  auto name = metadata_store_->GetNotebookMetadata(kMetaKeyName);
+  if (name.has_value()) {
+    config_.name = name.value();
   }
+
+  auto desc = metadata_store_->GetNotebookMetadata(kMetaKeyDescription);
+  if (desc.has_value()) {
+    config_.description = desc.value();
+  }
+
+  auto assets = metadata_store_->GetNotebookMetadata(kMetaKeyAssetsFolder);
+  if (assets.has_value()) {
+    config_.assets_folder = assets.value();
+  }
+
+  auto meta = metadata_store_->GetNotebookMetadata(kMetaKeyMetadata);
+  if (meta.has_value()) {
+    try {
+      config_.metadata = nlohmann::json::parse(meta.value());
+    } catch (const nlohmann::json::exception &) {
+      VXCORE_LOG_WARN("Failed to parse metadata JSON for raw notebook: id=%s",
+                      config_.id.c_str());
+    }
+  }
+
+  return VXCORE_OK;
+}
+
+VxCoreError RawNotebook::SaveConfigToDb() {
+  if (!metadata_store_ || !metadata_store_->IsOpen()) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  if (!metadata_store_->SetNotebookMetadata(kMetaKeyName, config_.name)) {
+    return VXCORE_ERR_DATABASE;
+  }
+  if (!metadata_store_->SetNotebookMetadata(kMetaKeyDescription, config_.description)) {
+    return VXCORE_ERR_DATABASE;
+  }
+  if (!metadata_store_->SetNotebookMetadata(kMetaKeyAssetsFolder, config_.assets_folder)) {
+    return VXCORE_ERR_DATABASE;
+  }
+  if (!metadata_store_->SetNotebookMetadata(kMetaKeyMetadata, config_.metadata.dump())) {
+    return VXCORE_ERR_DATABASE;
+  }
+
+  return VXCORE_OK;
 }
 
 VxCoreError RawNotebook::InitOnCreation() {
@@ -66,26 +104,20 @@ VxCoreError RawNotebook::InitOnCreation() {
     return VXCORE_ERR_IO;
   }
 
-  auto err = UpdateConfig(config_);
-  if (err != VXCORE_OK) {
-    VXCORE_LOG_ERROR("Failed to save raw notebook config: root=%s, error=%d", root_folder_.c_str(),
-                     err);
-    return err;
-  }
-
-  // Initialize MetadataStore
-  err = InitMetadataStore();
+  // Initialize MetadataStore first (needed for DB config writes)
+  auto err = InitMetadataStore();
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to initialize MetadataStore: root=%s, error=%d", root_folder_.c_str(),
                      err);
     return err;
   }
 
-  // Sync tags from NotebookConfig to MetadataStore
-  err = SyncTagsToMetadataStore();
+  // Write config fields to DB
+  err = SaveConfigToDb();
   if (err != VXCORE_OK) {
-    VXCORE_LOG_WARN("Tag sync failed on creation: root=%s, error=%d", root_folder_.c_str(), err);
-    // Continue anyway - tags will be synced on next open
+    VXCORE_LOG_ERROR("Failed to save raw notebook config to DB: root=%s, error=%d",
+                     root_folder_.c_str(), err);
+    return err;
   }
 
   return VXCORE_OK;
@@ -95,27 +127,21 @@ VxCoreError RawNotebook::Open(const std::string &local_data_folder, const std::s
                               const std::string &id, std::unique_ptr<Notebook> &out_notebook) {
   auto notebook = std::unique_ptr<RawNotebook>(new RawNotebook(local_data_folder, root_folder));
   notebook->config_.id = id;
-  auto err = notebook->LoadConfig();
-  if (err != VXCORE_OK) {
-    VXCORE_LOG_ERROR("Failed to load raw notebook config: root=%s, id=%s, error=%d",
-                     root_folder.c_str(), id.c_str(), err);
-    return err;
-  }
 
-  // Initialize MetadataStore
-  err = notebook->InitMetadataStore();
+  // Initialize MetadataStore first (needed to read config from DB)
+  auto err = notebook->InitMetadataStore();
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to initialize MetadataStore on open: root=%s, id=%s, error=%d",
                      root_folder.c_str(), id.c_str(), err);
     return err;
   }
 
-  // Sync tags from NotebookConfig to MetadataStore if needed
-  err = notebook->SyncTagsToMetadataStore();
+  // Read config from DB
+  err = notebook->LoadConfig();
   if (err != VXCORE_OK) {
-    VXCORE_LOG_WARN("Tag sync failed on open: root=%s, id=%s, error=%d", root_folder.c_str(),
-                    id.c_str(), err);
-    // Continue anyway - tags will be synced on next open or RebuildCache
+    VXCORE_LOG_ERROR("Failed to load raw notebook config from DB: root=%s, id=%s, error=%d",
+                     root_folder.c_str(), id.c_str(), err);
+    return err;
   }
 
   out_notebook = std::move(notebook);
@@ -124,29 +150,12 @@ VxCoreError RawNotebook::Open(const std::string &local_data_folder, const std::s
 
 std::string RawNotebook::GetMetadataFolder() const { return GetLocalDataFolder(); }
 
-std::string RawNotebook::GetConfigPath() const {
-  return ConcatenatePaths(GetMetadataFolder(), kConfigFileName);
-}
+std::string RawNotebook::GetConfigPath() const { return ""; }
 
 VxCoreError RawNotebook::UpdateConfig(const NotebookConfig &config) {
   assert(config_.id == config.id);
-
   config_ = config;
-
-  try {
-    std::ofstream file(PathFromUtf8(GetConfigPath()));
-    if (!file.is_open()) {
-      return VXCORE_ERR_IO;
-    }
-
-    nlohmann::json json = config_.ToJson();
-    file << json.dump(2);
-    return VXCORE_OK;
-  } catch (const nlohmann::json::exception &) {
-    return VXCORE_ERR_JSON_SERIALIZE;
-  } catch (...) {
-    return VXCORE_ERR_UNKNOWN;
-  }
+  return SaveConfigToDb();
 }
 
 VxCoreError RawNotebook::RebuildCache() {
@@ -162,6 +171,46 @@ std::string RawNotebook::GetRecycleBinPath() const {
 
 VxCoreError RawNotebook::EmptyRecycleBin() {
   // Raw notebooks do not support recycle bin
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VxCoreError RawNotebook::CreateTag(const std::string &tag_name, const std::string &parent_tag) {
+  (void)tag_name;
+  (void)parent_tag;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VxCoreError RawNotebook::CreateTagPath(const std::string &tag_path) {
+  (void)tag_path;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VxCoreError RawNotebook::DeleteTag(const std::string &tag_name) {
+  (void)tag_name;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VxCoreError RawNotebook::MoveTag(const std::string &tag_name, const std::string &parent_tag) {
+  (void)tag_name;
+  (void)parent_tag;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VxCoreError RawNotebook::GetTags(std::string &out_tags_json) const {
+  out_tags_json = "[]";
+  return VXCORE_OK;
+}
+
+VxCoreError RawNotebook::FindFilesByTags(const std::vector<std::string> &tags, bool use_and,
+                                         std::string &out_results_json) {
+  (void)tags;
+  (void)use_and;
+  (void)out_results_json;
+  return VXCORE_ERR_UNSUPPORTED;
+}
+
+VxCoreError RawNotebook::CountFilesByTag(std::string &out_results_json) {
+  (void)out_results_json;
   return VXCORE_ERR_UNSUPPORTED;
 }
 

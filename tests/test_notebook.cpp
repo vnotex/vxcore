@@ -1395,6 +1395,221 @@ int test_path_build_absolute_null_params() {
   return 0;
 }
 
+// --- Part A: Raw config migration to DB tests ---
+
+int test_raw_config_roundtrip_via_db() {
+  std::cout << "  Running test_raw_config_roundtrip_via_db..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_cfg_rt"));
+
+  // Create raw notebook with config fields
+  VxCoreContextHandle ctx1 = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(
+      ctx1, get_test_path("test_raw_cfg_rt").c_str(),
+      "{\"name\":\"Raw RT\",\"description\":\"roundtrip desc\",\"assetsFolder\":\"_assets\"}",
+      VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  std::string saved_id(notebook_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx1);
+
+  // Reopen in new context — LoadOpenNotebooks will call RawNotebook::Open
+  VxCoreContextHandle ctx2 = nullptr;
+  err = vxcore_context_create(nullptr, &ctx2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // The notebook should have been restored from session config + DB
+  char *config_json = nullptr;
+  err = vxcore_notebook_get_config(ctx2, saved_id.c_str(), &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(config_json);
+
+  std::string cfg(config_json);
+  ASSERT_NE(cfg.find("\"name\":\"Raw RT\""), std::string::npos);
+  ASSERT_NE(cfg.find("\"description\":\"roundtrip desc\""), std::string::npos);
+  ASSERT_NE(cfg.find("\"assetsFolder\":\"_assets\""), std::string::npos);
+
+  vxcore_string_free(config_json);
+  vxcore_context_destroy(ctx2);
+  cleanup_test_dir(get_test_path("test_raw_cfg_rt"));
+  std::cout << "  \xE2\x9C\x93 test_raw_config_roundtrip_via_db passed" << std::endl;
+  return 0;
+}
+
+int test_raw_no_config_json_created() {
+  std::cout << "  Running test_raw_no_config_json_created..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_no_cfg"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_no_cfg").c_str(),
+                               "{\"name\":\"No Config File\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // No vx_notebook folder in root
+  ASSERT(!path_exists(get_test_path("test_raw_no_cfg") + "/vx_notebook"));
+
+  // Get the local data path to check for config.json absence
+  char *local_data = nullptr;
+  err = vxcore_context_get_data_path(ctx, VXCORE_DATA_LOCAL, &local_data);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(local_data);
+
+  std::string nb_data = std::string(local_data) + "/notebooks/" + notebook_id + "/config.json";
+  vxcore_string_free(local_data);
+
+  // No config.json should exist in local data folder
+  ASSERT_FALSE(path_exists(nb_data));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_no_cfg"));
+  std::cout << "  \xE2\x9C\x93 test_raw_no_config_json_created passed" << std::endl;
+  return 0;
+}
+
+int test_raw_update_config_via_db() {
+  std::cout << "  Running test_raw_update_config_via_db..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_upd_cfg"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_upd_cfg").c_str(),
+                               "{\"name\":\"Original\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Update config
+  err = vxcore_notebook_update_config(ctx, notebook_id,
+                                      "{\"name\":\"Updated\",\"description\":\"new desc\"}");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Read back immediately
+  char *config_json = nullptr;
+  err = vxcore_notebook_get_config(ctx, notebook_id, &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string cfg(config_json);
+  ASSERT_NE(cfg.find("\"name\":\"Updated\""), std::string::npos);
+  ASSERT_NE(cfg.find("\"description\":\"new desc\""), std::string::npos);
+
+  vxcore_string_free(config_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_upd_cfg"));
+  std::cout << "  \xE2\x9C\x93 test_raw_update_config_via_db passed" << std::endl;
+  return 0;
+}
+
+// --- Part B: Raw tag guard tests ---
+
+int test_raw_tag_create_unsupported() {
+  std::cout << "  Running test_raw_tag_create_unsupported..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_tag_create"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_tag_create").c_str(),
+                               "{\"name\":\"Raw Tag\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "work");
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_tag_create"));
+  std::cout << "  \xE2\x9C\x93 test_raw_tag_create_unsupported passed" << std::endl;
+  return 0;
+}
+
+int test_raw_tag_delete_unsupported() {
+  std::cout << "  Running test_raw_tag_delete_unsupported..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_tag_del"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_tag_del").c_str(),
+                               "{\"name\":\"Raw Tag\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_delete(ctx, notebook_id, "nonexistent");
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_tag_del"));
+  std::cout << "  \xE2\x9C\x93 test_raw_tag_delete_unsupported passed" << std::endl;
+  return 0;
+}
+
+int test_raw_tag_list_returns_empty() {
+  std::cout << "  Running test_raw_tag_list_returns_empty..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_tag_list"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_tag_list").c_str(),
+                               "{\"name\":\"Raw Tag\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *tags_json = nullptr;
+  err = vxcore_tag_list(ctx, notebook_id, &tags_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(tags_json);
+  ASSERT_EQ(std::string(tags_json), "[]");
+
+  vxcore_string_free(tags_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_tag_list"));
+  std::cout << "  \xE2\x9C\x93 test_raw_tag_list_returns_empty passed" << std::endl;
+  return 0;
+}
+
+int test_raw_tag_move_unsupported() {
+  std::cout << "  Running test_raw_tag_move_unsupported..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_tag_mv"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_tag_mv").c_str(),
+                               "{\"name\":\"Raw Tag\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_move(ctx, notebook_id, "a", "b");
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_tag_mv"));
+  std::cout << "  \xE2\x9C\x93 test_raw_tag_move_unsupported passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
 
@@ -1439,6 +1654,17 @@ int main() {
   RUN_TEST(test_path_build_absolute_basic);
   RUN_TEST(test_path_build_absolute_not_found);
   RUN_TEST(test_path_build_absolute_null_params);
+
+  // Raw config migration tests
+  RUN_TEST(test_raw_config_roundtrip_via_db);
+  RUN_TEST(test_raw_no_config_json_created);
+  RUN_TEST(test_raw_update_config_via_db);
+
+  // Raw tag guard tests
+  RUN_TEST(test_raw_tag_create_unsupported);
+  RUN_TEST(test_raw_tag_delete_unsupported);
+  RUN_TEST(test_raw_tag_list_returns_empty);
+  RUN_TEST(test_raw_tag_move_unsupported);
 
   std::cout << "All notebook tests passed!" << std::endl;
   return 0;

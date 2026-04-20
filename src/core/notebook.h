@@ -80,17 +80,17 @@ class Notebook {
   // Must be called before deleting the notebook's local data folder.
   void Close();
 
-  VxCoreError CreateTag(const std::string &tag_name, const std::string &parent_tag = "");
-  VxCoreError CreateTagPath(const std::string &tag_path);
-  VxCoreError DeleteTag(const std::string &tag_name);
-  VxCoreError MoveTag(const std::string &tag_name, const std::string &parent_tag);
-  VxCoreError GetTags(std::string &out_tags_json) const;
+  virtual VxCoreError CreateTag(const std::string &tag_name, const std::string &parent_tag = "");
+  virtual VxCoreError CreateTagPath(const std::string &tag_path);
+  virtual VxCoreError DeleteTag(const std::string &tag_name);
+  virtual VxCoreError MoveTag(const std::string &tag_name, const std::string &parent_tag);
+  virtual VxCoreError GetTags(std::string &out_tags_json) const;
   TagNode *FindTag(const std::string &tag_name);
 
   // Direct DB-backed tag queries (bypasses SearchManager for efficiency)
-  VxCoreError FindFilesByTags(const std::vector<std::string> &tags, bool use_and,
+  virtual VxCoreError FindFilesByTags(const std::vector<std::string> &tags, bool use_and,
                               std::string &out_results_json);
-  VxCoreError CountFilesByTag(std::string &out_results_json);
+  virtual VxCoreError CountFilesByTag(std::string &out_results_json);
 
   // Rebuild the metadata cache from ground truth (config files).
   // Returns VXCORE_OK on success.
