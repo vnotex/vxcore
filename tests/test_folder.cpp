@@ -6640,6 +6640,349 @@ int test_raw_import_folder_with_allowlist() {
   return 0;
 }
 
+int test_raw_get_file_metadata() {
+  std::cout << "  Running test_raw_get_file_metadata..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_fmeta_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_fmeta_nb").c_str(),
+                               "{\"name\":\"Raw FMeta\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string root = get_test_path("test_raw_fmeta_nb");
+  write_file(root + "/note.md", "# Note");
+
+  // List to populate DB
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(children_json);
+
+  // Get file metadata — should be empty object
+  char *metadata_json = nullptr;
+  err = vxcore_node_get_metadata(ctx, notebook_id, "note.md", &metadata_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(metadata_json);
+
+  nlohmann::json meta = nlohmann::json::parse(metadata_json);
+  ASSERT_TRUE(meta.is_object());
+  ASSERT_TRUE(meta.empty());
+
+  vxcore_string_free(metadata_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_fmeta_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_get_file_metadata passed" << std::endl;
+  return 0;
+}
+
+int test_raw_update_file_metadata() {
+  std::cout << "  Running test_raw_update_file_metadata..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_ufmeta_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_ufmeta_nb").c_str(),
+                               "{\"name\":\"Raw UFMeta\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string root = get_test_path("test_raw_ufmeta_nb");
+  write_file(root + "/note.md", "# Note");
+
+  // List to populate DB
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(children_json);
+
+  // Update metadata
+  err = vxcore_node_update_metadata(ctx, notebook_id, "note.md", R"({"priority":"high"})");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Read back
+  char *metadata_json = nullptr;
+  err = vxcore_node_get_metadata(ctx, notebook_id, "note.md", &metadata_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(metadata_json);
+
+  nlohmann::json meta = nlohmann::json::parse(metadata_json);
+  ASSERT_EQ(meta["priority"].get<std::string>(), std::string("high"));
+
+  vxcore_string_free(metadata_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_ufmeta_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_update_file_metadata passed" << std::endl;
+  return 0;
+}
+
+int test_raw_get_folder_metadata() {
+  std::cout << "  Running test_raw_get_folder_metadata..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_dirmeta_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_dirmeta_nb").c_str(),
+                               "{\"name\":\"Raw DirMeta\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string root = get_test_path("test_raw_dirmeta_nb");
+  create_directory(root + "/docs");
+
+  // List to populate DB
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(children_json);
+
+  // Get folder metadata — should be empty object
+  char *metadata_json = nullptr;
+  err = vxcore_node_get_metadata(ctx, notebook_id, "docs", &metadata_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(metadata_json);
+
+  nlohmann::json meta = nlohmann::json::parse(metadata_json);
+  ASSERT_TRUE(meta.is_object());
+  ASSERT_TRUE(meta.empty());
+
+  vxcore_string_free(metadata_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_dirmeta_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_get_folder_metadata passed" << std::endl;
+  return 0;
+}
+
+int test_raw_update_folder_metadata() {
+  std::cout << "  Running test_raw_update_folder_metadata..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_udirmeta_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_udirmeta_nb").c_str(),
+                               "{\"name\":\"Raw UDirMeta\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string root = get_test_path("test_raw_udirmeta_nb");
+  create_directory(root + "/docs");
+
+  // List to populate DB
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(children_json);
+
+  // Update folder metadata
+  err = vxcore_node_update_metadata(ctx, notebook_id, "docs", R"({"color":"red"})");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Read back
+  char *metadata_json = nullptr;
+  err = vxcore_node_get_metadata(ctx, notebook_id, "docs", &metadata_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(metadata_json);
+
+  nlohmann::json meta = nlohmann::json::parse(metadata_json);
+  ASSERT_EQ(meta["color"].get<std::string>(), std::string("red"));
+
+  vxcore_string_free(metadata_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_udirmeta_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_update_folder_metadata passed" << std::endl;
+  return 0;
+}
+
+int test_raw_update_node_timestamps() {
+  std::cout << "  Running test_raw_update_node_timestamps..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_ts_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_ts_nb").c_str(),
+                               "{\"name\":\"Raw TS\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string root = get_test_path("test_raw_ts_nb");
+  write_file(root + "/note.md", "# Note");
+
+  // List to populate DB
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(children_json);
+
+  // Update file timestamps
+  int64_t new_modified = 1705404600000;
+  err = vxcore_node_update_timestamps(ctx, notebook_id, "note.md", -1, new_modified);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify via node_get_config
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "note.md", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(config_json);
+
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  ASSERT_EQ(config["modifiedUtc"].get<int64_t>(), new_modified);
+
+  vxcore_string_free(config_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_ts_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_update_node_timestamps passed" << std::endl;
+  return 0;
+}
+
+int test_raw_iterate_all_files() {
+  std::cout << "  Running test_raw_iterate_all_files..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_iter_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_iter_nb").c_str(),
+                               "{\"name\":\"Raw Iter\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create nested structure on filesystem
+  std::string root = get_test_path("test_raw_iter_nb");
+  write_file(root + "/root.md", "# Root");
+  create_directory(root + "/docs");
+  write_file(root + "/docs/a.md", "# A");
+  create_directory(root + "/docs/sub");
+  write_file(root + "/docs/sub/b.md", "# B");
+
+  // List root, then subfolders to populate the DB
+  char *cj = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &cj);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(cj);
+
+  err = vxcore_folder_list_children(ctx, notebook_id, "docs", &cj);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(cj);
+
+  err = vxcore_folder_list_children(ctx, notebook_id, "docs/sub", &cj);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(cj);
+
+  // Verify all files are accessible via node_get_config (proves IterateAllFiles could find them)
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "root.md", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json j1 = nlohmann::json::parse(config_json);
+  ASSERT_EQ(j1["name"].get<std::string>(), std::string("root.md"));
+  vxcore_string_free(config_json);
+
+  err = vxcore_node_get_config(ctx, notebook_id, "docs/a.md", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json j2 = nlohmann::json::parse(config_json);
+  ASSERT_EQ(j2["name"].get<std::string>(), std::string("a.md"));
+  vxcore_string_free(config_json);
+
+  err = vxcore_node_get_config(ctx, notebook_id, "docs/sub/b.md", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  nlohmann::json j3 = nlohmann::json::parse(config_json);
+  ASSERT_EQ(j3["name"].get<std::string>(), std::string("b.md"));
+  vxcore_string_free(config_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_iter_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_iterate_all_files passed" << std::endl;
+  return 0;
+}
+
+int test_raw_iterate_empty_notebook() {
+  std::cout << "  Running test_raw_iterate_empty_notebook..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_iter_empty_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_iter_empty_nb").c_str(),
+                               "{\"name\":\"Raw IterEmpty\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // List root — should have no files
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(children_json);
+
+  auto j = nlohmann::json::parse(children_json);
+  ASSERT_TRUE(j["files"].empty());
+  ASSERT_TRUE(j["folders"].empty());
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_iter_empty_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_iterate_empty_notebook passed" << std::endl;
+  return 0;
+}
+
+int test_raw_iterate_skips_hidden() {
+  std::cout << "  Running test_raw_iterate_skips_hidden..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_iter_hidden_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_iter_hidden_nb").c_str(),
+                               "{\"name\":\"Raw IterHidden\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string root = get_test_path("test_raw_iter_hidden_nb");
+  write_file(root + "/visible.md", "# Visible");
+  create_directory(root + "/.hidden");
+  write_file(root + "/.hidden/secret.md", "# Secret");
+  write_file(root + "/.dotfile.md", "# Dotfile");
+
+  // List root — hidden files/folders should be excluded
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(children_json);
+
+  auto j = nlohmann::json::parse(children_json);
+  // Only visible.md should appear
+  ASSERT_EQ(j["files"].size(), (size_t)1);
+  ASSERT_EQ(j["files"][0]["name"].get<std::string>(), std::string("visible.md"));
+  // .hidden folder should not appear
+  ASSERT_TRUE(j["folders"].empty());
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_iter_hidden_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_iterate_skips_hidden passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -6823,6 +7166,16 @@ int main() {
   RUN_TEST(test_raw_import_file_into_subfolder);
   RUN_TEST(test_raw_import_folder);
   RUN_TEST(test_raw_import_folder_with_allowlist);
+
+  // Raw notebook Metadata + Iteration tests
+  RUN_TEST(test_raw_get_file_metadata);
+  RUN_TEST(test_raw_update_file_metadata);
+  RUN_TEST(test_raw_get_folder_metadata);
+  RUN_TEST(test_raw_update_folder_metadata);
+  RUN_TEST(test_raw_update_node_timestamps);
+  RUN_TEST(test_raw_iterate_all_files);
+  RUN_TEST(test_raw_iterate_empty_notebook);
+  RUN_TEST(test_raw_iterate_skips_hidden);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;

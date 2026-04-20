@@ -526,24 +526,176 @@ VxCoreError RawFolderManager::DeleteFolder(const std::string &folder_path) {
 
 VxCoreError RawFolderManager::UpdateFolderMetadata(const std::string &folder_path,
                                                    const std::string &metadata_json) {
-  (void)folder_path;
-  (void)metadata_json;
-  return VXCORE_ERR_UNSUPPORTED;
+  VxCoreError err = InitRootFolder();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const auto clean_path = GetCleanRelativePath(folder_path);
+
+  // Ensure ancestor chain exists
+  err = EnsureFolderAncestorChain(clean_path);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  // Validate JSON
+  nlohmann::json metadata;
+  try {
+    metadata = nlohmann::json::parse(metadata_json);
+    if (!metadata.is_object()) {
+      return VXCORE_ERR_JSON_PARSE;
+    }
+  } catch (const std::exception &) {
+    return VXCORE_ERR_JSON_PARSE;
+  }
+
+  auto *store = notebook_->GetMetadataStore();
+  if (!store) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  std::string folder_id = FindFolderIdByPath(store, root_folder_id_, clean_path);
+  if (folder_id.empty()) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  auto record = store->GetFolder(folder_id);
+  if (!record) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  if (!store->UpdateFolder(folder_id, record->name, record->modified_utc, metadata_json)) {
+    VXCORE_LOG_WARN("UpdateFolderMetadata: Failed to update folder in MetadataStore: id=%s",
+                    folder_id.c_str());
+    return VXCORE_ERR_IO;
+  }
+
+  return VXCORE_OK;
 }
 
 VxCoreError RawFolderManager::UpdateNodeTimestamps(const std::string &node_path,
                                                    int64_t created_utc, int64_t modified_utc) {
-  (void)node_path;
-  (void)created_utc;
-  (void)modified_utc;
-  return VXCORE_ERR_UNSUPPORTED;
+  if (created_utc <= 0 && modified_utc <= 0) {
+    return VXCORE_OK;  // Nothing to update
+  }
+
+  VxCoreError err = InitRootFolder();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const auto clean_path = GetCleanRelativePath(node_path);
+
+  auto *store = notebook_->GetMetadataStore();
+  if (!store) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  // Try as file first (files are more common)
+  const auto [folder_path, file_name] = SplitPath(clean_path);
+
+  err = EnsureFolderAncestorChain(folder_path);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  FolderContents contents;
+  err = SyncFolderFromFilesystem(folder_path, contents);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  std::string file_id = FindFileIdByPath(store, root_folder_id_, clean_path);
+  if (!file_id.empty()) {
+    // It's a file
+    auto record = store->GetFile(file_id);
+    if (!record) {
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    int64_t new_modified = (modified_utc > 0) ? modified_utc : record->modified_utc;
+
+    if (created_utc > 0) {
+      VXCORE_LOG_DEBUG("UpdateNodeTimestamps: created_utc update not supported via MetadataStore "
+                       "for file id=%s",
+                       file_id.c_str());
+    }
+
+    if (!store->UpdateFile(file_id, record->name, new_modified, record->metadata)) {
+      VXCORE_LOG_WARN("Failed to update file timestamps in MetadataStore: id=%s",
+                      file_id.c_str());
+      return VXCORE_ERR_IO;
+    }
+
+    return VXCORE_OK;
+  }
+
+  // Try as folder — clean_path itself is the folder
+  err = EnsureFolderAncestorChain(clean_path);
+  if (err != VXCORE_OK) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  std::string folder_id = FindFolderIdByPath(store, root_folder_id_, clean_path);
+  if (folder_id.empty()) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  auto folder_record = store->GetFolder(folder_id);
+  if (!folder_record) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  int64_t new_modified = (modified_utc > 0) ? modified_utc : folder_record->modified_utc;
+
+  if (created_utc > 0) {
+    VXCORE_LOG_DEBUG("UpdateNodeTimestamps: created_utc update not supported via MetadataStore "
+                     "for folder id=%s",
+                     folder_id.c_str());
+  }
+
+  if (!store->UpdateFolder(folder_id, folder_record->name, new_modified, folder_record->metadata)) {
+    VXCORE_LOG_WARN("Failed to update folder timestamps in MetadataStore: id=%s",
+                    folder_id.c_str());
+    return VXCORE_ERR_IO;
+  }
+
+  return VXCORE_OK;
 }
 
 VxCoreError RawFolderManager::GetFolderMetadata(const std::string &folder_path,
                                                 std::string &out_metadata_json) {
-  (void)folder_path;
-  (void)out_metadata_json;
-  return VXCORE_ERR_UNSUPPORTED;
+  VxCoreError err = InitRootFolder();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const auto clean_path = GetCleanRelativePath(folder_path);
+
+  // Ensure ancestor chain exists
+  err = EnsureFolderAncestorChain(clean_path);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  auto *store = notebook_->GetMetadataStore();
+  if (!store) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  std::string folder_id = FindFolderIdByPath(store, root_folder_id_, clean_path);
+  if (folder_id.empty()) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  auto record = store->GetFolder(folder_id);
+  if (!record) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  out_metadata_json = record->metadata.empty() ? "{}" : record->metadata;
+  return VXCORE_OK;
 }
 
 VxCoreError RawFolderManager::RenameFolder(const std::string &folder_path,
@@ -852,9 +1004,59 @@ VxCoreError RawFolderManager::DeleteFile(const std::string &file_path) {
 
 VxCoreError RawFolderManager::UpdateFileMetadata(const std::string &file_path,
                                                  const std::string &metadata_json) {
-  (void)file_path;
-  (void)metadata_json;
-  return VXCORE_ERR_UNSUPPORTED;
+  VxCoreError err = InitRootFolder();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const auto clean_path = GetCleanRelativePath(file_path);
+  const auto [folder_path, file_name] = SplitPath(clean_path);
+
+  // Ensure ancestor chain + sync
+  err = EnsureFolderAncestorChain(folder_path);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  FolderContents contents;
+  err = SyncFolderFromFilesystem(folder_path, contents);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  // Validate JSON
+  nlohmann::json metadata;
+  try {
+    metadata = nlohmann::json::parse(metadata_json);
+    if (!metadata.is_object()) {
+      return VXCORE_ERR_JSON_PARSE;
+    }
+  } catch (const std::exception &) {
+    return VXCORE_ERR_JSON_PARSE;
+  }
+
+  auto *store = notebook_->GetMetadataStore();
+  if (!store) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  std::string file_id = FindFileIdByPath(store, root_folder_id_, clean_path);
+  if (file_id.empty()) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  auto record = store->GetFile(file_id);
+  if (!record) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  if (!store->UpdateFile(file_id, record->name, record->modified_utc, metadata_json)) {
+    VXCORE_LOG_WARN("UpdateFileMetadata: Failed to update file in MetadataStore: id=%s",
+                    file_id.c_str());
+    return VXCORE_ERR_IO;
+  }
+
+  return VXCORE_OK;
 }
 
 VxCoreError RawFolderManager::UpdateFileTags(const std::string &file_path,
@@ -927,9 +1129,43 @@ VxCoreError RawFolderManager::GetFileInfo(const std::string &file_path,
 
 VxCoreError RawFolderManager::GetFileMetadata(const std::string &file_path,
                                               std::string &out_metadata_json) {
-  (void)file_path;
-  (void)out_metadata_json;
-  return VXCORE_ERR_UNSUPPORTED;
+  VxCoreError err = InitRootFolder();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const auto clean_path = GetCleanRelativePath(file_path);
+  const auto [folder_path, file_name] = SplitPath(clean_path);
+
+  // Ensure ancestor chain + sync to discover the file in DB
+  err = EnsureFolderAncestorChain(folder_path);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  FolderContents contents;
+  err = SyncFolderFromFilesystem(folder_path, contents);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  auto *store = notebook_->GetMetadataStore();
+  if (!store) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  std::string file_id = FindFileIdByPath(store, root_folder_id_, clean_path);
+  if (file_id.empty()) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  auto record = store->GetFile(file_id);
+  if (!record) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  out_metadata_json = record->metadata.empty() ? "{}" : record->metadata;
+  return VXCORE_OK;
 }
 
 VxCoreError RawFolderManager::RenameFile(const std::string &file_path,
@@ -1416,7 +1652,34 @@ VxCoreError RawFolderManager::ImportFolder(const std::string &dest_folder_path,
 
 void RawFolderManager::IterateAllFiles(
     std::function<bool(const std::string &, const FileRecord &)> callback) {
-  (void)callback;
+  if (InitRootFolder() != VXCORE_OK) {
+    return;
+  }
+
+  std::function<bool(const std::string &)> iterate_folder = [&](const std::string &fp) -> bool {
+    FolderContents contents;
+    VxCoreError err = ListFolderContents(fp, false, contents);
+    if (err != VXCORE_OK) {
+      return true;  // Skip this folder, continue iteration
+    }
+
+    for (const auto &file : contents.files) {
+      if (!callback(fp, file)) {
+        return false;
+      }
+    }
+
+    for (const auto &folder : contents.folders) {
+      std::string child_path = ConcatenatePaths(fp, folder.name);
+      if (!iterate_folder(child_path)) {
+        return false;
+      }
+    }
+
+    return true;
+  };
+
+  iterate_folder(".");
 }
 
 VxCoreError RawFolderManager::FindFilesByTag(const std::string &tag_name,
