@@ -5491,6 +5491,410 @@ int test_raw_get_nonexistent_node() {
   return 0;
 }
 
+// ============ Raw Notebook Folder CRUD Tests ============
+
+int test_raw_create_folder() {
+  std::cout << "  Running test_raw_create_folder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_create_folder_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_create_folder_nb").c_str(),
+                               "{\"name\":\"Raw Create\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "my_folder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id);
+
+  // Verify filesystem
+  ASSERT(path_exists(get_test_path("test_raw_create_folder_nb") + "/my_folder"));
+
+  // Verify via list children
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(children_json);
+  bool found = false;
+  for (const auto &f : j["folders"]) {
+    if (f.get<std::string>() == "my_folder") {
+      found = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found);
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_create_folder_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_create_folder passed" << std::endl;
+  return 0;
+}
+
+int test_raw_create_nested_folder() {
+  std::cout << "  Running test_raw_create_nested_folder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_create_nested_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_create_nested_nb").c_str(),
+                               "{\"name\":\"Raw Nested\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create parent folder
+  char *parent_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "parent", &parent_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create child folder
+  char *child_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, "parent", "child", &child_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(child_id);
+
+  // Verify filesystem
+  ASSERT(path_exists(get_test_path("test_raw_create_nested_nb") + "/parent/child"));
+
+  // Verify via list children of parent
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, "parent", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(children_json);
+  bool found = false;
+  for (const auto &f : j["folders"]) {
+    if (f.get<std::string>() == "child") {
+      found = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found);
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(child_id);
+  vxcore_string_free(parent_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_create_nested_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_create_nested_folder passed" << std::endl;
+  return 0;
+}
+
+int test_raw_create_folder_duplicate() {
+  std::cout << "  Running test_raw_create_folder_duplicate..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_create_dup_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_create_dup_nb").c_str(),
+                               "{\"name\":\"Raw Dup\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "dup_folder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Try creating again — should fail
+  char *folder_id2 = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "dup_folder", &folder_id2);
+  ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_create_dup_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_create_folder_duplicate passed" << std::endl;
+  return 0;
+}
+
+int test_raw_delete_folder() {
+  std::cout << "  Running test_raw_delete_folder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_delete_folder_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_delete_folder_nb").c_str(),
+                               "{\"name\":\"Raw Delete\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "to_delete", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Delete it
+  err = vxcore_node_delete(ctx, notebook_id, "to_delete");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify filesystem gone
+  ASSERT_FALSE(path_exists(get_test_path("test_raw_delete_folder_nb") + "/to_delete"));
+
+  // Verify not in listing
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(children_json);
+  for (const auto &f : j["folders"]) {
+    ASSERT_NE(f.get<std::string>(), std::string("to_delete"));
+  }
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_delete_folder_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_delete_folder passed" << std::endl;
+  return 0;
+}
+
+int test_raw_delete_folder_recursive() {
+  std::cout << "  Running test_raw_delete_folder_recursive..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_delete_rec_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_delete_rec_nb").c_str(),
+                               "{\"name\":\"Raw DelRec\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create parent with child and a file
+  char *parent_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "parent", &parent_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(parent_id);
+
+  char *child_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, "parent", "child", &child_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(child_id);
+
+  // Write a file inside child
+  write_file(get_test_path("test_raw_delete_rec_nb") + "/parent/child/note.md", "# Note");
+
+  // Delete parent recursively
+  err = vxcore_node_delete(ctx, notebook_id, "parent");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify all gone
+  ASSERT_FALSE(path_exists(get_test_path("test_raw_delete_rec_nb") + "/parent"));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_delete_rec_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_delete_folder_recursive passed" << std::endl;
+  return 0;
+}
+
+int test_raw_rename_folder() {
+  std::cout << "  Running test_raw_rename_folder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_rename_folder_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_rename_folder_nb").c_str(),
+                               "{\"name\":\"Raw Rename\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "old_name", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Rename
+  err = vxcore_node_rename(ctx, notebook_id, "old_name", "new_name");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify filesystem
+  ASSERT_FALSE(path_exists(get_test_path("test_raw_rename_folder_nb") + "/old_name"));
+  ASSERT(path_exists(get_test_path("test_raw_rename_folder_nb") + "/new_name"));
+
+  // Verify via listing
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(children_json);
+  bool found_new = false;
+  for (const auto &f : j["folders"]) {
+    ASSERT_NE(f.get<std::string>(), std::string("old_name"));
+    if (f.get<std::string>() == "new_name") found_new = true;
+  }
+  ASSERT_TRUE(found_new);
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_rename_folder_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_rename_folder passed" << std::endl;
+  return 0;
+}
+
+int test_raw_move_folder() {
+  std::cout << "  Running test_raw_move_folder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_move_folder_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_move_folder_nb").c_str(),
+                               "{\"name\":\"Raw Move\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source and dest folders
+  char *src_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "src_folder", &src_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(src_id);
+
+  char *dest_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "dest_folder", &dest_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(dest_id);
+
+  // Write a file inside src
+  write_file(get_test_path("test_raw_move_folder_nb") + "/src_folder/note.md", "# Note");
+
+  // Move src_folder into dest_folder
+  err = vxcore_node_move(ctx, notebook_id, "src_folder", "dest_folder");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify filesystem
+  ASSERT_FALSE(path_exists(get_test_path("test_raw_move_folder_nb") + "/src_folder"));
+  ASSERT(path_exists(get_test_path("test_raw_move_folder_nb") + "/dest_folder/src_folder"));
+  ASSERT(path_exists(get_test_path("test_raw_move_folder_nb") + "/dest_folder/src_folder/note.md"));
+
+  // Verify via listing
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, "dest_folder", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(children_json);
+  bool found = false;
+  for (const auto &f : j["folders"]) {
+    if (f.get<std::string>() == "src_folder") {
+      found = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found);
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_move_folder_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_move_folder passed" << std::endl;
+  return 0;
+}
+
+int test_raw_copy_folder() {
+  std::cout << "  Running test_raw_copy_folder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_copy_folder_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_copy_folder_nb").c_str(),
+                               "{\"name\":\"Raw Copy\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "original", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Write a file inside
+  write_file(get_test_path("test_raw_copy_folder_nb") + "/original/note.md", "# Note");
+
+  // Copy with new name
+  char *copy_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "original", ".", "copied", &copy_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(copy_id);
+
+  // Verify both exist
+  ASSERT(path_exists(get_test_path("test_raw_copy_folder_nb") + "/original"));
+  ASSERT(path_exists(get_test_path("test_raw_copy_folder_nb") + "/copied"));
+  ASSERT(path_exists(get_test_path("test_raw_copy_folder_nb") + "/copied/note.md"));
+
+  vxcore_string_free(copy_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_copy_folder_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_copy_folder passed" << std::endl;
+  return 0;
+}
+
+int test_raw_copy_folder_recursive() {
+  std::cout << "  Running test_raw_copy_folder_recursive..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_copy_rec_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_copy_rec_nb").c_str(),
+                               "{\"name\":\"Raw CopyRec\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create nested structure: parent/child with files
+  char *parent_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "parent", &parent_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(parent_id);
+
+  char *child_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, "parent", "child", &child_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(child_id);
+
+  write_file(get_test_path("test_raw_copy_rec_nb") + "/parent/a.md", "# A");
+  write_file(get_test_path("test_raw_copy_rec_nb") + "/parent/child/b.md", "# B");
+
+  // Copy parent to root with new name
+  char *copy_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "parent", ".", "parent_copy", &copy_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(copy_id);
+
+  // Verify recursive copy
+  ASSERT(path_exists(get_test_path("test_raw_copy_rec_nb") + "/parent_copy"));
+  ASSERT(path_exists(get_test_path("test_raw_copy_rec_nb") + "/parent_copy/a.md"));
+  ASSERT(path_exists(get_test_path("test_raw_copy_rec_nb") + "/parent_copy/child"));
+  ASSERT(path_exists(get_test_path("test_raw_copy_rec_nb") + "/parent_copy/child/b.md"));
+
+  // Original still intact
+  ASSERT(path_exists(get_test_path("test_raw_copy_rec_nb") + "/parent/a.md"));
+
+  vxcore_string_free(copy_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_copy_rec_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_copy_folder_recursive passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -5645,6 +6049,17 @@ int main() {
   RUN_TEST(test_raw_get_folder_config);
   RUN_TEST(test_raw_get_file_info);
   RUN_TEST(test_raw_get_nonexistent_node);
+
+  // Raw notebook Folder CRUD tests
+  RUN_TEST(test_raw_create_folder);
+  RUN_TEST(test_raw_create_nested_folder);
+  RUN_TEST(test_raw_create_folder_duplicate);
+  RUN_TEST(test_raw_delete_folder);
+  RUN_TEST(test_raw_delete_folder_recursive);
+  RUN_TEST(test_raw_rename_folder);
+  RUN_TEST(test_raw_move_folder);
+  RUN_TEST(test_raw_copy_folder);
+  RUN_TEST(test_raw_copy_folder_recursive);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;
