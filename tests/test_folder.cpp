@@ -6358,6 +6358,288 @@ int test_raw_copy_file_with_new_name() {
   return 0;
 }
 
+// ============ Raw Notebook Import Tests ============
+
+int test_raw_import_file() {
+  std::cout << "  Running test_raw_import_file..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_import_file_nb"));
+  cleanup_test_dir(get_test_path("test_raw_import_file_src"));
+
+  // Create external source file outside notebook
+  create_directory(get_test_path("test_raw_import_file_src"));
+  std::string source_file = get_test_path("test_raw_import_file_src") + "/external.md";
+  write_file(source_file, "# External File");
+  ASSERT(path_exists(source_file));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_import_file_nb").c_str(),
+                               "{\"name\":\"Raw Import\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Import the external file into root
+  char *file_id = nullptr;
+  err = vxcore_file_import(ctx, notebook_id, ".", source_file.c_str(), &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(file_id);
+
+  // Verify file exists on filesystem
+  ASSERT(path_exists(get_test_path("test_raw_import_file_nb") + "/external.md"));
+
+  // Verify source file still exists (copy, not move)
+  ASSERT(path_exists(source_file));
+
+  // Verify DB record via list children
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(children_json);
+  bool found = false;
+  for (const auto &f : j["files"]) {
+    if (f["name"].get<std::string>() == "external.md") {
+      found = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found);
+
+  vxcore_string_free(children_json);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_import_file_nb"));
+  cleanup_test_dir(get_test_path("test_raw_import_file_src"));
+  std::cout << "  \xe2\x9c\x93 test_raw_import_file passed" << std::endl;
+  return 0;
+}
+
+int test_raw_import_file_preserves_content() {
+  std::cout << "  Running test_raw_import_file_preserves_content..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_import_content_nb"));
+  cleanup_test_dir(get_test_path("test_raw_import_content_src"));
+
+  // Create external source file with specific content
+  create_directory(get_test_path("test_raw_import_content_src"));
+  std::string source_file = get_test_path("test_raw_import_content_src") + "/data.txt";
+  std::string expected_content = "Line 1\nLine 2\nSpecial chars: @#$%^&*()";
+  write_file(source_file, expected_content);
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_import_content_nb").c_str(),
+                               "{\"name\":\"Raw ImportContent\"}", VXCORE_NOTEBOOK_RAW,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Import
+  char *file_id = nullptr;
+  err = vxcore_file_import(ctx, notebook_id, ".", source_file.c_str(), &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Read imported file and compare content
+  std::string imported_path = get_test_path("test_raw_import_content_nb") + "/data.txt";
+  ASSERT(path_exists(imported_path));
+  std::ifstream ifs(PathFromUtf8ForTest(imported_path), std::ios::binary);
+  std::string imported_content((std::istreambuf_iterator<char>(ifs)),
+                               std::istreambuf_iterator<char>());
+  ASSERT_EQ(imported_content, expected_content);
+
+  // Verify source unchanged
+  std::ifstream src_ifs(PathFromUtf8ForTest(source_file), std::ios::binary);
+  std::string src_content((std::istreambuf_iterator<char>(src_ifs)),
+                          std::istreambuf_iterator<char>());
+  ASSERT_EQ(src_content, expected_content);
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_import_content_nb"));
+  cleanup_test_dir(get_test_path("test_raw_import_content_src"));
+  std::cout << "  \xe2\x9c\x93 test_raw_import_file_preserves_content passed" << std::endl;
+  return 0;
+}
+
+int test_raw_import_file_into_subfolder() {
+  std::cout << "  Running test_raw_import_file_into_subfolder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_import_sub_nb"));
+  cleanup_test_dir(get_test_path("test_raw_import_sub_src"));
+
+  // Create external source file
+  create_directory(get_test_path("test_raw_import_sub_src"));
+  std::string source_file = get_test_path("test_raw_import_sub_src") + "/note.md";
+  write_file(source_file, "# Subfolder Import");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_import_sub_nb").c_str(),
+                               "{\"name\":\"Raw ImportSub\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create destination subfolder
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "docs", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Import into subfolder
+  char *file_id = nullptr;
+  err = vxcore_file_import(ctx, notebook_id, "docs", source_file.c_str(), &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(file_id);
+
+  // Verify file exists at correct location
+  ASSERT(path_exists(get_test_path("test_raw_import_sub_nb") + "/docs/note.md"));
+
+  // Verify via node_get_config
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "docs/note.md", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto config = nlohmann::json::parse(config_json);
+  ASSERT_EQ(config["name"].get<std::string>(), std::string("note.md"));
+  vxcore_string_free(config_json);
+
+  // Source untouched
+  ASSERT(path_exists(source_file));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_import_sub_nb"));
+  cleanup_test_dir(get_test_path("test_raw_import_sub_src"));
+  std::cout << "  \xe2\x9c\x93 test_raw_import_file_into_subfolder passed" << std::endl;
+  return 0;
+}
+
+int test_raw_import_folder() {
+  std::cout << "  Running test_raw_import_folder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_import_folder_nb"));
+  cleanup_test_dir(get_test_path("test_raw_import_folder_src"));
+
+  // Create external folder structure
+  std::string source_folder = get_test_path("test_raw_import_folder_src/my_notes");
+  create_directory(source_folder);
+  write_file(source_folder + "/readme.md", "# Readme");
+  write_file(source_folder + "/todo.txt", "Buy milk");
+  create_directory(source_folder + "/sub");
+  write_file(source_folder + "/sub/deep.md", "# Deep");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_import_folder_nb").c_str(),
+                               "{\"name\":\"Raw ImportFolder\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Import folder into root (no suffix filter)
+  char *folder_id = nullptr;
+  err = vxcore_folder_import(ctx, notebook_id, ".", source_folder.c_str(), nullptr, &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id);
+
+  // Verify filesystem structure
+  std::string imported = get_test_path("test_raw_import_folder_nb") + "/my_notes";
+  ASSERT(path_exists(imported));
+  ASSERT(path_exists(imported + "/readme.md"));
+  ASSERT(path_exists(imported + "/todo.txt"));
+  ASSERT(path_exists(imported + "/sub"));
+  ASSERT(path_exists(imported + "/sub/deep.md"));
+
+  // Verify source untouched
+  ASSERT(path_exists(source_folder + "/readme.md"));
+  ASSERT(path_exists(source_folder + "/sub/deep.md"));
+
+  // Verify DB records via list children
+  char *children_json = nullptr;
+  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(children_json);
+  bool found_folder = false;
+  for (const auto &f : j["folders"]) {
+    if (f["name"].get<std::string>() == "my_notes") {
+      found_folder = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found_folder);
+  vxcore_string_free(children_json);
+
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_import_folder_nb"));
+  cleanup_test_dir(get_test_path("test_raw_import_folder_src"));
+  std::cout << "  \xe2\x9c\x93 test_raw_import_folder passed" << std::endl;
+  return 0;
+}
+
+int test_raw_import_folder_with_allowlist() {
+  std::cout << "  Running test_raw_import_folder_with_allowlist..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_import_allow_nb"));
+  cleanup_test_dir(get_test_path("test_raw_import_allow_src"));
+
+  // Create external folder with mixed file types
+  std::string source_folder = get_test_path("test_raw_import_allow_src/mixed");
+  create_directory(source_folder);
+  write_file(source_folder + "/doc.md", "# Markdown");
+  write_file(source_folder + "/notes.txt", "Notes");
+  write_file(source_folder + "/photo.jpg", "fake jpg");
+  write_file(source_folder + "/script.py", "print('hi')");
+  create_directory(source_folder + "/inner");
+  write_file(source_folder + "/inner/nested.md", "# Nested MD");
+  write_file(source_folder + "/inner/nested.jpg", "fake nested jpg");
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_import_allow_nb").c_str(),
+                               "{\"name\":\"Raw ImportAllow\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Import with allowlist: only md and txt
+  char *folder_id = nullptr;
+  err = vxcore_folder_import(ctx, notebook_id, ".", source_folder.c_str(), "md;txt", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id);
+
+  // Verify only allowed files were copied
+  std::string imported = get_test_path("test_raw_import_allow_nb") + "/mixed";
+  ASSERT(path_exists(imported));
+  ASSERT(path_exists(imported + "/doc.md"));
+  ASSERT(path_exists(imported + "/notes.txt"));
+  ASSERT_FALSE(path_exists(imported + "/photo.jpg"));
+  ASSERT_FALSE(path_exists(imported + "/script.py"));
+
+  // Verify subfolder structure preserved but only filtered files
+  ASSERT(path_exists(imported + "/inner"));
+  ASSERT(path_exists(imported + "/inner/nested.md"));
+  ASSERT_FALSE(path_exists(imported + "/inner/nested.jpg"));
+
+  // Verify source untouched
+  ASSERT(path_exists(source_folder + "/photo.jpg"));
+  ASSERT(path_exists(source_folder + "/script.py"));
+
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_import_allow_nb"));
+  cleanup_test_dir(get_test_path("test_raw_import_allow_src"));
+  std::cout << "  \xe2\x9c\x93 test_raw_import_folder_with_allowlist passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -6534,6 +6816,13 @@ int main() {
   RUN_TEST(test_raw_move_file);
   RUN_TEST(test_raw_copy_file);
   RUN_TEST(test_raw_copy_file_with_new_name);
+
+  // Raw notebook Import tests
+  RUN_TEST(test_raw_import_file);
+  RUN_TEST(test_raw_import_file_preserves_content);
+  RUN_TEST(test_raw_import_file_into_subfolder);
+  RUN_TEST(test_raw_import_folder);
+  RUN_TEST(test_raw_import_folder_with_allowlist);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;

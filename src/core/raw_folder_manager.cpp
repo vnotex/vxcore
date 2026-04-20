@@ -1,9 +1,11 @@
 #include "raw_folder_manager.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <set>
+#include <sstream>
 
 #include "metadata_store.h"
 #include "notebook.h"
@@ -1122,21 +1124,294 @@ VxCoreError RawFolderManager::CopyFile(const std::string &file_path,
 VxCoreError RawFolderManager::ImportFile(const std::string &folder_path,
                                          const std::string &external_file_path,
                                          std::string &out_file_id) {
-  (void)folder_path;
-  (void)external_file_path;
-  (void)out_file_id;
-  return VXCORE_ERR_UNSUPPORTED;
+  VXCORE_LOG_INFO("ImportFile: folder=%s, external_file=%s", folder_path.c_str(),
+                  external_file_path.c_str());
+
+  const fs::path external_fs = PathFromUtf8(external_file_path);
+
+  // Validate external file exists and is a regular file
+  if (!fs::exists(external_fs)) {
+    VXCORE_LOG_ERROR("ImportFile: External file not found: %s", external_file_path.c_str());
+    return VXCORE_ERR_NOT_FOUND;
+  }
+  if (!fs::is_regular_file(external_fs)) {
+    VXCORE_LOG_ERROR("ImportFile: Path is not a regular file: %s", external_file_path.c_str());
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  VxCoreError err = InitRootFolder();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const auto clean_folder = GetCleanRelativePath(folder_path);
+  const bool is_root = clean_folder.empty() || clean_folder == ".";
+
+  // Resolve destination folder to absolute path
+  const std::string dest_folder_abs =
+      is_root ? notebook_->GetRootFolder()
+              : ConcatenatePaths(notebook_->GetRootFolder(), clean_folder);
+
+  // Ensure destination folder exists on filesystem
+  auto dest_folder_fs = PathFromUtf8(dest_folder_abs);
+  if (!fs::is_directory(dest_folder_fs)) {
+    VXCORE_LOG_ERROR("ImportFile: Destination folder not found: %s", dest_folder_abs.c_str());
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  // Extract filename and handle name collision
+  std::string original_name = PathToUtf8(external_fs.filename());
+  std::string target_name;
+  err = GetAvailableName(clean_folder, original_name, target_name);
+  if (err != VXCORE_OK) {
+    target_name = original_name;  // Fallback
+  }
+
+  fs::path dest_path = dest_folder_fs / PathFromUtf8(target_name);
+
+  // Filesystem first — copy the file
+  try {
+    fs::copy_file(external_fs, dest_path);
+    VXCORE_LOG_DEBUG("ImportFile: Copied file to: %s", PathToUtf8(dest_path).c_str());
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("ImportFile: Failed to copy file: %s", e.what());
+    return VXCORE_ERR_IO;
+  }
+
+  // DB second — create record with fresh UUID
+  out_file_id = GenerateUUID();
+  auto *store = notebook_->GetMetadataStore();
+  if (store) {
+    err = EnsureFolderAncestorChain(clean_folder);
+    if (err == VXCORE_OK) {
+      std::string dest_folder_id = FindFolderIdByPath(store, root_folder_id_, clean_folder);
+      if (!dest_folder_id.empty()) {
+        auto now = GetCurrentTimestampMillis();
+        StoreFileRecord record;
+        record.id = out_file_id;
+        record.folder_id = dest_folder_id;
+        record.name = target_name;
+        record.created_utc = now;
+        record.modified_utc = now;
+        record.metadata = "{}";
+        if (!store->CreateFile(record)) {
+          VXCORE_LOG_WARN("ImportFile: Failed to create file in MetadataStore: id=%s",
+                          out_file_id.c_str());
+        }
+      }
+    }
+  }
+
+  VXCORE_LOG_INFO("ImportFile: Successfully imported file: id=%s, name=%s", out_file_id.c_str(),
+                  target_name.c_str());
+  return VXCORE_OK;
 }
 
 VxCoreError RawFolderManager::ImportFolder(const std::string &dest_folder_path,
                                            const std::string &external_folder_path,
                                            const std::string &suffix_allowlist,
                                            std::string &out_folder_id) {
-  (void)dest_folder_path;
-  (void)external_folder_path;
-  (void)suffix_allowlist;
-  (void)out_folder_id;
-  return VXCORE_ERR_UNSUPPORTED;
+  VXCORE_LOG_INFO("ImportFolder: dest=%s, external=%s, suffix_allowlist=%s",
+                  dest_folder_path.c_str(), external_folder_path.c_str(),
+                  suffix_allowlist.c_str());
+
+  fs::path external_path = PathFromUtf8(external_folder_path);
+
+  // Validate external folder exists and is a directory
+  if (!fs::exists(external_path)) {
+    VXCORE_LOG_ERROR("ImportFolder: External folder not found: %s",
+                     external_folder_path.c_str());
+    return VXCORE_ERR_NOT_FOUND;
+  }
+  if (!fs::is_directory(external_path)) {
+    VXCORE_LOG_ERROR("ImportFolder: Path is not a directory: %s",
+                     external_folder_path.c_str());
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  // Reject importing from within the notebook root
+  try {
+    fs::path canonical_external = fs::canonical(external_path);
+    fs::path root_path = PathFromUtf8(notebook_->GetRootFolder());
+    auto mismatch_pair = std::mismatch(root_path.begin(), root_path.end(),
+                                       canonical_external.begin(), canonical_external.end());
+    if (mismatch_pair.first == root_path.end()) {
+      VXCORE_LOG_ERROR("ImportFolder: Cannot import folder from within notebook root: %s",
+                       external_folder_path.c_str());
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+  } catch (const std::exception &e) {
+    VXCORE_LOG_WARN("ImportFolder: Failed to canonicalize paths: %s", e.what());
+  }
+
+  // Parse suffix allowlist
+  std::set<std::string> allowed_suffixes;
+  if (!suffix_allowlist.empty()) {
+    std::istringstream iss(suffix_allowlist);
+    std::string suffix;
+    while (std::getline(iss, suffix, ';')) {
+      if (!suffix.empty()) {
+        if (suffix[0] == '.') {
+          suffix = suffix.substr(1);
+        }
+        std::transform(suffix.begin(), suffix.end(), suffix.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        allowed_suffixes.insert(suffix);
+      }
+    }
+    VXCORE_LOG_DEBUG("ImportFolder: Parsed %zu allowed suffixes", allowed_suffixes.size());
+  }
+
+  VxCoreError err = InitRootFolder();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const auto clean_dest = GetCleanRelativePath(dest_folder_path);
+  const bool dest_is_root = clean_dest.empty() || clean_dest == ".";
+  const std::string dest_abs =
+      dest_is_root ? notebook_->GetRootFolder()
+                   : ConcatenatePaths(notebook_->GetRootFolder(), clean_dest);
+
+  // Determine unique target name
+  std::string original_name = PathToUtf8(external_path.filename());
+  std::string target_name = original_name;
+  fs::path target_path = PathFromUtf8(dest_abs) / PathFromUtf8(target_name);
+  if (fs::exists(target_path)) {
+    int name_suffix = 1;
+    while (name_suffix <= 10000) {
+      target_name = original_name + "_" + std::to_string(name_suffix);
+      target_path = PathFromUtf8(dest_abs) / PathFromUtf8(target_name);
+      if (!fs::exists(target_path)) {
+        break;
+      }
+      ++name_suffix;
+    }
+    if (name_suffix > 10000) {
+      target_name = original_name + "_" + std::to_string(GetCurrentTimestampMillis());
+      target_path = PathFromUtf8(dest_abs) / PathFromUtf8(target_name);
+    }
+  }
+
+  // Recursive copy with suffix filtering (filesystem first)
+  std::function<void(const fs::path &, const fs::path &)> copy_filtered =
+      [&](const fs::path &src, const fs::path &dest) {
+        fs::create_directories(dest);
+        for (const auto &entry : fs::directory_iterator(src)) {
+          const std::string entry_name = PathToUtf8(entry.path().filename());
+          // Skip hidden files/folders
+          if (entry_name.empty() || entry_name[0] == '.') {
+            continue;
+          }
+          if (entry.is_directory()) {
+            copy_filtered(entry.path(), dest / PathFromUtf8(entry_name));
+          } else if (entry.is_regular_file()) {
+            if (!allowed_suffixes.empty()) {
+              std::string ext = PathToUtf8(entry.path().extension());
+              if (!ext.empty() && ext[0] == '.') {
+                ext = ext.substr(1);
+              }
+              std::transform(ext.begin(), ext.end(), ext.begin(),
+                             [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+              if (allowed_suffixes.find(ext) == allowed_suffixes.end()) {
+                continue;
+              }
+            }
+            fs::copy_file(entry.path(), dest / PathFromUtf8(entry_name),
+                          fs::copy_options::overwrite_existing);
+          }
+        }
+      };
+
+  try {
+    copy_filtered(external_path, target_path);
+    VXCORE_LOG_DEBUG("ImportFolder: Copied folder to: %s", PathToUtf8(target_path).c_str());
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("ImportFolder: Failed to copy folder: %s", e.what());
+    return VXCORE_ERR_IO;
+  }
+
+  // DB second — create records for imported folder and contents
+  out_folder_id = GenerateUUID();
+  auto *store = notebook_->GetMetadataStore();
+  if (store) {
+    err = EnsureFolderAncestorChain(clean_dest);
+    if (err != VXCORE_OK) {
+      VXCORE_LOG_WARN("ImportFolder: Failed to ensure ancestor chain for dest: %s",
+                      clean_dest.c_str());
+    }
+
+    std::string dest_folder_id = FindFolderIdByPath(store, root_folder_id_, clean_dest);
+    if (dest_folder_id.empty()) {
+      VXCORE_LOG_WARN("ImportFolder: Could not find dest folder in DB");
+    }
+
+    store->BeginTransaction();
+
+    // Create root imported folder record
+    auto now = GetCurrentTimestampMillis();
+    StoreFolderRecord root_record;
+    root_record.id = out_folder_id;
+    root_record.parent_id = dest_folder_id;
+    root_record.name = target_name;
+    root_record.created_utc = now;
+    root_record.modified_utc = now;
+    root_record.metadata = "{}";
+    if (!store->CreateFolder(root_record)) {
+      VXCORE_LOG_WARN("ImportFolder: Failed to create root folder in DB: id=%s",
+                      out_folder_id.c_str());
+    }
+
+    // Recursively create DB records for all contents
+    std::function<void(const fs::path &, const std::string &)> index_db =
+        [&](const fs::path &dir, const std::string &parent_id) {
+          if (!fs::is_directory(dir)) return;
+          for (const auto &entry : fs::directory_iterator(dir)) {
+            const std::string entry_name = PathToUtf8(entry.path().filename());
+            if (entry_name.empty() || entry_name[0] == '.') {
+              continue;
+            }
+            if (entry.is_directory()) {
+              std::string sub_id = GenerateUUID();
+              auto ts = GetCurrentTimestampMillis();
+              StoreFolderRecord sub_record;
+              sub_record.id = sub_id;
+              sub_record.parent_id = parent_id;
+              sub_record.name = entry_name;
+              sub_record.created_utc = ts;
+              sub_record.modified_utc = ts;
+              sub_record.metadata = "{}";
+              if (!store->CreateFolder(sub_record)) {
+                VXCORE_LOG_WARN("ImportFolder: Failed to create subfolder in DB: %s",
+                                entry_name.c_str());
+              }
+              index_db(entry.path(), sub_id);
+            } else if (entry.is_regular_file()) {
+              std::string file_id = GenerateUUID();
+              auto ts = GetCurrentTimestampMillis();
+              StoreFileRecord file_record;
+              file_record.id = file_id;
+              file_record.folder_id = parent_id;
+              file_record.name = entry_name;
+              file_record.created_utc = ts;
+              file_record.modified_utc = ts;
+              file_record.metadata = "{}";
+              if (!store->CreateFile(file_record)) {
+                VXCORE_LOG_WARN("ImportFolder: Failed to create file in DB: %s",
+                                entry_name.c_str());
+              }
+            }
+          }
+        };
+
+    index_db(target_path, out_folder_id);
+
+    store->CommitTransaction();
+  }
+
+  VXCORE_LOG_INFO("ImportFolder: Successfully imported folder: id=%s, name=%s",
+                  out_folder_id.c_str(), target_name.c_str());
+  return VXCORE_OK;
 }
 
 void RawFolderManager::IterateAllFiles(
