@@ -1,6 +1,9 @@
 #ifndef VXCORE_RAW_FOLDER_MANAGER_H_
 #define VXCORE_RAW_FOLDER_MANAGER_H_
 
+#include <string>
+
+#include "folder.h"
 #include "folder_manager.h"
 
 namespace vxcore {
@@ -72,6 +75,15 @@ class RawFolderManager : public FolderManager {
   VxCoreError UnindexNode(const std::string &node_path) override;
 
   void ClearCache() override;
+
+ private:
+  VxCoreError InitRootFolder();
+  VxCoreError EnsureFolderAncestorChain(const std::string &folder_path);
+  VxCoreError SyncFolderFromFilesystem(const std::string &folder_path,
+                                       FolderContents &out_contents);
+
+  std::string root_folder_id_;
+  FileRecord last_queried_file_;
 };
 
 }  // namespace vxcore
