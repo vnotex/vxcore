@@ -5110,6 +5110,62 @@ int test_list_external_nodes_excludes_nested() {
   return 0;
 }
 
+int test_list_external_nodes_ignores_patterns() {
+  std::cout << "  Running test_list_external_nodes_ignores_patterns..." << std::endl;
+  cleanup_test_dir(get_test_path("test_ignore_external_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_ignore_external_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create two external files directly on filesystem
+  std::string ignored_file = get_test_path("test_ignore_external_nb") + "/ignored.txt";
+  write_file(ignored_file, "This should be ignored.");
+  ASSERT(path_exists(ignored_file));
+
+  std::string visible_file = get_test_path("test_ignore_external_nb") + "/visible.txt";
+  write_file(visible_file, "This should be visible.");
+  ASSERT(path_exists(visible_file));
+
+  // Get current notebook config and add ignored pattern
+  char *config_json = nullptr;
+  err = vxcore_notebook_get_config(ctx, notebook_id, &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(config_json);
+
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  config["ignored"] = nlohmann::json::array({"ignored.txt"});
+  std::string updated_config_json = config.dump();
+  vxcore_string_free(config_json);
+
+  err = vxcore_notebook_update_config(ctx, notebook_id, updated_config_json.c_str());
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // List external nodes — ignored.txt should be filtered out
+  char *external_json = nullptr;
+  err = vxcore_folder_list_external(ctx, notebook_id, ".", &external_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(external_json);
+
+  nlohmann::json result = nlohmann::json::parse(external_json);
+  ASSERT(result.contains("files"));
+  ASSERT_EQ(result["files"].size(), 1);
+  ASSERT_EQ(result["files"][0]["name"].get<std::string>(), "visible.txt");
+
+  vxcore_string_free(external_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_ignore_external_nb"));
+  std::cout << "  ✓ test_list_external_nodes_ignores_patterns passed" << std::endl;
+  return 0;
+}
+
 // ============ Raw Notebook ListFolderContents Tests ============
 
 int test_raw_list_empty_folder() {
@@ -7953,6 +8009,7 @@ int main() {
   RUN_TEST(test_list_external_nodes_excludes_v2_images);
   RUN_TEST(test_list_external_nodes_excludes_v2_attachments);
   RUN_TEST(test_list_external_nodes_excludes_nested);
+  RUN_TEST(test_list_external_nodes_ignores_patterns);
 
   // Raw notebook ListFolderContents tests
   RUN_TEST(test_raw_list_empty_folder);

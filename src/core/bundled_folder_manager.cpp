@@ -12,6 +12,7 @@
 #include "metadata_store.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
+#include "utils/string_utils.h"
 #include "utils/utils.h"
 
 namespace vxcore {
@@ -2383,6 +2384,11 @@ VxCoreError BundledFolderManager::ListExternalNodes(const std::string &folder_pa
       if (entry.is_directory() &&
           (entry_name == "vx_images" || entry_name == "vx_attachments" ||
            entry_name == "_v_images" || entry_name == "_v_attachments")) {
+        continue;
+      }
+
+      // Skip entries matching notebook ignore patterns.
+      if (!nb_config.ignored.empty() && MatchesPatterns(entry_name, nb_config.ignored)) {
         continue;
       }
 
