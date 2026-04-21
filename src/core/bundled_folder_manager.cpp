@@ -2379,9 +2379,10 @@ VxCoreError BundledFolderManager::ListExternalNodes(const std::string &folder_pa
         continue;
       }
 
-      // Skip legacy VNote3 metadata directories at any level
+      // Skip legacy VNote metadata directories at any level
       if (entry.is_directory() &&
-          (entry_name == "vx_images" || entry_name == "vx_attachments")) {
+          (entry_name == "vx_images" || entry_name == "vx_attachments" ||
+           entry_name == "_v_images" || entry_name == "_v_attachments")) {
         continue;
       }
 

@@ -4941,6 +4941,115 @@ int test_list_external_nodes_excludes_vx_attachments() {
   return 0;
 }
 
+int test_list_external_nodes_excludes_v2_images() {
+  std::cout << "  Running test_list_external_nodes_excludes_v2_images..." << std::endl;
+  cleanup_test_dir(get_test_path("test_ext_excl_v2img_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_ext_excl_v2img_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Create _v_images directory directly on filesystem (VNote2 legacy name)
+  create_directory(get_test_path("test_ext_excl_v2img_nb") + "/_v_images");
+  ASSERT(path_exists(get_test_path("test_ext_excl_v2img_nb") + "/_v_images"));
+
+  // Also create a regular external folder for contrast
+  create_directory(get_test_path("test_ext_excl_v2img_nb") + "/my_stuff");
+  ASSERT(path_exists(get_test_path("test_ext_excl_v2img_nb") + "/my_stuff"));
+
+  // List external nodes
+  char *external_json = nullptr;
+  err = vxcore_folder_list_external(ctx, notebook_id, ".", &external_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(external_json);
+
+  nlohmann::json result = nlohmann::json::parse(external_json);
+
+  // _v_images should NOT appear in external folders
+  for (const auto &folder : result["folders"]) {
+    ASSERT_NE(folder["name"].get<std::string>(), std::string("_v_images"));
+  }
+
+  // my_stuff SHOULD appear
+  bool found_my_stuff = false;
+  for (const auto &folder : result["folders"]) {
+    if (folder["name"].get<std::string>() == "my_stuff") {
+      found_my_stuff = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found_my_stuff);
+
+  vxcore_string_free(external_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_ext_excl_v2img_nb"));
+  std::cout << "  \xe2\x9c\x93 test_list_external_nodes_excludes_v2_images passed" << std::endl;
+  return 0;
+}
+
+int test_list_external_nodes_excludes_v2_attachments() {
+  std::cout << "  Running test_list_external_nodes_excludes_v2_attachments..." << std::endl;
+  cleanup_test_dir(get_test_path("test_ext_excl_v2att_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_ext_excl_v2att_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Create _v_attachments directory directly on filesystem (VNote2 legacy name)
+  create_directory(get_test_path("test_ext_excl_v2att_nb") + "/_v_attachments");
+  ASSERT(path_exists(get_test_path("test_ext_excl_v2att_nb") + "/_v_attachments"));
+
+  // Also create a regular external folder for contrast
+  create_directory(get_test_path("test_ext_excl_v2att_nb") + "/my_data");
+  ASSERT(path_exists(get_test_path("test_ext_excl_v2att_nb") + "/my_data"));
+
+  // List external nodes
+  char *external_json = nullptr;
+  err = vxcore_folder_list_external(ctx, notebook_id, ".", &external_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(external_json);
+
+  nlohmann::json result = nlohmann::json::parse(external_json);
+
+  // _v_attachments should NOT appear in external folders
+  for (const auto &folder : result["folders"]) {
+    ASSERT_NE(folder["name"].get<std::string>(), std::string("_v_attachments"));
+  }
+
+  // my_data SHOULD appear
+  bool found_my_data = false;
+  for (const auto &folder : result["folders"]) {
+    if (folder["name"].get<std::string>() == "my_data") {
+      found_my_data = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(found_my_data);
+
+  vxcore_string_free(external_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_ext_excl_v2att_nb"));
+  std::cout << "  \xe2\x9c\x93 test_list_external_nodes_excludes_v2_attachments passed"
+            << std::endl;
+  return 0;
+}
+
 int test_list_external_nodes_excludes_nested() {
   std::cout << "  Running test_list_external_nodes_excludes_nested..." << std::endl;
   cleanup_test_dir(get_test_path("test_ext_excl_nested_nb"));
@@ -7841,6 +7950,8 @@ int main() {
   // External node exclusion tests
   RUN_TEST(test_list_external_nodes_excludes_vx_images);
   RUN_TEST(test_list_external_nodes_excludes_vx_attachments);
+  RUN_TEST(test_list_external_nodes_excludes_v2_images);
+  RUN_TEST(test_list_external_nodes_excludes_v2_attachments);
   RUN_TEST(test_list_external_nodes_excludes_nested);
 
   // Raw notebook ListFolderContents tests
