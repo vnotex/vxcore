@@ -112,6 +112,21 @@ VXCORE_API VxCoreError vxcore_notebook_get_recycle_bin_path(VxCoreContextHandle 
 VXCORE_API VxCoreError vxcore_notebook_empty_recycle_bin(VxCoreContextHandle context,
                                                          const char *notebook_id);
 
+// ============ Notebook History Operations ============
+
+// Get the file opening history for a notebook.
+// Returns a JSON array of history entries, ordered most-recent first.
+// Each entry: {"fileId": "<uuid>", "openedUtc": <millis>}
+// Returns empty array "[]" if no history exists.
+// Caller must free the result with vxcore_string_free().
+VXCORE_API VxCoreError vxcore_notebook_history_get(VxCoreContextHandle context,
+                                                   const char *notebook_id,
+                                                   char **out_history_json);
+
+// Clear all file opening history for a notebook.
+VXCORE_API VxCoreError vxcore_notebook_history_clear(VxCoreContextHandle context,
+                                                     const char *notebook_id);
+
 // ============ Folder Operations ============
 VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const char *notebook_id,
                                             const char *parent_path, const char *folder_name,

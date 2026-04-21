@@ -6,6 +6,8 @@
 #include "api/api_utils.h"
 #include "core/buffer_manager.h"
 #include "core/context.h"
+#include "core/history_manager.h"
+#include "core/notebook.h"
 #include "core/notebook_manager.h"
 #include "vxcore/vxcore.h"
 
@@ -330,6 +332,80 @@ VXCORE_API VxCoreError vxcore_path_build_absolute(VxCoreContextHandle context,
     return VXCORE_OK;
   } catch (...) {
     ctx->last_error = "Unknown error building absolute path";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_notebook_history_get(VxCoreContextHandle context,
+                                                   const char *notebook_id,
+                                                   char **out_history_json) {
+  if (!context || !notebook_id || !out_history_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    auto *store = notebook->GetMetadataStore();
+    if (!store) {
+      ctx->last_error = "Metadata store not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    auto history = vxcore::GetHistory(store);
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto &entry : history) {
+      arr.push_back(entry.ToJson());
+    }
+
+    char *json_copy = vxcore_strdup(arr.dump().c_str());
+    if (!json_copy) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+
+    *out_history_json = json_copy;
+    return VXCORE_OK;
+  } catch (...) {
+    ctx->last_error = "Unknown error getting notebook history";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_notebook_history_clear(VxCoreContextHandle context,
+                                                     const char *notebook_id) {
+  if (!context || !notebook_id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    auto *store = notebook->GetMetadataStore();
+    if (!store) {
+      ctx->last_error = "Metadata store not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    if (!vxcore::ClearHistory(store)) {
+      ctx->last_error = "Failed to clear notebook history";
+      return VXCORE_ERR_DATABASE;
+    }
+
+    return VXCORE_OK;
+  } catch (...) {
+    ctx->last_error = "Unknown error clearing notebook history";
     return VXCORE_ERR_UNKNOWN;
   }
 }

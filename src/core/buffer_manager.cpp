@@ -5,6 +5,7 @@
 
 #include "buffer_provider.h"
 #include "config_manager.h"
+#include "history_manager.h"
 #include "metadata_store.h"
 #include "notebook.h"
 #include "notebook_manager.h"
@@ -203,6 +204,18 @@ std::string BufferManager::OpenBuffer(const std::string &notebook_id,
   // Check if buffer already exists (de-duplication)
   std::string existing_id = FindBufferByPath(effective_notebook_id, effective_path);
   if (!existing_id.empty()) {
+    if (!effective_notebook_id.empty()) {
+      Notebook *nb = notebook_manager_->GetNotebook(effective_notebook_id);
+      if (nb) {
+        auto *store = nb->GetMetadataStore();
+        if (store) {
+          auto file_record = store->GetFileByPath(effective_path);
+          if (file_record.has_value()) {
+            RecordFileOpen(store, file_record->id);
+          }
+        }
+      }
+    }
     VXCORE_LOG_DEBUG("Buffer already open: id=%s, path=%s", existing_id.c_str(),
                      effective_path.c_str());
     return existing_id;
@@ -232,6 +245,17 @@ std::string BufferManager::OpenBuffer(const std::string &notebook_id,
 
   VXCORE_LOG_INFO("Opened buffer: id=%s, notebook_id=%s, file_path=%s", id.c_str(),
                   effective_notebook_id.c_str(), effective_path.c_str());
+
+  if (notebook) {
+    auto *store = notebook->GetMetadataStore();
+    if (store) {
+      auto file_record = store->GetFileByPath(effective_path);
+      if (file_record.has_value()) {
+        RecordFileOpen(store, file_record->id);
+      }
+    }
+  }
+
   return id;
 }
 
