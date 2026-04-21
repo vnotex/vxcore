@@ -26,6 +26,7 @@ set(VXCORE_SOURCES
     core/workspace_manager.cpp
     core/buffer.cpp
     core/buffer_manager.cpp
+    core/history_manager.cpp
     core/buffer_provider.cpp
     core/standard_buffer_provider.cpp
     core/external_buffer_provider.cpp
