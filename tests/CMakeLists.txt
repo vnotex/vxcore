@@ -14,6 +14,7 @@ add_vxcore_test(test_tag_sync)
 add_vxcore_test(test_filetype)
 add_vxcore_test(test_workspace)
 add_vxcore_test(test_buffer)
+add_vxcore_test(test_history)
 add_vxcore_test(test_session_persistence)
 add_vxcore_test(test_template)
 
