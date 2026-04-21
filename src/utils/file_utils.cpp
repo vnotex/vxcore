@@ -122,13 +122,13 @@ std::vector<std::string> SplitPathComponents(const std::string &path) {
   return components;
 }
 
-bool IsRelativePath(const std::string &path) { return std::filesystem::path(path).is_relative(); }
+bool IsRelativePath(const std::string &path) { return PathFromUtf8(path).is_relative(); }
 
 bool IsSingleName(const std::string &path) {
   if (path.empty()) {
     return false;
   }
-  if (!std::filesystem::path(path).is_relative()) {
+  if (!PathFromUtf8(path).is_relative()) {
     return false;
   }
   return path.find(kPathSeparator) == std::string::npos && path.find('\\') == std::string::npos;

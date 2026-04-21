@@ -85,7 +85,7 @@ std::string FolderManager::GetPublicAssetsFolder(const std::string &file_path) c
   std::string abs_parent = notebook_->GetAbsolutePath(parent_path);
 
   // Resolve relative to file's parent folder
-  return CleanFsPath(std::filesystem::path(abs_parent) / assets_folder);
+  return CleanFsPath(PathFromUtf8(abs_parent) / PathFromUtf8(assets_folder));
 }
 
 std::string FolderManager::GetAssetsFolder(const std::string &file_path) {

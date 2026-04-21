@@ -652,7 +652,7 @@ VXCORE_API VxCoreError vxcore_file_peek(VxCoreContextHandle context, const char 
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    std::filesystem::path abs_path = std::filesystem::path(notebook->GetRootFolder()) / file_path;
+    std::filesystem::path abs_path = vxcore::PathFromUtf8(notebook->GetRootFolder()) / vxcore::PathFromUtf8(file_path);
     if (!std::filesystem::exists(abs_path) || !std::filesystem::is_regular_file(abs_path)) {
       ctx->last_error = "File not found: " + std::string(file_path);
       return VXCORE_ERR_NOT_FOUND;
