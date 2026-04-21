@@ -1610,6 +1610,163 @@ int test_raw_tag_move_unsupported() {
   return 0;
 }
 
+int test_notebook_ignored_config() {
+  std::cout << "  Running test_notebook_ignored_config..." << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_ignored"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_ignored").c_str(),
+                               "{\"name\":\"Ignored Test\",\"ignored\":[\"*.tmp\",\"build/\"]}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *config_json = nullptr;
+  err = vxcore_notebook_get_config(ctx, notebook_id, &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(config_json);
+
+  std::string cfg(config_json);
+  ASSERT_NE(cfg.find("*.tmp"), std::string::npos);
+  ASSERT_NE(cfg.find("build/"), std::string::npos);
+  vxcore_string_free(config_json);
+
+  err = vxcore_notebook_update_config(ctx, notebook_id,
+                                      "{\"name\":\"Ignored Test\",\"ignored\":[\"*.log\"]}");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  config_json = nullptr;
+  err = vxcore_notebook_get_config(ctx, notebook_id, &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string cfg2(config_json);
+  ASSERT_NE(cfg2.find("*.log"), std::string::npos);
+  ASSERT_EQ(cfg2.find("*.tmp"), std::string::npos);
+  ASSERT_EQ(cfg2.find("build/"), std::string::npos);
+
+  vxcore_string_free(config_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_nb_ignored"));
+  std::cout << "  \xE2\x9C\x93 test_notebook_ignored_config passed" << std::endl;
+  return 0;
+}
+
+int test_notebook_ignored_empty_default() {
+  std::cout << "  Running test_notebook_ignored_empty_default..." << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_ignored_empty"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_nb_ignored_empty").c_str(),
+                               "{\"name\":\"Empty Ignored\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *config_json = nullptr;
+  err = vxcore_notebook_get_config(ctx, notebook_id, &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(config_json);
+
+  std::string cfg(config_json);
+  ASSERT_NE(cfg.find("\"ignored\":[]"), std::string::npos);
+
+  vxcore_string_free(config_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_nb_ignored_empty"));
+  std::cout << "  \xE2\x9C\x93 test_notebook_ignored_empty_default passed" << std::endl;
+  return 0;
+}
+
+int test_notebook_ignored_persistence() {
+  std::cout << "  Running test_notebook_ignored_persistence..." << std::endl;
+  cleanup_test_dir(get_test_path("test_nb_ignored_persist"));
+
+  VxCoreContextHandle ctx1 = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx1, get_test_path("test_nb_ignored_persist").c_str(),
+                               "{\"name\":\"Persist Test\",\"ignored\":[\"*.tmp\"]}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string saved_id(notebook_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx1);
+
+  VxCoreContextHandle ctx2 = nullptr;
+  err = vxcore_context_create(nullptr, &ctx2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *reopened_id = nullptr;
+  err = vxcore_notebook_open(ctx2, get_test_path("test_nb_ignored_persist").c_str(), &reopened_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(reopened_id);
+
+  char *config_json = nullptr;
+  err = vxcore_notebook_get_config(ctx2, reopened_id, &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string cfg(config_json);
+  ASSERT_NE(cfg.find("*.tmp"), std::string::npos);
+
+  vxcore_string_free(config_json);
+  vxcore_string_free(reopened_id);
+  vxcore_context_destroy(ctx2);
+  cleanup_test_dir(get_test_path("test_nb_ignored_persist"));
+  std::cout << "  \xE2\x9C\x93 test_notebook_ignored_persistence passed" << std::endl;
+  return 0;
+}
+
+int test_raw_ignored_config_roundtrip() {
+  std::cout << "  Running test_raw_ignored_config_roundtrip..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_ignored_rt"));
+
+  VxCoreContextHandle ctx1 = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(
+      ctx1, get_test_path("test_raw_ignored_rt").c_str(),
+      "{\"name\":\"Raw Ignored\",\"ignored\":[\"node_modules/\",\"*.bak\"]}",
+      VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  std::string saved_id(notebook_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx1);
+
+  VxCoreContextHandle ctx2 = nullptr;
+  err = vxcore_context_create(nullptr, &ctx2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *config_json = nullptr;
+  err = vxcore_notebook_get_config(ctx2, saved_id.c_str(), &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(config_json);
+
+  std::string cfg(config_json);
+  ASSERT_NE(cfg.find("node_modules/"), std::string::npos);
+  ASSERT_NE(cfg.find("*.bak"), std::string::npos);
+
+  vxcore_string_free(config_json);
+  vxcore_context_destroy(ctx2);
+  cleanup_test_dir(get_test_path("test_raw_ignored_rt"));
+  std::cout << "  \xE2\x9C\x93 test_raw_ignored_config_roundtrip passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
 
@@ -1625,6 +1782,9 @@ int main() {
   RUN_TEST(test_notebook_list);
   RUN_TEST(test_notebook_persistence);
   RUN_TEST(test_notebook_rebuild_cache);
+  RUN_TEST(test_notebook_ignored_config);
+  RUN_TEST(test_notebook_ignored_empty_default);
+  RUN_TEST(test_notebook_ignored_persistence);
   RUN_TEST(test_tag_create_list);
   RUN_TEST(test_tag_duplicate_create);
   RUN_TEST(test_tag_delete);
@@ -1659,6 +1819,7 @@ int main() {
   RUN_TEST(test_raw_config_roundtrip_via_db);
   RUN_TEST(test_raw_no_config_json_created);
   RUN_TEST(test_raw_update_config_via_db);
+  RUN_TEST(test_raw_ignored_config_roundtrip);
 
   // Raw tag guard tests
   RUN_TEST(test_raw_tag_create_unsupported);

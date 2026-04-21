@@ -14,6 +14,7 @@ const char *kMetaKeyName = "config.name";
 const char *kMetaKeyDescription = "config.description";
 const char *kMetaKeyAssetsFolder = "config.assetsFolder";
 const char *kMetaKeyMetadata = "config.metadata";
+const char *kMetaKeyIgnored = "config.ignored";
 }  // namespace
 
 RawNotebook::RawNotebook(const std::string &local_data_folder, const std::string &root_folder)
@@ -69,6 +70,23 @@ VxCoreError RawNotebook::LoadConfig() {
     }
   }
 
+  auto ignored_str = metadata_store_->GetNotebookMetadata(kMetaKeyIgnored);
+  if (ignored_str.has_value()) {
+    try {
+      auto arr = nlohmann::json::parse(ignored_str.value());
+      if (arr.is_array()) {
+        for (const auto &item : arr) {
+          if (item.is_string()) {
+            config_.ignored.push_back(item.get<std::string>());
+          }
+        }
+      }
+    } catch (const nlohmann::json::exception &) {
+      VXCORE_LOG_WARN("Failed to parse ignored JSON for raw notebook: id=%s",
+                      config_.id.c_str());
+    }
+  }
+
   return VXCORE_OK;
 }
 
@@ -87,6 +105,10 @@ VxCoreError RawNotebook::SaveConfigToDb() {
     return VXCORE_ERR_DATABASE;
   }
   if (!metadata_store_->SetNotebookMetadata(kMetaKeyMetadata, config_.metadata.dump())) {
+    return VXCORE_ERR_DATABASE;
+  }
+  if (!metadata_store_->SetNotebookMetadata(kMetaKeyIgnored,
+                                             nlohmann::json(config_.ignored).dump())) {
     return VXCORE_ERR_DATABASE;
   }
 

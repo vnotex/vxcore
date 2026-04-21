@@ -72,6 +72,13 @@ NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
   if (json.contains("tagsModifiedUtc") && json["tagsModifiedUtc"].is_number_integer()) {
     config.tags_modified_utc = json["tagsModifiedUtc"].get<int64_t>();
   }
+  if (json.contains("ignored") && json["ignored"].is_array()) {
+    for (const auto &item : json["ignored"]) {
+      if (item.is_string()) {
+        config.ignored.push_back(item.get<std::string>());
+      }
+    }
+  }
   return config;
 }
 
@@ -89,6 +96,11 @@ nlohmann::json NotebookConfig::ToJson() const {
   }
   json["tags"] = std::move(tags_array);
   json["tagsModifiedUtc"] = tags_modified_utc;
+  nlohmann::json ignored_array = nlohmann::json::array();
+  for (const auto &pattern : ignored) {
+    ignored_array.push_back(pattern);
+  }
+  json["ignored"] = std::move(ignored_array);
   return json;
 }
 

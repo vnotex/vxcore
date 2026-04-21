@@ -33,6 +33,7 @@ struct NotebookConfig {
   std::string description;
   std::string assets_folder;
   nlohmann::json metadata;
+  std::vector<std::string> ignored;
   std::vector<TagNode> tags;
   int64_t tags_modified_utc;
 
