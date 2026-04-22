@@ -125,7 +125,16 @@ VXCORE_API VxCoreError vxcore_notebook_history_get(VxCoreContextHandle context,
 
 // Clear all file opening history for a notebook.
 VXCORE_API VxCoreError vxcore_notebook_history_clear(VxCoreContextHandle context,
-                                                     const char *notebook_id);
+                                                      const char *notebook_id);
+
+// Get file opening history with resolved paths for a notebook.
+// Returns a JSON array of history entries with resolved relative paths, most-recent first.
+// Each entry: {"fileId": "<uuid>", "openedUtc": <millis>, "relativePath": "<path>", "name": "<filename>"}
+// Entries whose fileId no longer resolves (deleted files) are silently filtered out.
+// Caller must free the result with vxcore_string_free().
+VXCORE_API VxCoreError vxcore_notebook_history_get_resolved(VxCoreContextHandle context,
+                                                             const char *notebook_id,
+                                                             char **out_history_json);
 
 // ============ Folder Operations ============
 VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const char *notebook_id,

@@ -420,6 +420,139 @@ int test_history_skip_external() {
   return 0;
 }
 
+int test_history_get_resolved_basic() {
+  std::cout << "  Running test_history_get_resolved_basic..." << std::endl;
+  cleanup_test_dir(get_test_path("test_history_resolved_basic"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_history_resolved_basic").c_str(),
+                               "{\"name\":\"History Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "note.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *history_json = nullptr;
+  err = vxcore_notebook_history_get_resolved(ctx, notebook_id, &history_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(history_json);
+
+  auto arr = nlohmann::json::parse(history_json);
+  ASSERT_TRUE(arr.is_array());
+  ASSERT_EQ(arr.size(), static_cast<size_t>(1));
+  ASSERT_EQ(arr[0]["relativePath"].get<std::string>(), std::string("note.md"));
+  ASSERT_EQ(arr[0]["name"].get<std::string>(), std::string("note.md"));
+  ASSERT_FALSE(arr[0]["fileId"].get<std::string>().empty());
+  ASSERT_TRUE(arr[0]["openedUtc"].get<int64_t>() > 0);
+
+  vxcore_string_free(history_json);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_history_resolved_basic"));
+  std::cout << "  ✓ test_history_get_resolved_basic passed" << std::endl;
+  return 0;
+}
+
+int test_history_get_resolved_filters_deleted() {
+  std::cout << "  Running test_history_get_resolved_filters_deleted..." << std::endl;
+  cleanup_test_dir(get_test_path("test_history_resolved_filter"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_history_resolved_filter").c_str(),
+                               "{\"name\":\"History Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_keep = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "keep.md", &file_keep);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_del = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "delete_me.md", &file_del);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buf_keep = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "keep.md", &buf_keep);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buf_del = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "delete_me.md", &buf_del);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_buffer_close(ctx, buf_keep);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_close(ctx, buf_del);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_node_delete(ctx, notebook_id, "delete_me.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *history_json = nullptr;
+  err = vxcore_notebook_history_get_resolved(ctx, notebook_id, &history_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(history_json);
+
+  auto arr = nlohmann::json::parse(history_json);
+  ASSERT_TRUE(arr.is_array());
+  ASSERT_EQ(arr.size(), static_cast<size_t>(1));
+  ASSERT_EQ(arr[0]["relativePath"].get<std::string>(), std::string("keep.md"));
+
+  vxcore_string_free(history_json);
+  vxcore_string_free(buf_del);
+  vxcore_string_free(buf_keep);
+  vxcore_string_free(file_del);
+  vxcore_string_free(file_keep);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_history_resolved_filter"));
+  std::cout << "  ✓ test_history_get_resolved_filters_deleted passed" << std::endl;
+  return 0;
+}
+
+int test_history_get_resolved_empty() {
+  std::cout << "  Running test_history_get_resolved_empty..." << std::endl;
+  cleanup_test_dir(get_test_path("test_history_resolved_empty"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_history_resolved_empty").c_str(),
+                               "{\"name\":\"History Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *history_json = nullptr;
+  err = vxcore_notebook_history_get_resolved(ctx, notebook_id, &history_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(history_json);
+
+  auto arr = nlohmann::json::parse(history_json);
+  ASSERT_TRUE(arr.is_array());
+  ASSERT_EQ(arr.size(), static_cast<size_t>(0));
+
+  vxcore_string_free(history_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_history_resolved_empty"));
+  std::cout << "  ✓ test_history_get_resolved_empty passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running history tests..." << std::endl;
 
@@ -434,6 +567,9 @@ int main() {
   RUN_TEST(test_history_clear);
   RUN_TEST(test_history_persists);
   RUN_TEST(test_history_skip_external);
+  RUN_TEST(test_history_get_resolved_basic);
+  RUN_TEST(test_history_get_resolved_filters_deleted);
+  RUN_TEST(test_history_get_resolved_empty);
 
   std::cout << "All history tests passed!" << std::endl;
   return 0;

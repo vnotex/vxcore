@@ -7,6 +7,7 @@
 #include "core/buffer_manager.h"
 #include "core/context.h"
 #include "core/history_manager.h"
+#include "core/metadata_store.h"
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
 #include "vxcore/vxcore.h"
@@ -406,6 +407,58 @@ VXCORE_API VxCoreError vxcore_notebook_history_clear(VxCoreContextHandle context
     return VXCORE_OK;
   } catch (...) {
     ctx->last_error = "Unknown error clearing notebook history";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_notebook_history_get_resolved(VxCoreContextHandle context,
+                                                             const char *notebook_id,
+                                                             char **out_history_json) {
+  if (!context || !notebook_id || !out_history_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    auto *store = notebook->GetMetadataStore();
+    if (!store) {
+      ctx->last_error = "Metadata store not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    auto history = vxcore::GetHistory(store);
+    nlohmann::json arr = nlohmann::json::array();
+    for (const auto &entry : history) {
+      auto path = store->GetNodePathById(entry.file_id);
+      if (path.empty()) {
+        continue;
+      }
+      auto pos = path.rfind('/');
+      auto name = (pos != std::string::npos) ? path.substr(pos + 1) : path;
+      nlohmann::json obj;
+      obj["fileId"] = entry.file_id;
+      obj["openedUtc"] = entry.opened_utc;
+      obj["relativePath"] = path;
+      obj["name"] = name;
+      arr.push_back(obj);
+    }
+
+    char *json_copy = vxcore_strdup(arr.dump().c_str());
+    if (!json_copy) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+
+    *out_history_json = json_copy;
+    return VXCORE_OK;
+  } catch (...) {
+    ctx->last_error = "Unknown error getting resolved notebook history";
     return VXCORE_ERR_UNKNOWN;
   }
 }
