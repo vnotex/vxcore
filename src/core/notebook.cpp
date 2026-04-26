@@ -133,6 +133,8 @@ Notebook::Notebook(const std::string &local_data_folder, const std::string &root
                    NotebookType type)
     : local_data_folder_(local_data_folder), root_folder_(root_folder), type_(type) {}
 
+Notebook::~Notebook() = default;
+
 void Notebook::EnsureId() {
   if (config_.id.empty()) {
     config_.id = GenerateUUID();

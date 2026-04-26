@@ -56,7 +56,7 @@ struct NotebookRecord {
 
 class Notebook {
  public:
-  virtual ~Notebook() = default;
+  virtual ~Notebook();
 
   const std::string &GetId() const { return config_.id; }
   const std::string &GetRootFolder() const { return root_folder_; }
