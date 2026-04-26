@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include "tag_db.h"
+#include "utils/logger.h"
 
 namespace vxcore {
 namespace db {
@@ -245,16 +246,21 @@ std::optional<DbFolderRecord> FileDb::GetFolderByPath(const std::string& path) {
 
   // Split path into components (expects cleaned path with "/" separator)
   std::vector<std::string> parts = SplitPath(path);
+  VXCORE_LOG_INFO("[DIAG] GetFolderByPath: path='%s', components=%d", path.c_str(), (int)parts.size());
   if (parts.empty()) {
     return std::nullopt;
   }
 
   // Traverse path from root
   int64_t parent_id = -1;  // Start from root
+  VXCORE_LOG_INFO("[DIAG] GetFolderByPath: starting traversal from parent_id=%lld", (long long)parent_id);
   std::optional<DbFolderRecord> folder;
 
   for (const auto& part : parts) {
     folder = GetFolderByName(parent_id, part);
+    VXCORE_LOG_INFO("[DIAG] GetFolderByPath: looking for name='%s' under parent_id=%lld -> %s",
+                    part.c_str(), (long long)parent_id,
+                    folder.has_value() ? std::to_string(folder->id).c_str() : "NOT_FOUND");
     if (!folder.has_value()) {
       return std::nullopt;  // Path component not found
     }

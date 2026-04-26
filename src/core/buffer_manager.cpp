@@ -20,16 +20,16 @@ static std::optional<StoreFileRecord> TrySyncAndGetFile(Notebook *notebook, Meta
                                                         const std::string &file_path) {
   auto *folder_mgr = notebook->GetFolderManager();
   if (!folder_mgr) {
-    VXCORE_LOG_DEBUG("TrySyncAndGetFile: FolderManager is null");
+    VXCORE_LOG_INFO("TrySyncAndGetFile: FolderManager is null");
     return std::nullopt;
   }
   auto [parent, name] = SplitPath(file_path);
-  VXCORE_LOG_DEBUG("TrySyncAndGetFile: syncing parent folder '%s' for file '%s'", parent.c_str(),
+  VXCORE_LOG_INFO("TrySyncAndGetFile: syncing parent folder '%s' for file '%s'", parent.c_str(),
                    file_path.c_str());
   std::string config_json;
   VxCoreError err = folder_mgr->GetFolderConfig(parent, config_json);
   if (err != VXCORE_OK) {
-    VXCORE_LOG_DEBUG("TrySyncAndGetFile: GetFolderConfig('%s') failed: %d", parent.c_str(), err);
+    VXCORE_LOG_INFO("TrySyncAndGetFile: GetFolderConfig('%s') failed: %d", parent.c_str(), err);
     return std::nullopt;
   }
   auto result = store->GetFileByPath(file_path);
