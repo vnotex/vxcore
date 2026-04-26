@@ -433,8 +433,6 @@ std::optional<StoreFileRecord> SqliteMetadataStore::GetFileByPath(const std::str
   // Split path into folder path and file name
   std::string clean_path = CleanPath(path);
   auto [folder_path, file_name] = SplitPath(clean_path);
-  VXCORE_LOG_INFO("[DIAG] GetFileByPath: path='%s' -> folder_path='%s', file_name='%s'",
-                  path.c_str(), folder_path.c_str(), file_name.c_str());
 
   // Get folder DB ID
   int64_t folder_db_id = -1;
@@ -451,14 +449,9 @@ std::optional<StoreFileRecord> SqliteMetadataStore::GetFileByPath(const std::str
       folder_db_id = root_folders[0].id;
     }
   }
-  VXCORE_LOG_INFO("[DIAG] GetFileByPath: folder_db_id=%lld for folder_path='%s'",
-                  (long long)folder_db_id, folder_path.c_str());
 
   // Get file by name in folder
   auto db_file = file_db_->GetFileByName(folder_db_id, file_name);
-  VXCORE_LOG_INFO("[DIAG] GetFileByPath: file lookup for name='%s' in folder_db_id=%lld -> %s",
-                  file_name.c_str(), (long long)folder_db_id,
-                  db_file.has_value() ? "FOUND" : "NOT_FOUND");
   if (!db_file) {
     return std::nullopt;
   }

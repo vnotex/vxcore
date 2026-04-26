@@ -887,6 +887,54 @@ int test_filedb_get_folder_by_path_edge_cases() {
   return 0;
 }
 
+int test_filedb_get_folder_by_path_with_dot_root() {
+  std::cout << "  Running test_filedb_get_folder_by_path_with_dot_root..." << std::endl;
+
+  setup_test_db();
+  DbManager db_manager;
+  ASSERT_TRUE(db_manager.Open(test_db_path));
+  ASSERT_TRUE(db_manager.InitializeSchema());
+  TagDb tag_db(db_manager.GetHandle());
+  FileDb file_db(db_manager.GetHandle());
+
+  // Create "." root folder (mirrors production: BundledFolderManager/RawFolderManager)
+  int64_t dot_root_id = file_db.CreateFolder(-1, ".", 1000, 2000);
+  ASSERT_NE(dot_root_id, -1);
+
+  // Create subfolder as child of "." root
+  int64_t edu_id = file_db.CreateFolder(dot_root_id, "Education", 1100, 2100);
+  ASSERT_NE(edu_id, -1);
+
+  // Create deeper subfolder
+  int64_t sub_id = file_db.CreateFolder(edu_id, "sub", 1200, 2200);
+  ASSERT_NE(sub_id, -1);
+
+  // Subfolder found via "." root traversal
+  auto found_edu = file_db.GetFolderByPath("Education");
+  ASSERT_TRUE(found_edu.has_value());
+  ASSERT_EQ(found_edu->id, edu_id);
+  ASSERT_EQ(found_edu->name, "Education");
+
+  // Deep subfolder found
+  auto found_sub = file_db.GetFolderByPath("Education/sub");
+  ASSERT_TRUE(found_sub.has_value());
+  ASSERT_EQ(found_sub->id, sub_id);
+  ASSERT_EQ(found_sub->name, "sub");
+
+  // Nonexistent still returns nullopt
+  auto not_found = file_db.GetFolderByPath("nonexistent");
+  ASSERT_FALSE(not_found.has_value());
+
+  // "." path still returns nullopt (early return, NOT the "." folder record)
+  auto dot_path = file_db.GetFolderByPath(".");
+  ASSERT_FALSE(dot_path.has_value());
+
+  db_manager.Close();
+  cleanup_test_db();
+  std::cout << "  ✓ test_filedb_get_folder_by_path_with_dot_root passed" << std::endl;
+  return 0;
+}
+
 // ============================================================================
 // TagDb Query Tests
 // ============================================================================
@@ -1272,6 +1320,7 @@ int main() {
   RUN_TEST(test_filedb_get_folder_by_path);
   RUN_TEST(test_filedb_get_folder_by_path_not_found);
   RUN_TEST(test_filedb_get_folder_by_path_edge_cases);
+  RUN_TEST(test_filedb_get_folder_by_path_with_dot_root);
 
   // TagDb - Query tests
   RUN_TEST(test_tagdb_find_files_by_tags_and);
