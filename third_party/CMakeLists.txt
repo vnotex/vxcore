@@ -7,3 +7,6 @@ target_include_directories(bs_thread_pool INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # SQLite3 library
 add_subdirectory(sqlite)
+
+# cmark library (VNote fork)
+add_subdirectory(cmark)
