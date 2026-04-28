@@ -17,6 +17,28 @@ add_vxcore_test(test_buffer)
 add_vxcore_test(test_history)
 add_vxcore_test(test_session_persistence)
 add_vxcore_test(test_template)
+add_vxcore_test(test_e2e_assets)
+add_executable(test_content_processor test_content_processor.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/content_processor/markdown_handler.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/content_processor/content_processor.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
+target_link_libraries(test_content_processor PRIVATE vxcore cmark)
+target_include_directories(test_content_processor PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
+if(MSVC)
+    target_compile_definitions(test_content_processor PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+add_test(NAME test_content_processor COMMAND test_content_processor)
+
+add_executable(test_asset_utils test_asset_utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/content_processor/asset_utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
+target_link_libraries(test_asset_utils PRIVATE vxcore nlohmann_json)
+target_include_directories(test_asset_utils PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
+if(MSVC)
+    target_compile_definitions(test_asset_utils PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+add_test(NAME test_asset_utils COMMAND test_asset_utils)
 
 # test_snippet: Tests SnippetManager C++ API directly (no C API yet).
 # Compiles snippet_manager and dependencies directly since C++ symbols aren't DLL-exported.
@@ -117,7 +139,10 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/content_processor/asset_utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/content_processor/content_processor.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/content_processor/markdown_handler.cpp)
 target_include_directories(test_folder_manager PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
-target_link_libraries(test_folder_manager PRIVATE sqlite3 nlohmann_json)
+target_link_libraries(test_folder_manager PRIVATE sqlite3 nlohmann_json cmark)
 add_test(NAME test_folder_manager COMMAND test_folder_manager)

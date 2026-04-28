@@ -57,6 +57,9 @@ set(VXCORE_SOURCES
     utils/file_utils.cpp
     platform/path_provider.cpp
     platform/process_utils.cpp
+    core/content_processor/markdown_handler.cpp
+    core/content_processor/content_processor.cpp
+    core/content_processor/asset_utils.cpp
 )
 
 if(VXCORE_BUILD_SHARED)
@@ -76,7 +79,7 @@ target_include_directories(vxcore
         ${PROJECT_SOURCE_DIR}/src
 )
 
-target_link_libraries(vxcore PRIVATE nlohmann_json sqlite3 bs_thread_pool Threads::Threads)
+target_link_libraries(vxcore PRIVATE nlohmann_json sqlite3 cmark bs_thread_pool Threads::Threads)
 
 if(WIN32)
     target_link_libraries(vxcore PRIVATE shell32)
