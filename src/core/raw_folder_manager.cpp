@@ -7,6 +7,8 @@
 #include <set>
 #include <sstream>
 
+#include "core/content_processor/asset_utils.h"
+#include "core/content_processor/content_processor.h"
 #include "metadata_store.h"
 #include "notebook.h"
 #include "utils/file_utils.h"
@@ -821,6 +823,132 @@ VxCoreError RawFolderManager::MoveFolder(const std::string &src_path,
   return VXCORE_OK;
 }
 
+VxCoreError RawFolderManager::ProcessCopiedRawFolderTree(
+    const std::string &dest_abs_path, const std::string &src_rel_path,
+    const std::string &parent_folder_id) {
+  auto *store = notebook_->GetMetadataStore();
+  if (!store) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  const std::string &assets_folder_name = notebook_->GetConfig().assets_folder;
+  const std::set<std::string> skip_dirs = {assets_folder_name, "_v_images", "vx_images",
+                                           "_v_attachments", "vx_attachments"};
+  ContentProcessor processor;
+  auto dest_fs = PathFromUtf8(dest_abs_path);
+
+  try {
+    for (const auto &entry : fs::directory_iterator(dest_fs)) {
+      std::string entry_name = PathToUtf8(entry.path().filename());
+
+      // Skip hidden entries
+      if (entry_name.empty() || entry_name[0] == '.') {
+        continue;
+      }
+
+      if (entry.is_directory()) {
+        // Skip special asset/legacy directories
+        if (skip_dirs.count(entry_name)) {
+          continue;
+        }
+
+        // Generate new folder UUID and create DB record
+        std::string new_folder_id = GenerateUUID();
+        auto now = GetCurrentTimestampMillis();
+        StoreFolderRecord folder_record;
+        folder_record.id = new_folder_id;
+        folder_record.parent_id = parent_folder_id;
+        folder_record.name = entry_name;
+        folder_record.created_utc = now;
+        folder_record.modified_utc = now;
+        folder_record.metadata = "{}";
+        if (!store->CreateFolder(folder_record)) {
+          VXCORE_LOG_WARN("ProcessCopiedRawFolderTree: failed to create folder: %s",
+                          entry_name.c_str());
+        }
+
+        // Recurse into subfolder
+        std::string sub_dest_abs = ConcatenatePaths(dest_abs_path, entry_name);
+        std::string sub_src_rel = ConcatenatePaths(src_rel_path, entry_name);
+        VxCoreError err = ProcessCopiedRawFolderTree(sub_dest_abs, sub_src_rel, new_folder_id);
+        if (err != VXCORE_OK) {
+          VXCORE_LOG_WARN("ProcessCopiedRawFolderTree: failed on subfolder %s",
+                          entry_name.c_str());
+          return err;
+        }
+      } else if (entry.is_regular_file()) {
+        // Look up old UUID from the source path in MetadataStore
+        std::string src_file_rel = ConcatenatePaths(src_rel_path, entry_name);
+        std::string old_file_uuid = FindFileIdByPath(store, root_folder_id_, src_file_rel);
+
+        // Generate new UUID
+        std::string new_file_id = GenerateUUID();
+        auto now = GetCurrentTimestampMillis();
+
+        // Rename vx_assets/<old_uuid> → vx_assets/<new_uuid> if it exists
+        if (!old_file_uuid.empty()) {
+          std::string old_assets_abs =
+              ConcatenatePaths(ConcatenatePaths(dest_abs_path, assets_folder_name), old_file_uuid);
+          std::string new_assets_abs =
+              ConcatenatePaths(ConcatenatePaths(dest_abs_path, assets_folder_name), new_file_id);
+          fs::path old_assets_fs = PathFromUtf8(old_assets_abs);
+          if (fs::exists(old_assets_fs) && fs::is_directory(old_assets_fs)) {
+            try {
+              fs::rename(old_assets_fs, PathFromUtf8(new_assets_abs));
+            } catch (const std::exception &e) {
+              VXCORE_LOG_WARN("ProcessCopiedRawFolderTree: failed to rename assets dir: %s",
+                              e.what());
+            }
+          }
+        }
+
+        // Rewrite asset links in supported file types
+        if (!old_file_uuid.empty()) {
+          std::string ext;
+          size_t dot_pos = entry_name.find_last_of('.');
+          if (dot_pos != std::string::npos && dot_pos + 1 < entry_name.size()) {
+            ext = entry_name.substr(dot_pos + 1);
+          }
+
+          IFileTypeHandler *handler = processor.GetHandler(ext);
+          if (handler) {
+            std::string content;
+            VxCoreError read_err = ReadFile(entry.path(), content);
+            if (read_err == VXCORE_OK) {
+              std::string old_relative_assets =
+                  ConcatenatePaths(assets_folder_name, old_file_uuid);
+              std::string new_relative_assets = ConcatenatePaths(assets_folder_name, new_file_id);
+              std::string rewritten =
+                  handler->RewriteAssetLinks(content, old_relative_assets, new_relative_assets);
+              if (rewritten != content) {
+                WriteFile(entry.path(), rewritten);
+              }
+            }
+          }
+        }
+
+        // Create DB file record
+        StoreFileRecord file_record;
+        file_record.id = new_file_id;
+        file_record.folder_id = parent_folder_id;
+        file_record.name = entry_name;
+        file_record.created_utc = now;
+        file_record.modified_utc = now;
+        file_record.metadata = "{}";
+        if (!store->CreateFile(file_record)) {
+          VXCORE_LOG_WARN("ProcessCopiedRawFolderTree: failed to create file: %s",
+                          entry_name.c_str());
+        }
+      }
+    }
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("ProcessCopiedRawFolderTree: failed to iterate: %s", e.what());
+    return VXCORE_ERR_IO;
+  }
+
+  return VXCORE_OK;
+}
+
 VxCoreError RawFolderManager::CopyFolder(const std::string &src_path,
                                          const std::string &dest_parent_path,
                                          const std::string &new_name,
@@ -890,6 +1018,9 @@ VxCoreError RawFolderManager::CopyFolder(const std::string &src_path,
         }
       }
     }
+
+    // Process the copied tree: walk filesystem, regen UUIDs, rename assets, rewrite content
+    ProcessCopiedRawFolderTree(dest_abs, clean_src, out_folder_id);
   }
 
   return VXCORE_OK;
@@ -1262,6 +1393,47 @@ VxCoreError RawFolderManager::MoveFile(const std::string &file_path,
     return VXCORE_ERR_IO;
   }
 
+  // Move assets directory (no-op if source has no assets)
+  {
+    const std::string &assets_folder_name = notebook_->GetConfig().assets_folder;
+    auto *store_tmp = notebook_->GetMetadataStore();
+    std::string file_uuid;
+    if (store_tmp) {
+      file_uuid = FindFileIdByPath(store_tmp, root_folder_id_, clean_src);
+    }
+    if (!file_uuid.empty()) {
+      std::string old_assets_abs =
+          ConcatenatePaths(ConcatenatePaths(src_folder_abs, assets_folder_name), file_uuid);
+      std::string new_assets_abs =
+          ConcatenatePaths(ConcatenatePaths(dest_folder_abs, assets_folder_name), file_uuid);
+      MoveAssetsDirectory(old_assets_abs, new_assets_abs);
+    }
+  }
+
+  // Move relative-path linked files for supported file types
+  {
+    std::string ext;
+    size_t dot_pos = file_name.find_last_of('.');
+    if (dot_pos != std::string::npos && dot_pos + 1 < file_name.size()) {
+      ext = file_name.substr(dot_pos + 1);
+    }
+
+    ContentProcessor processor;
+    IFileTypeHandler *handler = processor.GetHandler(ext);
+    if (handler) {
+      std::string content;
+      VxCoreError read_err = ReadFile(fs_dest, content);
+      if (read_err == VXCORE_OK) {
+        auto relative_paths = handler->DiscoverRelativeLinks(
+            content, notebook_->GetConfig().assets_folder);
+        if (!relative_paths.empty()) {
+          MoveRelativeLinkedFiles(relative_paths, src_folder_abs, dest_folder_abs,
+                                  notebook_->GetRootFolder(), dest_abs);
+        }
+      }
+    }
+  }
+
   // DB second — UUID preserved, move to new parent
   auto *store = notebook_->GetMetadataStore();
   if (store) {
@@ -1331,6 +1503,71 @@ VxCoreError RawFolderManager::CopyFile(const std::string &file_path,
 
   // DB second — FRESH UUID
   out_file_id = GenerateUUID();
+
+  // Copy assets directory (no-op if source has no assets)
+  {
+    const std::string &assets_folder_name = notebook_->GetConfig().assets_folder;
+    std::string old_file_uuid;
+    auto *store_tmp = notebook_->GetMetadataStore();
+    if (store_tmp) {
+      old_file_uuid = FindFileIdByPath(store_tmp, root_folder_id_, clean_src);
+    }
+    if (!old_file_uuid.empty()) {
+      std::string src_assets_abs =
+          ConcatenatePaths(ConcatenatePaths(src_folder_abs, assets_folder_name), old_file_uuid);
+      std::string dest_assets_abs =
+          ConcatenatePaths(ConcatenatePaths(dest_folder_abs, assets_folder_name), out_file_id);
+      CopyAssetsDirectory(src_assets_abs, dest_assets_abs);
+    }
+  }
+
+  // Rewrite asset links and copy legacy images for supported file types
+  {
+    std::string ext;
+    size_t dot_pos = target_name.find_last_of('.');
+    if (dot_pos != std::string::npos && dot_pos + 1 < target_name.size()) {
+      ext = target_name.substr(dot_pos + 1);
+    }
+
+    ContentProcessor processor;
+    IFileTypeHandler *handler = processor.GetHandler(ext);
+    if (handler) {
+      std::string content;
+      VxCoreError read_err = ReadFile(fs_dest, content);
+      if (read_err == VXCORE_OK) {
+        // Rewrite asset links from old UUID to new UUID
+        std::string old_file_uuid;
+        auto *store_tmp2 = notebook_->GetMetadataStore();
+        if (store_tmp2) {
+          old_file_uuid = FindFileIdByPath(store_tmp2, root_folder_id_, clean_src);
+        }
+        if (!old_file_uuid.empty()) {
+          std::string old_relative_assets =
+              ConcatenatePaths(notebook_->GetConfig().assets_folder, old_file_uuid);
+          std::string new_relative_assets =
+              ConcatenatePaths(notebook_->GetConfig().assets_folder, out_file_id);
+          std::string rewritten =
+              handler->RewriteAssetLinks(content, old_relative_assets, new_relative_assets);
+          if (rewritten != content) {
+            WriteFile(fs_dest, rewritten);
+          }
+        }
+
+        // Copy relative-path linked files
+        std::string updated_content;
+        VxCoreError re_read_err = ReadFile(fs_dest, updated_content);
+        if (re_read_err == VXCORE_OK) {
+          auto relative_paths = handler->DiscoverRelativeLinks(
+              updated_content, notebook_->GetConfig().assets_folder);
+          if (!relative_paths.empty()) {
+            CopyRelativeLinkedFiles(relative_paths, src_folder_abs, dest_folder_abs,
+                                    notebook_->GetRootFolder(), src_abs);
+          }
+        }
+      }
+    }
+  }
+
   auto *store = notebook_->GetMetadataStore();
   if (store) {
     err = EnsureFolderAncestorChain(clean_dest);

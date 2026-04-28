@@ -143,6 +143,11 @@ class BundledFolderManager : public FolderManager {
   // Get the parent folder's ID (UUID) for a given folder path
   std::string GetParentFolderId(const std::string &folder_path);
 
+  // Recursively process a copied folder tree: regenerate UUIDs, rename assets, rewrite content
+  VxCoreError ProcessCopiedFolderTree(const std::string &dest_path,
+                                      const std::string &parent_id,
+                                      const std::string &new_name = "");
+
   // Recycle bin helpers
   std::string GenerateUniqueRecycleBinName(const std::string &name) const;
   std::string GenerateUniqueFileName(const std::string &folder_abs_path,

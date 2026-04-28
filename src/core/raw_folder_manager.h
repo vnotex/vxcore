@@ -80,7 +80,10 @@ class RawFolderManager : public FolderManager {
   VxCoreError InitRootFolder();
   VxCoreError EnsureFolderAncestorChain(const std::string &folder_path);
   VxCoreError SyncFolderFromFilesystem(const std::string &folder_path,
-                                       FolderContents &out_contents);
+                                        FolderContents &out_contents);
+  VxCoreError ProcessCopiedRawFolderTree(const std::string &dest_abs_path,
+                                         const std::string &src_rel_path,
+                                         const std::string &parent_folder_id);
 
   std::string root_folder_id_;
   FileRecord last_queried_file_;

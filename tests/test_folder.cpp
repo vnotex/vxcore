@@ -6067,6 +6067,268 @@ int test_raw_copy_folder_recursive() {
   return 0;
 }
 
+int test_raw_copy_folder_with_assets() {
+  std::cout << "  Running test_raw_copy_folder_with_assets..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_cpfld_assets_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_cpfld_assets_nb").c_str(),
+                               "{\"name\":\"Raw CpFldAssets\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source folder and file
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "src", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "src", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string old_uuid(file_id);
+
+  // Create assets dir with a dummy file
+  std::string nb_root = get_test_path("test_raw_cpfld_assets_nb");
+  std::string src_assets_dir = nb_root + "/src/vx_assets/" + old_uuid;
+  std::filesystem::create_directories(src_assets_dir);
+  { std::ofstream(src_assets_dir + "/pic.png") << "fake image data"; }
+  ASSERT(path_exists(src_assets_dir + "/pic.png"));
+
+  // Write some content
+  write_file(nb_root + "/src/note.md", "# Hello");
+
+  // Copy folder
+  char *copy_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "src", ".", "dest", &copy_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(copy_id);
+
+  // Find the new file UUID by listing vx_assets directory entries in dest
+  std::string dest_assets_base = nb_root + "/dest/vx_assets";
+  ASSERT(path_exists(dest_assets_base));
+  std::string new_uuid;
+  for (const auto &entry : std::filesystem::directory_iterator(dest_assets_base)) {
+    new_uuid = entry.path().filename().string();
+  }
+  ASSERT_FALSE(new_uuid.empty());
+  ASSERT_NE(new_uuid, old_uuid);  // UUID must differ
+
+  // New assets should exist
+  ASSERT(path_exists(nb_root + "/dest/vx_assets/" + new_uuid + "/pic.png"));
+
+  // Old UUID assets dir should NOT exist in dest
+  ASSERT_FALSE(path_exists(nb_root + "/dest/vx_assets/" + old_uuid));
+
+  // Source assets unchanged
+  ASSERT(path_exists(src_assets_dir + "/pic.png"));
+
+  vxcore_string_free(copy_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_cpfld_assets_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_copy_folder_with_assets passed" << std::endl;
+  return 0;
+}
+
+int test_raw_copy_folder_rewrites_markdown() {
+  std::cout << "  Running test_raw_copy_folder_rewrites_markdown..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_cpfld_rewrite_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_cpfld_rewrite_nb").c_str(),
+                               "{\"name\":\"Raw CpFldRewrite\"}", VXCORE_NOTEBOOK_RAW,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source folder and file
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "src", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "src", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string old_uuid(file_id);
+
+  // Write markdown content with asset link
+  std::string nb_root = get_test_path("test_raw_cpfld_rewrite_nb");
+  {
+    std::ofstream ofs(nb_root + "/src/note.md");
+    ofs << "# Title\n![img](vx_assets/" << old_uuid << "/pic.png)\nSome text\n";
+  }
+
+  // Create assets
+  std::string src_assets_dir = nb_root + "/src/vx_assets/" + old_uuid;
+  std::filesystem::create_directories(src_assets_dir);
+  { std::ofstream(src_assets_dir + "/pic.png") << "fake image data"; }
+
+  // Copy
+  char *copy_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "src", ".", "dest", &copy_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Find new UUID from filesystem
+  std::string dest_assets_base = nb_root + "/dest/vx_assets";
+  std::string new_uuid;
+  for (const auto &entry : std::filesystem::directory_iterator(dest_assets_base)) {
+    new_uuid = entry.path().filename().string();
+  }
+  ASSERT_FALSE(new_uuid.empty());
+  ASSERT_NE(new_uuid, old_uuid);
+
+  // Read copied file and verify content rewrite
+  std::string dest_content;
+  {
+    std::ifstream ifs(nb_root + "/dest/note.md");
+    dest_content.assign((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  }
+  ASSERT(dest_content.find("vx_assets/" + new_uuid) != std::string::npos);
+  ASSERT(dest_content.find("vx_assets/" + old_uuid) == std::string::npos);
+
+  // Source file should NOT be modified
+  std::string src_content;
+  {
+    std::ifstream ifs(nb_root + "/src/note.md");
+    src_content.assign((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  }
+  ASSERT(src_content.find("vx_assets/" + old_uuid) != std::string::npos);
+
+  vxcore_string_free(copy_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_cpfld_rewrite_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_copy_folder_rewrites_markdown passed" << std::endl;
+  return 0;
+}
+
+int test_raw_copy_folder_recursive_assets() {
+  std::cout << "  Running test_raw_copy_folder_recursive_assets..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_cpfld_rec_assets_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_cpfld_rec_assets_nb").c_str(),
+                               "{\"name\":\"Raw CpFldRecAssets\"}", VXCORE_NOTEBOOK_RAW,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string nb_root = get_test_path("test_raw_cpfld_rec_assets_nb");
+
+  // Create nested structure: parent/child
+  char *parent_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "parent", &parent_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(parent_id);
+
+  char *child_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, "parent", "child", &child_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(child_id);
+
+  // Create files at both levels
+  char *file_a_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "parent", "a.md", &file_a_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string uuid_a(file_a_id);
+
+  char *file_b_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "parent/child", "b.md", &file_b_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string uuid_b(file_b_id);
+
+  // Write markdown with asset links
+  {
+    std::ofstream ofs(nb_root + "/parent/a.md");
+    ofs << "![](vx_assets/" << uuid_a << "/img_a.png)\n";
+  }
+  {
+    std::ofstream ofs(nb_root + "/parent/child/b.md");
+    ofs << "![](vx_assets/" << uuid_b << "/img_b.png)\n";
+  }
+
+  // Create assets at both levels
+  std::string assets_a = nb_root + "/parent/vx_assets/" + uuid_a;
+  std::filesystem::create_directories(assets_a);
+  { std::ofstream(assets_a + "/img_a.png") << "image_a"; }
+
+  std::string assets_b = nb_root + "/parent/child/vx_assets/" + uuid_b;
+  std::filesystem::create_directories(assets_b);
+  { std::ofstream(assets_b + "/img_b.png") << "image_b"; }
+
+  // Copy parent
+  char *copy_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "parent", ".", "parent_copy", &copy_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(copy_id);
+
+  // Check top-level file: find new UUID
+  std::string dest_assets_a_base = nb_root + "/parent_copy/vx_assets";
+  ASSERT(path_exists(dest_assets_a_base));
+  std::string new_uuid_a;
+  for (const auto &entry : std::filesystem::directory_iterator(dest_assets_a_base)) {
+    new_uuid_a = entry.path().filename().string();
+  }
+  ASSERT_FALSE(new_uuid_a.empty());
+  ASSERT_NE(new_uuid_a, uuid_a);
+  ASSERT(path_exists(nb_root + "/parent_copy/vx_assets/" + new_uuid_a + "/img_a.png"));
+
+  // Verify markdown rewritten at top level
+  std::string content_a;
+  {
+    std::ifstream ifs(nb_root + "/parent_copy/a.md");
+    content_a.assign((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  }
+  ASSERT(content_a.find("vx_assets/" + new_uuid_a) != std::string::npos);
+  ASSERT(content_a.find("vx_assets/" + uuid_a) == std::string::npos);
+
+  // Check child-level file
+  std::string dest_assets_b_base = nb_root + "/parent_copy/child/vx_assets";
+  ASSERT(path_exists(dest_assets_b_base));
+  std::string new_uuid_b;
+  for (const auto &entry : std::filesystem::directory_iterator(dest_assets_b_base)) {
+    new_uuid_b = entry.path().filename().string();
+  }
+  ASSERT_FALSE(new_uuid_b.empty());
+  ASSERT_NE(new_uuid_b, uuid_b);
+  ASSERT(path_exists(nb_root + "/parent_copy/child/vx_assets/" + new_uuid_b + "/img_b.png"));
+
+  // Verify markdown rewritten at child level
+  std::string content_b;
+  {
+    std::ifstream ifs(nb_root + "/parent_copy/child/b.md");
+    content_b.assign((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  }
+  ASSERT(content_b.find("vx_assets/" + new_uuid_b) != std::string::npos);
+  ASSERT(content_b.find("vx_assets/" + uuid_b) == std::string::npos);
+
+  // Source unchanged
+  ASSERT(path_exists(assets_a + "/img_a.png"));
+  ASSERT(path_exists(assets_b + "/img_b.png"));
+
+  vxcore_string_free(copy_id);
+  vxcore_string_free(file_b_id);
+  vxcore_string_free(file_a_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_cpfld_rec_assets_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_copy_folder_recursive_assets passed" << std::endl;
+  return 0;
+}
+
 // =========================================================================
 // Raw notebook File CRUD tests
 // =========================================================================
@@ -6521,6 +6783,249 @@ int test_raw_copy_file_with_new_name() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_raw_copy_file_name_nb"));
   std::cout << "  \xe2\x9c\x93 test_raw_copy_file_with_new_name passed" << std::endl;
+  return 0;
+}
+
+// ============ Raw Notebook File Copy/Move with Assets Tests ============
+
+int test_raw_file_copy_with_assets() {
+  std::cout << "  Running test_raw_file_copy_with_assets..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_fcopy_assets_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_fcopy_assets_nb").c_str(),
+                               "{\"name\":\"Raw CopyAssets\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string old_uuid(file_id);
+
+  // Create assets dir with a dummy file
+  std::string nb_root = get_test_path("test_raw_fcopy_assets_nb");
+  std::string assets_dir = nb_root + "/vx_assets/" + old_uuid;
+  std::filesystem::create_directories(assets_dir);
+  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+  ASSERT(path_exists(assets_dir + "/pic.png"));
+
+  // Copy the file
+  char *copied_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "note.md", ".", "copy.md", &copied_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(copied_id);
+
+  // New UUID assets dir should exist with copied file
+  std::string new_assets_dir = nb_root + "/vx_assets/" + std::string(copied_id);
+  ASSERT(path_exists(new_assets_dir + "/pic.png"));
+
+  // Source assets should still be there
+  ASSERT(path_exists(assets_dir + "/pic.png"));
+
+  vxcore_string_free(copied_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_fcopy_assets_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_file_copy_with_assets passed" << std::endl;
+  return 0;
+}
+
+int test_raw_file_copy_rewrites_markdown_content() {
+  std::cout << "  Running test_raw_file_copy_rewrites_markdown_content..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_fcopy_rewrite_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_fcopy_rewrite_nb").c_str(),
+                               "{\"name\":\"Raw CopyRewrite\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string old_uuid(file_id);
+
+  // Write markdown content with asset link
+  std::string nb_root = get_test_path("test_raw_fcopy_rewrite_nb");
+  std::string file_path = nb_root + "/note.md";
+  {
+    std::ofstream ofs(file_path);
+    ofs << "# Title\n![img](vx_assets/" << old_uuid << "/pic.png)\nSome text\n";
+  }
+
+  // Create the assets dir
+  std::string assets_dir = nb_root + "/vx_assets/" + old_uuid;
+  std::filesystem::create_directories(assets_dir);
+  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+
+  // Copy
+  char *copied_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "note.md", ".", "copy.md", &copied_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string new_uuid(copied_id);
+
+  // Read copied file and verify content rewrite
+  std::string dest_path = nb_root + "/copy.md";
+  std::ifstream ifs(dest_path);
+  std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  ASSERT(content.find("vx_assets/" + new_uuid) != std::string::npos);
+  ASSERT(content.find("vx_assets/" + old_uuid) == std::string::npos);
+
+  // Source file should NOT be modified
+  std::ifstream src_ifs(file_path);
+  std::string src_content((std::istreambuf_iterator<char>(src_ifs)),
+                          std::istreambuf_iterator<char>());
+  ASSERT(src_content.find("vx_assets/" + old_uuid) != std::string::npos);
+
+  vxcore_string_free(copied_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_fcopy_rewrite_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_file_copy_rewrites_markdown_content passed" << std::endl;
+  return 0;
+}
+
+int test_raw_file_copy_without_assets_no_empty_dir() {
+  std::cout << "  Running test_raw_file_copy_without_assets_no_empty_dir..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_fcopy_noassets_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_fcopy_noassets_nb").c_str(),
+                               "{\"name\":\"Raw CopyNoAssets\"}", VXCORE_NOTEBOOK_RAW,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source file (no assets)
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Copy
+  char *copied_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "note.md", ".", "copy.md", &copied_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Should NOT create empty vx_assets/<new_uuid>/ dir
+  std::string nb_root = get_test_path("test_raw_fcopy_noassets_nb");
+  std::string new_assets_dir = nb_root + "/vx_assets/" + std::string(copied_id);
+  ASSERT_FALSE(path_exists(new_assets_dir));
+
+  vxcore_string_free(copied_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_fcopy_noassets_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_file_copy_without_assets_no_empty_dir passed" << std::endl;
+  return 0;
+}
+
+int test_raw_file_move_with_assets() {
+  std::cout << "  Running test_raw_file_move_with_assets..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_fmove_assets_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_fmove_assets_nb").c_str(),
+                               "{\"name\":\"Raw MoveAssets\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string uuid(file_id);
+
+  // Create assets
+  std::string nb_root = get_test_path("test_raw_fmove_assets_nb");
+  std::string assets_dir = nb_root + "/vx_assets/" + uuid;
+  std::filesystem::create_directories(assets_dir);
+  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+
+  // Create dest folder
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "dest", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Move
+  err = vxcore_node_move(ctx, notebook_id, "note.md", "dest");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Assets should be at new location
+  std::string new_assets_dir = nb_root + "/dest/vx_assets/" + uuid;
+  ASSERT(path_exists(new_assets_dir + "/pic.png"));
+
+  // Assets should be gone from old location
+  ASSERT_FALSE(path_exists(assets_dir + "/pic.png"));
+  ASSERT_FALSE(path_exists(assets_dir));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_fmove_assets_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_file_move_with_assets passed" << std::endl;
+  return 0;
+}
+
+int test_raw_file_move_without_assets_no_error() {
+  std::cout << "  Running test_raw_file_move_without_assets_no_error..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_fmove_noassets_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_fmove_noassets_nb").c_str(),
+                               "{\"name\":\"Raw MoveNoAssets\"}", VXCORE_NOTEBOOK_RAW,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source file
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create dest folder
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "dest", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Move without assets — should succeed
+  err = vxcore_node_move(ctx, notebook_id, "note.md", "dest");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // No empty dirs
+  std::string nb_root = get_test_path("test_raw_fmove_noassets_nb");
+  std::string assets_dir = nb_root + "/dest/vx_assets/" + std::string(file_id);
+  ASSERT_FALSE(path_exists(assets_dir));
+
+  ASSERT(path_exists(nb_root + "/dest/note.md"));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_fmove_noassets_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_file_move_without_assets_no_error passed" << std::endl;
   return 0;
 }
 
@@ -7870,6 +8375,600 @@ int test_raw_full_lifecycle_flow() {
   return 0;
 }
 
+// ===== Assets copy/move tests =====
+
+int test_file_copy_with_assets() {
+  std::cout << "  Running test_file_copy_with_assets..." << std::endl;
+  cleanup_test_dir(get_test_path("test_fcopy_assets_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_fcopy_assets_nb").c_str(),
+                               "{\"name\":\"Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create assets dir with a dummy file
+  std::string nb_root = get_test_path("test_fcopy_assets_nb");
+  std::string assets_dir = nb_root + "/vx_assets/" + std::string(file_id);
+  std::filesystem::create_directories(assets_dir);
+  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+  ASSERT(path_exists(assets_dir + "/pic.png"));
+
+  // Copy the file
+  char *copied_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "note.md", ".", "copy.md", &copied_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(copied_id);
+
+  // New UUID assets dir should exist with copied file
+  std::string new_assets_dir = nb_root + "/vx_assets/" + std::string(copied_id);
+  ASSERT(path_exists(new_assets_dir + "/pic.png"));
+
+  // Source assets should still be there
+  ASSERT(path_exists(assets_dir + "/pic.png"));
+
+  vxcore_string_free(copied_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_fcopy_assets_nb"));
+  std::cout << "  \xe2\x9c\x93 test_file_copy_with_assets passed" << std::endl;
+  return 0;
+}
+
+int test_file_copy_rewrites_markdown_content() {
+  std::cout << "  Running test_file_copy_rewrites_markdown_content..." << std::endl;
+  cleanup_test_dir(get_test_path("test_fcopy_rewrite_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_fcopy_rewrite_nb").c_str(),
+                               "{\"name\":\"Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Write markdown content with asset link
+  std::string nb_root = get_test_path("test_fcopy_rewrite_nb");
+  std::string file_path = nb_root + "/note.md";
+  std::string old_uuid(file_id);
+  {
+    std::ofstream ofs(file_path);
+    ofs << "# Title\n![img](vx_assets/" << old_uuid << "/pic.png)\nSome text\n";
+  }
+
+  // Create the assets dir
+  std::string assets_dir = nb_root + "/vx_assets/" + old_uuid;
+  std::filesystem::create_directories(assets_dir);
+  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+
+  // Copy
+  char *copied_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "note.md", ".", "copy.md", &copied_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string new_uuid(copied_id);
+
+  // Read copied file and verify content rewrite
+  std::string dest_path = nb_root + "/copy.md";
+  std::ifstream ifs(dest_path);
+  std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  ASSERT(content.find("vx_assets/" + new_uuid) != std::string::npos);
+  ASSERT(content.find("vx_assets/" + old_uuid) == std::string::npos);
+
+  // Source file should NOT be modified
+  std::ifstream src_ifs(file_path);
+  std::string src_content((std::istreambuf_iterator<char>(src_ifs)),
+                          std::istreambuf_iterator<char>());
+  ASSERT(src_content.find("vx_assets/" + old_uuid) != std::string::npos);
+
+  vxcore_string_free(copied_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_fcopy_rewrite_nb"));
+  std::cout << "  \xe2\x9c\x93 test_file_copy_rewrites_markdown_content passed" << std::endl;
+  return 0;
+}
+
+int test_file_copy_without_assets_no_empty_dir() {
+  std::cout << "  Running test_file_copy_without_assets_no_empty_dir..." << std::endl;
+  cleanup_test_dir(get_test_path("test_fcopy_noassets_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_fcopy_noassets_nb").c_str(),
+                               "{\"name\":\"Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // No assets dir created — just copy
+  char *copied_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "note.md", ".", "copy.md", &copied_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Should NOT create empty vx_assets/<new_uuid>/ dir
+  std::string nb_root = get_test_path("test_fcopy_noassets_nb");
+  std::string new_assets_dir = nb_root + "/vx_assets/" + std::string(copied_id);
+  ASSERT_FALSE(path_exists(new_assets_dir));
+
+  vxcore_string_free(copied_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_fcopy_noassets_nb"));
+  std::cout << "  \xe2\x9c\x93 test_file_copy_without_assets_no_empty_dir passed" << std::endl;
+  return 0;
+}
+
+int test_file_copy_nonmarkdown_no_rewrite() {
+  std::cout << "  Running test_file_copy_nonmarkdown_no_rewrite..." << std::endl;
+  cleanup_test_dir(get_test_path("test_fcopy_nomd_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_fcopy_nomd_nb").c_str(),
+                               "{\"name\":\"Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "data.txt", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string old_uuid(file_id);
+
+  // Write content that looks like markdown but file is .txt
+  std::string nb_root = get_test_path("test_fcopy_nomd_nb");
+  std::string file_path = nb_root + "/data.txt";
+  { std::ofstream(file_path) << "![img](vx_assets/" << old_uuid << "/pic.png)\n"; }
+
+  // Create assets dir
+  std::string assets_dir = nb_root + "/vx_assets/" + old_uuid;
+  std::filesystem::create_directories(assets_dir);
+  { std::ofstream(assets_dir + "/pic.png") << "fake"; }
+
+  // Copy
+  char *copied_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "data.txt", ".", "copy.txt", &copied_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string new_uuid(copied_id);
+
+  // Assets should be copied
+  std::string new_assets_dir = nb_root + "/vx_assets/" + new_uuid;
+  ASSERT(path_exists(new_assets_dir + "/pic.png"));
+
+  // Content should NOT be rewritten (still has old UUID)
+  std::string dest_path = nb_root + "/copy.txt";
+  std::ifstream ifs(dest_path);
+  std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  ASSERT(content.find("vx_assets/" + old_uuid) != std::string::npos);
+
+  vxcore_string_free(copied_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_fcopy_nomd_nb"));
+  std::cout << "  \xe2\x9c\x93 test_file_copy_nonmarkdown_no_rewrite passed" << std::endl;
+  return 0;
+}
+
+int test_file_move_with_assets() {
+  std::cout << "  Running test_file_move_with_assets..." << std::endl;
+  cleanup_test_dir(get_test_path("test_fmove_assets_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_fmove_assets_nb").c_str(),
+                               "{\"name\":\"Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string uuid(file_id);
+
+  // Create assets
+  std::string nb_root = get_test_path("test_fmove_assets_nb");
+  std::string assets_dir = nb_root + "/vx_assets/" + uuid;
+  std::filesystem::create_directories(assets_dir);
+  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+
+  // Create dest folder
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "dest", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Move
+  err = vxcore_node_move(ctx, notebook_id, "note.md", "dest");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Assets should be at new location
+  std::string new_assets_dir = nb_root + "/dest/vx_assets/" + uuid;
+  ASSERT(path_exists(new_assets_dir + "/pic.png"));
+
+  // Assets should be gone from old location
+  ASSERT_FALSE(path_exists(assets_dir + "/pic.png"));
+  ASSERT_FALSE(path_exists(assets_dir));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_fmove_assets_nb"));
+  std::cout << "  \xe2\x9c\x93 test_file_move_with_assets passed" << std::endl;
+  return 0;
+}
+
+int test_file_move_without_assets_no_error() {
+  std::cout << "  Running test_file_move_without_assets_no_error..." << std::endl;
+  cleanup_test_dir(get_test_path("test_fmove_noassets_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_fmove_noassets_nb").c_str(),
+                               "{\"name\":\"Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "dest", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Move without assets — should succeed
+  err = vxcore_node_move(ctx, notebook_id, "note.md", "dest");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // No empty dirs
+  std::string nb_root = get_test_path("test_fmove_noassets_nb");
+  std::string assets_dir = nb_root + "/dest/vx_assets/" + std::string(file_id);
+  ASSERT_FALSE(path_exists(assets_dir));
+
+  ASSERT(path_exists(nb_root + "/dest/note.md"));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_fmove_noassets_nb"));
+  std::cout << "  \xe2\x9c\x93 test_file_move_without_assets_no_error passed" << std::endl;
+  return 0;
+}
+
+int test_folder_copy_with_assets() {
+  std::cout << "  Running test_folder_copy_with_assets..." << std::endl;
+  cleanup_test_dir(get_test_path("test_fcopy_folder_assets_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_fcopy_folder_assets_nb").c_str(),
+                               "{\"name\":\"Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create source folder with a file
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "src_folder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "src_folder", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string old_uuid(file_id);
+
+  // Create assets directory for the file
+  std::string nb_root = get_test_path("test_fcopy_folder_assets_nb");
+  std::string assets_dir = nb_root + "/src_folder/vx_assets/" + old_uuid;
+  std::filesystem::create_directories(assets_dir);
+  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+
+  // Copy the folder
+  char *new_folder_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "src_folder", ".", "dest_folder", &new_folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(new_folder_id);
+  vxcore_string_free(new_folder_id);
+
+  // Get copied file's UUID
+  char *copied_config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "dest_folder", &copied_config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(copied_config_json);
+  std::string new_file_uuid = j["files"][0]["id"].get<std::string>();
+  vxcore_string_free(copied_config_json);
+
+  // New UUID must differ from old
+  ASSERT_NE(new_file_uuid, old_uuid);
+
+  // Verify assets at new UUID path
+  std::string new_assets_dir = nb_root + "/dest_folder/vx_assets/" + new_file_uuid;
+  ASSERT(path_exists(new_assets_dir + "/pic.png"));
+
+  // Verify old UUID assets dir is gone (renamed)
+  std::string old_assets_in_copy = nb_root + "/dest_folder/vx_assets/" + old_uuid;
+  ASSERT_FALSE(path_exists(old_assets_in_copy));
+
+  // Source assets should still be intact
+  ASSERT(path_exists(assets_dir + "/pic.png"));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_fcopy_folder_assets_nb"));
+  std::cout << "  \xe2\x9c\x93 test_folder_copy_with_assets passed" << std::endl;
+  return 0;
+}
+
+int test_folder_copy_rewrites_markdown_content() {
+  std::cout << "  Running test_folder_copy_rewrites_markdown_content..." << std::endl;
+  cleanup_test_dir(get_test_path("test_fcopy_folder_rewrite_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_fcopy_folder_rewrite_nb").c_str(),
+                               "{\"name\":\"Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "src", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "src", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string old_uuid(file_id);
+
+  // Write markdown content referencing assets
+  std::string nb_root = get_test_path("test_fcopy_folder_rewrite_nb");
+  std::string file_path = nb_root + "/src/note.md";
+  {
+    std::ofstream ofs(file_path);
+    ofs << "# Title\n![img](vx_assets/" << old_uuid << "/pic.png)\nSome text\n";
+  }
+
+  // Create the assets dir
+  std::string assets_dir = nb_root + "/src/vx_assets/" + old_uuid;
+  std::filesystem::create_directories(assets_dir);
+  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+
+  // Copy
+  char *new_folder_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "src", ".", "dest", &new_folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(new_folder_id);
+
+  // Get new file UUID
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "dest", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(config_json);
+  std::string new_uuid = j["files"][0]["id"].get<std::string>();
+  vxcore_string_free(config_json);
+
+  // Verify content was rewritten
+  std::string copied_file = nb_root + "/dest/note.md";
+  std::ifstream ifs(copied_file);
+  std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+  ASSERT(content.find("vx_assets/" + new_uuid) != std::string::npos);
+  ASSERT(content.find("vx_assets/" + old_uuid) == std::string::npos);
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_fcopy_folder_rewrite_nb"));
+  std::cout << "  \xe2\x9c\x93 test_folder_copy_rewrites_markdown_content passed" << std::endl;
+  return 0;
+}
+
+int test_folder_copy_recursive_assets() {
+  std::cout << "  Running test_folder_copy_recursive_assets..." << std::endl;
+  cleanup_test_dir(get_test_path("test_fcopy_folder_recurse_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_fcopy_folder_recurse_nb").c_str(),
+                               "{\"name\":\"Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create parent folder
+  char *parent_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "src", &parent_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(parent_id);
+
+  // Create file in parent folder
+  char *file1_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "src", "note1.md", &file1_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string old_uuid1(file1_id);
+
+  // Create subfolder
+  char *sub_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, "src", "sub", &sub_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string old_sub_folder_id(sub_id);
+  vxcore_string_free(sub_id);
+
+  // Create file in subfolder
+  char *file2_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "src/sub", "note2.md", &file2_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string old_uuid2(file2_id);
+
+  std::string nb_root = get_test_path("test_fcopy_folder_recurse_nb");
+
+  // Create assets for both files
+  std::string assets1 = nb_root + "/src/vx_assets/" + old_uuid1;
+  std::filesystem::create_directories(assets1);
+  { std::ofstream(assets1 + "/img1.png") << "image1"; }
+
+  std::string assets2 = nb_root + "/src/sub/vx_assets/" + old_uuid2;
+  std::filesystem::create_directories(assets2);
+  { std::ofstream(assets2 + "/img2.png") << "image2"; }
+
+  // Write markdown content
+  {
+    std::ofstream ofs(nb_root + "/src/note1.md");
+    ofs << "![](vx_assets/" << old_uuid1 << "/img1.png)\n";
+  }
+  {
+    std::ofstream ofs(nb_root + "/src/sub/note2.md");
+    ofs << "![](vx_assets/" << old_uuid2 << "/img2.png)\n";
+  }
+
+  // Copy the whole tree
+  char *new_folder_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "src", ".", "src_copy", &new_folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(new_folder_id);
+
+  // Check top-level file UUID
+  char *config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "src_copy", &config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(config_json);
+  std::string new_uuid1 = j["files"][0]["id"].get<std::string>();
+  vxcore_string_free(config_json);
+
+  ASSERT_NE(new_uuid1, old_uuid1);
+
+  // Verify top-level assets renamed
+  ASSERT(path_exists(nb_root + "/src_copy/vx_assets/" + new_uuid1 + "/img1.png"));
+  ASSERT_FALSE(path_exists(nb_root + "/src_copy/vx_assets/" + old_uuid1));
+
+  // Verify top-level content rewritten
+  {
+    std::ifstream ifs(nb_root + "/src_copy/note1.md");
+    std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    ASSERT(content.find("vx_assets/" + new_uuid1) != std::string::npos);
+    ASSERT(content.find("vx_assets/" + old_uuid1) == std::string::npos);
+  }
+
+  // Check subfolder file UUID
+  char *sub_config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "src_copy/sub", &sub_config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto sub_j = nlohmann::json::parse(sub_config_json);
+  std::string new_uuid2 = sub_j["files"][0]["id"].get<std::string>();
+  vxcore_string_free(sub_config_json);
+
+  ASSERT_NE(new_uuid2, old_uuid2);
+
+  // Verify subfolder assets renamed
+  ASSERT(path_exists(nb_root + "/src_copy/sub/vx_assets/" + new_uuid2 + "/img2.png"));
+  ASSERT_FALSE(path_exists(nb_root + "/src_copy/sub/vx_assets/" + old_uuid2));
+
+  // Verify subfolder content rewritten
+  {
+    std::ifstream ifs(nb_root + "/src_copy/sub/note2.md");
+    std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+    ASSERT(content.find("vx_assets/" + new_uuid2) != std::string::npos);
+    ASSERT(content.find("vx_assets/" + old_uuid2) == std::string::npos);
+  }
+
+  vxcore_string_free(file1_id);
+  vxcore_string_free(file2_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_fcopy_folder_recurse_nb"));
+  std::cout << "  \xe2\x9c\x93 test_folder_copy_recursive_assets passed" << std::endl;
+  return 0;
+}
+
+int test_folder_copy_recursive_subfolder_uuids() {
+  std::cout << "  Running test_folder_copy_recursive_subfolder_uuids..." << std::endl;
+  cleanup_test_dir(get_test_path("test_fcopy_folder_subuuid_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_fcopy_folder_subuuid_nb").c_str(),
+                               "{\"name\":\"Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create folder with subfolder
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "src", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string old_folder_uuid(folder_id);
+  vxcore_string_free(folder_id);
+
+  char *sub_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, "src", "child", &sub_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string old_child_uuid(sub_id);
+  vxcore_string_free(sub_id);
+
+  // Copy folder tree
+  char *new_folder_id = nullptr;
+  err = vxcore_node_copy(ctx, notebook_id, "src", ".", "src_copy", &new_folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string new_root_uuid(new_folder_id);
+  vxcore_string_free(new_folder_id);
+
+  // Verify root folder UUID changed
+  ASSERT_NE(new_root_uuid, old_folder_uuid);
+
+  // Get subfolder UUID
+  char *child_config_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "src_copy/child", &child_config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(child_config_json);
+  std::string new_child_uuid = j["id"].get<std::string>();
+  vxcore_string_free(child_config_json);
+
+  // Verify subfolder UUID changed
+  ASSERT_NE(new_child_uuid, old_child_uuid);
+
+  // Also verify they are all unique
+  ASSERT_NE(new_root_uuid, new_child_uuid);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_fcopy_folder_subuuid_nb"));
+  std::cout << "  \xe2\x9c\x93 test_folder_copy_recursive_subfolder_uuids passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -7904,6 +9003,21 @@ int main() {
   RUN_TEST(test_file_copy_invalid_params);
   RUN_TEST(test_file_copy_not_found);
   RUN_TEST(test_file_copy_already_exists);
+
+  // Assets copy/move tests
+  RUN_TEST(test_file_copy_with_assets);
+  RUN_TEST(test_file_copy_rewrites_markdown_content);
+  RUN_TEST(test_file_copy_without_assets_no_empty_dir);
+  RUN_TEST(test_file_copy_nonmarkdown_no_rewrite);
+  RUN_TEST(test_file_move_with_assets);
+  RUN_TEST(test_file_move_without_assets_no_error);
+
+  // Folder copy assets tests
+  RUN_TEST(test_folder_copy_with_assets);
+  RUN_TEST(test_folder_copy_rewrites_markdown_content);
+  RUN_TEST(test_folder_copy_recursive_assets);
+  RUN_TEST(test_folder_copy_recursive_subfolder_uuids);
+
   RUN_TEST(test_file_tag);
   RUN_TEST(test_file_untag);
   RUN_TEST(test_file_tag_duplicate);
@@ -8038,6 +9152,9 @@ int main() {
   RUN_TEST(test_raw_move_folder);
   RUN_TEST(test_raw_copy_folder);
   RUN_TEST(test_raw_copy_folder_recursive);
+  RUN_TEST(test_raw_copy_folder_with_assets);
+  RUN_TEST(test_raw_copy_folder_rewrites_markdown);
+  RUN_TEST(test_raw_copy_folder_recursive_assets);
 
   // Raw notebook File CRUD tests
   RUN_TEST(test_raw_create_file);
@@ -8049,6 +9166,11 @@ int main() {
   RUN_TEST(test_raw_move_file);
   RUN_TEST(test_raw_copy_file);
   RUN_TEST(test_raw_copy_file_with_new_name);
+  RUN_TEST(test_raw_file_copy_with_assets);
+  RUN_TEST(test_raw_file_copy_rewrites_markdown_content);
+  RUN_TEST(test_raw_file_copy_without_assets_no_empty_dir);
+  RUN_TEST(test_raw_file_move_with_assets);
+  RUN_TEST(test_raw_file_move_without_assets_no_error);
 
   // Raw notebook Import tests
   RUN_TEST(test_raw_import_file);

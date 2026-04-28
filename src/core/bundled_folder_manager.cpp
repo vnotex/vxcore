@@ -9,6 +9,8 @@
 #include <unordered_set>
 
 #include "bundled_notebook.h"
+#include "core/content_processor/asset_utils.h"
+#include "core/content_processor/content_processor.h"
 #include "metadata_store.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
@@ -733,6 +735,115 @@ VxCoreError BundledFolderManager::MoveFolder(const std::string &src_path,
   return VXCORE_OK;
 }
 
+VxCoreError BundledFolderManager::ProcessCopiedFolderTree(const std::string &dest_path,
+                                                          const std::string &parent_id,
+                                                          const std::string &new_name) {
+  // Load the folder config from the just-copied vx.json (contains old UUIDs)
+  std::unique_ptr<FolderConfig> config;
+  VxCoreError error = LoadFolderConfig(dest_path, config);
+  if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("ProcessCopiedFolderTree: failed to load config at %s", dest_path.c_str());
+    return error;
+  }
+
+  // Regenerate folder UUID
+  config->id = GenerateUUID();
+  int64_t now = GetCurrentTimestampMillis();
+  config->created_utc = now;
+  config->modified_utc = now;
+
+  // Update folder name if provided (top-level copy uses new destination name)
+  if (!new_name.empty()) {
+    config->name = new_name;
+  }
+
+  const std::string content_path = GetContentPath(dest_path);
+  const std::string &assets_folder_name = notebook_->GetConfig().assets_folder;
+  ContentProcessor processor;
+
+  // Process each file: regenerate UUID, rename assets dir, rewrite content
+  for (auto &file : config->files) {
+    std::string old_uuid = file.id;
+    file.id = GenerateUUID();
+    file.created_utc = now;
+    file.modified_utc = now;
+
+    // Rename vx_assets/<old_uuid> → vx_assets/<new_uuid> if it exists
+    std::string old_assets_abs =
+        ConcatenatePaths(ConcatenatePaths(content_path, assets_folder_name), old_uuid);
+    std::string new_assets_abs =
+        ConcatenatePaths(ConcatenatePaths(content_path, assets_folder_name), file.id);
+    fs::path old_assets_fs = PathFromUtf8(old_assets_abs);
+    if (fs::exists(old_assets_fs) && fs::is_directory(old_assets_fs)) {
+      try {
+        fs::rename(old_assets_fs, PathFromUtf8(new_assets_abs));
+      } catch (const std::exception &e) {
+        VXCORE_LOG_WARN("Failed to rename assets dir: %s", e.what());
+      }
+    }
+
+    // Rewrite asset links in supported file types
+    std::string ext;
+    size_t dot_pos = file.name.find_last_of('.');
+    if (dot_pos != std::string::npos && dot_pos + 1 < file.name.size()) {
+      ext = file.name.substr(dot_pos + 1);
+    }
+
+    IFileTypeHandler *handler = processor.GetHandler(ext);
+    if (handler) {
+      fs::path file_fs_path = PathFromUtf8(ConcatenatePaths(content_path, file.name));
+      std::string content;
+      VxCoreError read_err = ReadFile(file_fs_path, content);
+      if (read_err == VXCORE_OK) {
+        std::string old_relative_assets = ConcatenatePaths(assets_folder_name, old_uuid);
+        std::string new_relative_assets = ConcatenatePaths(assets_folder_name, file.id);
+        std::string rewritten =
+            handler->RewriteAssetLinks(content, old_relative_assets, new_relative_assets);
+        if (rewritten != content) {
+          WriteFile(file_fs_path, rewritten);
+        }
+      }
+    }
+  }
+
+  // Save updated config
+  error = SaveFolderConfig(dest_path, *config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  // Write-through to MetadataStore
+  if (auto *store = notebook_->GetMetadataStore()) {
+    StoreFolderRecord folder_record = ToStoreFolderRecord(*config, parent_id);
+    if (!store->CreateFolder(folder_record)) {
+      VXCORE_LOG_WARN("ProcessCopiedFolderTree: failed to create folder in store: id=%s",
+                      config->id.c_str());
+    }
+
+    for (const auto &file : config->files) {
+      StoreFileRecord file_record = ToStoreFileRecord(file, config->id);
+      if (!store->CreateFile(file_record)) {
+        VXCORE_LOG_WARN("ProcessCopiedFolderTree: failed to create file in store: id=%s",
+                        file.id.c_str());
+      }
+    }
+  }
+
+  // Recurse into subfolders
+  std::string folder_id = config->id;
+  for (const auto &subfolder_name : config->folders) {
+    std::string sub_path = ConcatenatePaths(dest_path, subfolder_name);
+    error = ProcessCopiedFolderTree(sub_path, folder_id);
+    if (error != VXCORE_OK) {
+      VXCORE_LOG_WARN("ProcessCopiedFolderTree: failed on subfolder %s", sub_path.c_str());
+      return error;
+    }
+  }
+
+  CacheConfig(dest_path, std::move(config));
+  return VXCORE_OK;
+}
+
 VxCoreError BundledFolderManager::CopyFolder(const std::string &src_path,
                                              const std::string &dest_parent_path,
                                              const std::string &new_name,
@@ -784,50 +895,37 @@ VxCoreError BundledFolderManager::CopyFolder(const std::string &src_path,
     return VXCORE_ERR_IO;
   }
 
-  std::unique_ptr<FolderConfig> dest_config = std::make_unique<FolderConfig>(*src_config);
-  dest_config->id = GenerateUUID();
-  dest_config->name = folder_name;
-  dest_config->created_utc = GetCurrentTimestampMillis();
-  dest_config->modified_utc = dest_config->created_utc;
-
-  for (auto &file : dest_config->files) {
-    file.id = GenerateUUID();
-    file.created_utc = dest_config->created_utc;
-    file.modified_utc = dest_config->created_utc;
+  // Copy the config subtree (metadata/contents/src/ → metadata/contents/dest/)
+  // so that ProcessCopiedFolderTree can load configs for all subfolders
+  try {
+    fs::path src_config_dir = PathFromUtf8(GetConfigPath(clean_src_path)).parent_path();
+    fs::path dest_config_dir = PathFromUtf8(GetConfigPath(dest_path)).parent_path();
+    fs::copy(src_config_dir, dest_config_dir, fs::copy_options::recursive);
+  } catch (const std::exception &) {
+    return VXCORE_ERR_IO;
   }
 
-  out_folder_id = dest_config->id;
+  // Process the entire copied tree recursively: regenerate UUIDs, rename assets, rewrite content
+  VxCoreError process_err = ProcessCopiedFolderTree(dest_path, dest_parent_config->id, folder_name);
+  if (process_err != VXCORE_OK) {
+    return process_err;
+  }
 
-  error = SaveFolderConfig(dest_path, *dest_config);
+  // Get the processed folder's new ID
+  FolderConfig *processed_config = nullptr;
+  error = GetFolderConfig(dest_path, &processed_config);
   if (error != VXCORE_OK) {
     return error;
   }
+  out_folder_id = processed_config->id;
 
+  // Update parent config with new folder name
   dest_parent_config->folders.push_back(folder_name);
   dest_parent_config->modified_utc = GetCurrentTimestampMillis();
   error = SaveFolderConfig(clean_dest_parent_path, *dest_parent_config);
   if (error != VXCORE_OK) {
     return error;
   }
-
-  // Write-through to MetadataStore
-  if (auto *store = notebook_->GetMetadataStore()) {
-    // Use dest parent's ID (root folder also has an ID now)
-    StoreFolderRecord folder_record = ToStoreFolderRecord(*dest_config, dest_parent_config->id);
-    if (!store->CreateFolder(folder_record)) {
-      VXCORE_LOG_WARN("Failed to create folder in MetadataStore: id=%s", out_folder_id.c_str());
-    }
-
-    // Create all files in the folder
-    for (const auto &file : dest_config->files) {
-      StoreFileRecord file_record = ToStoreFileRecord(file, dest_config->id);
-      if (!store->CreateFile(file_record)) {
-        VXCORE_LOG_WARN("Failed to create file in MetadataStore: id=%s", file.id.c_str());
-      }
-    }
-  }
-
-  CacheConfig(dest_path, std::move(dest_config));
 
   VXCORE_LOG_INFO("Folder copied successfully: id=%s", out_folder_id.c_str());
   return VXCORE_OK;
@@ -1300,6 +1398,43 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
     return VXCORE_ERR_IO;
   }
 
+  // Move assets directory (no-op if source has no assets)
+  {
+    const std::string &assets_folder_name = notebook_->GetConfig().assets_folder;
+    std::string old_assets_abs =
+        ConcatenatePaths(ConcatenatePaths(src_content_path, assets_folder_name), file->id);
+    std::string new_assets_abs =
+        ConcatenatePaths(ConcatenatePaths(dest_content_path, assets_folder_name), file->id);
+    MoveAssetsDirectory(old_assets_abs, new_assets_abs);
+  }
+
+  // Move relative-path linked files for supported file types
+  {
+    std::string ext;
+    size_t dot_pos = file_name.find_last_of('.');
+    if (dot_pos != std::string::npos && dot_pos + 1 < file_name.size()) {
+      ext = file_name.substr(dot_pos + 1);
+    }
+
+    ContentProcessor processor;
+    IFileTypeHandler *handler = processor.GetHandler(ext);
+    if (handler) {
+      std::string content;
+      VxCoreError read_err = ReadFile(dest_fs_path, content);
+      if (read_err == VXCORE_OK) {
+        auto relative_paths = handler->DiscoverRelativeLinks(
+            content, notebook_->GetConfig().assets_folder);
+        if (!relative_paths.empty()) {
+          std::string src_dir = PathToGenericUtf8(PathFromUtf8(src_content_path));
+          std::string dest_dir = PathToGenericUtf8(PathFromUtf8(dest_content_path));
+          MoveRelativeLinkedFiles(relative_paths, src_dir, dest_dir,
+                                  notebook_->GetRootFolder(),
+                                  PathToGenericUtf8(dest_fs_path));
+        }
+      }
+    }
+  }
+
   FileRecord file_copy = *file;
   file_copy.modified_utc = GetCurrentTimestampMillis();
 
@@ -1390,6 +1525,60 @@ VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
   new_file.modified_utc = new_file.created_utc;
 
   out_file_id = new_file.id;
+
+  // Copy assets directory (no-op if source has no assets)
+  {
+    const std::string &assets_folder_name = notebook_->GetConfig().assets_folder;
+    std::string src_assets_abs =
+        ConcatenatePaths(ConcatenatePaths(src_content_path, assets_folder_name), file->id);
+    std::string dest_assets_abs =
+        ConcatenatePaths(ConcatenatePaths(dest_content_path, assets_folder_name), new_file.id);
+    CopyAssetsDirectory(src_assets_abs, dest_assets_abs);
+  }
+
+  // Rewrite asset links and copy legacy images for supported file types
+  {
+    std::string ext;
+    size_t dot_pos = target_name.find_last_of('.');
+    if (dot_pos != std::string::npos && dot_pos + 1 < target_name.size()) {
+      ext = target_name.substr(dot_pos + 1);
+    }
+
+    ContentProcessor processor;
+    IFileTypeHandler *handler = processor.GetHandler(ext);
+    if (handler) {
+      std::string content;
+      VxCoreError read_err = ReadFile(dest_fs_path, content);
+      if (read_err == VXCORE_OK) {
+        // Rewrite asset links from old UUID to new UUID
+        std::string old_relative_assets =
+            ConcatenatePaths(notebook_->GetConfig().assets_folder, file->id);
+        std::string new_relative_assets =
+            ConcatenatePaths(notebook_->GetConfig().assets_folder, new_file.id);
+        std::string rewritten = handler->RewriteAssetLinks(content, old_relative_assets,
+                                                           new_relative_assets);
+        if (rewritten != content) {
+          WriteFile(dest_fs_path, rewritten);
+        }
+
+        // Copy relative-path linked files
+        // Use the (possibly rewritten) content from dest file
+        std::string updated_content;
+        VxCoreError re_read_err = ReadFile(dest_fs_path, updated_content);
+        if (re_read_err == VXCORE_OK) {
+          auto relative_paths = handler->DiscoverRelativeLinks(
+              updated_content, notebook_->GetConfig().assets_folder);
+          if (!relative_paths.empty()) {
+            std::string src_dir = PathToGenericUtf8(PathFromUtf8(src_content_path));
+            std::string dest_dir = PathToGenericUtf8(PathFromUtf8(dest_content_path));
+            CopyRelativeLinkedFiles(relative_paths, src_dir, dest_dir,
+                                    notebook_->GetRootFolder(),
+                                    PathToGenericUtf8(src_fs_path));
+          }
+        }
+      }
+    }
+  }
 
   dest_config->files.push_back(new_file);
   dest_config->modified_utc = new_file.created_utc;
