@@ -30,6 +30,37 @@ inline std::string CleanPath(const std::string &path) {
   return CleanFsPath(PathFromUtf8(path));
 }
 
+// UTF-8-safe filesystem query wrappers.
+// Use these instead of calling std::filesystem functions with raw std::string paths.
+inline bool PathExists(const std::string &utf8_path) {
+  if (utf8_path.empty()) {
+    return false;
+  }
+  return std::filesystem::exists(PathFromUtf8(utf8_path));
+}
+
+inline bool IsDirectory(const std::string &utf8_path) {
+  if (utf8_path.empty()) {
+    return false;
+  }
+  return std::filesystem::is_directory(PathFromUtf8(utf8_path));
+}
+
+inline bool IsRegularFile(const std::string &utf8_path) {
+  if (utf8_path.empty()) {
+    return false;
+  }
+  return std::filesystem::is_regular_file(PathFromUtf8(utf8_path));
+}
+
+// Extract filename from a UTF-8 path string safely.
+inline std::string PathFilename(const std::string &utf8_path) {
+  if (utf8_path.empty()) {
+    return {};
+  }
+  return PathToUtf8(PathFromUtf8(utf8_path).filename());
+}
+
 bool IsRelativePath(const std::string &path);
 
 // Check if path is a single name (no path separators, not absolute).

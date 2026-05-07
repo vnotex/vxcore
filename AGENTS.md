@@ -248,6 +248,34 @@ VxCoreContext
 - Relative paths within notebook are relative to notebook root
 - Use `ConcatenatePaths()` to join path components
 
+### UTF-8 Path Safety (CRITICAL on Windows)
+
+> **⚠ NEVER pass `std::string` directly to `std::filesystem` functions.**
+>
+> On Windows, `std::filesystem` interprets `std::string` using the active ANSI code page, NOT UTF-8.
+> Paths with non-ASCII characters (Chinese, Japanese, accented, etc.) will silently fail.
+
+**Rules:**
+
+| ❌ WRONG | ✅ CORRECT |
+|----------|-----------|
+| `std::filesystem::exists(utf8_string)` | `PathExists(utf8_string)` |
+| `std::filesystem::is_directory(utf8_string)` | `IsDirectory(utf8_string)` |
+| `std::filesystem::is_regular_file(utf8_string)` | `IsRegularFile(utf8_string)` |
+| `std::filesystem::path p(utf8_string); p.filename().string()` | `PathFilename(utf8_string)` |
+| `std::filesystem::exists(PathFromUtf8(x))` | `PathExists(x)` (preferred) |
+
+**For code inside the DLL** (src/): Use `PathExists()`, `IsDirectory()`, `IsRegularFile()`, `PathFilename()` from `utils/file_utils.h`.
+
+**For code outside the DLL** (cli/, tests/): Must provide a local `Utf8PathExists()` helper using `MultiByteToWideChar` + `#ifdef _WIN32`. See `cli/config_cmd.cpp` for the pattern.
+
+**When you MUST use raw `std::filesystem`** (e.g., `create_directories`, `remove`, `rename`): Always wrap the path argument with `PathFromUtf8()`:
+```cpp
+std::filesystem::create_directories(PathFromUtf8(utf8_path));
+std::filesystem::remove(PathFromUtf8(utf8_path));
+std::filesystem::rename(PathFromUtf8(old_path), PathFromUtf8(new_path));
+```
+
 ### Utility Functions (check before implementing)
 
 - `src/utils/utils.h`: `GenerateUUID()`, `GetCurrentTimestampMillis()`, `HasFlag()`

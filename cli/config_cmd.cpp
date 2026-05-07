@@ -6,6 +6,24 @@
 
 #include "vxcore/vxcore.h"
 
+#ifdef _WIN32
+#include <windows.h>
+static bool Utf8PathExists(const char *utf8_path) {
+  if (!utf8_path || !utf8_path[0]) return false;
+  int wide_size = MultiByteToWideChar(CP_UTF8, 0, utf8_path, -1, nullptr, 0);
+  if (wide_size <= 0) return false;
+  std::wstring wide_str(static_cast<size_t>(wide_size), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, utf8_path, -1, wide_str.data(), wide_size);
+  wide_str.resize(static_cast<size_t>(wide_size - 1));
+  return std::filesystem::exists(std::filesystem::path(wide_str));
+}
+#else
+static bool Utf8PathExists(const char *utf8_path) {
+  if (!utf8_path || !utf8_path[0]) return false;
+  return std::filesystem::exists(utf8_path);
+}
+#endif
+
 namespace vxcore_cli {
 
 static void showConfigHelp() {
@@ -90,7 +108,7 @@ int ConfigCommand::dump(const ParsedArgs &args) {
   std::cout << "=== VxCore Configuration ===\n\n";
 
   std::cout << "App Config Path:\n  " << config_path << "\n";
-  bool config_exists = std::filesystem::exists(config_path);
+  bool config_exists = Utf8PathExists(config_path);
   std::cout << "  Exists: " << (config_exists ? "yes" : "no") << "\n\n";
 
   if (show_contents && config_exists) {
@@ -98,7 +116,7 @@ int ConfigCommand::dump(const ParsedArgs &args) {
   }
 
   std::cout << "Session Config Path:\n  " << session_config_path << "\n";
-  bool session_exists = std::filesystem::exists(session_config_path);
+  bool session_exists = Utf8PathExists(session_config_path);
   std::cout << "  Exists: " << (session_exists ? "yes" : "no") << "\n\n";
 
   if (show_contents && session_exists) {

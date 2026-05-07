@@ -84,7 +84,7 @@ void BufferManager::LoadBuffers() {
       full_path = record.file_path;
     }
 
-    bool exists = std::filesystem::exists(full_path);
+    bool exists = PathExists(full_path);
     VXCORE_LOG_INFO("LoadBuffers: id=%s, full_path=%s, exists=%d", record.id.c_str(),
                     full_path.c_str(), exists ? 1 : 0);
 

@@ -575,8 +575,7 @@ VXCORE_API VxCoreError vxcore_node_list_attachments(VxCoreContextHandle context,
         nlohmann::json filenames = nlohmann::json::array();
         for (const auto &rel_path : j) {
           std::string path_str = rel_path.get<std::string>();
-          std::filesystem::path p(path_str);
-          filenames.push_back(p.filename().string());
+          filenames.push_back(vxcore::PathFilename(path_str));
         }
         *out_attachments_json = vxcore_strdup(filenames.dump().c_str());
       } else {
