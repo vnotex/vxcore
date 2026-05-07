@@ -281,6 +281,8 @@ void Buffer::LoadContent(const std::string &full_path) {
         ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
     last_modified_time_ =
         std::chrono::duration_cast<std::chrono::milliseconds>(sctp.time_since_epoch()).count();
+    VXCORE_LOG_DEBUG("[EXT-CHK] LoadContent: path=%s mtime_recorded=%lld revision=%d",
+                     full_path.c_str(), (long long)last_modified_time_, revision_);
 
     state_ = VXCORE_BUFFER_NORMAL;
     modified_ = false;
@@ -373,6 +375,10 @@ void Buffer::CheckExternalChanges(const std::string &full_path) {
     int64_t current_mtime =
         std::chrono::duration_cast<std::chrono::milliseconds>(sctp.time_since_epoch()).count();
 
+    VXCORE_LOG_DEBUG("[EXT-CHK] CheckExternalChanges: path=%s content_loaded=%d stored_mtime=%lld current_mtime=%lld state=%d",
+                     full_path.c_str(), content_loaded_ ? 1 : 0,
+                     (long long)last_modified_time_, (long long)current_mtime, state_);
+
     // Compare with stored modification time
     if (current_mtime != last_modified_time_) {
       state_ = VXCORE_BUFFER_FILE_CHANGED;
@@ -381,6 +387,8 @@ void Buffer::CheckExternalChanges(const std::string &full_path) {
       // File restored to normal state
       state_ = VXCORE_BUFFER_NORMAL;
     }
+    VXCORE_LOG_DEBUG("[EXT-CHK] CheckExternalChanges result: path=%s new_state=%d",
+                     full_path.c_str(), state_);
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Exception checking file changes for %s: %s", full_path.c_str(), e.what());
   }
