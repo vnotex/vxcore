@@ -526,6 +526,12 @@ VXCORE_API VxCoreError vxcore_buffer_save(VxCoreContextHandle context, const cha
 // Reload buffer content from disk.
 VXCORE_API VxCoreError vxcore_buffer_reload(VxCoreContextHandle context, const char *id);
 
+// Check if a buffer's file has been modified or deleted externally.
+// Updates the buffer's internal state. Query the new state with vxcore_buffer_get_state().
+// Returns VXCORE_OK on success, VXCORE_ERR_BUFFER_NOT_FOUND if buffer doesn't exist.
+VXCORE_API VxCoreError vxcore_buffer_check_external_changes(VxCoreContextHandle context,
+                                                             const char *id);
+
 // Get buffer content as JSON.
 // Returns JSON: {"content": "<hex-encoded-bytes>"} (caller must free with vxcore_string_free).
 VXCORE_API VxCoreError vxcore_buffer_get_content(VxCoreContextHandle context, const char *id,

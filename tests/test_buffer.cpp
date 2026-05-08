@@ -354,6 +354,11 @@ int test_buffer_save_reload() {
   std::string disk_content = read_file_content(file_path);
   ASSERT_EQ(disk_content, std::string(original_content));
 
+  // Get revision after save
+  int revision_before_reload = 0;
+  err = vxcore_buffer_get_revision(ctx, buffer_id, &revision_before_reload);
+  ASSERT_EQ(err, VXCORE_OK);
+
   // Modify file on disk externally
   const char *modified_content = "Modified externally";
   create_test_file(file_path, modified_content);
@@ -361,6 +366,12 @@ int test_buffer_save_reload() {
   // Reload buffer
   err = vxcore_buffer_reload(ctx, buffer_id);
   ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify revision incremented after reload
+  int revision_after_reload = 0;
+  err = vxcore_buffer_get_revision(ctx, buffer_id, &revision_after_reload);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(revision_after_reload, revision_before_reload + 1);
 
   // Verify reloaded content
   const void *content_ptr = nullptr;
@@ -3321,6 +3332,226 @@ int test_virtual_buffer_rejected_by_regular_open() {
   return 0;
 }
 
+int test_buffer_check_external_changes() {
+  std::cout << "  Running test_buffer_check_external_changes..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_ext_changes"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_ext_changes");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"ExtChange Test\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create file and open buffer
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::string file_path = notebook_path + "/test.md";
+  create_test_file(file_path, "Initial content");
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Reload to establish baseline (file_create + create_test_file may cause mismatch)
+  err = vxcore_buffer_reload(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify state is NORMAL after reload
+  VxCoreBufferState state;
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_NORMAL);
+
+  // Check external changes when nothing changed - should stay NORMAL
+  err = vxcore_buffer_check_external_changes(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_NORMAL);
+
+  // Modify file externally (sleep for mtime granularity)
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  create_test_file(file_path, "Externally modified content");
+
+  // Check external changes - should detect FILE_CHANGED
+  err = vxcore_buffer_check_external_changes(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_FILE_CHANGED);
+
+  // Reload buffer - should reset to NORMAL
+  err = vxcore_buffer_reload(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_NORMAL);
+
+  // Delete file externally
+  std::filesystem::remove(std::filesystem::path(file_path));
+
+  // Check external changes - should detect FILE_MISSING
+  err = vxcore_buffer_check_external_changes(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_FILE_MISSING);
+
+  // Test error cases
+  err = vxcore_buffer_check_external_changes(nullptr, buffer_id);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  err = vxcore_buffer_check_external_changes(ctx, nullptr);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
+  err = vxcore_buffer_check_external_changes(ctx, "nonexistent-id");
+  ASSERT_EQ(err, VXCORE_ERR_BUFFER_NOT_FOUND);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_ext_changes"));
+  std::cout << "  ✓ test_buffer_check_external_changes passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_check_external_changes_unloaded() {
+  std::cout << "  Running test_buffer_check_external_changes_unloaded..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_ext_unloaded"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_ext_unloaded");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Unloaded Test\"}",
+                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create file with content on disk
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "lazy.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string file_path = notebook_path + "/lazy.md";
+  create_test_file(file_path, "Lazy content");
+
+  // Open buffer (lazy — DO NOT read content or reload)
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "lazy.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify content_loaded == false (buffer not yet loaded from disk)
+  char *buf_json = nullptr;
+  err = vxcore_buffer_get(ctx, buffer_id, &buf_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  auto j = nlohmann::json::parse(buf_json);
+  ASSERT_FALSE(j.value("contentLoaded", true));
+  vxcore_string_free(buf_json);
+
+  // Check external changes — should NOT detect FILE_CHANGED for unloaded buffer
+  err = vxcore_buffer_check_external_changes(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  VxCoreBufferState state;
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_NORMAL);  // Bug 1 fix: NOT FILE_CHANGED
+
+  // Now trigger lazy load by reading content
+  const void *data = nullptr;
+  size_t size = 0;
+  err = vxcore_buffer_get_content_raw(ctx, buffer_id, &data, &size);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_TRUE(size > 0);
+
+  // Verify content_loaded == true now
+  err = vxcore_buffer_get(ctx, buffer_id, &buf_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  j = nlohmann::json::parse(buf_json);
+  ASSERT_TRUE(j.value("contentLoaded", false));
+  vxcore_string_free(buf_json);
+
+  // Modify file on disk
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  create_test_file(file_path, "Externally modified lazy content");
+
+  // Check external changes — SHOULD detect FILE_CHANGED now (content was loaded)
+  err = vxcore_buffer_check_external_changes(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_FILE_CHANGED);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_ext_unloaded"));
+  std::cout << "  ✓ test_buffer_check_external_changes_unloaded passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_mtime_no_jitter() {
+  std::cout << "  Running test_buffer_mtime_no_jitter..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_mtime_jitter"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_mtime_jitter");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Jitter Test\"}",
+                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "stable.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string file_path = notebook_path + "/stable.md";
+  create_test_file(file_path, "Stable content that never changes");
+
+  // Open buffer and load content (establishes baseline mtime)
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "stable.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Trigger content load
+  const void *data = nullptr;
+  size_t size = 0;
+  err = vxcore_buffer_get_content_raw(ctx, buffer_id, &data, &size);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Check external changes 100 times — should NEVER detect FILE_CHANGED
+  for (int i = 0; i < 100; i++) {
+    err = vxcore_buffer_check_external_changes(ctx, buffer_id);
+    ASSERT_EQ(err, VXCORE_OK);
+    VxCoreBufferState state;
+    err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+    ASSERT_EQ(err, VXCORE_OK);
+    if (state != VXCORE_BUFFER_NORMAL) {
+      std::cerr << "  FAIL: Jitter detected at iteration " << i
+                << " state=" << state << std::endl;
+      return 1;
+    }
+  }
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_mtime_jitter"));
+  std::cout << "  ✓ test_buffer_mtime_no_jitter passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running buffer tests..." << std::endl;
 
@@ -3332,10 +3563,13 @@ int main() {
   RUN_TEST(test_buffer_list);
   RUN_TEST(test_buffer_content_raw);
   RUN_TEST(test_buffer_content_json);
+  RUN_TEST(test_buffer_check_external_changes_unloaded);
+  RUN_TEST(test_buffer_mtime_no_jitter);
   RUN_TEST(test_buffer_save_reload);
   RUN_TEST(test_buffer_deduplication);
   RUN_TEST(test_buffer_external_file);
   RUN_TEST(test_buffer_state);
+  RUN_TEST(test_buffer_check_external_changes);
   RUN_TEST(test_buffer_is_modified);
   RUN_TEST(test_buffer_get_revision);
 

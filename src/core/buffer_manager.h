@@ -57,6 +57,10 @@ class BufferManager {
   // Reload buffer from disk
   VxCoreError ReloadBuffer(const std::string &id);
 
+  // Check if buffer's file has been modified or deleted externally.
+  // Updates internal buffer state (query with GetState() afterwards).
+  VxCoreError CheckExternalChanges(const std::string &id);
+
   // Get buffer content as raw memory (direct access for large files)
   VxCoreError GetBufferContent(const std::string &id, const void **out_data, size_t *out_size);
 

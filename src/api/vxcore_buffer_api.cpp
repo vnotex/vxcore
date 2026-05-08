@@ -259,6 +259,29 @@ VXCORE_API VxCoreError vxcore_buffer_reload(VxCoreContextHandle context, const c
   }
 }
 
+VXCORE_API VxCoreError vxcore_buffer_check_external_changes(VxCoreContextHandle context,
+                                                             const char *id) {
+  if (!context || !id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    VxCoreError err = ctx->buffer_manager->CheckExternalChanges(id);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to check external changes";
+    }
+    return err;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_buffer_get_content(VxCoreContextHandle context, const char *id,
                                                  char **out_json) {
   if (!context || !id || !out_json) {

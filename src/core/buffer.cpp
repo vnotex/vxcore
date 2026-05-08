@@ -277,10 +277,8 @@ void Buffer::LoadContent(const std::string &full_path) {
 
     // Update last modified time
     auto ftime = std::filesystem::last_write_time(fs_path);
-    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-        ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
     last_modified_time_ =
-        std::chrono::duration_cast<std::chrono::milliseconds>(sctp.time_since_epoch()).count();
+        std::chrono::duration_cast<std::chrono::milliseconds>(ftime.time_since_epoch()).count();
     VXCORE_LOG_DEBUG("[EXT-CHK] LoadContent: path=%s mtime_recorded=%lld revision=%d",
                      full_path.c_str(), (long long)last_modified_time_, revision_);
 
@@ -327,10 +325,8 @@ void Buffer::SaveContent(const std::string &full_path) {
 
     // Update last modified time
     auto ftime = std::filesystem::last_write_time(fs_path);
-    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-        ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
     last_modified_time_ =
-        std::chrono::duration_cast<std::chrono::milliseconds>(sctp.time_since_epoch()).count();
+        std::chrono::duration_cast<std::chrono::milliseconds>(ftime.time_since_epoch()).count();
 
     state_ = VXCORE_BUFFER_NORMAL;
     modified_ = false;
@@ -358,6 +354,13 @@ void Buffer::CheckExternalChanges(const std::string &full_path) {
     return;
   }
 
+  // Skip check for buffers that haven't loaded content yet (e.g., session-restored inactive tabs).
+  // Their last_modified_time_ is 0 (constructor default), so any real mtime would differ,
+  // causing a false positive FILE_CHANGED state.
+  if (!content_loaded_ && last_modified_time_ == 0) {
+    return;
+  }
+
   try {
     std::filesystem::path fs_path = PathFromUtf8(full_path);
     if (!std::filesystem::exists(fs_path)) {
@@ -370,10 +373,8 @@ void Buffer::CheckExternalChanges(const std::string &full_path) {
 
     // Get current file modification time
     auto ftime = std::filesystem::last_write_time(fs_path);
-    auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-        ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
     int64_t current_mtime =
-        std::chrono::duration_cast<std::chrono::milliseconds>(sctp.time_since_epoch()).count();
+        std::chrono::duration_cast<std::chrono::milliseconds>(ftime.time_since_epoch()).count();
 
     VXCORE_LOG_DEBUG("[EXT-CHK] CheckExternalChanges: path=%s content_loaded=%d stored_mtime=%lld current_mtime=%lld state=%d",
                      full_path.c_str(), content_loaded_ ? 1 : 0,

@@ -425,6 +425,27 @@ VxCoreError BufferManager::ReloadBuffer(const std::string &id) {
   return VXCORE_OK;
 }
 
+VxCoreError BufferManager::CheckExternalChanges(const std::string &id) {
+  auto *buffer = GetBuffer(id);
+  if (!buffer) {
+    VXCORE_LOG_ERROR("Cannot check external changes: buffer not found: id=%s", id.c_str());
+    return VXCORE_ERR_BUFFER_NOT_FOUND;
+  }
+
+  if (buffer->IsVirtual()) {
+    return VXCORE_OK;
+  }
+
+  std::string full_path = buffer->ResolveFullPath();
+  if (full_path.empty()) {
+    VXCORE_LOG_ERROR("Cannot check external changes: failed to resolve path for buffer: id=%s",
+                     id.c_str());
+    return VXCORE_ERR_NOT_FOUND;
+  }
+  buffer->CheckExternalChanges(full_path);
+  return VXCORE_OK;
+}
+
 VxCoreError BufferManager::GetBufferContent(const std::string &id, const void **out_data,
                                             size_t *out_size) {
   if (!out_data || !out_size) {
