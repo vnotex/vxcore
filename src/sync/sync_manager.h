@@ -36,15 +36,15 @@ class SyncManager {
   VxCoreError GetSyncConfig(const std::string &notebook_id, SyncConfig &out_config);
 
   // Test-only: bypass the factory and inject any backend instance for the given notebook.
-  void RegisterBackendForTesting(const std::string &notebook_id,
-                                 std::unique_ptr<ISyncBackend> backend);
+  VXCORE_API void RegisterBackendForTesting(const std::string &notebook_id,
+                                            std::unique_ptr<ISyncBackend> backend);
 
   // Test-only: full EnableSync flow with a supplied backend (skips factory).
   // Calls SetCredentials(creds) BEFORE Initialize(...) when credentials != nullptr.
-  VxCoreError EnableSyncWithBackendForTesting(const std::string &notebook_id,
-                                              const SyncConfig &config,
-                                              const SyncCredentials *credentials,
-                                              std::unique_ptr<ISyncBackend> backend);
+  VXCORE_API VxCoreError EnableSyncWithBackendForTesting(const std::string &notebook_id,
+                                                         const SyncConfig &config,
+                                                         const SyncCredentials *credentials,
+                                                         std::unique_ptr<ISyncBackend> backend);
 
  private:
   VxCoreError ValidateNotebook(const std::string &notebook_id);

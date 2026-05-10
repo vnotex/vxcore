@@ -88,11 +88,21 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id) {
     return VXCORE_ERR_SYNC_NOT_ENABLED;
   }
 
-  if (backends_.find(notebook_id) == backends_.end()) {
+  auto backend_it = backends_.find(notebook_id);
+  if (backend_it == backends_.end()) {
     return VXCORE_ERR_NOT_IMPLEMENTED;
   }
 
-  return VXCORE_OK;
+  states_[notebook_id] = SyncState::kStaging;
+  VxCoreError sync_err = backend_it->second->Sync(nullptr, nullptr);
+  if (sync_err == VXCORE_OK) {
+    states_[notebook_id] = SyncState::kIdle;
+  } else if (sync_err == VXCORE_ERR_SYNC_CONFLICT) {
+    states_[notebook_id] = SyncState::kConflicted;
+  } else {
+    states_[notebook_id] = SyncState::kError;
+  }
+  return sync_err;
 }
 
 VxCoreError SyncManager::GetSyncStatus(const std::string &notebook_id, SyncState &out_state,
@@ -110,11 +120,13 @@ VxCoreError SyncManager::GetSyncStatus(const std::string &notebook_id, SyncState
 
   out_state = states_[notebook_id];
 
-  if (backends_.find(notebook_id) == backends_.end()) {
-    return VXCORE_ERR_NOT_IMPLEMENTED;
+  auto backend_it = backends_.find(notebook_id);
+  if (backend_it == backends_.end()) {
+    out_files.clear();
+    return VXCORE_OK;
   }
 
-  return VXCORE_OK;
+  return backend_it->second->GetStatus(out_files);
 }
 
 VxCoreError SyncManager::GetConflicts(const std::string &notebook_id,
@@ -130,11 +142,13 @@ VxCoreError SyncManager::GetConflicts(const std::string &notebook_id,
     return VXCORE_ERR_SYNC_NOT_ENABLED;
   }
 
-  if (backends_.find(notebook_id) == backends_.end()) {
-    return VXCORE_ERR_NOT_IMPLEMENTED;
+  auto backend_it = backends_.find(notebook_id);
+  if (backend_it == backends_.end()) {
+    out_conflicts.clear();
+    return VXCORE_OK;
   }
 
-  return VXCORE_OK;
+  return backend_it->second->GetConflicts(out_conflicts);
 }
 
 VxCoreError SyncManager::ResolveConflict(const std::string &notebook_id, const std::string &path,
@@ -151,11 +165,20 @@ VxCoreError SyncManager::ResolveConflict(const std::string &notebook_id, const s
     return VXCORE_ERR_SYNC_NOT_ENABLED;
   }
 
-  if (backends_.find(notebook_id) == backends_.end()) {
+  auto backend_it = backends_.find(notebook_id);
+  if (backend_it == backends_.end()) {
     return VXCORE_ERR_NOT_IMPLEMENTED;
   }
 
-  return VXCORE_OK;
+  VxCoreError resolve_err = backend_it->second->ResolveConflict(path, resolution);
+  if (resolve_err == VXCORE_OK) {
+    std::vector<SyncConflictInfo> remaining;
+    backend_it->second->GetConflicts(remaining);
+    if (remaining.empty()) {
+      states_[notebook_id] = SyncState::kIdle;
+    }
+  }
+  return resolve_err;
 }
 
 void SyncManager::RegisterBackendForTesting(const std::string &notebook_id,
