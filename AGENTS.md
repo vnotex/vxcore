@@ -109,6 +109,7 @@ vxcore/
 │   │   ├── vxcore_folder_api.cpp    # Folder/file operations
 │   │   ├── vxcore_tag_api.cpp       # Tag operations
 │   │   ├── vxcore_search_api.cpp    # Search operations
+│   │   ├── vxcore_sync_api.cpp      # Sync operations
 │   │   ├── api_utils.h              # API helper utilities
 │   │   ├── error_handler.h/.cpp     # Error handling utilities
 │   │   └── handle_manager.h/.cpp    # Handle management
@@ -142,6 +143,12 @@ vxcore/
 │   │   ├── search_query.h/.cpp      # SearchQuery, SearchScope, SearchOption
 │   │   └── search_file_info.h/.cpp  # SearchFileInfo struct
 │   │
+│   ├── sync/                # Sync backend subsystem (see src/sync/AGENTS.md)
+│   │   ├── sync_types.h             # Sync enums, structs, callback typedef
+│   │   ├── sync_backend.h           # ISyncBackend pure virtual interface
+│   │   ├── sync_manager.h/.cpp      # SyncManager orchestrator (per-notebook dispatch)
+│   │   └── AGENTS.md               # Detailed sync module documentation
+│   │
 │   ├── platform/            # Platform-specific code
 │   │   ├── path_provider.h/.cpp     # AppData, LocalData paths per platform
 │   │   └── process_utils.h/.cpp     # External process execution (for rg)
@@ -167,6 +174,7 @@ vxcore/
 │   ├── test_folder.cpp      # Folder/file operation tests
 │   ├── test_search.cpp      # Search tests
 │   ├── test_db.cpp          # Database layer tests
+│   ├── test_sync.cpp        # Sync backend tests
 │   └── ...
 │
 ├── third_party/             # External dependencies (DO NOT MODIFY)
@@ -203,6 +211,7 @@ vxcore/
    - **Raw**: Config stored in session config only, metadata in local data folder
 5. **FolderManager abstraction**: `BundledFolderManager` and `RawFolderManager` implement different storage strategies
 6. **Search backends**: Pluggable via `ISearchBackend` interface (ripgrep, simple built-in)
+7. **Sync backends**: Pluggable via `ISyncBackend` interface (Git, WebDAV, etc. — see `src/sync/AGENTS.md`)
 
 ### Thread Safety
 
@@ -221,6 +230,7 @@ C API (vxcore_*)
     ▼
 VxCoreContext
     ├── ConfigManager (VxCoreConfig, VxCoreSessionConfig)
+    ├── SyncManager (per-notebook ISyncBackend dispatch)
     └── NotebookManager
             └── Notebook (Bundled/Raw)
                     ├── NotebookConfig (id, name, tags, metadata)
