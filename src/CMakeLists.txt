@@ -16,6 +16,7 @@ set(VXCORE_SOURCES
     api/vxcore_buffer_api.cpp
     api/vxcore_template_api.cpp
     api/vxcore_snippet_api.cpp
+    api/vxcore_sync_api.cpp
     api/handle_manager.cpp
     api/error_handler.cpp
     core/config_manager.cpp
@@ -50,6 +51,7 @@ set(VXCORE_SOURCES
     search/search_file_info.cpp
     search/rg_search_backend.cpp
     search/simple_search_backend.cpp
+    sync/sync_manager.cpp
     utils/utils.cpp
     utils/string_utils.cpp
     utils/base64.cpp

@@ -18,6 +18,7 @@ add_vxcore_test(test_history)
 add_vxcore_test(test_session_persistence)
 add_vxcore_test(test_template)
 add_vxcore_test(test_e2e_assets)
+add_vxcore_test(test_sync)
 add_executable(test_content_processor test_content_processor.cpp
     ${CMAKE_SOURCE_DIR}/src/core/content_processor/markdown_handler.cpp
     ${CMAKE_SOURCE_DIR}/src/core/content_processor/content_processor.cpp

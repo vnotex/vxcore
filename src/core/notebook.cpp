@@ -79,6 +79,18 @@ NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
       }
     }
   }
+  if (json.contains("syncEnabled") && json["syncEnabled"].is_boolean()) {
+    config.sync_enabled = json["syncEnabled"].get<bool>();
+  }
+  if (json.contains("syncBackend") && json["syncBackend"].is_string()) {
+    config.sync_backend = json["syncBackend"].get<std::string>();
+  }
+  if (json.contains("syncRemoteUrl") && json["syncRemoteUrl"].is_string()) {
+    config.sync_remote_url = json["syncRemoteUrl"].get<std::string>();
+  }
+  if (json.contains("syncIntervalSeconds") && json["syncIntervalSeconds"].is_number_integer()) {
+    config.sync_interval_seconds = json["syncIntervalSeconds"].get<int>();
+  }
   return config;
 }
 
@@ -101,6 +113,10 @@ nlohmann::json NotebookConfig::ToJson() const {
     ignored_array.push_back(pattern);
   }
   json["ignored"] = std::move(ignored_array);
+  json["syncEnabled"] = sync_enabled;
+  json["syncBackend"] = sync_backend;
+  json["syncRemoteUrl"] = sync_remote_url;
+  json["syncIntervalSeconds"] = sync_interval_seconds;
   return json;
 }
 

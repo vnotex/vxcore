@@ -36,6 +36,10 @@ struct NotebookConfig {
   std::vector<std::string> ignored;
   std::vector<TagNode> tags;
   int64_t tags_modified_utc;
+  bool sync_enabled = false;
+  std::string sync_backend;
+  std::string sync_remote_url;
+  int sync_interval_seconds = 300;
 
   NotebookConfig();
 

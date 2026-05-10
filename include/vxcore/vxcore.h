@@ -834,6 +834,43 @@ VXCORE_API VxCoreError vxcore_snippet_apply(VxCoreContextHandle context, const c
                                             const char *selected_text, const char *indentation,
                                             const char *overrides_json, char **out_json);
 
+// ============ Sync Operations ============
+
+// Enable sync for a notebook.
+// notebook_id: ID of the notebook.
+// config_json: JSON object with sync configuration:
+//   {"backend":"git","remoteUrl":"...","intervalSeconds":300}
+// Returns VXCORE_ERR_UNSUPPORTED for raw notebooks.
+VXCORE_API VxCoreError vxcore_sync_enable(VxCoreContextHandle context, const char *notebook_id,
+                                          const char *config_json);
+
+// Disable sync for a notebook.
+VXCORE_API VxCoreError vxcore_sync_disable(VxCoreContextHandle context, const char *notebook_id);
+
+// Trigger an immediate sync cycle.
+// Returns VXCORE_ERR_SYNC_NOT_ENABLED if sync is not enabled.
+// Returns VXCORE_ERR_NOT_IMPLEMENTED if no backend is registered.
+VXCORE_API VxCoreError vxcore_sync_trigger(VxCoreContextHandle context, const char *notebook_id);
+
+// Get sync status for a notebook.
+// out_status_json: JSON output: {"state":"idle","files":[{"path":"...","status":"modified_local"}]}
+// Caller must free with vxcore_string_free().
+VXCORE_API VxCoreError vxcore_sync_get_status(VxCoreContextHandle context, const char *notebook_id,
+                                              char **out_status_json);
+
+// Get unresolved sync conflicts.
+// out_conflicts_json: JSON output: {"conflicts":[{"path":"...","localModifiedUtc":123,"remoteModifiedUtc":456,"isBinary":false}]}
+// Caller must free with vxcore_string_free().
+VXCORE_API VxCoreError vxcore_sync_get_conflicts(VxCoreContextHandle context,
+                                                 const char *notebook_id,
+                                                 char **out_conflicts_json);
+
+// Resolve a sync conflict.
+// resolution: One of "keep_both", "keep_local", "keep_remote".
+VXCORE_API VxCoreError vxcore_sync_resolve_conflict(VxCoreContextHandle context,
+                                                    const char *notebook_id, const char *path,
+                                                    const char *resolution);
+
 VXCORE_API void vxcore_string_free(char *str);
 
 #ifdef __cplusplus
