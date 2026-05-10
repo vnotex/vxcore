@@ -16,6 +16,14 @@ class ISyncBackend {
   virtual VxCoreError Initialize(const std::string &root_folder,
                                  const SyncConfig &config) = 0;
 
+  // Called by SyncManager BEFORE Initialize/Sync/Push/Pull when credentials are
+  // available. Backend caches them. Idempotent. Default no-op for backends that
+  // don't need credentials (e.g., MockSyncBackend).
+  virtual VxCoreError SetCredentials(const SyncCredentials &creds) {
+    (void)creds;
+    return VXCORE_OK;
+  }
+
   virtual VxCoreError Shutdown() = 0;
 
   virtual VxCoreError Sync(SyncProgressCallback callback, void *userdata) = 0;
