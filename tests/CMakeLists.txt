@@ -172,3 +172,15 @@ add_executable(test_folder_manager test_folder_manager.cpp
 target_include_directories(test_folder_manager PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(test_folder_manager PRIVATE sqlite3 nlohmann_json cmark)
 add_test(NAME test_folder_manager COMMAND test_folder_manager)
+
+# test_sync_manager_dispatch: T9 of git-sync-backend plan. Hosts MockSyncBackend
+# tests and (in later tasks) SyncManager dispatch tests via the test-only
+# RegisterBackendForTesting / EnableSyncWithBackendForTesting hooks.
+add_executable(test_sync_manager_dispatch test_sync_manager_dispatch.cpp
+    mock_sync_backend.cpp)
+target_include_directories(test_sync_manager_dispatch PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_sync_manager_dispatch PRIVATE vxcore nlohmann_json)
+add_test(NAME test_sync_manager_dispatch COMMAND test_sync_manager_dispatch)

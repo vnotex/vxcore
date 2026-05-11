@@ -158,4 +158,65 @@ VxCoreError SyncManager::ResolveConflict(const std::string &notebook_id, const s
   return VXCORE_OK;
 }
 
+void SyncManager::RegisterBackendForTesting(const std::string &notebook_id,
+                                            std::unique_ptr<ISyncBackend> backend) {
+  states_[notebook_id] = SyncState::kIdle;
+  backends_[notebook_id] = std::move(backend);
+}
+
+VxCoreError SyncManager::EnableSyncWithBackendForTesting(
+    const std::string &notebook_id, const SyncConfig &config,
+    const SyncCredentials *credentials, std::unique_ptr<ISyncBackend> backend) {
+  VxCoreError err = ValidateNotebook(notebook_id);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const bool had_config = configs_.count(notebook_id) > 0;
+  const bool had_state = states_.count(notebook_id) > 0;
+  SyncConfig prev_config;
+  SyncState prev_state = SyncState::kIdle;
+  if (had_config) prev_config = configs_[notebook_id];
+  if (had_state) prev_state = states_[notebook_id];
+
+  configs_[notebook_id] = config;
+  states_[notebook_id] = SyncState::kIdle;
+
+  if (credentials != nullptr) {
+    err = backend->SetCredentials(*credentials);
+    if (err != VXCORE_OK) {
+      if (had_config) {
+        configs_[notebook_id] = prev_config;
+      } else {
+        configs_.erase(notebook_id);
+      }
+      if (had_state) {
+        states_[notebook_id] = prev_state;
+      } else {
+        states_.erase(notebook_id);
+      }
+      return err;
+    }
+  }
+
+  auto *notebook = notebook_manager_->GetNotebook(notebook_id);
+  err = backend->Initialize(notebook->GetRootFolder(), config);
+  if (err != VXCORE_OK) {
+    if (had_config) {
+      configs_[notebook_id] = prev_config;
+    } else {
+      configs_.erase(notebook_id);
+    }
+    if (had_state) {
+      states_[notebook_id] = prev_state;
+    } else {
+      states_.erase(notebook_id);
+    }
+    return err;
+  }
+
+  backends_[notebook_id] = std::move(backend);
+  return VXCORE_OK;
+}
+
 }  // namespace vxcore
