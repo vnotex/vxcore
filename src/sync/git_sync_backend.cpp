@@ -5,6 +5,8 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <utility>
+#include <vector>
 
 #include "utils/file_utils.h"
 #include "utils/logger.h"
@@ -533,9 +535,307 @@ VxCoreError GitSyncBackend::Pull(SyncProgressCallback callback, void *userdata) 
   return VXCORE_ERR_NOT_IMPLEMENTED;
 }
 
+// T20: map git_status_list to SyncFileInfo list. We honor the same status
+// flags as `git status` and prefer the index_to_workdir path when available
+// (so renames on the unstaged side surface the destination), falling back to
+// head_to_index. Files outside our flag set (e.g. IGNORED, CURRENT) are
+// silently skipped.
 VxCoreError GitSyncBackend::GetStatus(std::vector<SyncFileInfo> &out_files) {
-  (void)out_files;
-  return VXCORE_ERR_NOT_IMPLEMENTED;
+  std::lock_guard<std::mutex> lock(op_mutex_);
+  if (!initialized_) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+
+  out_files.clear();
+
+  git_status_options opts = GIT_STATUS_OPTIONS_INIT;
+  opts.show = GIT_STATUS_SHOW_INDEX_AND_WORKDIR;
+  opts.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED |
+               GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX |
+               GIT_STATUS_OPT_RENAMES_INDEX_TO_WORKDIR;
+
+  git_status_list *list = nullptr;
+  int rc = git_status_list_new(&list, repo_, &opts);
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+
+  const size_t n = git_status_list_entrycount(list);
+  for (size_t i = 0; i < n; ++i) {
+    const git_status_entry *entry = git_status_byindex(list, i);
+    if (entry == nullptr) {
+      continue;
+    }
+
+    const unsigned int s = entry->status;
+    SyncFileStatus mapped = SyncFileStatus::kUnchanged;
+    if ((s & GIT_STATUS_CONFLICTED) != 0) {
+      mapped = SyncFileStatus::kConflicted;
+    } else if ((s & (GIT_STATUS_INDEX_NEW | GIT_STATUS_WT_NEW)) != 0) {
+      mapped = SyncFileStatus::kAddedLocal;
+    } else if ((s & (GIT_STATUS_INDEX_MODIFIED | GIT_STATUS_WT_MODIFIED)) != 0) {
+      mapped = SyncFileStatus::kModifiedLocal;
+    } else if ((s & (GIT_STATUS_INDEX_DELETED | GIT_STATUS_WT_DELETED)) != 0) {
+      mapped = SyncFileStatus::kDeletedLocal;
+    } else {
+      // RENAMED / TYPECHANGE / IGNORED / CURRENT etc. — not in our enum.
+      continue;
+    }
+
+    const char *path = nullptr;
+    if (entry->index_to_workdir != nullptr &&
+        entry->index_to_workdir->new_file.path != nullptr) {
+      path = entry->index_to_workdir->new_file.path;
+    } else if (entry->head_to_index != nullptr &&
+               entry->head_to_index->new_file.path != nullptr) {
+      path = entry->head_to_index->new_file.path;
+    }
+    if (path == nullptr) {
+      continue;
+    }
+
+    SyncFileInfo info;
+    info.path = path;
+    info.status = mapped;
+    out_files.push_back(std::move(info));
+  }
+
+  git_status_list_free(list);
+  return VXCORE_OK;
+}
+
+// T21: stage every change under the working tree, then defensively scrub any
+// path under vx_notebook/vx_sync/ from the index (the gitignore covers it,
+// but we belt-and-brace because users may pass exclude_paths that override).
+// Caller holds op_mutex_ and has repo_ open.
+//
+// libgit2 v1.7.x's git_index_add_all flat-out refuses any path under what it
+// recognizes as a gitdir (returns "invalid path" with klass GIT_ERROR_INVALID
+// the first time it walks vx_notebook/vx_sync/). To survive a missing or
+// corrupted .gitignore we install a matched-path callback that skips those
+// paths during the walk; the post-walk index scrub then mops up any stale
+// entries (e.g. left over from a previous backend version that did stage
+// them before this guard existed).
+VxCoreError GitSyncBackend::StageAll() {
+  if (repo_ == nullptr) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+
+  git_index *idx = nullptr;
+  int rc = git_repository_index(&idx, repo_);
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+
+  struct AddCbCtx {};
+  auto add_cb = [](const char *path, const char *matched_pathspec,
+                   void *payload) -> int {
+    (void)matched_pathspec;
+    (void)payload;
+    static const char kPrefix[] = "vx_notebook/vx_sync";
+    if (path != nullptr &&
+        std::strncmp(path, kPrefix, sizeof(kPrefix) - 1) == 0) {
+      return 1;  // skip
+    }
+    return 0;  // include
+  };
+
+  rc = git_index_add_all(idx, /*pathspec=*/nullptr, GIT_INDEX_ADD_DEFAULT,
+                         add_cb, /*payload=*/nullptr);
+  if (rc != 0) {
+    VxCoreError err = TranslateGitError(rc);
+    git_index_free(idx);
+    return err;
+  }
+
+  // Defensive removal: collect entry paths under vx_notebook/vx_sync first
+  // (avoid mutating while iterating), then drop them by path/stage 0.
+  static const std::string kExcludePrefix = "vx_notebook/vx_sync";
+  std::vector<std::string> to_remove;
+  const size_t n = git_index_entrycount(idx);
+  for (size_t i = 0; i < n; ++i) {
+    const git_index_entry *e = git_index_get_byindex(idx, i);
+    if (e == nullptr || e->path == nullptr) {
+      continue;
+    }
+    const std::string p(e->path);
+    if (p.compare(0, kExcludePrefix.size(), kExcludePrefix) == 0) {
+      to_remove.push_back(p);
+    }
+  }
+  for (const auto &p : to_remove) {
+    int rrc = git_index_remove(idx, p.c_str(), /*stage=*/0);
+    if (rrc != 0) {
+      VxCoreError err = TranslateGitError(rrc);
+      git_index_free(idx);
+      return err;
+    }
+  }
+
+  rc = git_index_write(idx);
+  if (rc != 0) {
+    VxCoreError err = TranslateGitError(rc);
+    git_index_free(idx);
+    return err;
+  }
+
+  git_index_free(idx);
+  return VXCORE_OK;
+}
+
+// T22: if the index's tree differs from HEAD's tree, create a commit on HEAD
+// using credentials_.author_name/_email (or the VNote defaults). If HEAD
+// doesn't exist yet (initial commit), the new commit becomes the root.
+// Returns VXCORE_OK both when a commit was made and when there was nothing
+// to commit (empty-commit suppression).
+VxCoreError GitSyncBackend::CommitIndex(const std::string &message) {
+  if (repo_ == nullptr) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+
+  git_index *idx = nullptr;
+  int rc = git_repository_index(&idx, repo_);
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+
+  git_oid tree_oid;
+  rc = git_index_write_tree(&tree_oid, idx);
+  git_index_free(idx);
+  idx = nullptr;
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+
+  // Look up parent commit + its tree (if HEAD resolves) so we can suppress
+  // empty commits and supply a parent to git_commit_create_v.
+  git_object *parent_obj = nullptr;
+  int head_rc = git_revparse_single(&parent_obj, repo_, "HEAD");
+  git_commit *parent_commit = nullptr;
+  bool have_parent = false;
+  if (head_rc == 0) {
+    rc = git_commit_lookup(&parent_commit, repo_, git_object_id(parent_obj));
+    git_object_free(parent_obj);
+    parent_obj = nullptr;
+    if (rc != 0) {
+      return TranslateGitError(rc);
+    }
+    have_parent = true;
+
+    // Compare trees; suppress empty commit when identical.
+    git_tree *parent_tree = nullptr;
+    rc = git_commit_tree(&parent_tree, parent_commit);
+    if (rc != 0) {
+      VxCoreError err = TranslateGitError(rc);
+      git_commit_free(parent_commit);
+      return err;
+    }
+    const git_oid *parent_tree_oid = git_tree_id(parent_tree);
+    if (parent_tree_oid != nullptr &&
+        git_oid_equal(parent_tree_oid, &tree_oid) != 0) {
+      git_tree_free(parent_tree);
+      git_commit_free(parent_commit);
+      return VXCORE_OK;  // Nothing to commit.
+    }
+    git_tree_free(parent_tree);
+  } else {
+    // No HEAD yet — initial commit. Clear the "not found" libgit2 state so
+    // a later TranslateGitError doesn't pick it up.
+    git_error_clear();
+  }
+
+  const char *user_name = credentials_.author_name.empty()
+                              ? "VNote Sync"
+                              : credentials_.author_name.c_str();
+  const char *user_email = credentials_.author_email.empty()
+                               ? "sync@vnote.local"
+                               : credentials_.author_email.c_str();
+
+  git_signature *sig = nullptr;
+  rc = git_signature_now(&sig, user_name, user_email);
+  if (rc != 0) {
+    VxCoreError err = TranslateGitError(rc);
+    if (parent_commit) git_commit_free(parent_commit);
+    return err;
+  }
+
+  git_tree *tree = nullptr;
+  rc = git_tree_lookup(&tree, repo_, &tree_oid);
+  if (rc != 0) {
+    VxCoreError err = TranslateGitError(rc);
+    git_signature_free(sig);
+    if (parent_commit) git_commit_free(parent_commit);
+    return err;
+  }
+
+  git_oid commit_oid;
+  if (have_parent) {
+    rc = git_commit_create_v(&commit_oid, repo_, "HEAD", sig, sig,
+                             /*message_encoding=*/nullptr, message.c_str(),
+                             tree, /*parent_count=*/1, parent_commit);
+  } else {
+    rc = git_commit_create_v(&commit_oid, repo_, "HEAD", sig, sig,
+                             /*message_encoding=*/nullptr, message.c_str(),
+                             tree, /*parent_count=*/0);
+  }
+
+  git_tree_free(tree);
+  git_signature_free(sig);
+  if (parent_commit) git_commit_free(parent_commit);
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+  return VXCORE_OK;
+}
+
+// T23: fetch refs from origin with the credential callback wired in so
+// PAT-authenticated remotes work. Caller holds op_mutex_ and has repo_ open.
+VxCoreError GitSyncBackend::FetchOrigin() {
+  if (repo_ == nullptr) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+
+  git_remote *remote = nullptr;
+  int rc = git_remote_lookup(&remote, repo_, "origin");
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+
+  git_fetch_options fopts = GIT_FETCH_OPTIONS_INIT;
+  fopts.callbacks.credentials = &GitSyncBackendCredentialCb;
+  fopts.callbacks.payload = this;
+
+  rc = git_remote_fetch(remote, /*refspecs=*/nullptr, &fopts,
+                        "vnote sync fetch");
+  git_remote_free(remote);
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+  return VXCORE_OK;
+}
+
+VxCoreError GitSyncBackend::StageAllForTesting() {
+  std::lock_guard<std::mutex> lock(op_mutex_);
+  if (!initialized_) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+  return StageAll();
+}
+
+VxCoreError GitSyncBackend::CommitIndexForTesting(const std::string &message) {
+  std::lock_guard<std::mutex> lock(op_mutex_);
+  if (!initialized_) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+  return CommitIndex(message);
+}
+
+VxCoreError GitSyncBackend::FetchOriginForTesting() {
+  std::lock_guard<std::mutex> lock(op_mutex_);
+  if (!initialized_) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+  return FetchOrigin();
 }
 
 VxCoreError GitSyncBackend::GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) {

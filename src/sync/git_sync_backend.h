@@ -63,7 +63,32 @@ class GitSyncBackend : public ISyncBackend {
   // reaching into anonymous-namespace internals.
   static VXCORE_API VxCoreError TranslateGitErrorForTesting(int git_rc);
 
+  // T21/T22/T23 test hooks: each acquires op_mutex_ and delegates to the
+  // private helper. They allow unit tests to drive the Sync sub-steps in
+  // isolation without exercising the full Sync() orchestration (which lands
+  // in T24+T25+T26).
+  VXCORE_API VxCoreError StageAllForTesting();
+  VXCORE_API VxCoreError CommitIndexForTesting(const std::string &message);
+  VXCORE_API VxCoreError FetchOriginForTesting();
+
  private:
+  // T21: stage everything tracked + untracked under repo workdir, then
+  // defensively remove any index entry under vx_notebook/vx_sync/ (our
+  // gitdir lives there; .gitignore should already exclude it but we belt-
+  // and-brace it). Caller must hold op_mutex_ and have repo_ open.
+  VxCoreError StageAll();
+
+  // T22: write the current index out as a tree, compare to HEAD's tree, and
+  // create a commit on HEAD if the trees differ. Empty (no-op) commits are
+  // suppressed and return VXCORE_OK. Author/committer come from
+  // credentials_.author_name/_email with sensible defaults. Caller must
+  // hold op_mutex_ and have repo_ open.
+  VxCoreError CommitIndex(const std::string &message);
+
+  // T23: git_remote_lookup("origin") + git_remote_fetch with our credential
+  // callback wired in. Caller must hold op_mutex_ and have repo_ open.
+  VxCoreError FetchOrigin();
+
   // T27 credential callback friend; static C-style libgit2 callback needs to read credentials_.
   friend int GitSyncBackendCredentialCb(struct git_credential **out, const char *url,
                                         const char *username_from_url,

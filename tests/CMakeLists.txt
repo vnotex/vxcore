@@ -244,3 +244,36 @@ target_include_directories(test_git_sync_credentials PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(test_git_sync_credentials PRIVATE libgit2package nlohmann_json)
 add_test(NAME test_git_sync_credentials COMMAND test_git_sync_credentials)
+
+# test_git_sync_status: T20 of git-sync-backend plan. Maps git_status_list
+# entries to SyncFileInfo. Compiles git_sync_backend.cpp directly and pulls
+# in libgit2_init.cpp / logger.cpp / file_utils.cpp via the
+# git_sync_test_helpers static library — same DLL-static-storage isolation
+# story as test_git_sync_init.
+add_executable(test_git_sync_status test_git_sync_status.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp)
+target_include_directories(test_git_sync_status PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_git_sync_status PRIVATE
+    git_sync_test_helpers
+    libgit2package
+    nlohmann_json)
+add_test(NAME test_git_sync_status COMMAND test_git_sync_status)
+
+# test_git_sync_roundtrip: T21 (StageAll), T22 (CommitIndex), T23
+# (FetchOrigin) of the git-sync-backend plan. Drives the Sync sub-helpers
+# through the public *ForTesting hooks. Compiled the same way as
+# test_git_sync_status.
+add_executable(test_git_sync_roundtrip test_git_sync_roundtrip.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp)
+target_include_directories(test_git_sync_roundtrip PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_git_sync_roundtrip PRIVATE
+    git_sync_test_helpers
+    libgit2package
+    nlohmann_json)
+add_test(NAME test_git_sync_roundtrip COMMAND test_git_sync_roundtrip)
