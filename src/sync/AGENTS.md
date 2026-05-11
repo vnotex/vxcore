@@ -2,7 +2,7 @@
 
 src/sync contains the pluggable notebook synchronization backend layer.
 It provides an abstract `ISyncBackend` interface, a `SyncManager` orchestrator, and all supporting types.
-No concrete backend (Git, WebDAV, etc.) is implemented yet — this is the interface skeleton only.
+GitSyncBackend is implemented; WebDAV/OneDrive/etc. remain future.
 
 ## Architecture
 
@@ -18,7 +18,7 @@ SyncManager                         ← Orchestrator (per-notebook backend dispa
 
 ISyncBackend                        ← Pure virtual interface (8 methods)
     │
-    ├── GitSyncBackend (future)     ← libgit2-based
+    ├── GitSyncBackend (libgit2-based)
     ├── WebDavSyncBackend (future)
     ├── OneDriveSyncBackend (future)
     ├── DropboxSyncBackend (future)
@@ -217,6 +217,105 @@ struct NotebookConfig {
 | Recycle bin IS synced | `vx_recycle_bin/` is included so deletions propagate across devices |
 | Sync state directory: `vx_notebook/vx_sync/` | Backend-specific state (e.g., `.git/`) lives here |
 | Conflict naming: `file.sync-conflict-{timestamp}.ext` | Syncthing-style, keeps both versions |
+
+## Git Sync Backend
+
+`GitSyncBackend` is the first concrete `ISyncBackend` implementation. It uses
+[libgit2](https://libgit2.org/) (vendored as a nested submodule under
+`libs/vxcore/third_party/libgit2`) and is built whenever `VXCORE_ENABLE_GIT_SYNC`
+is `ON` (default).
+
+### File Map
+
+| File | Purpose |
+|------|---------|
+| `git_sync_backend.h` | `GitSyncBackend` class declaration (inherits `ISyncBackend`) |
+| `git_sync_backend.cpp` | Implementation: stage/commit/fetch/rebase/push, conflict handling |
+| `libgit2_init.h` | `LibGit2Init` RAII helper that calls `git_libgit2_init`/`shutdown` |
+| `libgit2_init.cpp` | Reference-counted `git_libgit2_init` wrapper (thread-safe) |
+
+### Repository Layout
+
+The git working tree IS the notebook root, but the gitdir is hidden inside the
+`vx_notebook/vx_sync/` metadata folder so it never appears in the user's
+notebook listing. This split is created via `git_repository_init_ext` with
+`GIT_REPOSITORY_INIT_NO_DOTGIT_DIR` and explicit `workdir_path`/`gitdir_path`
+arguments:
+
+```
+<notebook_root>/                  ← workdir (notebook content)
+├── My Note.md
+├── images/
+└── vx_notebook/
+    └── vx_sync/                  ← gitdir (refs, objects, index, HEAD, config)
+        ├── HEAD
+        ├── config
+        ├── objects/
+        └── refs/
+```
+
+`SyncConfig::exclude_paths` defaults to `*.vswp` and `vx_notebook/vx_sync/`,
+which keeps editor swap files and the gitdir itself out of every commit.
+
+### Authentication
+
+| Method | How |
+|--------|-----|
+| HTTPS PAT | `SyncCredentials::personal_access_token` is sent as the password with username `x-access-token` (GitHub/GitLab/Gitea convention) |
+| Anonymous | If no PAT is set, libgit2 falls back to no credentials (works for public-read remotes) |
+| SSH | NOT SUPPORTED in v1 — libssh2 is intentionally not linked |
+
+### Commit Author
+
+Defaults to `"VNote Sync" <sync@vnote.local>`. Callers may override per-sync via
+`SyncCredentials::author_name` and `SyncCredentials::author_email`. The commit
+author is NOT persisted in `NotebookConfig` (kept session-local).
+
+### Sync Semantics
+
+`Sync()` performs a single round-trip:
+
+1. **Stage** — `git add -A` on the workdir, honoring `exclude_paths`.
+2. **Commit** — Auto-commit with timestamped message if the index has changes.
+3. **Fetch** — `git fetch origin` for the tracked branch.
+4. **Rebase** — Replay local commits onto `origin/<branch>`.
+5. **Push** — `git push origin <branch>` (fast-forward only).
+
+Non-fast-forward push errors trigger up to **3 retries** with exponential
+backoff (`100ms`, `500ms`, `2000ms`), each retry refetching and rebasing.
+`Sync()` is **synchronous** in v1 — it blocks the calling thread until the
+round-trip finishes or a non-recoverable error is returned.
+
+### Conflict Workflow
+
+If the rebase hits a conflict, libgit2 leaves the rebase **in progress** on
+disk and `Sync()` returns `VXCORE_ERR_SYNC_CONFLICT`. The caller then:
+
+1. `GetConflicts()` — reads conflict entries from the libgit2 index and
+   returns one `SyncConflictInfo` per conflicted path.
+2. `ResolveConflict(path, kKeepBoth)` — writes the local version to
+   `<file>.sync-conflict-<unix_ts>.<ext>` (Syncthing-style sidecar) and stages
+   the remote version as the resolved file.
+   `kKeepLocal` and `kKeepRemote` overwrite without a sidecar.
+3. When all conflicts are resolved, `GitSyncBackend` automatically calls
+   `git_rebase_continue` until the rebase finishes, then resumes the push
+   step. No explicit "commit resolution" call is needed.
+
+### Limitations / Deferred to v2
+
+The following are explicitly **out of scope for v1** and tracked separately:
+
+- SSH transport (libssh2 not linked, no key-based auth)
+- Username/password basic auth (only PAT is supported over HTTPS)
+- OAuth flows (device code, PKCE, refresh tokens)
+- QtKeychain integration (PAT lives in session config in plaintext for now)
+- Public C API for `Push` / `Pull` (only `Sync` is wired through `vxcore_sync_*`)
+- Branch switching / non-default branches per push
+- Commit log / history inspection API
+- Multiple remotes per notebook
+- Git-LFS support
+- Asynchronous `Sync()` (blocks caller thread; no built-in worker thread)
+- Persisted custom commit author (override is per-call only)
 
 ## How to Add a New Sync Backend
 
