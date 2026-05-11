@@ -392,6 +392,138 @@ int test_git_init_uses_credential_author_when_set() {
   return 0;
 }
 
+// T15: clone-into-empty branch. With no vx_sync, no user files, and a remote
+// that has commits, Initialize must clone into the notebook root using the
+// init+remote+fetch+checkout pattern (NOT git_clone — that hangs on Windows
+// for file:// URLs).
+int test_git_init_clone_into_empty_notebook() {
+  std::cout << "  Running test_git_init_clone_into_empty_notebook..." << std::endl;
+
+  const std::string bare_path = get_test_path("git_init_clone_bare");
+  const std::string notebook_root = get_test_path("git_init_clone_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "note.md", "hello", "init");
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    VxCoreError rc = backend.Initialize(notebook_root, config);
+    ASSERT_EQ(rc, VXCORE_OK);
+
+    // The remote file checked out at the workdir (notebook root).
+    const std::string note_path = notebook_root + "/note.md";
+    ASSERT_TRUE(vxcore::IsRegularFile(note_path));
+    {
+      std::ifstream ifs(vxcore::PathFromUtf8(note_path), std::ios::binary);
+      std::string content((std::istreambuf_iterator<char>(ifs)),
+                          std::istreambuf_iterator<char>());
+      ASSERT_EQ(content, std::string("hello"));
+    }
+
+    // gitdir is at vx_notebook/vx_sync/, NOT at <root>/.git.
+    ASSERT_FALSE(vxcore::PathExists(notebook_root + "/.git"));
+    ASSERT_TRUE(vxcore::IsRegularFile(notebook_root + "/vx_notebook/vx_sync/HEAD"));
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_init_clone_into_empty_notebook passed" << std::endl;
+  return 0;
+}
+
+// T15: SetCredentials before Initialize must not break the clone path even
+// when the remote (file://) doesn't actually authenticate. The credential
+// callback wires through but libgit2's local transport never invokes it.
+int test_git_init_clone_with_pat_uses_3arg_overload() {
+  std::cout << "  Running test_git_init_clone_with_pat_uses_3arg_overload..."
+            << std::endl;
+
+  const std::string bare_path = get_test_path("git_init_clonepat_bare");
+  const std::string notebook_root = get_test_path("git_init_clonepat_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "note.md", "hello", "init");
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    vxcore::SyncCredentials creds;
+    creds.personal_access_token = "dummy";
+    ASSERT_EQ(backend.SetCredentials(creds), VXCORE_OK);
+
+    VxCoreError rc = backend.Initialize(notebook_root, config);
+    ASSERT_EQ(rc, VXCORE_OK);
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_init_clone_with_pat_uses_3arg_overload passed"
+            << std::endl;
+  return 0;
+}
+
+// T15: explicit assertion that the clone branch uses the separate gitdir
+// layout (vx_notebook/vx_sync/) and NEVER creates a top-level .git directory.
+int test_git_init_clone_uses_separate_gitdir() {
+  std::cout << "  Running test_git_init_clone_uses_separate_gitdir..."
+            << std::endl;
+
+  const std::string bare_path = get_test_path("git_init_clonegit_bare");
+  const std::string notebook_root = get_test_path("git_init_clonegit_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "note.md", "hello", "init");
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    VxCoreError rc = backend.Initialize(notebook_root, config);
+    ASSERT_EQ(rc, VXCORE_OK);
+
+    ASSERT_FALSE(vxcore::PathExists(notebook_root + "/.git"));
+    ASSERT_TRUE(vxcore::IsRegularFile(notebook_root + "/vx_notebook/vx_sync/HEAD"));
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_init_clone_uses_separate_gitdir passed" << std::endl;
+  return 0;
+}
+
 // T19: Shutdown is idempotent — calling it twice on an initialized backend
 // returns OK both times and does not crash.
 int test_git_shutdown_idempotent() {
@@ -439,6 +571,9 @@ int main() {
   RUN_TEST(test_git_init_rejects_corrupt_repo);
   RUN_TEST(test_git_init_applies_config);
   RUN_TEST(test_git_init_uses_credential_author_when_set);
+  RUN_TEST(test_git_init_clone_into_empty_notebook);
+  RUN_TEST(test_git_init_clone_with_pat_uses_3arg_overload);
+  RUN_TEST(test_git_init_clone_uses_separate_gitdir);
   RUN_TEST(test_git_shutdown_idempotent);
   std::cout << "All git_sync_init tests passed" << std::endl;
   return 0;

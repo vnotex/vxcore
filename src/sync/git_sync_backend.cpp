@@ -255,10 +255,165 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
           root_folder_.c_str(), config_.remote_url.c_str());
       return VXCORE_ERR_INVALID_PARAM;
     }
+
+    // T15: clone-into-empty branch. The notebook root has no user files
+    // (only vx_notebook/ at most) and a remote URL is configured. We init a
+    // libgit2 repo with the separate gitdir layout (vx_notebook/vx_sync/),
+    // attach origin, fetch with credentials, then checkout the remote's
+    // default branch (main, fall back to master). git_clone is intentionally
+    // avoided — its Windows local-transport path hangs on file:// URLs (see
+    // T10 learnings).
+    if (!has_user_files && !config_.remote_url.empty()) {
+      // Ensure parent directories exist before init_ext touches the gitdir.
+      try {
+        std::filesystem::create_directories(PathFromUtf8(git_dir_));
+      } catch (const std::exception &e) {
+        VXCORE_LOG_ERROR("Initialize(clone): create_directories(%s) failed: %s",
+                         git_dir_.c_str(), e.what());
+        return VXCORE_ERR_UNKNOWN;
+      }
+
+      git_repository_init_options iopts = GIT_REPOSITORY_INIT_OPTIONS_INIT;
+      int rc = git_repository_init_options_init(
+          &iopts, GIT_REPOSITORY_INIT_OPTIONS_VERSION);
+      if (rc != 0) {
+        return TranslateGitError(rc);
+      }
+      // NO_DOTGIT_DIR keeps the gitdir literally at <git_dir_> instead of
+      // nesting ".git" beneath it; matches the spike T1 layout that
+      // GitSyncBackend re-opens in Branch 1.
+      iopts.flags = GIT_REPOSITORY_INIT_NO_REINIT |
+                    GIT_REPOSITORY_INIT_MKDIR |
+                    GIT_REPOSITORY_INIT_MKPATH |
+                    GIT_REPOSITORY_INIT_NO_DOTGIT_DIR;
+      iopts.workdir_path = root_folder_.c_str();
+      iopts.initial_head = "main";
+
+      rc = git_repository_init_ext(&repo_, git_dir_.c_str(), &iopts);
+      if (rc != 0) {
+        VxCoreError err = TranslateGitError(rc);
+        repo_ = nullptr;
+        return err;
+      }
+
+      VxCoreError cfg_err = ApplyDefaultGitConfig();
+      if (cfg_err != VXCORE_OK) {
+        git_repository_free(repo_);
+        repo_ = nullptr;
+        return cfg_err;
+      }
+
+      // Defaults are best-effort; failure to write doesn't abort clone.
+      WriteIfMissing(root_folder_ + "/.gitignore", BuildGitignoreContent(config_));
+      WriteIfMissing(root_folder_ + "/.gitattributes", kDefaultGitattributes);
+
+      git_remote *remote = nullptr;
+      rc = git_remote_create(&remote, repo_, "origin",
+                             config_.remote_url.c_str());
+      if (rc != 0) {
+        VxCoreError err = TranslateGitError(rc);
+        git_repository_free(repo_);
+        repo_ = nullptr;
+        return err;
+      }
+
+      git_fetch_options fopts = GIT_FETCH_OPTIONS_INIT;
+      fopts.callbacks.credentials = &GitSyncBackendCredentialCb;
+      fopts.callbacks.payload = this;
+
+      rc = git_remote_fetch(remote, /*refspecs=*/nullptr, &fopts,
+                            "vnote initial fetch");
+      git_remote_free(remote);
+      remote = nullptr;
+      if (rc != 0) {
+        VxCoreError err = TranslateGitError(rc);
+        git_repository_free(repo_);
+        repo_ = nullptr;
+        return err;
+      }
+
+      // Resolve the remote default branch. Prefer main, fall back to master.
+      // If neither exists, the remote is truly empty (no commits yet) — leave
+      // the local repo as-is with HEAD symbolically pointing at refs/heads/main
+      // and let the future Sync() create the first commit.
+      git_reference *origin_ref = nullptr;
+      rc = git_reference_lookup(&origin_ref, repo_,
+                                "refs/remotes/origin/main");
+      if (rc != 0) {
+        git_error_clear();
+        rc = git_reference_lookup(&origin_ref, repo_,
+                                  "refs/remotes/origin/master");
+      }
+      if (rc != 0) {
+        git_error_clear();
+        initialized_ = true;
+        return VXCORE_OK;
+      }
+
+      git_object *target = nullptr;
+      rc = git_reference_peel(&target, origin_ref, GIT_OBJECT_COMMIT);
+      if (rc != 0) {
+        VxCoreError err = TranslateGitError(rc);
+        git_reference_free(origin_ref);
+        git_repository_free(repo_);
+        repo_ = nullptr;
+        return err;
+      }
+
+      git_checkout_options copts = GIT_CHECKOUT_OPTIONS_INIT;
+      copts.checkout_strategy = GIT_CHECKOUT_SAFE;
+      rc = git_checkout_tree(repo_, target, &copts);
+      if (rc != 0) {
+        VxCoreError err = TranslateGitError(rc);
+        git_object_free(target);
+        git_reference_free(origin_ref);
+        git_repository_free(repo_);
+        repo_ = nullptr;
+        return err;
+      }
+
+      // Snapshot the OID before freeing the peeled object, then create the
+      // local refs/heads/main pointing at it. HEAD was set to a symbolic
+      // refs/heads/main by init_ext; this binding makes it resolve.
+      git_oid target_oid = *git_object_id(target);
+      git_object_free(target);
+      git_reference_free(origin_ref);
+
+      git_reference *local_ref = nullptr;
+      rc = git_reference_create(&local_ref, repo_, "refs/heads/main",
+                                &target_oid, /*force=*/0,
+                                "vnote initial checkout");
+      if (rc != 0) {
+        VxCoreError err = TranslateGitError(rc);
+        git_repository_free(repo_);
+        repo_ = nullptr;
+        return err;
+      }
+      git_reference_free(local_ref);
+
+      // libgit2 writes a `.git` gitlink file in the workdir when the gitdir
+      // lives elsewhere (so plain `git` CLI can find it). VNote doesn't want
+      // notebooks to look like git working trees to external tools, so we
+      // remove the gitlink — vx_notebook/vx_sync/ remains the canonical
+      // gitdir and GitSyncBackend re-open uses git_repository_open on it
+      // directly. Only delete a regular file (the gitlink), never a real
+      // user `.git` directory.
+      const std::string gitlink_path = root_folder_ + "/.git";
+      if (PathExists(gitlink_path) && !IsDirectory(gitlink_path)) {
+        std::error_code rm_ec;
+        std::filesystem::remove(PathFromUtf8(gitlink_path), rm_ec);
+        if (rm_ec) {
+          VXCORE_LOG_WARN("Initialize(clone): failed to remove gitlink %s: %s",
+                          gitlink_path.c_str(), rm_ec.message().c_str());
+        }
+      }
+
+      initialized_ = true;
+      return VXCORE_OK;
+    }
   }
 
-  // Other Initialize branches (T15: clone, T16: init+push) are
-  // not implemented yet.
+  // Other Initialize branches (T16: init+push) are not implemented yet.
   return VXCORE_ERR_NOT_IMPLEMENTED;
 }
 
