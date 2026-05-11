@@ -206,3 +206,22 @@ target_link_libraries(git_sync_test_helpers PUBLIC libgit2package)
 # Link git_sync_test_helpers into test_sync_manager_dispatch so its T10
 # RUN_TEST(test_helper_*) cases can use the helpers.
 target_link_libraries(test_sync_manager_dispatch PRIVATE git_sync_test_helpers)
+
+# test_git_sync_credentials: T27 (credential callback selection) and T28
+# (libgit2 -> VxCoreError translation) of the git-sync-backend plan.
+# Compiles git_sync_backend.cpp + libgit2_init.cpp directly (mirroring
+# test_libgit2_init) instead of linking vxcore.dll, so this binary owns
+# its own copies of the GitSyncBackend symbols and the libgit2 ref-count
+# statics. Avoids needing dllexport for the file-scope credential callback
+# and the test-only TranslateGitErrorForTesting hook.
+add_executable(test_git_sync_credentials test_git_sync_credentials.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/libgit2_init.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
+target_include_directories(test_git_sync_credentials PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_git_sync_credentials PRIVATE libgit2package nlohmann_json)
+add_test(NAME test_git_sync_credentials COMMAND test_git_sync_credentials)

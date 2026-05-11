@@ -2,6 +2,7 @@
 
 #include <git2.h>
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 
@@ -73,6 +74,55 @@ std::string BuildGitignoreContent(const SyncConfig &config) {
     }
   }
   return out;
+}
+
+// T28: translate libgit2 return codes / error classes to VxCoreError. Always
+// reads git_error_last() (and logs it) so the original libgit2 message is
+// preserved in the log even when we collapse many klass values into a single
+// VxCoreError. libgit2 v1.7.x has no GIT_ERROR_TCP / GIT_ERROR_NOTFOUND klass
+// constants; we rely on the return-code constants (GIT_ENOTFOUND,
+// GIT_EINVALIDSPEC) for those cases instead.
+VxCoreError TranslateGitError(int git_rc) {
+  if (git_rc >= 0) {
+    return VXCORE_OK;
+  }
+
+  const git_error *err = git_error_last();
+  const char *message = (err && err->message) ? err->message : "(no message)";
+  int klass = err ? err->klass : 0;
+  VXCORE_LOG_ERROR("libgit2 error rc=%d klass=%d: %s", git_rc, klass, message);
+
+  if (git_rc == GIT_EAUTH) {
+    return VXCORE_ERR_SYNC_AUTH_FAILED;
+  }
+
+  if (klass == GIT_ERROR_HTTP) {
+    if (message != nullptr &&
+        (std::strstr(message, "401") != nullptr ||
+         std::strstr(message, "authenticat") != nullptr ||
+         std::strstr(message, "credentials") != nullptr)) {
+      return VXCORE_ERR_SYNC_AUTH_FAILED;
+    }
+    return VXCORE_ERR_SYNC_NETWORK;
+  }
+
+  if (klass == GIT_ERROR_NET || klass == GIT_ERROR_SSL || klass == GIT_ERROR_SSH) {
+    return VXCORE_ERR_SYNC_NETWORK;
+  }
+
+  if (klass == GIT_ERROR_MERGE || klass == GIT_ERROR_CHECKOUT) {
+    return VXCORE_ERR_SYNC_CONFLICT;
+  }
+
+  if (git_rc == GIT_ENOTFOUND) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  if (klass == GIT_ERROR_INVALID || git_rc == GIT_EINVALIDSPEC) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  return VXCORE_ERR_UNKNOWN;
 }
 
 }  // namespace
@@ -149,6 +199,32 @@ int GitSyncBackend::WriteDefaultIgnoreAndAttributesForTesting(const std::string 
   if (WriteIfMissing(dir + "/.gitignore", BuildGitignoreContent(config))) ++written;
   if (WriteIfMissing(dir + "/.gitattributes", kDefaultGitattributes)) ++written;
   return written;
+}
+
+VxCoreError GitSyncBackend::TranslateGitErrorForTesting(int git_rc) {
+  return TranslateGitError(git_rc);
+}
+
+// T27: libgit2 credential callback. v1 only honors PAT (HTTPS) and anonymous;
+// the legacy SyncCredentials::username/password fields are intentionally
+// ignored here (forbidden by plan guardrails). Returning GIT_PASSTHROUGH lets
+// libgit2 try the next credential type or fail with an auth error which T28
+// then translates.
+int GitSyncBackendCredentialCb(git_credential **out, const char *url,
+                               const char *username_from_url,
+                               unsigned int allowed_types, void *payload) {
+  (void)url;
+  (void)username_from_url;
+  auto *self = static_cast<GitSyncBackend *>(payload);
+  if (self == nullptr) {
+    return GIT_PASSTHROUGH;
+  }
+  if (!self->credentials_.personal_access_token.empty() &&
+      (allowed_types & GIT_CREDENTIAL_USERPASS_PLAINTEXT) != 0) {
+    return git_credential_userpass_plaintext_new(
+        out, "x-access-token", self->credentials_.personal_access_token.c_str());
+  }
+  return GIT_PASSTHROUGH;
 }
 
 }  // namespace vxcore
