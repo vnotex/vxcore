@@ -107,6 +107,15 @@ class GitSyncBackend : public ISyncBackend {
   // open.
   VxCoreError PushOrigin();
 
+  // T29-T32: After a single conflict has been resolved by the caller (index
+  // staged + conflict cleared), continue the in-progress rebase. Commits the
+  // current operation via git_rebase_commit, then loops git_rebase_next:
+  // on a fresh conflict leaves rebase_in_progress_ set and returns OK; on
+  // GIT_ITEROVER calls git_rebase_finish and clears rebase_in_progress_.
+  // No-op (returns OK) if no rebase is in progress. Caller must hold
+  // op_mutex_ and have repo_ open.
+  VxCoreError ContinueRebaseAfterResolution();
+
   // T27 credential callback friend; static C-style libgit2 callback needs to read credentials_.
   friend int GitSyncBackendCredentialCb(struct git_credential **out, const char *url,
                                         const char *username_from_url,
