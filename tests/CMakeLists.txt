@@ -184,3 +184,25 @@ target_include_directories(test_sync_manager_dispatch PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(test_sync_manager_dispatch PRIVATE vxcore nlohmann_json)
 add_test(NAME test_sync_manager_dispatch COMMAND test_sync_manager_dispatch)
+
+# git_sync_test_helpers: T10 of git-sync-backend plan. STATIC library providing
+# libgit2-based fixture helpers (create_bare_repo / commit_file / git_head_sha /
+# git_status_clean) for all test_git_sync_* binaries plus
+# test_sync_manager_dispatch. Compiles libgit2_init.cpp directly (matching the
+# test_libgit2_init pattern) so the helper owns its own copy of the libgit2
+# refcount statics independent of vxcore.dll.
+add_library(git_sync_test_helpers STATIC
+    test_git_sync_helpers.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/libgit2_init.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
+target_include_directories(git_sync_test_helpers PUBLIC
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+    ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(git_sync_test_helpers PUBLIC libgit2package)
+
+# Link git_sync_test_helpers into test_sync_manager_dispatch so its T10
+# RUN_TEST(test_helper_*) cases can use the helpers.
+target_link_libraries(test_sync_manager_dispatch PRIVATE git_sync_test_helpers)
