@@ -214,6 +214,25 @@ target_link_libraries(test_sync_manager_dispatch PRIVATE git_sync_test_helpers)
 # its own copies of the GitSyncBackend symbols and the libgit2 ref-count
 # statics. Avoids needing dllexport for the file-scope credential callback
 # and the test-only TranslateGitErrorForTesting hook.
+# test_git_sync_init: T14-T19 of git-sync-backend plan. Initialize matrix
+# (re-open / clone / init+push / reject / config / shutdown). T14 owns the
+# re-open + URL-mismatch cases. Compiles git_sync_backend.cpp directly and
+# pulls in libgit2_init.cpp / logger.cpp / file_utils.cpp via the
+# git_sync_test_helpers static library — this binary owns its own copies of
+# the GitSyncBackend symbols and libgit2 ref-count statics, avoiding the
+# Windows DLL static-storage duplication problem.
+add_executable(test_git_sync_init test_git_sync_init.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp)
+target_include_directories(test_git_sync_init PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_git_sync_init PRIVATE
+    git_sync_test_helpers
+    libgit2package
+    nlohmann_json)
+add_test(NAME test_git_sync_init COMMAND test_git_sync_init)
+
 add_executable(test_git_sync_credentials test_git_sync_credentials.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/libgit2_init.cpp

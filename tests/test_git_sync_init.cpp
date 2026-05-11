@@ -1,0 +1,171 @@
+// Tests for GitSyncBackend::Initialize re-open branch (Task T14 of the
+// git-sync-backend plan). Each test case:
+//   1. Builds a bare remote on disk via vxcore_test::create_bare_repo and
+//      seeds it with one commit through vxcore_test::commit_file.
+//   2. Manually creates a notebook root with a vx_notebook/vx_sync/ libgit2
+//      repo using the spike T1 layout (separate gitdir under vx_sync, workdir
+//      = notebook root, initial branch "main").
+//   3. Drives GitSyncBackend::Initialize and asserts the documented behavior
+//      (idempotent OK on URL match, INVALID_PARAM on URL mismatch).
+//
+// Other Initialize branches (T15 clone, T16 init+push, T17 reject) are
+// covered by their own task cases in the same binary later — this file only
+// owns the T14 cases.
+//
+// We compile git_sync_backend.cpp + libgit2_init.cpp directly into this
+// binary (matching the test_git_sync_credentials pattern) so the test owns
+// its own copy of the GitSyncBackend symbols and the libgit2 ref-count
+// statics — the DLL boundary on Windows would otherwise duplicate the
+// statics and confuse libgit2_init.
+
+#include <git2.h>
+
+#include <cstdio>
+#include <filesystem>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+
+#include "sync/git_sync_backend.h"
+#include "sync/libgit2_init.h"
+#include "sync/sync_types.h"
+#include "test_git_sync_helpers.h"
+#include "test_utils.h"
+#include "vxcore/vxcore_types.h"
+
+namespace {
+
+// Manually construct a vx_notebook/vx_sync/ repo at <notebook_root> bound to
+// <origin_url>, mirroring the layout GitSyncBackend::Initialize will re-open.
+// Keeps the dependency story narrow — no GitSyncBackend init code involved.
+void seed_notebook_with_existing_repo(const std::string &notebook_root,
+                                      const std::string &origin_url) {
+  vxcore::LibGit2Init guard;
+
+  std::filesystem::create_directories(notebook_root);
+
+  const std::string git_dir = notebook_root + "/vx_notebook/vx_sync";
+
+  git_repository_init_options opts = GIT_REPOSITORY_INIT_OPTIONS_INIT;
+  if (git_repository_init_options_init(&opts,
+                                       GIT_REPOSITORY_INIT_OPTIONS_VERSION) < 0) {
+    throw std::runtime_error("init_options_init failed");
+  }
+  // NO_DOTGIT_DIR: keep the gitdir literally at <notebook_root>/vx_notebook/vx_sync
+  // instead of letting libgit2 nest a ".git" subfolder, since GitSyncBackend
+  // looks for HEAD directly under that path.
+  opts.flags = GIT_REPOSITORY_INIT_MKDIR | GIT_REPOSITORY_INIT_MKPATH |
+               GIT_REPOSITORY_INIT_NO_REINIT |
+               GIT_REPOSITORY_INIT_NO_DOTGIT_DIR;
+  opts.workdir_path = notebook_root.c_str();
+  opts.initial_head = "main";
+
+  git_repository *repo = nullptr;
+  if (git_repository_init_ext(&repo, git_dir.c_str(), &opts) < 0) {
+    const git_error *e = git_error_last();
+    throw std::runtime_error(std::string("git_repository_init_ext: ") +
+                             ((e && e->message) ? e->message : "unknown"));
+  }
+
+  git_remote *remote = nullptr;
+  int rc = git_remote_create(&remote, repo, "origin", origin_url.c_str());
+  if (rc != 0) {
+    const git_error *e = git_error_last();
+    git_repository_free(repo);
+    throw std::runtime_error(std::string("git_remote_create: ") +
+                             ((e && e->message) ? e->message : "unknown"));
+  }
+
+  git_remote_free(remote);
+  git_repository_free(repo);
+}
+
+int test_git_init_reopens_existing_repo() {
+  std::cout << "  Running test_git_init_reopens_existing_repo..." << std::endl;
+
+  const std::string bare_path = get_test_path("git_init_reopen_bare");
+  const std::string notebook_root = get_test_path("git_init_reopen_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "note.md", "hello", "init");
+
+    seed_notebook_with_existing_repo(notebook_root, bare_url);
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    VxCoreError rc = backend.Initialize(notebook_root, config);
+    ASSERT_EQ(rc, VXCORE_OK);
+
+    // Idempotent re-call returns OK without re-validating.
+    rc = backend.Initialize(notebook_root, config);
+    ASSERT_EQ(rc, VXCORE_OK);
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_init_reopens_existing_repo passed" << std::endl;
+  return 0;
+}
+
+int test_git_init_rejects_url_mismatch() {
+  std::cout << "  Running test_git_init_rejects_url_mismatch..." << std::endl;
+
+  const std::string bare_path_a = get_test_path("git_init_mismatch_bare_a");
+  const std::string bare_path_b = get_test_path("git_init_mismatch_bare_b");
+  const std::string notebook_root = get_test_path("git_init_mismatch_nb");
+  cleanup_test_dir(bare_path_a);
+  cleanup_test_dir(bare_path_b);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url_a = vxcore_test::create_bare_repo(bare_path_a);
+    const std::string bare_url_b = vxcore_test::create_bare_repo(bare_path_b);
+    vxcore_test::commit_file(bare_path_a, "note.md", "hello", "init");
+
+    // Existing repo points at bare A.
+    seed_notebook_with_existing_repo(notebook_root, bare_url_a);
+
+    // Config points at bare B — Initialize must reject.
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url_b;
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    VxCoreError rc = backend.Initialize(notebook_root, config);
+    ASSERT_EQ(rc, VXCORE_ERR_INVALID_PARAM);
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path_a);
+    cleanup_test_dir(bare_path_b);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path_a);
+  cleanup_test_dir(bare_path_b);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_init_rejects_url_mismatch passed" << std::endl;
+  return 0;
+}
+
+}  // namespace
+
+int main() {
+  RUN_TEST(test_git_init_reopens_existing_repo);
+  RUN_TEST(test_git_init_rejects_url_mismatch);
+  std::cout << "All git_sync_init tests passed" << std::endl;
+  return 0;
+}

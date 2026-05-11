@@ -142,8 +142,71 @@ VxCoreError GitSyncBackend::SetCredentials(const SyncCredentials &creds) {
 
 VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
                                        const SyncConfig &config) {
-  (void)root_folder;
-  (void)config;
+  std::lock_guard<std::mutex> lock(op_mutex_);
+
+  // Idempotent: a second Initialize on an already-initialized backend is a
+  // no-op. Re-validating against config_ would risk rejecting a benign repeat
+  // call (e.g. SyncManager re-enabling), so we just return OK.
+  if (initialized_) {
+    return VXCORE_OK;
+  }
+
+  root_folder_ = root_folder;
+  config_ = config;
+  git_dir_ = root_folder_ + "/vx_notebook/vx_sync";
+
+  // Branch 1 (T14): re-open an existing libgit2 repo at <git_dir_>.
+  // We only treat the directory as a real repo if HEAD is present — bare
+  // /vx_sync/ subdir without HEAD is treated as "no repo" and falls through
+  // to NOT_IMPLEMENTED (T15/T16/T17 will handle clone/init/reject).
+  const std::string head_path = git_dir_ + "/HEAD";
+  if (IsDirectory(git_dir_) && IsRegularFile(head_path)) {
+    git_repository *repo = nullptr;
+    int rc = git_repository_open(&repo, git_dir_.c_str());
+    if (rc != 0) {
+      // Corrupt or unreadable repo — surface the libgit2 error class via
+      // TranslateGitError, but do NOT auto-delete vx_sync (user data).
+      return TranslateGitError(rc);
+    }
+
+    // Bind the working tree to the notebook root.
+    rc = git_repository_set_workdir(repo, root_folder_.c_str(), /*update_gitlink=*/0);
+    if (rc != 0) {
+      VxCoreError err = TranslateGitError(rc);
+      git_repository_free(repo);
+      return err;
+    }
+
+    // Look up the "origin" remote.
+    git_remote *remote = nullptr;
+    rc = git_remote_lookup(&remote, repo, "origin");
+    if (rc != 0) {
+      // Missing origin: T14 contract says reject with INVALID_PARAM.
+      VXCORE_LOG_ERROR(
+          "GitSyncBackend::Initialize: existing repo at %s has no 'origin' remote",
+          git_dir_.c_str());
+      git_repository_free(repo);
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+
+    const char *remote_url = git_remote_url(remote);
+    if (remote_url == nullptr || config_.remote_url != remote_url) {
+      VXCORE_LOG_ERROR(
+          "GitSyncBackend::Initialize: origin URL mismatch (existing='%s' config='%s')",
+          remote_url ? remote_url : "(null)", config_.remote_url.c_str());
+      git_remote_free(remote);
+      git_repository_free(repo);
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+
+    git_remote_free(remote);
+    repo_ = repo;
+    initialized_ = true;
+    return VXCORE_OK;
+  }
+
+  // Other Initialize branches (T15: clone, T16: init+push, T17: reject) are
+  // not implemented yet.
   return VXCORE_ERR_NOT_IMPLEMENTED;
 }
 
