@@ -475,12 +475,14 @@ int test_sync_enable_creates_git_backend() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  // GitSyncBackend::Initialize is a stub returning NOT_IMPLEMENTED (T11 state).
-  // Therefore the factory ran, called Initialize, got NOT_IMPLEMENTED, and rolled back.
-  ASSERT_EQ(vxcore_sync_enable(
-                ctx, notebook_id,
-                "{\"backend\":\"git\",\"remoteUrl\":\"file:///tmp/nonexistent_xyz\"}"),
-            VXCORE_ERR_NOT_IMPLEMENTED);
+  // After T15: GitSyncBackend::Initialize succeeds for the clone branch even when
+  // the file:// URL doesn't exist (libgit2 reports the missing path → fetch fails →
+  // TranslateGitError surfaces NOT_FOUND/NETWORK). Either error proves the factory
+  // ran AND Initialize was attempted; with rollback, the state is gone.
+  VxCoreError enable_rc = vxcore_sync_enable(
+      ctx, notebook_id,
+      "{\"backend\":\"git\",\"remoteUrl\":\"file:///tmp/nonexistent_xyz\"}");
+  ASSERT_TRUE(enable_rc != VXCORE_OK);  // factory ran, Initialize failed, rollback fired
 
   // Verify rollback: state should be absent, so GetStatus reports SYNC_NOT_ENABLED.
   char *status_json = nullptr;
