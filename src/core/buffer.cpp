@@ -282,7 +282,9 @@ void Buffer::LoadContent(const std::string &full_path) {
     state_ = VXCORE_BUFFER_NORMAL;
     modified_ = false;
     content_loaded_ = true;
-    VXCORE_LOG_DEBUG("Loaded file content: %s (%zu bytes)", full_path.c_str(), content_.size());
+    revision_++;
+    VXCORE_LOG_DEBUG("Loaded file content: %s (%zu bytes, revision %d)", full_path.c_str(),
+                     content_.size(), revision_);
   } catch (const std::exception &e) {
     state_ = VXCORE_BUFFER_FILE_MISSING;
     VXCORE_LOG_ERROR("Exception loading file %s: %s", full_path.c_str(), e.what());
