@@ -71,6 +71,12 @@ class GitSyncBackend : public ISyncBackend {
   VXCORE_API VxCoreError CommitIndexForTesting(const std::string &message);
   VXCORE_API VxCoreError FetchOriginForTesting();
 
+  // T24/T25 test hooks: drive the rebase / push helpers in isolation. Each
+  // acquires op_mutex_, checks initialized_, then delegates to the private
+  // helper.
+  VXCORE_API VxCoreError RebaseOntoOriginForTesting();
+  VXCORE_API VxCoreError PushOriginForTesting();
+
  private:
   // T21: stage everything tracked + untracked under repo workdir, then
   // defensively remove any index entry under vx_notebook/vx_sync/ (our
@@ -88,6 +94,18 @@ class GitSyncBackend : public ISyncBackend {
   // T23: git_remote_lookup("origin") + git_remote_fetch with our credential
   // callback wired in. Caller must hold op_mutex_ and have repo_ open.
   VxCoreError FetchOrigin();
+
+  // T24: rebase the current branch onto refs/remotes/origin/<branch>. If HEAD
+  // is unborn or the remote-tracking ref does not exist, returns OK (nothing
+  // to rebase). On a conflict, leaves rebase_in_progress_ set so a later
+  // ResolveConflict (T29-T32) can complete the rebase, and returns
+  // VXCORE_ERR_SYNC_CONFLICT. Caller must hold op_mutex_ and have repo_ open.
+  VxCoreError RebaseOntoOrigin();
+
+  // T25: push the current branch to origin/<branch>. Wires the credential
+  // callback so PAT auth works. Caller must hold op_mutex_ and have repo_
+  // open.
+  VxCoreError PushOrigin();
 
   // T27 credential callback friend; static C-style libgit2 callback needs to read credentials_.
   friend int GitSyncBackendCredentialCb(struct git_credential **out, const char *url,

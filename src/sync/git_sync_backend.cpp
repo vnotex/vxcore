@@ -2,9 +2,11 @@
 
 #include <git2.h>
 
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -521,8 +523,101 @@ bool GitSyncBackend::RemoteHasRefs() {
 }
 
 VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) {
-  (void)callback; (void)userdata;
-  return VXCORE_ERR_NOT_IMPLEMENTED;
+  std::unique_lock<std::mutex> lock(op_mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    return VXCORE_ERR_SYNC_IN_PROGRESS;
+  }
+  if (!initialized_) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+
+  // T26: build SyncProgress and dispatch to user callback. Inline lambda
+  // keeps the noisy nullable-callback guard out of every phase site.
+  auto emit = [&](SyncState state, const char *msg, float pct) {
+    if (!callback) {
+      return;
+    }
+    SyncProgress progress;
+    progress.message = msg;
+    progress.percentage = pct;
+    progress.current_state = state;
+    callback(progress, userdata);
+  };
+
+  emit(SyncState::kStaging, "Staging", 0.10f);
+  VxCoreError err = StageAll();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  emit(SyncState::kStaging, "Committing", 0.20f);
+  const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count();
+  err = CommitIndex(std::string("VNote sync ") + std::to_string(now_ms));
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  // T25 retry loop: up to 3 attempts of fetch -> rebase -> push. Push can
+  // race with a concurrent writer who pushed between our fetch and our push;
+  // we re-fetch+rebase and retry with backoff. Conflicts short-circuit
+  // immediately (the user must resolve before any further sync attempts).
+  static const int kBackoffMs[3] = {100, 500, 2000};
+  bool pushed = false;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    emit(SyncState::kFetching, "Fetching", 0.40f);
+    err = FetchOrigin();
+    if (err != VXCORE_OK) {
+      return err;
+    }
+
+    emit(SyncState::kAnalyzing, "Analyzing", 0.50f);
+
+    emit(SyncState::kMerging, "Rebasing", 0.70f);
+    err = RebaseOntoOrigin();
+    if (err == VXCORE_ERR_SYNC_CONFLICT) {
+      return VXCORE_ERR_SYNC_CONFLICT;
+    }
+    if (err != VXCORE_OK) {
+      return err;
+    }
+
+    emit(SyncState::kPushing, "Pushing", 0.90f);
+    err = PushOrigin();
+    if (err == VXCORE_OK) {
+      pushed = true;
+      break;
+    }
+
+    // Distinguish a non-fast-forward rejection (retry-worthy) from a hard
+    // network/auth error (terminal). libgit2 surfaces non-FF rejections with
+    // a textual message via git_error_last(); TranslateGitError already
+    // collapsed to VXCORE_ERR_SYNC_NETWORK. Inspect the message we just
+    // logged in TranslateGitError — but we don't have it here, so re-read.
+    const git_error *gerr = git_error_last();
+    bool non_ff = false;
+    if (gerr && gerr->message) {
+      const char *m = gerr->message;
+      if (std::strstr(m, "non-fast-forward") != nullptr ||
+          std::strstr(m, "non fast forward") != nullptr ||
+          std::strstr(m, "fast-forward") != nullptr ||
+          std::strstr(m, "rejected") != nullptr) {
+        non_ff = true;
+      }
+    }
+    if (!non_ff || attempt >= 2) {
+      return err;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(kBackoffMs[attempt]));
+  }
+
+  if (!pushed) {
+    return VXCORE_ERR_SYNC_NETWORK;
+  }
+
+  emit(SyncState::kIdle, "Sync complete", 1.0f);
+  return VXCORE_OK;
 }
 
 VxCoreError GitSyncBackend::Push(SyncProgressCallback callback, void *userdata) {
@@ -814,6 +909,196 @@ VxCoreError GitSyncBackend::FetchOrigin() {
   return VXCORE_OK;
 }
 
+// T24: rebase the current local branch onto origin/<branch>.
+VxCoreError GitSyncBackend::RebaseOntoOrigin() {
+  if (repo_ == nullptr) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+
+  // Resolve current HEAD ref. UNBORNBRANCH means there are no local commits
+  // yet (e.g. fresh init+empty remote) — nothing to rebase.
+  git_reference *head_ref = nullptr;
+  int rc = git_repository_head(&head_ref, repo_);
+  if (rc == GIT_EUNBORNBRANCH) {
+    git_error_clear();
+    return VXCORE_OK;
+  }
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+
+  const char *branch_short = git_reference_shorthand(head_ref);
+  if (branch_short == nullptr) {
+    git_reference_free(head_ref);
+    return VXCORE_ERR_UNKNOWN;
+  }
+  std::string remote_ref_name =
+      std::string("refs/remotes/origin/") + branch_short;
+
+  git_reference *remote_ref = nullptr;
+  rc = git_reference_lookup(&remote_ref, repo_, remote_ref_name.c_str());
+  if (rc == GIT_ENOTFOUND) {
+    // No upstream tracking ref yet — push will publish the branch later.
+    git_error_clear();
+    git_reference_free(head_ref);
+    return VXCORE_OK;
+  }
+  if (rc != 0) {
+    VxCoreError err = TranslateGitError(rc);
+    git_reference_free(head_ref);
+    return err;
+  }
+
+  git_annotated_commit *local_anno = nullptr;
+  rc = git_annotated_commit_from_ref(&local_anno, repo_, head_ref);
+  if (rc != 0) {
+    VxCoreError err = TranslateGitError(rc);
+    git_reference_free(remote_ref);
+    git_reference_free(head_ref);
+    return err;
+  }
+
+  git_annotated_commit *remote_anno = nullptr;
+  rc = git_annotated_commit_from_ref(&remote_anno, repo_, remote_ref);
+  if (rc != 0) {
+    VxCoreError err = TranslateGitError(rc);
+    git_annotated_commit_free(local_anno);
+    git_reference_free(remote_ref);
+    git_reference_free(head_ref);
+    return err;
+  }
+
+  rc = git_rebase_init(&rebase_in_progress_, repo_, local_anno, remote_anno,
+                       /*onto=*/nullptr, /*opts=*/nullptr);
+  git_annotated_commit_free(local_anno);
+  git_annotated_commit_free(remote_anno);
+  git_reference_free(remote_ref);
+  git_reference_free(head_ref);
+  if (rc != 0) {
+    rebase_in_progress_ = nullptr;
+    return TranslateGitError(rc);
+  }
+
+  // Default signature for new commits created during rebase replay.
+  const char *user_name = credentials_.author_name.empty()
+                              ? "VNote Sync"
+                              : credentials_.author_name.c_str();
+  const char *user_email = credentials_.author_email.empty()
+                               ? "sync@vnote.local"
+                               : credentials_.author_email.c_str();
+  git_signature *sig = nullptr;
+  rc = git_signature_now(&sig, user_name, user_email);
+  if (rc != 0) {
+    VxCoreError err = TranslateGitError(rc);
+    git_rebase_free(rebase_in_progress_);
+    rebase_in_progress_ = nullptr;
+    return err;
+  }
+
+  // Replay each rebase operation. On conflict, leave rebase_in_progress_
+  // set so ResolveConflict can resume (the on-disk rebase state under
+  // .git/rebase-merge is also preserved).
+  for (;;) {
+    git_rebase_operation *op = nullptr;
+    rc = git_rebase_next(&op, rebase_in_progress_);
+    if (rc == GIT_ITEROVER) {
+      git_error_clear();
+      rc = git_rebase_finish(rebase_in_progress_, sig);
+      git_rebase_free(rebase_in_progress_);
+      rebase_in_progress_ = nullptr;
+      git_signature_free(sig);
+      if (rc != 0) {
+        return TranslateGitError(rc);
+      }
+      return VXCORE_OK;
+    }
+    if (rc != 0) {
+      VxCoreError err = TranslateGitError(rc);
+      git_rebase_free(rebase_in_progress_);
+      rebase_in_progress_ = nullptr;
+      git_signature_free(sig);
+      return err;
+    }
+
+    // Detect conflicts after each step.
+    git_index *idx = nullptr;
+    int irc = git_repository_index(&idx, repo_);
+    if (irc != 0) {
+      VxCoreError err = TranslateGitError(irc);
+      git_rebase_free(rebase_in_progress_);
+      rebase_in_progress_ = nullptr;
+      git_signature_free(sig);
+      return err;
+    }
+    bool has_conflicts = (git_index_has_conflicts(idx) != 0);
+    git_index_free(idx);
+
+    if (has_conflicts) {
+      // LEAVE rebase_in_progress_ set; T29-T32 ResolveConflict will resume.
+      git_signature_free(sig);
+      return VXCORE_ERR_SYNC_CONFLICT;
+    }
+
+    git_oid commit_oid;
+    rc = git_rebase_commit(&commit_oid, rebase_in_progress_, /*author=*/sig,
+                           /*committer=*/sig, /*message_encoding=*/nullptr,
+                           /*message=*/nullptr);
+    if (rc != 0) {
+      VxCoreError err = TranslateGitError(rc);
+      git_rebase_free(rebase_in_progress_);
+      rebase_in_progress_ = nullptr;
+      git_signature_free(sig);
+      return err;
+    }
+  }
+}
+
+// T25: push the current branch back to origin. Refspec is built explicitly
+// from git_repository_head's shorthand to avoid relying on configured
+// upstream tracking. Caller must hold op_mutex_ and have repo_ open.
+VxCoreError GitSyncBackend::PushOrigin() {
+  if (repo_ == nullptr) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+
+  git_remote *remote = nullptr;
+  int rc = git_remote_lookup(&remote, repo_, "origin");
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+
+  git_push_options popts = GIT_PUSH_OPTIONS_INIT;
+  popts.callbacks.credentials = &GitSyncBackendCredentialCb;
+  popts.callbacks.payload = this;
+
+  git_reference *head_ref = nullptr;
+  rc = git_repository_head(&head_ref, repo_);
+  if (rc != 0) {
+    git_remote_free(remote);
+    return TranslateGitError(rc);
+  }
+  const char *branch_short = git_reference_shorthand(head_ref);
+  if (branch_short == nullptr) {
+    git_reference_free(head_ref);
+    git_remote_free(remote);
+    return VXCORE_ERR_UNKNOWN;
+  }
+  std::string refspec = std::string("refs/heads/") + branch_short +
+                        ":refs/heads/" + branch_short;
+  git_reference_free(head_ref);
+
+  // git_strarray takes a non-const char**; refspec.data() is valid since C++17.
+  char *arr[1] = {refspec.data()};
+  git_strarray refspecs = {arr, 1};
+
+  rc = git_remote_push(remote, &refspecs, &popts);
+  git_remote_free(remote);
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+  return VXCORE_OK;
+}
+
 VxCoreError GitSyncBackend::StageAllForTesting() {
   std::lock_guard<std::mutex> lock(op_mutex_);
   if (!initialized_) {
@@ -836,6 +1121,22 @@ VxCoreError GitSyncBackend::FetchOriginForTesting() {
     return VXCORE_ERR_UNKNOWN;
   }
   return FetchOrigin();
+}
+
+VxCoreError GitSyncBackend::RebaseOntoOriginForTesting() {
+  std::lock_guard<std::mutex> lock(op_mutex_);
+  if (!initialized_) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+  return RebaseOntoOrigin();
+}
+
+VxCoreError GitSyncBackend::PushOriginForTesting() {
+  std::lock_guard<std::mutex> lock(op_mutex_);
+  if (!initialized_) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+  return PushOrigin();
 }
 
 VxCoreError GitSyncBackend::GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) {

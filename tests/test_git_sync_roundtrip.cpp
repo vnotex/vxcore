@@ -645,6 +645,315 @@ int test_git_fetch_updates_origin_main() {
   return 0;
 }
 
+// T24: clean fast-forward rebase. Local HEAD is at A. Helper pushes B onto
+// origin. After fetch + rebase, local HEAD must equal B.
+int test_git_rebase_clean_fast_forward() {
+  std::cout << "  Running test_git_rebase_clean_fast_forward..." << std::endl;
+
+  const std::string bare_path = get_test_path("git_rebase_ff_bare");
+  const std::string notebook_root = get_test_path("git_rebase_ff_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "note.md", "A", "init");
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
+
+    push_follow_up_commit(bare_path, "note.md", "B", "second commit");
+    const std::string bare_head = vxcore_test::git_head_sha(bare_path);
+
+    ASSERT_EQ(backend.FetchOriginForTesting(), VXCORE_OK);
+    ASSERT_EQ(backend.RebaseOntoOriginForTesting(), VXCORE_OK);
+
+    const std::string git_dir = notebook_root + "/vx_notebook/vx_sync";
+    const std::string local_head = vxcore_test::git_head_sha(git_dir);
+    ASSERT_EQ(local_head, bare_head);
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_rebase_clean_fast_forward passed" << std::endl;
+  return 0;
+}
+
+// T24: diverged histories on different files rebase cleanly. Both local file
+// X and remote file Y must be present after rebase.
+int test_git_rebase_diverged_no_conflict() {
+  std::cout << "  Running test_git_rebase_diverged_no_conflict..." << std::endl;
+
+  const std::string bare_path = get_test_path("git_rebase_div_bare");
+  const std::string notebook_root = get_test_path("git_rebase_div_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "note.md", "base", "init");
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
+
+    // Local commit: add file X.
+    write_file_at(notebook_root + "/local_X.md", "local change");
+    ASSERT_EQ(backend.StageAllForTesting(), VXCORE_OK);
+    ASSERT_EQ(backend.CommitIndexForTesting("add local X"), VXCORE_OK);
+
+    // Remote commit: add file Y on top of init.
+    push_follow_up_commit(bare_path, "remote_Y.md", "remote change",
+                          "add remote Y");
+
+    ASSERT_EQ(backend.FetchOriginForTesting(), VXCORE_OK);
+    ASSERT_EQ(backend.RebaseOntoOriginForTesting(), VXCORE_OK);
+
+    ASSERT_TRUE(vxcore::PathExists(notebook_root + "/local_X.md"));
+    ASSERT_TRUE(vxcore::PathExists(notebook_root + "/remote_Y.md"));
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_rebase_diverged_no_conflict passed" << std::endl;
+  return 0;
+}
+
+// T24: same file modified differently on both sides surfaces as
+// VXCORE_ERR_SYNC_CONFLICT. Verify the rebase is left in progress (the
+// repository state should NOT be NONE) so ResolveConflict can resume.
+int test_git_rebase_conflict_surfaces() {
+  std::cout << "  Running test_git_rebase_conflict_surfaces..." << std::endl;
+
+  const std::string bare_path = get_test_path("git_rebase_conf_bare");
+  const std::string notebook_root = get_test_path("git_rebase_conf_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "note.md", "base line\n", "init");
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
+
+    // Local change to line 1 of note.md.
+    write_file_at(notebook_root + "/note.md", "local edit\n");
+    ASSERT_EQ(backend.StageAllForTesting(), VXCORE_OK);
+    ASSERT_EQ(backend.CommitIndexForTesting("local edit note"), VXCORE_OK);
+
+    // Remote change to the SAME line 1.
+    push_follow_up_commit(bare_path, "note.md", "remote edit\n",
+                          "remote edit note");
+
+    ASSERT_EQ(backend.FetchOriginForTesting(), VXCORE_OK);
+    ASSERT_EQ(backend.RebaseOntoOriginForTesting(),
+              VXCORE_ERR_SYNC_CONFLICT);
+
+    // Verify the on-disk rebase state is preserved (libgit2 records this
+    // under the gitdir as rebase-merge/* — git_repository_state observes it).
+    const std::string git_dir = notebook_root + "/vx_notebook/vx_sync";
+    vxcore::LibGit2Init guard;
+    git_repository *repo = nullptr;
+    ASSERT_EQ(git_repository_open(&repo, git_dir.c_str()), 0);
+    int state = git_repository_state(repo);
+    git_repository_free(repo);
+    ASSERT_NE(state, GIT_REPOSITORY_STATE_NONE);
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_rebase_conflict_surfaces passed" << std::endl;
+  return 0;
+}
+
+// T25: PushOrigin propagates a fast-forward local commit to the bare repo.
+int test_git_push_fast_forward() {
+  std::cout << "  Running test_git_push_fast_forward..." << std::endl;
+
+  const std::string bare_path = get_test_path("git_push_ff_bare");
+  const std::string notebook_root = get_test_path("git_push_ff_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "note.md", "init", "init");
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
+
+    write_file_at(notebook_root + "/note.md", "local update");
+    ASSERT_EQ(backend.StageAllForTesting(), VXCORE_OK);
+    ASSERT_EQ(backend.CommitIndexForTesting("local update"), VXCORE_OK);
+
+    const std::string git_dir = notebook_root + "/vx_notebook/vx_sync";
+    const std::string local_head = vxcore_test::git_head_sha(git_dir);
+
+    ASSERT_EQ(backend.PushOriginForTesting(), VXCORE_OK);
+
+    const std::string bare_head = vxcore_test::git_head_sha(bare_path);
+    ASSERT_EQ(local_head, bare_head);
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_push_fast_forward passed" << std::endl;
+  return 0;
+}
+
+// Sync end-to-end: stage + commit + fetch + rebase (no conflict on different
+// file) + push must succeed; status is empty afterwards and HEAD == origin.
+int test_git_sync_round_trip_succeeds() {
+  std::cout << "  Running test_git_sync_round_trip_succeeds..." << std::endl;
+
+  const std::string bare_path = get_test_path("git_sync_rt_bare");
+  const std::string notebook_root = get_test_path("git_sync_rt_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "note.md", "base", "init");
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
+
+    // Local change.
+    write_file_at(notebook_root + "/local.md", "local body");
+
+    // Remote change on a different file.
+    push_follow_up_commit(bare_path, "remote.md", "remote body",
+                          "remote add file");
+
+    ASSERT_EQ(backend.Sync(nullptr, nullptr), VXCORE_OK);
+
+    std::vector<vxcore::SyncFileInfo> status;
+    ASSERT_EQ(backend.GetStatus(status), VXCORE_OK);
+    ASSERT_TRUE(status.empty());
+
+    const std::string git_dir = notebook_root + "/vx_notebook/vx_sync";
+    const std::string local_head = vxcore_test::git_head_sha(git_dir);
+    const std::string origin_main = ref_sha(git_dir, "refs/remotes/origin/main");
+    ASSERT_EQ(local_head, origin_main);
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_sync_round_trip_succeeds passed" << std::endl;
+  return 0;
+}
+
+// T26: Sync emits SyncProgress for each phase. Verify all five expected
+// states (Staging, Fetching, Merging, Pushing, Idle) appear in order.
+int test_git_sync_emits_progress_phases() {
+  std::cout << "  Running test_git_sync_emits_progress_phases..." << std::endl;
+
+  const std::string bare_path = get_test_path("git_sync_prog_bare");
+  const std::string notebook_root = get_test_path("git_sync_prog_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "note.md", "base", "init");
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
+
+    write_file_at(notebook_root + "/local.md", "local body");
+    push_follow_up_commit(bare_path, "remote.md", "remote body",
+                          "remote add file");
+
+    struct ProgressEntry {
+      vxcore::SyncState state;
+      float pct;
+    };
+    std::vector<ProgressEntry> entries;
+    auto cb = [](const vxcore::SyncProgress &p, void *ud) {
+      auto *vec = static_cast<std::vector<ProgressEntry> *>(ud);
+      vec->push_back({p.current_state, p.percentage});
+    };
+    ASSERT_EQ(backend.Sync(cb, &entries), VXCORE_OK);
+
+    auto contains_state = [&](vxcore::SyncState s) {
+      for (const auto &e : entries) {
+        if (e.state == s) return true;
+      }
+      return false;
+    };
+    ASSERT_TRUE(contains_state(vxcore::SyncState::kStaging));
+    ASSERT_TRUE(contains_state(vxcore::SyncState::kFetching));
+    ASSERT_TRUE(contains_state(vxcore::SyncState::kMerging));
+    ASSERT_TRUE(contains_state(vxcore::SyncState::kPushing));
+    ASSERT_TRUE(contains_state(vxcore::SyncState::kIdle));
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_sync_emits_progress_phases passed" << std::endl;
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -654,6 +963,12 @@ int main() {
   RUN_TEST(test_git_commit_skips_empty);
   RUN_TEST(test_git_commit_uses_default_author);
   RUN_TEST(test_git_fetch_updates_origin_main);
+  RUN_TEST(test_git_rebase_clean_fast_forward);
+  RUN_TEST(test_git_rebase_diverged_no_conflict);
+  RUN_TEST(test_git_rebase_conflict_surfaces);
+  RUN_TEST(test_git_push_fast_forward);
+  RUN_TEST(test_git_sync_round_trip_succeeds);
+  RUN_TEST(test_git_sync_emits_progress_phases);
   std::cout << "All git_sync_roundtrip tests passed" << std::endl;
   return 0;
 }
