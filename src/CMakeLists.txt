@@ -52,6 +52,7 @@ set(VXCORE_SOURCES
     search/rg_search_backend.cpp
     search/simple_search_backend.cpp
     sync/sync_manager.cpp
+    sync/libgit2_init.cpp
     utils/utils.cpp
     utils/string_utils.cpp
     utils/base64.cpp

@@ -29,6 +29,21 @@ add_executable(spike_libgit2 spike_libgit2.cpp)
 target_link_libraries(spike_libgit2 PRIVATE libgit2package)
 target_include_directories(spike_libgit2 PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
 add_test(NAME spike_libgit2 COMMAND spike_libgit2)
+
+# test_libgit2_init: T4 of the git-sync-backend plan. Verifies the LibGit2Init
+# RAII ref-counted singleton balances git_libgit2_init/shutdown calls.
+# Compiles libgit2_init.cpp directly (NOT linked through vxcore.dll) so the
+# test binary owns its own copy of the ref-count statics — Windows DLL
+# boundaries duplicate static storage, which would otherwise pollute the
+# ref-count semantics with whatever vxcore did at load time.
+add_executable(test_libgit2_init test_libgit2_init.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/libgit2_init.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
+target_include_directories(test_libgit2_init PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_libgit2_init PRIVATE libgit2package)
+add_test(NAME test_libgit2_init COMMAND test_libgit2_init)
+
 add_executable(test_content_processor test_content_processor.cpp
     ${CMAKE_SOURCE_DIR}/src/core/content_processor/markdown_handler.cpp
     ${CMAKE_SOURCE_DIR}/src/core/content_processor/content_processor.cpp
