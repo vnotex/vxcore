@@ -155,11 +155,24 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
   config_ = config;
   git_dir_ = root_folder_ + "/vx_notebook/vx_sync";
 
+  // T17 corrupt-repo guard: vx_sync exists as a directory but has no HEAD —
+  // the user has stray files or a broken libgit2 init under our state dir.
+  // Reject loudly. We deliberately do NOT delete vx_sync (user data) and
+  // require the user to inspect/clean it manually.
+  const std::string head_path = git_dir_ + "/HEAD";
+  if (IsDirectory(git_dir_) && !IsRegularFile(head_path)) {
+    VXCORE_LOG_ERROR(
+        "GitSyncBackend::Initialize: corrupt or non-repo state at %s "
+        "(directory exists but HEAD missing) — refusing to proceed; "
+        "inspect/remove the directory manually",
+        git_dir_.c_str());
+    return VXCORE_ERR_UNKNOWN;
+  }
+
   // Branch 1 (T14): re-open an existing libgit2 repo at <git_dir_>.
   // We only treat the directory as a real repo if HEAD is present — bare
   // /vx_sync/ subdir without HEAD is treated as "no repo" and falls through
   // to NOT_IMPLEMENTED (T15/T16/T17 will handle clone/init/reject).
-  const std::string head_path = git_dir_ + "/HEAD";
   if (IsDirectory(git_dir_) && IsRegularFile(head_path)) {
     git_repository *repo = nullptr;
     int rc = git_repository_open(&repo, git_dir_.c_str());
@@ -201,11 +214,50 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
 
     git_remote_free(remote);
     repo_ = repo;
+
+    // T18: enforce baseline git config (filemode, autocrlf, gpgsign, author).
+    VxCoreError cfg_err = ApplyDefaultGitConfig();
+    if (cfg_err != VXCORE_OK) {
+      git_repository_free(repo_);
+      repo_ = nullptr;
+      return cfg_err;
+    }
+
     initialized_ = true;
     return VXCORE_OK;
   }
 
-  // Other Initialize branches (T15: clone, T16: init+push, T17: reject) are
+  // T17 both-non-empty guard: vx_sync does NOT exist, the notebook root has
+  // user files (anything other than vx_notebook/), AND the configured remote
+  // already has refs. We can't safely choose between clone and init+push, so
+  // we refuse and ask the user to empty one side.
+  if (!PathExists(git_dir_)) {
+    bool has_user_files = false;
+    try {
+      for (auto &entry :
+           std::filesystem::directory_iterator(PathFromUtf8(root_folder_))) {
+        const std::string name = PathToUtf8(entry.path().filename());
+        if (name == "vx_notebook") {
+          continue;
+        }
+        has_user_files = true;
+        break;
+      }
+    } catch (const std::exception &e) {
+      VXCORE_LOG_ERROR("GitSyncBackend::Initialize: directory_iterator(%s) failed: %s",
+                       root_folder_.c_str(), e.what());
+    }
+
+    if (has_user_files && RemoteHasRefs()) {
+      VXCORE_LOG_ERROR(
+          "GitSyncBackend::Initialize: both notebook root '%s' and remote '%s' "
+          "are non-empty — refusing to proceed; empty one side and retry",
+          root_folder_.c_str(), config_.remote_url.c_str());
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+  }
+
+  // Other Initialize branches (T15: clone, T16: init+push) are
   // not implemented yet.
   return VXCORE_ERR_NOT_IMPLEMENTED;
 }
@@ -223,6 +275,92 @@ VxCoreError GitSyncBackend::Shutdown() {
   credentials_ = {};
   initialized_ = false;
   return VXCORE_OK;
+}
+
+// T18: open the repo-level config and force the four invariants. Caller holds
+// op_mutex_ and has repo_ open. Returns the first failing translation, or
+// VXCORE_OK on full success. Always frees the cfg handle.
+VxCoreError GitSyncBackend::ApplyDefaultGitConfig() {
+  if (repo_ == nullptr) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+  git_config *cfg = nullptr;
+  int rc = git_repository_config(&cfg, repo_);
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+
+  const char *user_name = credentials_.author_name.empty()
+                              ? "VNote Sync"
+                              : credentials_.author_name.c_str();
+  const char *user_email = credentials_.author_email.empty()
+                               ? "sync@vnote.local"
+                               : credentials_.author_email.c_str();
+
+  // core.autocrlf is set as a string ("false") to match git's textual config
+  // representation; the others are booleans.
+  rc = git_config_set_bool(cfg, "core.filemode", 0);
+  if (rc == 0) rc = git_config_set_string(cfg, "core.autocrlf", "false");
+  if (rc == 0) rc = git_config_set_bool(cfg, "commit.gpgsign", 0);
+  if (rc == 0) rc = git_config_set_string(cfg, "user.name", user_name);
+  if (rc == 0) rc = git_config_set_string(cfg, "user.email", user_email);
+
+  git_config_free(cfg);
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+  return VXCORE_OK;
+}
+
+// T17 helper: build a detached anonymous remote pointing at config_.remote_url
+// (no repo needed), connect for fetch (with our credential callback), and
+// ls-remote. Returns true iff at least one ref is advertised. On any libgit2
+// failure we log and return false — the caller treats unreachable remotes as
+// "no refs" so the both-non-empty guard does not falsely reject network
+// hiccups.
+bool GitSyncBackend::RemoteHasRefs() {
+  if (config_.remote_url.empty()) {
+    return false;
+  }
+
+  git_remote *remote = nullptr;
+  int rc = git_remote_create_detached(&remote, config_.remote_url.c_str());
+  if (rc != 0) {
+    const git_error *err = git_error_last();
+    VXCORE_LOG_ERROR("RemoteHasRefs: git_remote_create_detached failed rc=%d: %s",
+                     rc, (err && err->message) ? err->message : "(no message)");
+    return false;
+  }
+
+  git_remote_callbacks cb = GIT_REMOTE_CALLBACKS_INIT;
+  cb.credentials = &GitSyncBackendCredentialCb;
+  cb.payload = this;
+
+  rc = git_remote_connect(remote, GIT_DIRECTION_FETCH, &cb,
+                          /*proxy_opts=*/nullptr, /*custom_headers=*/nullptr);
+  if (rc != 0) {
+    const git_error *err = git_error_last();
+    VXCORE_LOG_ERROR("RemoteHasRefs: git_remote_connect failed rc=%d: %s",
+                     rc, (err && err->message) ? err->message : "(no message)");
+    git_remote_free(remote);
+    return false;
+  }
+
+  const git_remote_head **heads = nullptr;
+  size_t n_heads = 0;
+  rc = git_remote_ls(&heads, &n_heads, remote);
+  bool has_refs = false;
+  if (rc == 0) {
+    has_refs = (n_heads > 0);
+  } else {
+    const git_error *err = git_error_last();
+    VXCORE_LOG_ERROR("RemoteHasRefs: git_remote_ls failed rc=%d: %s",
+                     rc, (err && err->message) ? err->message : "(no message)");
+  }
+
+  git_remote_disconnect(remote);
+  git_remote_free(remote);
+  return has_refs;
 }
 
 VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) {

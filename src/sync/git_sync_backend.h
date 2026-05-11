@@ -69,6 +69,16 @@ class GitSyncBackend : public ISyncBackend {
                                         const char *username_from_url,
                                         unsigned int allowed_types, void *payload);
 
+  // T18: apply baseline repo-level config (filemode, autocrlf, gpgsign,
+  // user.name, user.email). Caller must hold op_mutex_ and have repo_ open.
+  VxCoreError ApplyDefaultGitConfig();
+
+  // T17 helper: returns true if the remote at config_.remote_url advertises
+  // any refs. Uses an in-memory repo + anonymous remote with the credential
+  // callback so PAT auth (if set) is honored. Logs and returns false on
+  // network/auth failure (caller treats inability to reach as "no refs").
+  bool RemoteHasRefs();
+
   LibGit2Init libgit2_;     // RAII; FIRST member so it's last destroyed
   std::mutex op_mutex_;     // serializes per-backend libgit2 calls
   std::string root_folder_; // notebook root (= libgit2 workdir)

@@ -22,6 +22,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -31,6 +32,7 @@
 #include "sync/sync_types.h"
 #include "test_git_sync_helpers.h"
 #include "test_utils.h"
+#include "utils/file_utils.h"
 #include "vxcore/vxcore_types.h"
 
 namespace {
@@ -161,11 +163,283 @@ int test_git_init_rejects_url_mismatch() {
   return 0;
 }
 
+// T17: vx_sync does not exist, the notebook root has user files, and the
+// remote already has refs — Initialize must refuse with INVALID_PARAM.
+int test_git_init_rejects_both_non_empty() {
+  std::cout << "  Running test_git_init_rejects_both_non_empty..." << std::endl;
+
+  const std::string bare_path = get_test_path("git_init_bothfull_bare");
+  const std::string notebook_root = get_test_path("git_init_bothfull_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "remote.md", "remote content", "init");
+
+    // Notebook root has a stray user file but NO vx_notebook/vx_sync/.
+    std::filesystem::create_directories(vxcore::PathFromUtf8(notebook_root));
+    {
+      std::ofstream ofs(vxcore::PathFromUtf8(notebook_root + "/notes.md"),
+                        std::ios::binary | std::ios::trunc);
+      ofs << "local user content";
+    }
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    VxCoreError rc = backend.Initialize(notebook_root, config);
+    ASSERT_EQ(rc, VXCORE_ERR_INVALID_PARAM);
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_init_rejects_both_non_empty passed" << std::endl;
+  return 0;
+}
+
+// T17: vx_notebook/vx_sync/ exists as a directory but contains no HEAD file —
+// Initialize must refuse and leave the directory contents intact (no auto
+// delete of user data).
+int test_git_init_rejects_corrupt_repo() {
+  std::cout << "  Running test_git_init_rejects_corrupt_repo..." << std::endl;
+
+  const std::string notebook_root = get_test_path("git_init_corrupt_nb");
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string vx_sync = notebook_root + "/vx_notebook/vx_sync";
+    std::filesystem::create_directories(vxcore::PathFromUtf8(vx_sync));
+    const std::string stray = vx_sync + "/stray.txt";
+    {
+      std::ofstream ofs(vxcore::PathFromUtf8(stray), std::ios::binary | std::ios::trunc);
+      ofs << "garbage";
+    }
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = "file:///tmp/does-not-matter.git";
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    VxCoreError rc = backend.Initialize(notebook_root, config);
+    ASSERT_NE(rc, VXCORE_OK);
+
+    // Garbage left intact (no auto-delete of user data).
+    ASSERT_TRUE(vxcore::IsRegularFile(stray));
+    ASSERT_TRUE(vxcore::IsDirectory(vx_sync));
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_init_rejects_corrupt_repo passed" << std::endl;
+  return 0;
+}
+
+// Read a config string value from a libgit2 repo at <repo_path>. Throws if
+// missing. Used by the T18 assertion helpers.
+namespace {
+
+std::string read_config_string(const std::string &repo_path, const char *key) {
+  git_repository *repo = nullptr;
+  if (git_repository_open(&repo, repo_path.c_str()) != 0) {
+    throw std::runtime_error("git_repository_open failed");
+  }
+  git_config *cfg = nullptr;
+  if (git_repository_config(&cfg, repo) != 0) {
+    git_repository_free(repo);
+    throw std::runtime_error("git_repository_config failed");
+  }
+  git_buf buf = GIT_BUF_INIT;
+  int rc = git_config_get_string_buf(&buf, cfg, key);
+  if (rc != 0) {
+    git_config_free(cfg);
+    git_repository_free(repo);
+    throw std::runtime_error(std::string("git_config_get_string_buf(") + key + ") failed");
+  }
+  std::string out(buf.ptr ? buf.ptr : "");
+  git_buf_dispose(&buf);
+  git_config_free(cfg);
+  git_repository_free(repo);
+  return out;
+}
+
+int read_config_bool(const std::string &repo_path, const char *key) {
+  git_repository *repo = nullptr;
+  if (git_repository_open(&repo, repo_path.c_str()) != 0) {
+    throw std::runtime_error("git_repository_open failed");
+  }
+  git_config *cfg = nullptr;
+  if (git_repository_config(&cfg, repo) != 0) {
+    git_repository_free(repo);
+    throw std::runtime_error("git_repository_config failed");
+  }
+  int value = 0;
+  int rc = git_config_get_bool(&value, cfg, key);
+  git_config_free(cfg);
+  git_repository_free(repo);
+  if (rc != 0) {
+    throw std::runtime_error(std::string("git_config_get_bool(") + key + ") failed");
+  }
+  return value;
+}
+
+}  // namespace
+
+// T18: re-open path applies baseline git config (filemode/autocrlf/gpgsign +
+// default author).
+int test_git_init_applies_config() {
+  std::cout << "  Running test_git_init_applies_config..." << std::endl;
+
+  const std::string bare_path = get_test_path("git_init_cfg_bare");
+  const std::string notebook_root = get_test_path("git_init_cfg_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "note.md", "hello", "init");
+
+    seed_notebook_with_existing_repo(notebook_root, bare_url);
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    {
+      vxcore::GitSyncBackend backend;
+      VxCoreError rc = backend.Initialize(notebook_root, config);
+      ASSERT_EQ(rc, VXCORE_OK);
+    }  // Shutdown frees the repo so we can reopen below.
+
+    const std::string git_dir = notebook_root + "/vx_notebook/vx_sync";
+    vxcore::LibGit2Init guard;
+    ASSERT_EQ(read_config_bool(git_dir, "core.filemode"), 0);
+    ASSERT_EQ(read_config_string(git_dir, "core.autocrlf"), std::string("false"));
+    ASSERT_EQ(read_config_bool(git_dir, "commit.gpgsign"), 0);
+    ASSERT_EQ(read_config_string(git_dir, "user.name"), std::string("VNote Sync"));
+    ASSERT_EQ(read_config_string(git_dir, "user.email"), std::string("sync@vnote.local"));
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_init_applies_config passed" << std::endl;
+  return 0;
+}
+
+// T18: SyncCredentials::author_name/author_email override the hardcoded
+// defaults when set BEFORE Initialize.
+int test_git_init_uses_credential_author_when_set() {
+  std::cout << "  Running test_git_init_uses_credential_author_when_set..." << std::endl;
+
+  const std::string bare_path = get_test_path("git_init_author_bare");
+  const std::string notebook_root = get_test_path("git_init_author_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "note.md", "hello", "init");
+
+    seed_notebook_with_existing_repo(notebook_root, bare_url);
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    {
+      vxcore::GitSyncBackend backend;
+      vxcore::SyncCredentials creds;
+      creds.author_name = "Alice";
+      creds.author_email = "alice@a.com";
+      ASSERT_EQ(backend.SetCredentials(creds), VXCORE_OK);
+      VxCoreError rc = backend.Initialize(notebook_root, config);
+      ASSERT_EQ(rc, VXCORE_OK);
+    }
+
+    const std::string git_dir = notebook_root + "/vx_notebook/vx_sync";
+    vxcore::LibGit2Init guard;
+    ASSERT_EQ(read_config_string(git_dir, "user.name"), std::string("Alice"));
+    ASSERT_EQ(read_config_string(git_dir, "user.email"), std::string("alice@a.com"));
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_init_uses_credential_author_when_set passed" << std::endl;
+  return 0;
+}
+
+// T19: Shutdown is idempotent — calling it twice on an initialized backend
+// returns OK both times and does not crash.
+int test_git_shutdown_idempotent() {
+  std::cout << "  Running test_git_shutdown_idempotent..." << std::endl;
+
+  const std::string bare_path = get_test_path("git_shutdown_bare");
+  const std::string notebook_root = get_test_path("git_shutdown_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+    vxcore_test::commit_file(bare_path, "note.md", "hello", "init");
+
+    seed_notebook_with_existing_repo(notebook_root, bare_url);
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    vxcore::GitSyncBackend backend;
+    ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
+    ASSERT_EQ(backend.Shutdown(), VXCORE_OK);
+    ASSERT_EQ(backend.Shutdown(), VXCORE_OK);
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_shutdown_idempotent passed" << std::endl;
+  return 0;
+}
+
 }  // namespace
 
 int main() {
   RUN_TEST(test_git_init_reopens_existing_repo);
   RUN_TEST(test_git_init_rejects_url_mismatch);
+  RUN_TEST(test_git_init_rejects_both_non_empty);
+  RUN_TEST(test_git_init_rejects_corrupt_repo);
+  RUN_TEST(test_git_init_applies_config);
+  RUN_TEST(test_git_init_uses_credential_author_when_set);
+  RUN_TEST(test_git_shutdown_idempotent);
   std::cout << "All git_sync_init tests passed" << std::endl;
   return 0;
 }
