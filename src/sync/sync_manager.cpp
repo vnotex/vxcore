@@ -2,6 +2,7 @@
 
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
+#include "sync/git_sync_backend.h"
 #include "utils/logger.h"
 
 namespace vxcore {
@@ -28,15 +29,73 @@ VxCoreError SyncManager::ValidateNotebook(const std::string &notebook_id) {
 
 VxCoreError SyncManager::EnableSync(const std::string &notebook_id, const SyncConfig &config) {
   VXCORE_LOG_DEBUG("SyncManager::EnableSync: notebook_id=%s", notebook_id.c_str());
+  return EnableSyncImpl(notebook_id, config, nullptr);
+}
 
+VxCoreError SyncManager::EnableSync(const std::string &notebook_id, const SyncConfig &config,
+                                    const SyncCredentials &credentials) {
+  VXCORE_LOG_DEBUG("SyncManager::EnableSync(creds): notebook_id=%s", notebook_id.c_str());
+  return EnableSyncImpl(notebook_id, config, &credentials);
+}
+
+VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
+                                        const SyncCredentials *credentials) {
   VxCoreError err = ValidateNotebook(notebook_id);
   if (err != VXCORE_OK) {
     return err;
   }
 
+  const bool had_config = configs_.count(notebook_id) > 0;
+  const bool had_state = states_.count(notebook_id) > 0;
+  SyncConfig prev_config;
+  SyncState prev_state = SyncState::kIdle;
+  if (had_config) prev_config = configs_[notebook_id];
+  if (had_state) prev_state = states_[notebook_id];
+
   configs_[notebook_id] = config;
   states_[notebook_id] = SyncState::kIdle;
 
+  auto rollback = [&]() {
+    if (had_config) {
+      configs_[notebook_id] = prev_config;
+    } else {
+      configs_.erase(notebook_id);
+    }
+    if (had_state) {
+      states_[notebook_id] = prev_state;
+    } else {
+      states_.erase(notebook_id);
+    }
+  };
+
+  // Factory: build a backend if config.backend matches a known type.
+  std::unique_ptr<ISyncBackend> backend;
+  if (config.backend == "git") {
+    backend = std::make_unique<GitSyncBackend>();
+  }
+  // Unknown backend: leave config + state stored, no backend registered.
+  if (!backend) {
+    VXCORE_LOG_INFO("Sync enabled for notebook: %s, backend: %s (no factory)",
+                    notebook_id.c_str(), config.backend.c_str());
+    return VXCORE_OK;
+  }
+
+  if (credentials != nullptr) {
+    err = backend->SetCredentials(*credentials);
+    if (err != VXCORE_OK) {
+      rollback();
+      return err;
+    }
+  }
+
+  auto *notebook = notebook_manager_->GetNotebook(notebook_id);
+  err = backend->Initialize(notebook->GetRootFolder(), config);
+  if (err != VXCORE_OK) {
+    rollback();
+    return err;
+  }
+
+  backends_[notebook_id] = std::move(backend);
   VXCORE_LOG_INFO("Sync enabled for notebook: %s, backend: %s", notebook_id.c_str(),
                   config.backend.c_str());
   return VXCORE_OK;

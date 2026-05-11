@@ -460,6 +460,109 @@ int test_git_sync_backend_construct_destruct() {
   return 0;
 }
 
+int test_sync_enable_creates_git_backend() {
+  std::cout << "  Running test_sync_enable_creates_git_backend..." << std::endl;
+  std::string path = get_test_path("test_sync_enable_git_factory");
+  cleanup_test_dir(path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"gf1\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  // GitSyncBackend::Initialize is a stub returning NOT_IMPLEMENTED (T11 state).
+  // Therefore the factory ran, called Initialize, got NOT_IMPLEMENTED, and rolled back.
+  ASSERT_EQ(vxcore_sync_enable(
+                ctx, notebook_id,
+                "{\"backend\":\"git\",\"remoteUrl\":\"file:///tmp/nonexistent_xyz\"}"),
+            VXCORE_ERR_NOT_IMPLEMENTED);
+
+  // Verify rollback: state should be absent, so GetStatus reports SYNC_NOT_ENABLED.
+  char *status_json = nullptr;
+  ASSERT_EQ(vxcore_sync_get_status(ctx, notebook_id, &status_json),
+            VXCORE_ERR_SYNC_NOT_ENABLED);
+  if (status_json) vxcore_string_free(status_json);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(path);
+  std::cout << "  \xE2\x9C\x93 test_sync_enable_creates_git_backend passed" << std::endl;
+  return 0;
+}
+
+int test_sync_enable_with_credentials_calls_setcred_first() {
+  std::cout << "  Running test_sync_enable_with_credentials_calls_setcred_first..." << std::endl;
+  std::string path = get_test_path("test_sync_enable_creds_order");
+  cleanup_test_dir(path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"gf2\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  auto mock = std::make_unique<MockSyncBackend>();
+  mock->next_initialize_result = VXCORE_OK;
+  MockSyncBackend *mock_ptr = mock.get();
+
+  SyncConfig config;
+  config.backend = "mock";
+  config.remote_url = "file:///tmp/x";
+
+  SyncCredentials creds;
+  creds.personal_access_token = "abc";
+
+  auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
+                notebook_id, config, &creds, std::move(mock)),
+            VXCORE_OK);
+
+  ASSERT_EQ(mock_ptr->set_credentials_call_count, 1);
+  ASSERT_EQ(mock_ptr->initialize_call_count, 1);
+  // Proves SetCredentials ran BEFORE Initialize.
+  ASSERT_EQ(mock_ptr->set_credentials_call_count_at_initialize, 1);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(path);
+  std::cout << "  \xE2\x9C\x93 test_sync_enable_with_credentials_calls_setcred_first passed"
+            << std::endl;
+  return 0;
+}
+
+int test_sync_enable_unknown_backend_no_factory() {
+  std::cout << "  Running test_sync_enable_unknown_backend_no_factory..." << std::endl;
+  std::string path = get_test_path("test_sync_enable_unknown");
+  cleanup_test_dir(path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"gf3\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  // Unknown backend: factory ignores it, just stores config + state.
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
+                               "{\"backend\":\"unknown_xyz\",\"remoteUrl\":\"x\"}"),
+            VXCORE_OK);
+
+  // No backend registered, so trigger returns NOT_IMPLEMENTED.
+  ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_ERR_NOT_IMPLEMENTED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(path);
+  std::cout << "  \xE2\x9C\x93 test_sync_enable_unknown_backend_no_factory passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running sync manager dispatch tests...\n";
   vxcore_set_test_mode(1);
@@ -481,6 +584,9 @@ int main() {
   RUN_TEST(test_sync_manager_set_credentials_unknown_notebook_returns_not_found);
   RUN_TEST(test_sync_manager_set_credentials_not_enabled_returns_not_enabled);
   RUN_TEST(test_git_sync_backend_construct_destruct);
+  RUN_TEST(test_sync_enable_creates_git_backend);
+  RUN_TEST(test_sync_enable_with_credentials_calls_setcred_first);
+  RUN_TEST(test_sync_enable_unknown_backend_no_factory);
   std::cout << "All sync manager dispatch tests passed\n";
   return 0;
 }

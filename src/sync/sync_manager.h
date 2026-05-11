@@ -20,6 +20,12 @@ class SyncManager {
 
   VxCoreError EnableSync(const std::string &notebook_id, const SyncConfig &config);
 
+  // C++-only overload: EnableSync that sets credentials BEFORE Initialize().
+  // Required for backends whose Initialize() needs auth (e.g., authenticated git clone).
+  // Intentionally NOT exposed via the C API in v1; called by the Qt layer or tests.
+  VXCORE_API VxCoreError EnableSync(const std::string &notebook_id, const SyncConfig &config,
+                                    const SyncCredentials &credentials);
+
   VxCoreError DisableSync(const std::string &notebook_id);
 
   VxCoreError TriggerSync(const std::string &notebook_id);
@@ -58,6 +64,12 @@ class SyncManager {
 
  private:
   VxCoreError ValidateNotebook(const std::string &notebook_id);
+
+  // Shared implementation for both EnableSync overloads. When credentials != nullptr,
+  // calls backend->SetCredentials(*credentials) BEFORE backend->Initialize(...).
+  // On any failure, rolls back configs_/states_/backends_ to their prior state.
+  VxCoreError EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
+                             const SyncCredentials *credentials);
 
   NotebookManager *notebook_manager_;
   std::unordered_map<std::string, std::unique_ptr<ISyncBackend>> backends_;
