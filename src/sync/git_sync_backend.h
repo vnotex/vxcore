@@ -43,6 +43,13 @@ class GitSyncBackend : public ISyncBackend {
   VxCoreError ResolveConflict(const std::string &path,
                               SyncConflictResolution resolution) override;
 
+  // Test-only helper: writes default .gitignore + .gitattributes (using
+  // config.exclude_paths) into <dir>, preserving any pre-existing files.
+  // Returns count of files actually written.
+  // Internal callers (T15/T18) use the same helpers via Initialize.
+  static VXCORE_API int WriteDefaultIgnoreAndAttributesForTesting(const std::string &dir,
+                                                                  const SyncConfig &config);
+
  private:
   // T27 credential callback friend; static C-style libgit2 callback needs to read credentials_.
   friend int GitSyncBackendCredentialCb(struct git_credential **out, const char *url,
