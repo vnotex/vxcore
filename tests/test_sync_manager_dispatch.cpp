@@ -7,6 +7,7 @@
 
 #include "core/context.h"
 #include "mock_sync_backend.h"
+#include "sync/git_sync_backend.h"
 #include "sync/sync_backend.h"
 #include "sync/sync_manager.h"
 #include "sync/sync_types.h"
@@ -443,6 +444,22 @@ int test_sync_manager_set_credentials_not_enabled_returns_not_enabled() {
   return 0;
 }
 
+int test_git_sync_backend_construct_destruct() {
+  std::cout << "  Running test_git_sync_backend_construct_destruct..." << std::endl;
+  // Smoke-test ctor/dtor + LibGit2Init ref-counting (libgit2_ is the FIRST member,
+  // so it is destroyed LAST — guarantees libgit2 is still initialized while other
+  // dtors run). Stack instance:
+  {
+    vxcore::GitSyncBackend stack_backend;
+    (void)stack_backend;
+  }
+  // Heap instance:
+  auto *heap_backend = new vxcore::GitSyncBackend();
+  delete heap_backend;
+  std::cout << "  \xE2\x9C\x93 test_git_sync_backend_construct_destruct passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running sync manager dispatch tests...\n";
   vxcore_set_test_mode(1);
@@ -463,6 +480,7 @@ int main() {
   RUN_TEST(test_sync_manager_set_credentials_no_backend_returns_not_implemented);
   RUN_TEST(test_sync_manager_set_credentials_unknown_notebook_returns_not_found);
   RUN_TEST(test_sync_manager_set_credentials_not_enabled_returns_not_enabled);
+  RUN_TEST(test_git_sync_backend_construct_destruct);
   std::cout << "All sync manager dispatch tests passed\n";
   return 0;
 }
