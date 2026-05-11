@@ -328,6 +328,121 @@ int test_sync_resolve_clears_conflicted_state_when_no_more_conflicts() {
   return 0;
 }
 
+int test_sync_manager_set_credentials_dispatches() {
+  std::cout << "  Running test_sync_manager_set_credentials_dispatches..." << std::endl;
+  std::string path = get_test_path("test_sync_dispatch_setcred");
+  cleanup_test_dir(path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"sc1\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
+            VXCORE_OK);
+
+  auto mock = std::make_unique<MockSyncBackend>();
+  MockSyncBackend *mock_ptr = mock.get();
+  auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  ctx_impl->sync_manager->RegisterBackendForTesting(notebook_id, std::move(mock));
+
+  SyncCredentials creds;
+  creds.personal_access_token = "abc123";
+  ASSERT_EQ(ctx_impl->sync_manager->SetCredentials(notebook_id, creds), VXCORE_OK);
+  ASSERT_EQ(mock_ptr->set_credentials_call_count, 1);
+  ASSERT_TRUE(mock_ptr->last_credentials.personal_access_token == "abc123");
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(path);
+  std::cout << "  \xE2\x9C\x93 test_sync_manager_set_credentials_dispatches passed" << std::endl;
+  return 0;
+}
+
+int test_sync_manager_set_credentials_no_backend_returns_not_implemented() {
+  std::cout << "  Running test_sync_manager_set_credentials_no_backend_returns_not_implemented..."
+            << std::endl;
+  std::string path = get_test_path("test_sync_dispatch_setcred_nobackend");
+  cleanup_test_dir(path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"sc2\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
+            VXCORE_OK);
+
+  auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  SyncCredentials creds;
+  creds.personal_access_token = "tkn";
+  ASSERT_EQ(ctx_impl->sync_manager->SetCredentials(notebook_id, creds),
+            VXCORE_ERR_NOT_IMPLEMENTED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(path);
+  std::cout
+      << "  \xE2\x9C\x93 test_sync_manager_set_credentials_no_backend_returns_not_implemented "
+         "passed"
+      << std::endl;
+  return 0;
+}
+
+int test_sync_manager_set_credentials_unknown_notebook_returns_not_found() {
+  std::cout << "  Running test_sync_manager_set_credentials_unknown_notebook_returns_not_found..."
+            << std::endl;
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  SyncCredentials creds;
+  ASSERT_EQ(ctx_impl->sync_manager->SetCredentials("nonexistent-id-xyz", creds),
+            VXCORE_ERR_NOT_FOUND);
+
+  vxcore_context_destroy(ctx);
+  std::cout
+      << "  \xE2\x9C\x93 test_sync_manager_set_credentials_unknown_notebook_returns_not_found "
+         "passed"
+      << std::endl;
+  return 0;
+}
+
+int test_sync_manager_set_credentials_not_enabled_returns_not_enabled() {
+  std::cout << "  Running test_sync_manager_set_credentials_not_enabled_returns_not_enabled..."
+            << std::endl;
+  std::string path = get_test_path("test_sync_dispatch_setcred_notenabled");
+  cleanup_test_dir(path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"sc4\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  SyncCredentials creds;
+  ASSERT_EQ(ctx_impl->sync_manager->SetCredentials(notebook_id, creds),
+            VXCORE_ERR_SYNC_NOT_ENABLED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(path);
+  std::cout
+      << "  \xE2\x9C\x93 test_sync_manager_set_credentials_not_enabled_returns_not_enabled passed"
+      << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running sync manager dispatch tests...\n";
   vxcore_set_test_mode(1);
@@ -344,6 +459,10 @@ int main() {
   RUN_TEST(test_sync_conflicts_returns_backend_list);
   RUN_TEST(test_sync_resolve_dispatches_to_backend);
   RUN_TEST(test_sync_resolve_clears_conflicted_state_when_no_more_conflicts);
+  RUN_TEST(test_sync_manager_set_credentials_dispatches);
+  RUN_TEST(test_sync_manager_set_credentials_no_backend_returns_not_implemented);
+  RUN_TEST(test_sync_manager_set_credentials_unknown_notebook_returns_not_found);
+  RUN_TEST(test_sync_manager_set_credentials_not_enabled_returns_not_enabled);
   std::cout << "All sync manager dispatch tests passed\n";
   return 0;
 }

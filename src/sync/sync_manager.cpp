@@ -181,6 +181,27 @@ VxCoreError SyncManager::ResolveConflict(const std::string &notebook_id, const s
   return resolve_err;
 }
 
+VxCoreError SyncManager::SetCredentials(const std::string &notebook_id,
+                                        const SyncCredentials &credentials) {
+  VXCORE_LOG_DEBUG("SyncManager::SetCredentials: notebook_id=%s", notebook_id.c_str());
+
+  VxCoreError err = ValidateNotebook(notebook_id);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  if (states_.find(notebook_id) == states_.end()) {
+    return VXCORE_ERR_SYNC_NOT_ENABLED;
+  }
+
+  auto backend_it = backends_.find(notebook_id);
+  if (backend_it == backends_.end()) {
+    return VXCORE_ERR_NOT_IMPLEMENTED;
+  }
+
+  return backend_it->second->SetCredentials(credentials);
+}
+
 void SyncManager::RegisterBackendForTesting(const std::string &notebook_id,
                                             std::unique_ptr<ISyncBackend> backend) {
   states_[notebook_id] = SyncState::kIdle;

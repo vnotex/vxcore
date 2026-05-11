@@ -35,6 +35,16 @@ class SyncManager {
 
   VxCoreError GetSyncConfig(const std::string &notebook_id, SyncConfig &out_config);
 
+  // C++-only: forwards credentials to the registered backend (rotation path).
+  // Returns:
+  //   VXCORE_ERR_NOT_FOUND if notebook unknown
+  //   VXCORE_ERR_SYNC_NOT_ENABLED if state absent
+  //   VXCORE_ERR_NOT_IMPLEMENTED if no backend registered
+  //   otherwise whatever backend->SetCredentials returns
+  // Intentionally NOT exposed via vxcore.h C API in v1.
+  VXCORE_API VxCoreError SetCredentials(const std::string &notebook_id,
+                                        const SyncCredentials &credentials);
+
   // Test-only: bypass the factory and inject any backend instance for the given notebook.
   VXCORE_API void RegisterBackendForTesting(const std::string &notebook_id,
                                             std::unique_ptr<ISyncBackend> backend);
