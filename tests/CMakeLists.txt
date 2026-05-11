@@ -19,6 +19,16 @@ add_vxcore_test(test_session_persistence)
 add_vxcore_test(test_template)
 add_vxcore_test(test_e2e_assets)
 add_vxcore_test(test_sync)
+
+# spike_libgit2: Phase-0 kill-switch test for the libgit2 vendoring (T1 of the
+# git-sync-backend plan). Exercises a separate gitdir/workdir + a full
+# index->tree->commit round-trip to prove the static link works on this
+# platform. Linked directly against libgit2package (NOT vxcore) because the
+# real GitSyncBackend doesn't exist yet.
+add_executable(spike_libgit2 spike_libgit2.cpp)
+target_link_libraries(spike_libgit2 PRIVATE libgit2package)
+target_include_directories(spike_libgit2 PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
+add_test(NAME spike_libgit2 COMMAND spike_libgit2)
 add_executable(test_content_processor test_content_processor.cpp
     ${CMAKE_SOURCE_DIR}/src/core/content_processor/markdown_handler.cpp
     ${CMAKE_SOURCE_DIR}/src/core/content_processor/content_processor.cpp
