@@ -871,6 +871,27 @@ VXCORE_API VxCoreError vxcore_sync_resolve_conflict(VxCoreContextHandle context,
                                                     const char *notebook_id, const char *path,
                                                     const char *resolution);
 
+// Set credentials for an already-enabled sync notebook (rotation path).
+// credentials_json shape (all fields optional, missing = empty string):
+//   {"pat":"...","authorName":"...","authorEmail":"..."}
+// Forwards to the registered backend's SetCredentials. Returns:
+//   VXCORE_ERR_NOT_FOUND        - notebook unknown
+//   VXCORE_ERR_SYNC_NOT_ENABLED - sync not enabled for notebook
+//   VXCORE_ERR_NOT_IMPLEMENTED  - no concrete backend registered
+VXCORE_API VxCoreError vxcore_sync_set_credentials(VxCoreContextHandle context,
+                                                   const char *notebook_id,
+                                                   const char *credentials_json);
+
+// Enable sync for a notebook with credentials supplied BEFORE backend Initialize().
+// Required for backends whose Initialize step needs auth (e.g., authenticated git clone).
+// config_json: same shape as vxcore_sync_enable.
+// credentials_json: same shape as vxcore_sync_set_credentials (all fields optional).
+// Returns VXCORE_ERR_UNSUPPORTED for raw notebooks.
+VXCORE_API VxCoreError vxcore_sync_enable_with_credentials(VxCoreContextHandle context,
+                                                           const char *notebook_id,
+                                                           const char *config_json,
+                                                           const char *credentials_json);
+
 VXCORE_API void vxcore_string_free(char *str);
 
 #ifdef __cplusplus

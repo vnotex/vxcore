@@ -20,6 +20,7 @@ add_vxcore_test(test_template)
 add_vxcore_test(test_e2e_assets)
 add_vxcore_test(test_sync)
 
+
 # spike_libgit2: Phase-0 kill-switch test for the libgit2 vendoring (T1 of the
 # git-sync-backend plan). Exercises a separate gitdir/workdir + a full
 # index->tree->commit round-trip to prove the static link works on this
@@ -313,4 +314,14 @@ target_link_libraries(test_git_sync_pushpull PRIVATE
     libgit2package
     nlohmann_json)
 add_test(NAME test_git_sync_pushpull COMMAND test_git_sync_pushpull)
+
+# test_sync_credentials_api: T1+T2 of notebook-git-sync-ui plan. Exercises the
+# C ABI wrappers vxcore_sync_set_credentials and vxcore_sync_enable_with_credentials
+# end-to-end against a real libgit2 file:// bare-repo fixture. Reuses the
+# git_sync_test_helpers static library (defined above) for create_bare_repo +
+# commit_file. Linked against vxcore (via add_vxcore_test) for the C ABI under
+# test, plus git_sync_test_helpers + nlohmann_json for the fixture and JSON.
+add_vxcore_test(test_sync_credentials_api)
+target_link_libraries(test_sync_credentials_api PRIVATE git_sync_test_helpers nlohmann_json)
+
 

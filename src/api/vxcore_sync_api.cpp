@@ -257,3 +257,93 @@ VXCORE_API VxCoreError vxcore_sync_resolve_conflict(VxCoreContextHandle context,
     return VXCORE_ERR_UNKNOWN;
   }
 }
+
+// Parse credentials_json into a vxcore::SyncCredentials. All fields optional;
+// missing or non-string fields become empty strings. Throws nlohmann::json::exception
+// on malformed JSON (caught by callers).
+static vxcore::SyncCredentials ParseCredentials(const char *credentials_json) {
+  vxcore::SyncCredentials creds;
+  auto j = nlohmann::json::parse(credentials_json);
+  if (j.contains("pat") && j["pat"].is_string()) {
+    creds.personal_access_token = j["pat"].get<std::string>();
+  }
+  if (j.contains("authorName") && j["authorName"].is_string()) {
+    creds.author_name = j["authorName"].get<std::string>();
+  }
+  if (j.contains("authorEmail") && j["authorEmail"].is_string()) {
+    creds.author_email = j["authorEmail"].get<std::string>();
+  }
+  return creds;
+}
+
+VXCORE_API VxCoreError vxcore_sync_set_credentials(VxCoreContextHandle context,
+                                                   const char *notebook_id,
+                                                   const char *credentials_json) {
+  if (!context || !notebook_id || !credentials_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    if (!ctx->sync_manager) {
+      ctx->last_error = "Sync manager not initialized";
+      return VXCORE_ERR_UNKNOWN;
+    }
+
+    vxcore::SyncCredentials creds = ParseCredentials(credentials_json);
+    // NOTE: never log the PAT value itself.
+    return ctx->sync_manager->SetCredentials(notebook_id, creds);
+  } catch (const nlohmann::json::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_JSON_PARSE;
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error setting sync credentials";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_sync_enable_with_credentials(VxCoreContextHandle context,
+                                                           const char *notebook_id,
+                                                           const char *config_json,
+                                                           const char *credentials_json) {
+  if (!context || !notebook_id || !config_json || !credentials_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    if (!ctx->sync_manager) {
+      ctx->last_error = "Sync manager not initialized";
+      return VXCORE_ERR_UNKNOWN;
+    }
+
+    auto j = nlohmann::json::parse(config_json);
+
+    vxcore::SyncConfig config;
+    if (j.contains("backend") && j["backend"].is_string())
+      config.backend = j["backend"].get<std::string>();
+    if (j.contains("remoteUrl") && j["remoteUrl"].is_string())
+      config.remote_url = j["remoteUrl"].get<std::string>();
+    if (j.contains("intervalSeconds") && j["intervalSeconds"].is_number_integer())
+      config.interval_seconds = j["intervalSeconds"].get<int>();
+    config.enabled = true;
+
+    vxcore::SyncCredentials creds = ParseCredentials(credentials_json);
+    // NOTE: never log the PAT value itself.
+    return ctx->sync_manager->EnableSync(notebook_id, config, creds);
+  } catch (const nlohmann::json::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_JSON_PARSE;
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error enabling sync with credentials";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
