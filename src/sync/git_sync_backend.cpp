@@ -415,9 +415,108 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
       initialized_ = true;
       return VXCORE_OK;
     }
+
+    // T16: init+push branch. The notebook root has user files, the configured
+    // remote is empty (RemoteHasRefs was false; T17 would have rejected
+    // otherwise), and a remote URL is set. Initialize a libgit2 repo with the
+    // separate-gitdir layout, write defaults, create origin, stage+commit
+    // everything, and push refs/heads/main to publish the notebook.
+    if (has_user_files && !config_.remote_url.empty()) {
+      try {
+        std::filesystem::create_directories(PathFromUtf8(git_dir_));
+      } catch (const std::exception &e) {
+        VXCORE_LOG_ERROR("Initialize(initpush): create_directories(%s) failed: %s",
+                         git_dir_.c_str(), e.what());
+        return VXCORE_ERR_UNKNOWN;
+      }
+
+      git_repository_init_options iopts = GIT_REPOSITORY_INIT_OPTIONS_INIT;
+      int rc = git_repository_init_options_init(
+          &iopts, GIT_REPOSITORY_INIT_OPTIONS_VERSION);
+      if (rc != 0) {
+        return TranslateGitError(rc);
+      }
+      iopts.flags = GIT_REPOSITORY_INIT_NO_REINIT |
+                    GIT_REPOSITORY_INIT_MKDIR |
+                    GIT_REPOSITORY_INIT_MKPATH |
+                    GIT_REPOSITORY_INIT_NO_DOTGIT_DIR;
+      iopts.workdir_path = root_folder_.c_str();
+      iopts.initial_head = "main";
+
+      rc = git_repository_init_ext(&repo_, git_dir_.c_str(), &iopts);
+      if (rc != 0) {
+        VxCoreError err = TranslateGitError(rc);
+        repo_ = nullptr;
+        return err;
+      }
+
+      VxCoreError cfg_err = ApplyDefaultGitConfig();
+      if (cfg_err != VXCORE_OK) {
+        git_repository_free(repo_);
+        repo_ = nullptr;
+        return cfg_err;
+      }
+
+      // Defaults are best-effort; failure to write doesn't abort init+push.
+      WriteIfMissing(root_folder_ + "/.gitignore", BuildGitignoreContent(config_));
+      WriteIfMissing(root_folder_ + "/.gitattributes", kDefaultGitattributes);
+
+      git_remote *remote = nullptr;
+      rc = git_remote_create(&remote, repo_, "origin",
+                             config_.remote_url.c_str());
+      if (rc != 0) {
+        VxCoreError err = TranslateGitError(rc);
+        git_repository_free(repo_);
+        repo_ = nullptr;
+        return err;
+      }
+      git_remote_free(remote);
+
+      // Stage everything currently on disk (user files + just-written
+      // .gitignore/.gitattributes), commit as the initial root commit, then
+      // push refs/heads/main so the empty remote becomes the source of truth.
+      // Helpers assume op_mutex_ already held — we hold it for the whole
+      // Initialize so don't re-lock.
+      VxCoreError err = StageAll();
+      if (err != VXCORE_OK) {
+        git_repository_free(repo_);
+        repo_ = nullptr;
+        return err;
+      }
+      err = CommitIndex("VNote sync: initial commit");
+      if (err != VXCORE_OK) {
+        git_repository_free(repo_);
+        repo_ = nullptr;
+        return err;
+      }
+      err = PushOrigin();
+      if (err != VXCORE_OK) {
+        git_repository_free(repo_);
+        repo_ = nullptr;
+        return err;
+      }
+
+      // Same gitlink scrub as T15: libgit2 leaves a .git gitlink file in the
+      // workdir pointing at our separate gitdir. VNote re-opens via the
+      // gitdir directly, so we don't want notebooks to look like git working
+      // trees to external tools. Only delete a regular file (the gitlink),
+      // never a real user `.git` directory.
+      const std::string gitlink_path = root_folder_ + "/.git";
+      if (PathExists(gitlink_path) && !IsDirectory(gitlink_path)) {
+        std::error_code rm_ec;
+        std::filesystem::remove(PathFromUtf8(gitlink_path), rm_ec);
+        if (rm_ec) {
+          VXCORE_LOG_WARN("Initialize(initpush): failed to remove gitlink %s: %s",
+                          gitlink_path.c_str(), rm_ec.message().c_str());
+        }
+      }
+
+      initialized_ = true;
+      return VXCORE_OK;
+    }
   }
 
-  // Other Initialize branches (T16: init+push) are not implemented yet.
+  // No Initialize branch matched (e.g. has_user_files but no remote_url).
   return VXCORE_ERR_NOT_IMPLEMENTED;
 }
 

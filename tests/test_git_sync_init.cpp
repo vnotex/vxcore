@@ -524,6 +524,100 @@ int test_git_init_clone_uses_separate_gitdir() {
   return 0;
 }
 
+// T16: init+push branch. With no vx_sync, user files in the notebook root,
+// and an EMPTY remote (no refs yet), Initialize must init a local repo,
+// commit the user files, and push refs/heads/main so the remote becomes the
+// source of truth. Bare's HEAD must end up at the same SHA as the local
+// vx_sync HEAD, and the pushed tree must contain notes.md.
+int test_git_init_push_existing_notebook_to_empty_remote() {
+  std::cout << "  Running test_git_init_push_existing_notebook_to_empty_remote..."
+            << std::endl;
+
+  const std::string bare_path = get_test_path("git_init_push_bare");
+  const std::string notebook_root = get_test_path("git_init_push_nb");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+
+  try {
+    // Bare remote with NO commits — RemoteHasRefs() must return false so we
+    // exercise the T16 branch (not T17 reject).
+    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+
+    // Notebook root with a single user file; no vx_notebook/vx_sync/.
+    std::filesystem::create_directories(vxcore::PathFromUtf8(notebook_root));
+    {
+      std::ofstream ofs(vxcore::PathFromUtf8(notebook_root + "/notes.md"),
+                        std::ios::binary | std::ios::trunc);
+      ofs << "local user content";
+    }
+
+    vxcore::SyncConfig config;
+    config.backend = "git";
+    config.remote_url = bare_url;
+    config.interval_seconds = 300;
+
+    {
+      vxcore::GitSyncBackend backend;
+      VxCoreError rc = backend.Initialize(notebook_root, config);
+      ASSERT_EQ(rc, VXCORE_OK);
+    }  // Shutdown frees repo so we can reopen below.
+
+    const std::string local_gitdir = notebook_root + "/vx_notebook/vx_sync";
+
+    // gitdir layout: separate gitdir at vx_notebook/vx_sync/, no top-level .git.
+    ASSERT_FALSE(vxcore::PathExists(notebook_root + "/.git"));
+    ASSERT_TRUE(vxcore::IsRegularFile(local_gitdir + "/HEAD"));
+
+    // Bare and local must point at the same commit after the push.
+    const std::string local_sha = vxcore_test::git_head_sha(local_gitdir);
+    const std::string bare_sha = vxcore_test::git_head_sha(bare_path);
+    ASSERT_EQ(local_sha, bare_sha);
+
+    // The pushed commit's tree must contain notes.md.
+    vxcore::LibGit2Init guard;
+    git_repository *repo = nullptr;
+    ASSERT_EQ(git_repository_open(&repo, bare_path.c_str()), 0);
+
+    git_object *head_obj = nullptr;
+    int rc = git_revparse_single(&head_obj, repo, "HEAD");
+    if (rc != 0) {
+      git_repository_free(repo);
+      throw std::runtime_error("git_revparse_single(HEAD) failed");
+    }
+    git_commit *commit = nullptr;
+    rc = git_commit_lookup(&commit, repo, git_object_id(head_obj));
+    git_object_free(head_obj);
+    if (rc != 0) {
+      git_repository_free(repo);
+      throw std::runtime_error("git_commit_lookup failed");
+    }
+    git_tree *tree = nullptr;
+    rc = git_commit_tree(&tree, commit);
+    git_commit_free(commit);
+    if (rc != 0) {
+      git_repository_free(repo);
+      throw std::runtime_error("git_commit_tree failed");
+    }
+
+    const git_tree_entry *entry = git_tree_entry_byname(tree, "notes.md");
+    ASSERT_NOT_NULL(entry);
+
+    git_tree_free(tree);
+    git_repository_free(repo);
+  } catch (const std::exception &e) {
+    std::cerr << "  exception: " << e.what() << std::endl;
+    cleanup_test_dir(bare_path);
+    cleanup_test_dir(notebook_root);
+    return 1;
+  }
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(notebook_root);
+  std::cout << "  test_git_init_push_existing_notebook_to_empty_remote passed"
+            << std::endl;
+  return 0;
+}
+
 // T19: Shutdown is idempotent — calling it twice on an initialized backend
 // returns OK both times and does not crash.
 int test_git_shutdown_idempotent() {
@@ -574,6 +668,7 @@ int main() {
   RUN_TEST(test_git_init_clone_into_empty_notebook);
   RUN_TEST(test_git_init_clone_with_pat_uses_3arg_overload);
   RUN_TEST(test_git_init_clone_uses_separate_gitdir);
+  RUN_TEST(test_git_init_push_existing_notebook_to_empty_remote);
   RUN_TEST(test_git_shutdown_idempotent);
   std::cout << "All git_sync_init tests passed" << std::endl;
   return 0;
