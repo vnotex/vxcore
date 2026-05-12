@@ -66,22 +66,29 @@ Every SyncManager method that operates on a notebook follows this pattern:
 
 | File | Purpose |
 |------|---------|
-| `sync_types.h` | Enums (`SyncState`, `SyncFileStatus`, `SyncConflictResolution`), structs (`SyncConfig`, `SyncProgress`, `SyncFileInfo`, `SyncConflictInfo`, `SyncCredentials`), `SyncProgressCallback` typedef |
-| `sync_backend.h` | `ISyncBackend` pure virtual class (8 methods) |
-| `sync_manager.h` | `SyncManager` class declaration (7 public + 1 private method, 3 maps) |
-| `sync_manager.cpp` | `SyncManager` skeleton implementation (validation + state management, no actual sync) |
+| `sync_types.h` | Enums (`SyncState`, `SyncFileStatus`, `SyncConflictResolution`), structs (`SyncConfig`, `SyncProgress`, `SyncFileInfo`, `SyncConflictInfo`, `SyncCredentials`), `SyncProgressCallback` typedef, `SyncConfig::FromJson()`/`ToJson()` |
+| `sync_backend.h` | `ISyncBackend` pure virtual class (9 methods including `SetCredentials`) |
+| `sync_manager.h` | `SyncManager` class: per-notebook dispatch, dirty tracking via `EventManager` |
+| `sync_manager.cpp` | `SyncManager` implementation (validation, state management, event subscription, dirty tracking) |
+| `git_sync_backend.h` | `GitSyncBackend` class declaration (inherits `ISyncBackend`, libgit2-based) |
+| `git_sync_backend.cpp` | Implementation: stage/commit/fetch/rebase/push, conflict handling |
+| `libgit2_init.h` | `LibGit2Init` RAII helper that calls `git_libgit2_init`/`shutdown` |
+| `libgit2_init.cpp` | Reference-counted `git_libgit2_init` wrapper (thread-safe) |
 
 ### Related Files Outside src/sync
 
 | File | What's There |
 |------|-------------|
-| `include/vxcore/vxcore_types.h` | Error codes 21-25 (`SYNC_IN_PROGRESS`, `CONFLICT`, `AUTH_FAILED`, `NETWORK`, `NOT_ENABLED`) |
-| `include/vxcore/vxcore.h` | 6 C API declarations (`vxcore_sync_{enable,disable,trigger,get_status,get_conflicts,resolve_conflict}`) |
+| `include/vxcore/vxcore_types.h` | Error codes 21-25 (`SYNC_IN_PROGRESS`, `CONFLICT`, `AUTH_FAILED`, `NETWORK`, `NOT_ENABLED`), `VxCoreEventCallback` typedef |
+| `include/vxcore/vxcore.h` | 8 C API declarations (`vxcore_sync_{enable,disable,trigger,get_status,get_conflicts,resolve_conflict,set_credentials,enable_with_credentials}`) |
 | `src/api/vxcore_sync_api.cpp` | C API implementations with JSON serialization and null checks |
-| `src/core/context.h` | `VxCoreContext::sync_manager` (`unique_ptr<SyncManager>`) |
+| `src/core/context.h` | `VxCoreContext` owns `sync_manager`, `event_manager`, `work_queue_manager` (member order matters — see Thread Safety) |
+| `src/core/event_manager.h/.cpp` | `EventManager` subscribe/emit system — SyncManager subscribes to file/folder events |
+| `src/core/event_names.h` | Event name constants: `file.created`, `file.saved`, `file.deleted`, `file.moved`, `folder.created`, `folder.deleted`, `notebook.opened`, `notebook.closed` |
 | `src/core/notebook.h` | `NotebookConfig` sync fields: `sync_enabled`, `sync_backend`, `sync_remote_url`, `sync_interval_seconds` |
 | `src/core/notebook.cpp` | `FromJson()`/`ToJson()` for sync fields |
-| `tests/test_sync.cpp` | 7 test cases covering error paths, raw rejection, config roundtrip |
+| `tests/test_sync.cpp` | 14 test cases: error paths, raw rejection, config roundtrip, `backend_options`/`extra` roundtrip |
+| `tests/test_event_manager.cpp` | 18 tests including 4 SyncManager dirty-tracking integration tests |
 
 ## Types Reference
 
@@ -165,12 +172,14 @@ Output strings must be freed with `vxcore_string_free()`.
 
 | Function | Parameters | Notes |
 |----------|-----------|-------|
-| `vxcore_sync_enable` | `notebook_id`, `config_json` | JSON keys: `backend`, `remoteUrl`, `intervalSeconds` |
+| `vxcore_sync_enable` | `notebook_id`, `config_json` | JSON keys: `backend`, `remoteUrl`, `intervalSeconds`, `backendOptions` |
 | `vxcore_sync_disable` | `notebook_id` | Clears backend, state, and config for notebook |
-| `vxcore_sync_trigger` | `notebook_id` | Returns `SYNC_NOT_ENABLED` or `NOT_IMPLEMENTED` until backend exists |
+| `vxcore_sync_trigger` | `notebook_id` | Returns `SYNC_NOT_ENABLED` or `NOT_IMPLEMENTED` until backend exists. Clears dirty state on success. |
 | `vxcore_sync_get_status` | `notebook_id`, `out_status_json` | Output: `{"state":"idle","files":[{"path":"...","status":"..."}]}` |
 | `vxcore_sync_get_conflicts` | `notebook_id`, `out_conflicts_json` | Output: `{"conflicts":[{"path":"...","localModifiedUtc":0,"remoteModifiedUtc":0,"isBinary":false}]}` |
 | `vxcore_sync_resolve_conflict` | `notebook_id`, `path`, `resolution` | Resolution strings: `"keep_both"`, `"keep_local"`, `"keep_remote"` |
+| `vxcore_sync_set_credentials` | `notebook_id`, `credentials_json` | Rotate credentials on already-enabled notebook. JSON keys: `pat`, `authorName`, `authorEmail`, `extra` |
+| `vxcore_sync_enable_with_credentials` | `notebook_id`, `config_json`, `credentials_json` | Enable + set credentials atomically (needed when Initialize requires auth, e.g., authenticated git clone) |
 
 ### JSON Key Mapping (C API ↔ C++ Struct)
 
@@ -320,7 +329,7 @@ The following are explicitly **out of scope for v1** and tracked separately:
 - Git-LFS support
 - Persisted custom commit author (override is per-call only)
 
-See `docs/sync-evolution-plan.md` for planned improvements (WorkQueue, EventManager, extensible config).
+See `docs/sync-evolution-plan.md` for implementation history and remaining ideas.
 
 ## How to Add a New Sync Backend
 
@@ -425,35 +434,19 @@ VxCoreError MySyncBackend::Sync(SyncProgressCallback callback, void *userdata) {
 
 ### Step 3: Register in SyncManager
 
-Add backend creation logic to `SyncManager::EnableSync()` in `sync_manager.cpp`:
+Add a factory branch to `SyncManager::EnableSyncImpl()` in `sync_manager.cpp`:
 
 ```cpp
-VxCoreError SyncManager::EnableSync(const std::string &notebook_id,
-                                    const SyncConfig &config) {
-  VxCoreError err = ValidateNotebook(notebook_id);
-  if (err != VXCORE_OK) return err;
-
-  configs_[notebook_id] = config;
-  states_[notebook_id] = SyncState::kIdle;
-
-  // Create backend based on config.backend string
-  std::unique_ptr<ISyncBackend> backend;
-  if (config.backend == "my_backend") {
-    backend = std::make_unique<MySyncBackend>();
-  }
-  // else if (config.backend == "git") { ... }
-  // else if (config.backend == "webdav") { ... }
-
-  if (backend) {
-    auto *notebook = notebook_manager_->GetNotebook(notebook_id);
-    err = backend->Initialize(notebook->GetRootFolder(), config);
-    if (err != VXCORE_OK) return err;
-    backends_[notebook_id] = std::move(backend);
-  }
-
-  return VXCORE_OK;
+// In SyncManager::EnableSyncImpl(), after the existing "git" branch:
+if (config.backend == "git") {
+  backend = std::make_unique<GitSyncBackend>();
+} else if (config.backend == "my_backend") {
+  backend = std::make_unique<MySyncBackend>();
 }
 ```
+
+The existing `EnableSyncImpl` handles credential forwarding, rollback on failure,
+and state management — you only need to add the factory branch.
 
 ### Step 4: Add to Build
 
@@ -505,13 +498,14 @@ int test_my_sync_backend_init() {
 ### Checklist for New Backend
 
 - [ ] Create `src/sync/{name}_sync_backend.h` with class inheriting `ISyncBackend`
-- [ ] Create `src/sync/{name}_sync_backend.cpp` implementing all 8 methods
-- [ ] Add `#include` and factory branch in `SyncManager::EnableSync()`
+- [ ] Create `src/sync/{name}_sync_backend.cpp` implementing all 9 methods (including `SetCredentials`)
+- [ ] Add factory branch in `SyncManager::EnableSyncImpl()`
 - [ ] Add `.cpp` to `src/CMakeLists.txt` `VXCORE_SOURCES`
 - [ ] Add test cases to `tests/test_sync.cpp`
 - [ ] If backend needs external library (e.g., libgit2), add `find_package` + `target_link_libraries` in `CMakeLists.txt`
 - [ ] Use `SyncProgressCallback` to report progress during `Sync()`, `Push()`, `Pull()`
 - [ ] Handle credentials via `SyncCredentials` struct (passed at runtime, not stored in config)
+- [ ] Read backend-specific options from `SyncConfig::backend_options` and `SyncCredentials::extra`
 - [ ] Store backend-specific state in `<notebook_root>/vx_notebook/vx_sync/`
 - [ ] Respect `SyncConfig::exclude_paths` when scanning for changes
 - [ ] Return appropriate error codes (see table in Validation Flow section)
@@ -521,7 +515,10 @@ int test_my_sync_backend_init() {
 Run sync tests:
 ```bash
 ctest --test-dir build -C Debug -R test_sync
+ctest --test-dir build -C Debug -R test_event_manager   # includes dirty-tracking tests
 ```
+
+### test_sync.cpp (14 tests)
 
 | Test | What It Verifies |
 |------|-----------------|
@@ -531,11 +528,75 @@ ctest --test-dir build -C Debug -R test_sync
 | `test_sync_trigger_not_implemented` | `TriggerSync` with no backend returns `NOT_IMPLEMENTED` |
 | `test_sync_raw_notebook_rejected` | `EnableSync` on raw notebook returns `UNSUPPORTED` |
 | `test_sync_nonexistent_notebook` | `EnableSync` on missing notebook returns `NOT_FOUND` |
-| `test_notebook_config_sync_fields` | `NotebookConfig` sync fields roundtrip through JSON (create → read → update → read) |
+| `test_notebook_config_sync_fields` | `NotebookConfig` sync fields roundtrip through JSON |
+| `test_sync_config_from_json_with_backend_options` | `SyncConfig::FromJson` parses `backendOptions` |
+| `test_sync_config_to_json_includes_backend_options` | `SyncConfig::ToJson` includes `backendOptions` when non-empty |
+| `test_sync_config_roundtrip_backend_options` | `FromJson`→`ToJson` roundtrip preserves nested `backendOptions` |
+| `test_sync_config_from_json_without_backend_options` | `FromJson` without `backendOptions` leaves it null (backward compat) |
+| `test_sync_credentials_extra_field` | `SyncCredentials::extra` holds opaque JSON |
+| `test_sync_enable_with_backend_options_via_c_api` | C API passes `backendOptions` through to `SyncConfig` |
+| `test_sync_config_to_json_omits_empty_backend_options` | `ToJson` omits `backendOptions` when empty |
+
+### test_event_manager.cpp (dirty-tracking subset, 4 tests)
+
+| Test | What It Verifies |
+|------|-----------------|
+| `test_sync_dirty_on_file_created` | File creation marks sync-enabled notebook as dirty |
+| `test_sync_dirty_cleared_after_trigger` | `ClearDirty` removes notebook from dirty set |
+| `test_sync_dirty_not_marked_for_non_sync_notebook` | File ops on non-sync notebook do NOT mark dirty |
+| `test_sync_dirty_multiple_ops_single_entry` | Multiple file/folder ops produce only one dirty entry |
+
+## Event-Driven Dirty Tracking
+
+`SyncManager::SetEventManager()` subscribes to `file.created`, `file.saved`,
+`file.deleted`, `file.moved`, `folder.created`, and `folder.deleted` events.
+When an event fires for a notebook that has sync enabled (`configs_` map),
+the notebook ID is added to `dirty_notebooks_` (a `std::set`, so duplicates
+are ignored).
+
+**Caller responsibility:** The caller polls `GetDirtyNotebooks()` periodically
+(e.g., on a timer) and calls `TriggerSync()` for each dirty notebook.
+`TriggerSync()` automatically calls `ClearDirty()` on success. This keeps
+debounce/interval policy in the caller, not in vxcore.
+
+```
+file.created event → SyncManager marks notebook dirty
+                   → caller's timer fires
+                   → GetDirtyNotebooks() returns ["nb-123"]
+                   → vxcore_sync_trigger(ctx, "nb-123")
+                   → on success, dirty state cleared
+```
 
 ## Thread Safety
 
-`SyncManager` is NOT thread-safe. If sync operations are triggered from a background timer, the caller (Qt layer) must serialize access via signals/slots or a mutex.
+`SyncManager` methods (`EnableSync`, `TriggerSync`, etc.) are NOT thread-safe.
+The caller must serialize access (e.g., via signals/slots or a mutex).
 
-`Sync()` is **synchronous** in v1 — it blocks the calling thread. See
-`docs/sync-evolution-plan.md` for the planned async model (WorkQueue + EventManager).
+`SyncManager` dirty tracking (`GetDirtyNotebooks`/`ClearDirty`) IS thread-safe
+(protected by its own mutex), since events may fire from any thread.
+
+**`VxCoreContext` member ordering constraint:** In `context.h`, `EventManager`
+and `WorkQueueManager` are declared before `SyncManager` so they are destroyed
+after it. `SyncManager::~SyncManager()` unsubscribes from `EventManager` during
+destruction — if `EventManager` were destroyed first, this would be a
+use-after-free.
+
+`Sync()` is **synchronous** in v1 — it blocks the calling thread. The caller
+can use `WorkQueue` to run sync on a worker thread:
+
+```cpp
+// Qt caller example:
+auto *sync_queue = ctx->work_queue_manager->GetOrCreate("sync");
+
+// On timer tick (main thread):
+for (const auto &nb_id : ctx->sync_manager->GetDirtyNotebooks()) {
+  sync_queue->Enqueue([ctx, nb_id] {
+    ctx->sync_manager->TriggerSync(nb_id);  // blocks on worker thread, not UI
+  });
+}
+
+// Worker thread (QThread):
+while (!stopped) {
+  vxcore_work_queue_process_next(ctx_handle, "sync", 500);
+}
+```
