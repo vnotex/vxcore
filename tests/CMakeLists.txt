@@ -19,6 +19,8 @@ add_vxcore_test(test_session_persistence)
 add_vxcore_test(test_template)
 add_vxcore_test(test_e2e_assets)
 add_vxcore_test(test_sync)
+add_vxcore_test(test_work_queue)
+add_vxcore_test(test_event_manager)
 
 
 # spike_libgit2: Phase-0 kill-switch test for the libgit2 vendoring (T1 of the
@@ -138,6 +140,8 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/bundled_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/raw_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/folder_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/event_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/work_queue.cpp
     ${CMAKE_SOURCE_DIR}/src/core/folder.cpp
     ${CMAKE_SOURCE_DIR}/src/core/notebook.cpp
     ${CMAKE_SOURCE_DIR}/src/core/bundled_notebook.cpp

@@ -1,5 +1,7 @@
 #include "sync_manager.h"
 
+#include "core/event_manager.h"
+#include "core/event_names.h"
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
 #include "sync/git_sync_backend.h"
@@ -13,7 +15,45 @@ SyncManager::SyncManager(NotebookManager *notebook_manager)
 }
 
 SyncManager::~SyncManager() {
+  if (event_manager_) {
+    for (auto id : event_listener_ids_) {
+      event_manager_->Unsubscribe(id);
+    }
+  }
   VXCORE_LOG_INFO("SyncManager shutting down");
+}
+
+void SyncManager::SetEventManager(EventManager *event_manager) {
+  event_manager_ = event_manager;
+  if (!event_manager_) return;
+
+  auto mark_dirty = [this](const std::string &, const nlohmann::json &data) {
+    if (data.contains("notebookId") && data["notebookId"].is_string()) {
+      std::string nb_id = data["notebookId"].get<std::string>();
+      if (configs_.count(nb_id) > 0) {
+        std::lock_guard<std::mutex> lock(dirty_mutex_);
+        dirty_notebooks_.insert(nb_id);
+        VXCORE_LOG_DEBUG("SyncManager: marked notebook dirty: %s", nb_id.c_str());
+      }
+    }
+  };
+
+  event_listener_ids_.push_back(event_manager_->Subscribe(events::kFileCreated, mark_dirty));
+  event_listener_ids_.push_back(event_manager_->Subscribe(events::kFileSaved, mark_dirty));
+  event_listener_ids_.push_back(event_manager_->Subscribe(events::kFileDeleted, mark_dirty));
+  event_listener_ids_.push_back(event_manager_->Subscribe(events::kFileMoved, mark_dirty));
+  event_listener_ids_.push_back(event_manager_->Subscribe(events::kFolderCreated, mark_dirty));
+  event_listener_ids_.push_back(event_manager_->Subscribe(events::kFolderDeleted, mark_dirty));
+}
+
+std::vector<std::string> SyncManager::GetDirtyNotebooks() const {
+  std::lock_guard<std::mutex> lock(dirty_mutex_);
+  return {dirty_notebooks_.begin(), dirty_notebooks_.end()};
+}
+
+void SyncManager::ClearDirty(const std::string &notebook_id) {
+  std::lock_guard<std::mutex> lock(dirty_mutex_);
+  dirty_notebooks_.erase(notebook_id);
 }
 
 VxCoreError SyncManager::ValidateNotebook(const std::string &notebook_id) {
@@ -156,6 +196,7 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id) {
   VxCoreError sync_err = backend_it->second->Sync(nullptr, nullptr);
   if (sync_err == VXCORE_OK) {
     states_[notebook_id] = SyncState::kIdle;
+    ClearDirty(notebook_id);
   } else if (sync_err == VXCORE_ERR_SYNC_CONFLICT) {
     states_[notebook_id] = SyncState::kConflicted;
   } else {

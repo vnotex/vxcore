@@ -14,7 +14,8 @@ SyncManager                         ← Orchestrator (per-notebook backend dispa
     │
     ├── backends_  map<id, unique_ptr<ISyncBackend>>   ← Concrete backend instances
     ├── states_    map<id, SyncState>                   ← Per-notebook sync state
-    └── configs_   map<id, SyncConfig>                  ← Per-notebook sync config (runtime)
+    ├── configs_   map<id, SyncConfig>                  ← Per-notebook sync config (runtime)
+    └── dirty_notebooks_  set<id>                       ← Notebooks with unsynced changes (via EventManager)
 
 ISyncBackend                        ← Pure virtual interface (8 methods)
     │
@@ -114,11 +115,11 @@ enum class SyncConflictResolution {
 
 | Struct | Fields | Notes |
 |--------|--------|-------|
-| `SyncConfig` | `enabled`, `backend`, `remote_url`, `interval_seconds`, `exclude_paths` | Has `FromJson()`/`ToJson()`. Default interval: 300s. Default excludes: `*.vswp`, `vx_notebook/vx_sync/` |
+| `SyncConfig` | `enabled`, `backend`, `remote_url`, `interval_seconds`, `exclude_paths`, `backend_options` | Has `FromJson()`/`ToJson()`. Default interval: 300s. Default excludes: `*.vswp`, `vx_notebook/vx_sync/`. `backend_options` is an opaque JSON bag for backend-specific config. |
 | `SyncProgress` | `message`, `percentage`, `current_state` | Passed to `SyncProgressCallback` during sync operations |
 | `SyncFileInfo` | `path`, `status` | Per-file sync status |
 | `SyncConflictInfo` | `path`, `local_modified_utc`, `remote_modified_utc`, `is_binary` | Conflict metadata for resolution UI |
-| `SyncCredentials` | `username`, `password`, `ssh_public_key_path`, `ssh_private_key_path` | NOT stored in notebook config (lives in session config, per-device) |
+| `SyncCredentials` | `username`, `password`, `ssh_public_key_path`, `ssh_private_key_path`, `personal_access_token`, `author_name`, `author_email`, `extra` | NOT stored in notebook config (lives in session config, per-device). `extra` is an opaque JSON bag for backend-specific credentials. |
 
 ### Callback
 
@@ -178,6 +179,9 @@ Output strings must be freed with `vxcore_string_free()`.
 | `backend` | `SyncConfig::backend` | string |
 | `remoteUrl` | `SyncConfig::remote_url` | string |
 | `intervalSeconds` | `SyncConfig::interval_seconds` | int |
+| `backendOptions` | `SyncConfig::backend_options` | object (opaque) |
+| `excludePaths` | `SyncConfig::exclude_paths` | string array |
+| `extra` | `SyncCredentials::extra` | object (opaque) |
 | `syncEnabled` | `NotebookConfig::sync_enabled` | bool |
 | `syncBackend` | `NotebookConfig::sync_backend` | string |
 | `syncRemoteUrl` | `NotebookConfig::sync_remote_url` | string |
@@ -314,8 +318,9 @@ The following are explicitly **out of scope for v1** and tracked separately:
 - Commit log / history inspection API
 - Multiple remotes per notebook
 - Git-LFS support
-- Asynchronous `Sync()` (blocks caller thread; no built-in worker thread)
 - Persisted custom commit author (override is per-call only)
+
+See `docs/sync-evolution-plan.md` for planned improvements (WorkQueue, EventManager, extensible config).
 
 ## How to Add a New Sync Backend
 
@@ -532,8 +537,5 @@ ctest --test-dir build -C Debug -R test_sync
 
 `SyncManager` is NOT thread-safe. If sync operations are triggered from a background timer, the caller (Qt layer) must serialize access via signals/slots or a mutex.
 
-For backends that need async operations (network I/O), the recommended pattern is:
-1. `SyncManager::TriggerSync()` is called on the main thread
-2. The backend internally spawns a worker thread for I/O
-3. Progress is reported via `SyncProgressCallback` (which the caller marshals to the UI thread)
-4. The backend returns `VXCORE_ERR_SYNC_IN_PROGRESS` if a sync is already running
+`Sync()` is **synchronous** in v1 — it blocks the calling thread. See
+`docs/sync-evolution-plan.md` for the planned async model (WorkQueue + EventManager).

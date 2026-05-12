@@ -4,9 +4,11 @@
 #include "core/buffer_manager.h"
 #include "core/config_manager.h"
 #include "core/context.h"
+#include "core/event_manager.h"
 #include "core/notebook_manager.h"
 #include "core/snippet_manager.h"
 #include "core/template_manager.h"
+#include "core/work_queue.h"
 #include "sync/sync_manager.h"
 #include "core/workspace_manager.h"
 #include "platform/path_provider.h"
@@ -143,6 +145,10 @@ VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
     ctx->template_manager = std::make_unique<vxcore::TemplateManager>(ctx->config_manager.get());
     ctx->snippet_manager = std::make_unique<vxcore::SnippetManager>(ctx->config_manager.get());
     ctx->sync_manager = std::make_unique<vxcore::SyncManager>(ctx->notebook_manager.get());
+    ctx->work_queue_manager = std::make_unique<vxcore::WorkQueueManager>();
+    ctx->event_manager = std::make_unique<vxcore::EventManager>();
+    ctx->notebook_manager->SetEventManager(ctx->event_manager.get());
+    ctx->sync_manager->SetEventManager(ctx->event_manager.get());
 
     *out_context = reinterpret_cast<VxCoreContextHandle>(ctx);
     return VXCORE_OK;

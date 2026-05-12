@@ -16,16 +16,21 @@ class BufferManager;
 class TemplateManager;
 class SnippetManager;
 class SyncManager;
+class WorkQueueManager;
+class EventManager;
 
 struct VxCoreContext {
   // IMPORTANT: Member order determines destruction order (reverse of declaration).
   // thread_pool must outlive all managers (first declared = last destroyed).
+  // event_manager must outlive sync_manager and notebook_manager (they subscribe to events).
+  // work_queue_manager must outlive event_manager (events may be dispatched via queues).
   // workspace_manager depends on buffer_manager and config_manager.
   // buffer_manager depends on notebook_manager and config_manager.
-  // Destruction: workspace -> buffer -> notebook -> config -> thread_pool (safe).
   std::unique_ptr<BS::thread_pool<>> thread_pool_;
 
   std::unique_ptr<ConfigManager> config_manager;
+  std::unique_ptr<WorkQueueManager> work_queue_manager;
+  std::unique_ptr<EventManager> event_manager;
   std::unique_ptr<NotebookManager> notebook_manager;
   std::unique_ptr<BufferManager> buffer_manager;
   std::unique_ptr<WorkspaceManager> workspace_manager;

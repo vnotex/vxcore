@@ -2,6 +2,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "sync/sync_types.h"
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
 
@@ -201,6 +202,114 @@ int test_notebook_config_sync_fields() {
   return 0;
 }
 
+int test_sync_config_from_json_with_backend_options() {
+  std::cout << "  Running test_sync_config_from_json_with_backend_options..." << std::endl;
+  nlohmann::json j = {
+      {"backend", "webdav"},
+      {"remoteUrl", "https://example.com/dav"},
+      {"intervalSeconds", 120},
+      {"backendOptions", {{"authHeader", "Bearer token123"}, {"depth", 1}}}};
+  auto config = vxcore::SyncConfig::FromJson(j);
+  ASSERT_EQ(config.backend, "webdav");
+  ASSERT_EQ(config.remote_url, "https://example.com/dav");
+  ASSERT_EQ(config.interval_seconds, 120);
+  ASSERT_TRUE(config.backend_options.is_object());
+  ASSERT_EQ(config.backend_options["authHeader"], "Bearer token123");
+  ASSERT_EQ(config.backend_options["depth"], 1);
+  std::cout << "  \xE2\x9C\x93 test_sync_config_from_json_with_backend_options passed" << std::endl;
+  return 0;
+}
+
+int test_sync_config_to_json_includes_backend_options() {
+  std::cout << "  Running test_sync_config_to_json_includes_backend_options..." << std::endl;
+  vxcore::SyncConfig config;
+  config.backend = "s3";
+  config.remote_url = "s3://bucket";
+  config.backend_options = {{"region", "us-east-1"}, {"prefix", "notebooks/"}};
+  auto j = config.ToJson();
+  ASSERT_TRUE(j.contains("backendOptions"));
+  ASSERT_EQ(j["backendOptions"]["region"], "us-east-1");
+  ASSERT_EQ(j["backendOptions"]["prefix"], "notebooks/");
+  std::cout << "  \xE2\x9C\x93 test_sync_config_to_json_includes_backend_options passed" << std::endl;
+  return 0;
+}
+
+int test_sync_config_roundtrip_backend_options() {
+  std::cout << "  Running test_sync_config_roundtrip_backend_options..." << std::endl;
+  vxcore::SyncConfig original;
+  original.backend = "custom";
+  original.remote_url = "custom://host";
+  original.interval_seconds = 60;
+  original.backend_options = {{"nested", {{"key", "value"}}}, {"list", {1, 2, 3}}};
+  auto j = original.ToJson();
+  auto restored = vxcore::SyncConfig::FromJson(j);
+  ASSERT_EQ(restored.backend, original.backend);
+  ASSERT_EQ(restored.remote_url, original.remote_url);
+  ASSERT_EQ(restored.interval_seconds, original.interval_seconds);
+  ASSERT_EQ(restored.backend_options, original.backend_options);
+  std::cout << "  \xE2\x9C\x93 test_sync_config_roundtrip_backend_options passed" << std::endl;
+  return 0;
+}
+
+int test_sync_config_from_json_without_backend_options() {
+  std::cout << "  Running test_sync_config_from_json_without_backend_options..." << std::endl;
+  nlohmann::json j = {{"backend", "git"}, {"remoteUrl", "https://github.com/user/repo.git"}};
+  auto config = vxcore::SyncConfig::FromJson(j);
+  ASSERT_EQ(config.backend, "git");
+  ASSERT_TRUE(config.backend_options.is_null());
+  std::cout << "  \xE2\x9C\x93 test_sync_config_from_json_without_backend_options passed" << std::endl;
+  return 0;
+}
+
+int test_sync_credentials_extra_field() {
+  std::cout << "  Running test_sync_credentials_extra_field..." << std::endl;
+  vxcore::SyncCredentials creds;
+  creds.personal_access_token = "ghp_test";
+  creds.extra = {{"access_key_id", "AKIA..."}, {"secret_access_key", "secret"}};
+  ASSERT_TRUE(creds.extra.is_object());
+  ASSERT_EQ(creds.extra["access_key_id"], "AKIA...");
+  std::cout << "  \xE2\x9C\x93 test_sync_credentials_extra_field passed" << std::endl;
+  return 0;
+}
+
+int test_sync_enable_with_backend_options_via_c_api() {
+  std::cout << "  Running test_sync_enable_with_backend_options_via_c_api..." << std::endl;
+  cleanup_test_dir(get_test_path("test_sync_bo"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_sync_bo").c_str(),
+                               "{\"name\":\"BackendOptionsTest\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Enable sync with backendOptions
+  const char *config_json =
+      R"({"backend":"webdav","remoteUrl":"https://dav.example.com","backendOptions":{"depth":2}})";
+  err = vxcore_sync_enable(ctx, notebook_id, config_json);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_sync_bo"));
+  std::cout << "  \xE2\x9C\x93 test_sync_enable_with_backend_options_via_c_api passed" << std::endl;
+  return 0;
+}
+
+int test_sync_config_to_json_omits_empty_backend_options() {
+  std::cout << "  Running test_sync_config_to_json_omits_empty_backend_options..." << std::endl;
+  vxcore::SyncConfig config;
+  config.backend = "git";
+  auto j = config.ToJson();
+  ASSERT_FALSE(j.contains("backendOptions"));
+  std::cout << "  \xE2\x9C\x93 test_sync_config_to_json_omits_empty_backend_options passed"
+            << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running sync tests..." << std::endl;
 
@@ -214,6 +323,13 @@ int main() {
   RUN_TEST(test_sync_raw_notebook_rejected);
   RUN_TEST(test_sync_nonexistent_notebook);
   RUN_TEST(test_notebook_config_sync_fields);
+  RUN_TEST(test_sync_config_from_json_with_backend_options);
+  RUN_TEST(test_sync_config_to_json_includes_backend_options);
+  RUN_TEST(test_sync_config_roundtrip_backend_options);
+  RUN_TEST(test_sync_config_from_json_without_backend_options);
+  RUN_TEST(test_sync_credentials_extra_field);
+  RUN_TEST(test_sync_enable_with_backend_options_via_c_api);
+  RUN_TEST(test_sync_config_to_json_omits_empty_backend_options);
 
   std::cout << "\xE2\x9C\x93 All sync tests passed" << std::endl;
   return 0;

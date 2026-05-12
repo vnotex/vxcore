@@ -51,13 +51,7 @@ VXCORE_API VxCoreError vxcore_sync_enable(VxCoreContextHandle context, const cha
 
     auto j = nlohmann::json::parse(config_json);
 
-    vxcore::SyncConfig config;
-    if (j.contains("backend") && j["backend"].is_string())
-      config.backend = j["backend"].get<std::string>();
-    if (j.contains("remoteUrl") && j["remoteUrl"].is_string())
-      config.remote_url = j["remoteUrl"].get<std::string>();
-    if (j.contains("intervalSeconds") && j["intervalSeconds"].is_number_integer())
-      config.interval_seconds = j["intervalSeconds"].get<int>();
+    vxcore::SyncConfig config = vxcore::SyncConfig::FromJson(j);
     config.enabled = true;
 
     return ctx->sync_manager->EnableSync(notebook_id, config);
@@ -273,6 +267,9 @@ static vxcore::SyncCredentials ParseCredentials(const char *credentials_json) {
   if (j.contains("authorEmail") && j["authorEmail"].is_string()) {
     creds.author_email = j["authorEmail"].get<std::string>();
   }
+  if (j.contains("extra") && j["extra"].is_object()) {
+    creds.extra = j["extra"];
+  }
   return creds;
 }
 
@@ -324,13 +321,7 @@ VXCORE_API VxCoreError vxcore_sync_enable_with_credentials(VxCoreContextHandle c
 
     auto j = nlohmann::json::parse(config_json);
 
-    vxcore::SyncConfig config;
-    if (j.contains("backend") && j["backend"].is_string())
-      config.backend = j["backend"].get<std::string>();
-    if (j.contains("remoteUrl") && j["remoteUrl"].is_string())
-      config.remote_url = j["remoteUrl"].get<std::string>();
-    if (j.contains("intervalSeconds") && j["intervalSeconds"].is_number_integer())
-      config.interval_seconds = j["intervalSeconds"].get<int>();
+    vxcore::SyncConfig config = vxcore::SyncConfig::FromJson(j);
     config.enabled = true;
 
     vxcore::SyncCredentials creds = ParseCredentials(credentials_json);

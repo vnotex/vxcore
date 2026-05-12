@@ -5,6 +5,8 @@
 #include <functional>
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 #include "folder.h"
 #include "notebook.h"
 #include "utils/file_utils.h"
@@ -12,6 +14,7 @@
 
 namespace vxcore {
 
+class EventManager;
 class Notebook;
 
 class FolderManager {
@@ -19,6 +22,8 @@ class FolderManager {
   explicit FolderManager(Notebook *notebook) : notebook_(notebook) {}
 
   virtual ~FolderManager() = default;
+
+  void SetEventManager(EventManager *event_manager) { event_manager_ = event_manager; }
 
   virtual VxCoreError InitOnCreation() { return VXCORE_OK; }
 
@@ -167,7 +172,10 @@ class FolderManager {
     return notebook_->GetCleanRelativePath(path);
   }
 
+  void EmitEvent(const char *event_name, const nlohmann::json &data);
+
   Notebook *notebook_ = nullptr;
+  EventManager *event_manager_ = nullptr;
 };
 
 }  // namespace vxcore

@@ -2,9 +2,16 @@
 
 #include <filesystem>
 
+#include "core/event_manager.h"
 #include "utils/file_utils.h"
 
 namespace vxcore {
+
+void FolderManager::EmitEvent(const char *event_name, const nlohmann::json &data) {
+  if (event_manager_) {
+    event_manager_->Emit(event_name, data);
+  }
+}
 
 VxCoreError FolderManager::MoveToRecycleBin(const std::filesystem::path &source_path) {
   try {

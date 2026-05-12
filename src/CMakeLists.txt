@@ -17,6 +17,8 @@ set(VXCORE_SOURCES
     api/vxcore_template_api.cpp
     api/vxcore_snippet_api.cpp
     api/vxcore_sync_api.cpp
+    api/vxcore_work_queue_api.cpp
+    api/vxcore_event_api.cpp
     api/handle_manager.cpp
     api/error_handler.cpp
     core/config_manager.cpp
@@ -41,6 +43,8 @@ set(VXCORE_SOURCES
     core/raw_folder_manager.cpp
     core/template_manager.cpp
     core/snippet_manager.cpp
+    core/work_queue.cpp
+    core/event_manager.cpp
     db/db_manager.cpp
     db/file_db.cpp
     db/tag_db.cpp

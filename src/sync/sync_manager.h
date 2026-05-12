@@ -2,6 +2,8 @@
 #define VXCORE_SYNC_MANAGER_H
 
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 
@@ -11,12 +13,15 @@
 
 namespace vxcore {
 
+class EventManager;
 class NotebookManager;
 
 class SyncManager {
  public:
   explicit SyncManager(NotebookManager *notebook_manager);
   ~SyncManager();
+
+  void SetEventManager(EventManager *event_manager);
 
   VxCoreError EnableSync(const std::string &notebook_id, const SyncConfig &config);
 
@@ -62,6 +67,10 @@ class SyncManager {
                                                          const SyncCredentials *credentials,
                                                          std::unique_ptr<ISyncBackend> backend);
 
+  VXCORE_API std::vector<std::string> GetDirtyNotebooks() const;
+
+  VXCORE_API void ClearDirty(const std::string &notebook_id);
+
  private:
   VxCoreError ValidateNotebook(const std::string &notebook_id);
 
@@ -72,9 +81,13 @@ class SyncManager {
                              const SyncCredentials *credentials);
 
   NotebookManager *notebook_manager_;
+  EventManager *event_manager_ = nullptr;
   std::unordered_map<std::string, std::unique_ptr<ISyncBackend>> backends_;
   std::unordered_map<std::string, SyncState> states_;
   std::unordered_map<std::string, SyncConfig> configs_;
+  mutable std::mutex dirty_mutex_;
+  std::set<std::string> dirty_notebooks_;
+  std::vector<uint64_t> event_listener_ids_;
 };
 
 }  // namespace vxcore

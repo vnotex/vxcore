@@ -5,6 +5,9 @@
 
 #include "bundled_notebook.h"
 #include "config_manager.h"
+#include "core/event_manager.h"
+#include "core/event_names.h"
+#include "core/folder_manager.h"
 #include "metadata_store.h"
 #include "raw_notebook.h"
 #include "utils/file_utils.h"
@@ -117,9 +120,15 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
     }
 
     out_notebook_id = notebook->GetId();
+    if (event_manager_ && notebook->GetFolderManager()) {
+      notebook->GetFolderManager()->SetEventManager(event_manager_);
+    }
     notebooks_[out_notebook_id] = std::move(notebook);
 
     VXCORE_LOG_INFO("Notebook created successfully: id=%s", out_notebook_id.c_str());
+    if (event_manager_) {
+      event_manager_->Emit(events::kNotebookOpened, {{"notebookId", out_notebook_id}});
+    }
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &e) {
     VXCORE_LOG_ERROR("JSON parse error while creating notebook: %s", e.what());
@@ -166,9 +175,15 @@ VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
   }
 
   out_notebook_id = notebook->GetId();
+  if (event_manager_ && notebook->GetFolderManager()) {
+    notebook->GetFolderManager()->SetEventManager(event_manager_);
+  }
   notebooks_[out_notebook_id] = std::move(notebook);
 
   VXCORE_LOG_INFO("Notebook open successfully: id=%s", out_notebook_id.c_str());
+  if (event_manager_) {
+    event_manager_->Emit(events::kNotebookOpened, {{"notebookId", out_notebook_id}});
+  }
   return VXCORE_OK;
 }
 
@@ -200,6 +215,9 @@ VxCoreError NotebookManager::CloseNotebook(const std::string &notebook_id) {
   config_manager_->SaveSessionConfig();
 
   VXCORE_LOG_INFO("Notebook closed successfully: id=%s", notebook_id.c_str());
+  if (event_manager_) {
+    event_manager_->Emit(events::kNotebookClosed, {{"notebookId", notebook_id}});
+  }
   return VXCORE_OK;
 }
 

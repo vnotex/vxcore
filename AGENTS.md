@@ -110,6 +110,8 @@ vxcore/
 │   │   ├── vxcore_tag_api.cpp       # Tag operations
 │   │   ├── vxcore_search_api.cpp    # Search operations
 │   │   ├── vxcore_sync_api.cpp      # Sync operations
+│   │   ├── vxcore_event_api.cpp     # Event system C API
+│   │   ├── vxcore_work_queue_api.cpp # Work queue C API
 │   │   ├── api_utils.h              # API helper utilities
 │   │   ├── error_handler.h/.cpp     # Error handling utilities
 │   │   └── handle_manager.h/.cpp    # Handle management
@@ -126,7 +128,10 @@ vxcore/
 │   │   ├── folder_manager.h         # Abstract folder/file operations interface
 │   │   ├── bundled_folder_manager.h/.cpp  # Folder ops for bundled notebooks
 │   │   ├── raw_folder_manager.h/.cpp      # Folder ops for raw notebooks
-│   │   └── folder.h/.cpp            # FolderConfig, FolderRecord, FileRecord
+│   │   ├── folder.h/.cpp            # FolderConfig, FolderRecord, FileRecord
+│   │   ├── event_manager.h/.cpp     # Event system (subscribe/emit notifications)
+│   │   ├── event_names.h            # Event name constants (file.created, etc.)
+│   │   └── work_queue.h/.cpp        # Thread-safe work queue + named queue manager
 │   │
 │   ├── db/                  # SQLite database layer
 │   │   ├── db_manager.h/.cpp        # Database lifecycle, schema, transactions
@@ -212,11 +217,16 @@ vxcore/
 5. **FolderManager abstraction**: `BundledFolderManager` and `RawFolderManager` implement different storage strategies
 6. **Search backends**: Pluggable via `ISearchBackend` interface (ripgrep, simple built-in)
 7. **Sync backends**: Pluggable via `ISyncBackend` interface (Git, WebDAV, etc. — see `src/sync/AGENTS.md`)
+8. **Event system**: `EventManager` provides fire-and-forget notifications (not cancellable). Events are emitted by `FolderManager` and `NotebookManager` on mutations. `SyncManager` subscribes to mark notebooks dirty for auto-sync.
+9. **Work queues**: `WorkQueueManager` provides named thread-safe queues. vxcore does NOT create threads — the caller owns worker threads and calls `vxcore_work_queue_process_next()`.
 
 ### Thread Safety
 
 - `NotebookManager` operations are NOT thread-safe; caller must synchronize
 - `DbManager`, `FileDb`, `TagDb` are NOT thread-safe; designed for single-threaded use per notebook
+- `WorkQueue` is thread-safe (mutex + condvar) — safe cross-thread boundary
+- `EventManager::Emit()` is thread-safe (copies listener list under lock, then invokes outside lock)
+- `SyncManager` dirty tracking (`GetDirtyNotebooks`/`ClearDirty`) is thread-safe (own mutex)
 - `Logger` is thread-safe (uses mutex)
 
 ### Data Flow
@@ -230,11 +240,13 @@ C API (vxcore_*)
     ▼
 VxCoreContext
     ├── ConfigManager (VxCoreConfig, VxCoreSessionConfig)
-    ├── SyncManager (per-notebook ISyncBackend dispatch)
+    ├── EventManager (subscribe/emit notifications)
+    ├── WorkQueueManager (named thread-safe work queues)
+    ├── SyncManager (per-notebook ISyncBackend dispatch, dirty tracking via events)
     └── NotebookManager
             └── Notebook (Bundled/Raw)
                     ├── NotebookConfig (id, name, tags, metadata)
-                    ├── FolderManager (folder/file operations)
+                    ├── FolderManager (folder/file operations, emits events)
                     │       └── DbManager + FileDb + TagDb
                     └── SearchManager (search operations)
                             └── ISearchBackend (rg/simple)

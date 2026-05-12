@@ -892,6 +892,51 @@ VXCORE_API VxCoreError vxcore_sync_enable_with_credentials(VxCoreContextHandle c
                                                            const char *config_json,
                                                            const char *credentials_json);
 
+// ============ Event System ============
+
+// Subscribe to a named event. The callback fires when the event is emitted.
+// event_name: Event name string (e.g., "file.created", "notebook.opened").
+// callback: Function pointer invoked with (event_name, json_data, userdata).
+// userdata: Opaque pointer passed through to the callback.
+// Returns VXCORE_OK on success.
+VXCORE_API VxCoreError vxcore_on_event(VxCoreContextHandle context, const char *event_name,
+                                       VxCoreEventCallback callback, void *userdata);
+
+// Unsubscribe a previously registered callback from a named event.
+// Removes the first matching callback function pointer.
+// Returns VXCORE_ERR_NOT_FOUND if callback was not registered.
+VXCORE_API VxCoreError vxcore_off_event(VxCoreContextHandle context, const char *event_name,
+                                        VxCoreEventCallback callback);
+
+// ============ Work Queue Operations ============
+// Named work queues allow callers to dedicate different worker threads to
+// different categories of work (e.g., "sync", "events", "indexing").
+// Queues are created on first use by internal code (e.g., EventManager).
+// The caller's worker thread drains a queue by calling ProcessNext in a loop.
+
+// Process the next queued work item from the named queue, blocking up to
+// timeout_ms milliseconds. Returns 1 if a work item was executed, 0 if
+// timeout, shutdown, or queue does not exist.
+// Pass timeout_ms <= 0 to block indefinitely until work arrives or shutdown.
+VXCORE_API int vxcore_work_queue_process_next(VxCoreContextHandle context, const char *queue_name,
+                                              int timeout_ms);
+
+// Process all currently queued work items in the named queue.
+// Returns the number of items processed, or 0 if queue does not exist.
+VXCORE_API int vxcore_work_queue_process_all(VxCoreContextHandle context, const char *queue_name);
+
+// Get the number of pending work items in the named queue.
+// Returns 0 if queue does not exist.
+VXCORE_API int vxcore_work_queue_size(VxCoreContextHandle context, const char *queue_name);
+
+// Signal a named work queue to shut down. Unblocks any waiting ProcessNext.
+// After shutdown, no new items can be enqueued to this queue. Idempotent.
+// No-op if queue does not exist.
+VXCORE_API void vxcore_work_queue_shutdown(VxCoreContextHandle context, const char *queue_name);
+
+// Shut down all work queues. Idempotent.
+VXCORE_API void vxcore_work_queue_shutdown_all(VxCoreContextHandle context);
+
 VXCORE_API void vxcore_string_free(char *str);
 
 #ifdef __cplusplus

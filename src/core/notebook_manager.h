@@ -12,11 +12,14 @@
 namespace vxcore {
 
 class ConfigManager;
+class EventManager;
 
 class NotebookManager {
  public:
   NotebookManager(ConfigManager *config_manager);
   ~NotebookManager();
+
+  void SetEventManager(EventManager *event_manager) { event_manager_ = event_manager; }
 
   VxCoreError CreateNotebook(const std::string &root_folder, NotebookType type,
                              const std::string &config_json, std::string &out_notebook_id);
@@ -57,6 +60,7 @@ class NotebookManager {
   void DeleteNotebookLocalData(const Notebook &notebook);
 
   ConfigManager *config_manager_ = nullptr;
+  EventManager *event_manager_ = nullptr;
   std::map<std::string, std::unique_ptr<Notebook>> notebooks_;
 };
 

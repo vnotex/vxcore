@@ -11,6 +11,7 @@
 #include "bundled_notebook.h"
 #include "core/content_processor/asset_utils.h"
 #include "core/content_processor/content_processor.h"
+#include "core/event_names.h"
 #include "metadata_store.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
@@ -350,6 +351,8 @@ VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
 
   CacheConfig(folder_relative_path, std::move(new_config));
   VXCORE_LOG_INFO("Folder created successfully: id=%s", out_folder_id.c_str());
+  EmitEvent(events::kFolderCreated,
+            {{"notebookId", notebook_->GetId()}, {"path", folder_relative_path}});
   return VXCORE_OK;
 }
 
@@ -414,6 +417,8 @@ VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
     }
 
     VXCORE_LOG_INFO("Folder deleted successfully: path=%s", clean_folder_path.c_str());
+    EmitEvent(events::kFolderDeleted,
+              {{"notebookId", notebook_->GetId()}, {"path", clean_folder_path}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
@@ -989,6 +994,9 @@ VxCoreError BundledFolderManager::CreateFile(const std::string &folder_path,
     }
   }
 
+  auto file_rel_path = ConcatenatePaths(clean_folder_path, file_name);
+  EmitEvent(events::kFileCreated,
+            {{"notebookId", notebook_->GetId()}, {"path", file_rel_path}});
   return VXCORE_OK;
 }
 
@@ -1041,6 +1049,8 @@ VxCoreError BundledFolderManager::DeleteFile(const std::string &file_path) {
     }
 
     VXCORE_LOG_INFO("DeleteFile successful: file %s deleted", clean_file_path.c_str());
+    EmitEvent(events::kFileDeleted,
+              {{"notebookId", notebook_->GetId()}, {"path", clean_file_path}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
@@ -1345,6 +1355,10 @@ VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
 
   VXCORE_LOG_INFO("RenameFile successful: file renamed from %s to %s", clean_file_path.c_str(),
                   ConcatenatePaths(folder_path, new_name).c_str());
+  EmitEvent(events::kFileMoved,
+            {{"notebookId", notebook_->GetId()},
+             {"oldPath", clean_file_path},
+             {"newPath", ConcatenatePaths(folder_path, new_name)}});
   return VXCORE_OK;
 }
 
@@ -1463,6 +1477,10 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
 
   VXCORE_LOG_INFO("MoveFile successful: file moved from %s to %s", clean_src_file_path.c_str(),
                   ConcatenatePaths(clean_dest_folder_path, file_name).c_str());
+  EmitEvent(events::kFileMoved,
+            {{"notebookId", notebook_->GetId()},
+             {"oldPath", clean_src_file_path},
+             {"newPath", ConcatenatePaths(clean_dest_folder_path, file_name)}});
   return VXCORE_OK;
 }
 

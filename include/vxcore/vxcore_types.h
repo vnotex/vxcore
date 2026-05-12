@@ -79,6 +79,8 @@ typedef struct {
   const char *message;
 } VxCoreResult;
 
+typedef void (*VxCoreEventCallback)(const char *event_name, const char *json_data, void *userdata);
+
 #ifdef __cplusplus
 }
 #endif
