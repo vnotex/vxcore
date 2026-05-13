@@ -149,6 +149,7 @@ VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
     ctx->event_manager = std::make_unique<vxcore::EventManager>();
     ctx->notebook_manager->SetEventManager(ctx->event_manager.get());
     ctx->sync_manager->SetEventManager(ctx->event_manager.get());
+    ctx->sync_manager->SetWorkQueueManager(ctx->work_queue_manager.get());
 
     *out_context = reinterpret_cast<VxCoreContextHandle>(ctx);
     return VXCORE_OK;

@@ -1,6 +1,7 @@
 #ifndef VXCORE_SYNC_MANAGER_H
 #define VXCORE_SYNC_MANAGER_H
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -15,6 +16,7 @@ namespace vxcore {
 
 class EventManager;
 class NotebookManager;
+class WorkQueueManager;
 
 class SyncManager {
  public:
@@ -22,6 +24,8 @@ class SyncManager {
   ~SyncManager();
 
   void SetEventManager(EventManager *event_manager);
+
+  void SetWorkQueueManager(WorkQueueManager *work_queue_manager);
 
   VxCoreError EnableSync(const std::string &notebook_id, const SyncConfig &config);
 
@@ -80,13 +84,19 @@ class SyncManager {
   VxCoreError EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
                              const SyncCredentials *credentials);
 
+  // Enqueue a sync job on the "sync" WorkQueue if the debounce interval has elapsed.
+  // Called under dirty_mutex_.
+  void MaybeEnqueueSync(const std::string &notebook_id);
+
   NotebookManager *notebook_manager_;
   EventManager *event_manager_ = nullptr;
+  WorkQueueManager *work_queue_manager_ = nullptr;
   std::unordered_map<std::string, std::unique_ptr<ISyncBackend>> backends_;
   std::unordered_map<std::string, SyncState> states_;
   std::unordered_map<std::string, SyncConfig> configs_;
   mutable std::mutex dirty_mutex_;
   std::set<std::string> dirty_notebooks_;
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_enqueue_time_;
   std::vector<uint64_t> event_listener_ids_;
 };
 

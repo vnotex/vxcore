@@ -4,6 +4,7 @@
 #include "core/event_names.h"
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
+#include "core/work_queue.h"
 #include "sync/git_sync_backend.h"
 #include "utils/logger.h"
 
@@ -34,6 +35,7 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
         std::lock_guard<std::mutex> lock(dirty_mutex_);
         dirty_notebooks_.insert(nb_id);
         VXCORE_LOG_DEBUG("SyncManager: marked notebook dirty: %s", nb_id.c_str());
+        MaybeEnqueueSync(nb_id);
       }
     }
   };
@@ -44,6 +46,38 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
   event_listener_ids_.push_back(event_manager_->Subscribe(events::kFileMoved, mark_dirty));
   event_listener_ids_.push_back(event_manager_->Subscribe(events::kFolderCreated, mark_dirty));
   event_listener_ids_.push_back(event_manager_->Subscribe(events::kFolderDeleted, mark_dirty));
+}
+
+void SyncManager::SetWorkQueueManager(WorkQueueManager *work_queue_manager) {
+  work_queue_manager_ = work_queue_manager;
+}
+
+void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
+  // Called under dirty_mutex_.
+  if (!work_queue_manager_ || !event_manager_) return;
+
+  auto cfg_it = configs_.find(notebook_id);
+  if (cfg_it == configs_.end() || cfg_it->second.interval_seconds <= 0) return;
+
+  auto now = std::chrono::steady_clock::now();
+  auto interval = std::chrono::seconds(cfg_it->second.interval_seconds);
+  auto &last = last_enqueue_time_[notebook_id];
+  if (last != std::chrono::steady_clock::time_point{} && (now - last) < interval) return;
+
+  last = now;
+
+  auto *queue = work_queue_manager_->GetOrCreate("sync");
+  std::string nb_id = notebook_id;
+  queue->Enqueue([this, nb_id]() {
+    event_manager_->Emit(events::kSyncStarted, {{"notebookId", nb_id}});
+    VxCoreError err = TriggerSync(nb_id);
+    if (err == VXCORE_ERR_SYNC_CONFLICT) {
+      event_manager_->Emit(events::kSyncConflict, {{"notebookId", nb_id}});
+    }
+    event_manager_->Emit(events::kSyncFinished,
+                         {{"notebookId", nb_id}, {"result", static_cast<int>(err)}});
+  });
+  VXCORE_LOG_DEBUG("SyncManager: enqueued auto-sync for notebook: %s", notebook_id.c_str());
 }
 
 std::vector<std::string> SyncManager::GetDirtyNotebooks() const {
