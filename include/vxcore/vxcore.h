@@ -882,6 +882,12 @@ VXCORE_API VxCoreError vxcore_sync_set_credentials(VxCoreContextHandle context,
                                                    const char *notebook_id,
                                                    const char *credentials_json);
 
+// Check whether a notebook's sync configuration is complete and ready to sync.
+// Returns VXCORE_OK and sets *out_ready to 1 if syncEnabled is true, syncBackend
+// is non-empty, and syncRemoteUrl is non-empty. Sets *out_ready to 0 otherwise.
+VXCORE_API VxCoreError vxcore_sync_is_ready(VxCoreContextHandle context, const char *notebook_id,
+                                            int *out_ready);
+
 // Enable sync for a notebook with credentials supplied BEFORE backend Initialize().
 // Required for backends whose Initialize step needs auth (e.g., authenticated git clone).
 // config_json: same shape as vxcore_sync_enable.

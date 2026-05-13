@@ -2,6 +2,8 @@
 
 #include "api/api_utils.h"
 #include "core/context.h"
+#include "core/notebook.h"
+#include "core/notebook_manager.h"
 #include "sync/sync_manager.h"
 #include "sync/sync_types.h"
 #include "utils/logger.h"
@@ -299,6 +301,34 @@ VXCORE_API VxCoreError vxcore_sync_set_credentials(VxCoreContextHandle context,
     return VXCORE_ERR_UNKNOWN;
   } catch (...) {
     ctx->last_error = "Unknown error setting sync credentials";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_sync_is_ready(VxCoreContextHandle context, const char *notebook_id,
+                                            int *out_ready) {
+  if (!context || !notebook_id || !out_ready) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto *nb = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!nb) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    const auto &cfg = nb->GetConfig();
+    *out_ready =
+        (cfg.sync_enabled && !cfg.sync_backend.empty() && !cfg.sync_remote_url.empty()) ? 1 : 0;
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error checking sync readiness";
     return VXCORE_ERR_UNKNOWN;
   }
 }
