@@ -38,8 +38,12 @@ elseif(APPLE)
 else()
   set(USE_HTTPS "OpenSSL" CACHE STRING "" FORCE)
 endif()
-# Force libgit2 to use the same CRT as VNote (/MD) to avoid D9025 warnings.
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL" CACHE STRING "" FORCE)
+# Force libgit2 to use the SAME CRT as the consuming app (/MD or /MDd) to avoid
+# D9025 warnings AND ABI mismatch between libgit2 (release CRT) and the rest of
+# the app (debug CRT in Debug builds — caused std::string layout disagreement
+# and _RTC_StackFailure crashes on first log call). Generator expression:
+# MultiThreadedDLL in Release, MultiThreadedDebugDLL in Debug.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL" CACHE STRING "" FORCE)
 # Suppress all warnings from libgit2 internal targets (C5287 etc.) by
 # injecting /w (MSVC) or -w (GCC/Clang) into the C/CXX flags for this scope.
 set(_saved_c_flags "${CMAKE_C_FLAGS}")
