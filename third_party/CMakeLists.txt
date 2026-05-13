@@ -38,7 +38,22 @@ elseif(APPLE)
 else()
   set(USE_HTTPS "OpenSSL" CACHE STRING "" FORCE)
 endif()
+# Force libgit2 to use the same CRT as VNote (/MD) to avoid D9025 warnings.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL" CACHE STRING "" FORCE)
+# Suppress all warnings from libgit2 internal targets (C5287 etc.) by
+# injecting /w (MSVC) or -w (GCC/Clang) into the C/CXX flags for this scope.
+set(_saved_c_flags "${CMAKE_C_FLAGS}")
+set(_saved_cxx_flags "${CMAKE_CXX_FLAGS}")
+if(MSVC)
+  string(APPEND CMAKE_C_FLAGS " /w")
+  string(APPEND CMAKE_CXX_FLAGS " /w")
+else()
+  string(APPEND CMAKE_C_FLAGS " -w")
+  string(APPEND CMAKE_CXX_FLAGS " -w")
+endif()
 add_subdirectory(libgit2 EXCLUDE_FROM_ALL)
+set(CMAKE_C_FLAGS "${_saved_c_flags}")
+set(CMAKE_CXX_FLAGS "${_saved_cxx_flags}")
 # libgit2 v1.7 names its public static-library target "libgit2package"; expose
 # its public include directory as an INTERFACE usage requirement so downstream
 # consumers (vxcore + the spike test) only need to link against the target.
