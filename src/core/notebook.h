@@ -81,6 +81,14 @@ class Notebook {
   FolderManager *GetFolderManager() { return folder_manager_.get(); }
   MetadataStore *GetMetadataStore() { return metadata_store_.get(); }
 
+  // Per-device "last successful git sync" timestamp, persisted in metadata DB
+  // (NOT in NotebookConfig JSON -- that file is inside the synced tree, which
+  // would cause a self-sync loop). Units: int64 milliseconds since Unix epoch.
+  // 0 means never synced (or read error). Best-effort: write failures are
+  // logged but not propagated, mirroring the tags_synced_utc pattern.
+  void SetLastSyncUtc(int64_t ts_millis);
+  int64_t GetLastSyncUtc() const;
+
   // Closes the notebook, releasing all resources (DB connections, etc.).
   // Must be called before deleting the notebook's local data folder.
   void Close();

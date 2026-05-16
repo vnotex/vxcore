@@ -7,6 +7,7 @@
 #include "core/work_queue.h"
 #include "sync/git_sync_backend.h"
 #include "utils/logger.h"
+#include "utils/utils.h"
 
 namespace vxcore {
 
@@ -231,6 +232,13 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id) {
   if (sync_err == VXCORE_OK) {
     states_[notebook_id] = SyncState::kIdle;
     ClearDirty(notebook_id);
+    // Persist per-device "last successful sync" timestamp. Best-effort:
+    // failure to write is logged inside SetLastSyncUtc but does NOT fail
+    // the sync (the sync itself succeeded -- only the UI timestamp suffers).
+    auto *notebook = notebook_manager_->GetNotebook(notebook_id);
+    if (notebook) {
+      notebook->SetLastSyncUtc(GetCurrentTimestampMillis());
+    }
   } else if (sync_err == VXCORE_ERR_SYNC_CONFLICT) {
     states_[notebook_id] = SyncState::kConflicted;
   } else {

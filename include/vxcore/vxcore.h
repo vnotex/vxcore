@@ -898,6 +898,21 @@ VXCORE_API VxCoreError vxcore_sync_enable_with_credentials(VxCoreContextHandle c
                                                            const char *config_json,
                                                            const char *credentials_json);
 
+// Return the per-device last successful sync timestamp for a notebook, in
+// milliseconds since Unix epoch. Sets *out_utc_millis to 0 when the notebook
+// has never been successfully synced on this device or when the underlying
+// metadata read fails. The timestamp is persisted in metadata.db (which lives
+// in the per-machine local data folder), NOT in the notebook's git-synced
+// config.json, to avoid a self-sync loop.
+//
+// Errors:
+//   VXCORE_ERR_NULL_POINTER   context, notebook_id, or out_utc_millis is null
+//   VXCORE_ERR_NOT_FOUND      notebook is not loaded in NotebookManager
+//   VXCORE_OK                 success (*out_utc_millis populated; may be 0)
+VXCORE_API VxCoreError vxcore_sync_get_last_sync_utc(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     int64_t *out_utc_millis);
+
 // ============ Event System ============
 
 // Subscribe to a named event. The callback fires when the event is emitted.

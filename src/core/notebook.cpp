@@ -316,6 +316,36 @@ VxCoreError Notebook::SyncTagsToMetadataStore() {
   return VXCORE_OK;
 }
 
+void Notebook::SetLastSyncUtc(int64_t ts_millis) {
+  if (!metadata_store_) {
+    VXCORE_LOG_WARN("Notebook::SetLastSyncUtc: metadata_store_ is null, "
+                    "skipping write for notebook=%s",
+                    config_.id.c_str());
+    return;
+  }
+  const bool ok =
+      metadata_store_->SetNotebookMetadata("last_sync_utc", std::to_string(ts_millis));
+  if (!ok) {
+    VXCORE_LOG_WARN("Notebook::SetLastSyncUtc: write failed for notebook=%s",
+                    config_.id.c_str());
+  }
+}
+
+int64_t Notebook::GetLastSyncUtc() const {
+  if (!metadata_store_) {
+    return 0;
+  }
+  auto value = metadata_store_->GetNotebookMetadata("last_sync_utc");
+  if (!value.has_value()) {
+    return 0;
+  }
+  try {
+    return std::stoll(value.value());
+  } catch (...) {
+    return 0;
+  }
+}
+
 void Notebook::Close() {
   VXCORE_LOG_INFO("Closing notebook: id=%s", config_.id.c_str());
 

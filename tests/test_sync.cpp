@@ -1,10 +1,49 @@
+#include <chrono>
 #include <iostream>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "core/context.h"
+#include "sync/sync_backend.h"
+#include "sync/sync_manager.h"
 #include "sync/sync_types.h"
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
+
+namespace {
+
+// GetCurrentTimestampMillis() lives inside the vxcore DLL and is not exported
+// across the DLL boundary, so we re-derive the same value here using the same
+// units (std::chrono::milliseconds since Unix epoch) for the bounds check in
+// test_last_sync_utc_persistence.
+int64_t TestNowMillis() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+// Minimal in-memory ISyncBackend stub: every operation succeeds, no real I/O.
+// Used to drive SyncManager::TriggerSync through a known-OK path so we can
+// observe the side effect that persists last_sync_utc.
+class MockSyncBackend : public vxcore::ISyncBackend {
+ public:
+  VxCoreError Initialize(const std::string &, const vxcore::SyncConfig &) override {
+    return VXCORE_OK;
+  }
+  VxCoreError Shutdown() override { return VXCORE_OK; }
+  VxCoreError Sync(vxcore::SyncProgressCallback, void *) override { return VXCORE_OK; }
+  VxCoreError Push(vxcore::SyncProgressCallback, void *) override { return VXCORE_OK; }
+  VxCoreError Pull(vxcore::SyncProgressCallback, void *) override { return VXCORE_OK; }
+  VxCoreError GetStatus(std::vector<vxcore::SyncFileInfo> &) override { return VXCORE_OK; }
+  VxCoreError GetConflicts(std::vector<vxcore::SyncConflictInfo> &) override { return VXCORE_OK; }
+  VxCoreError ResolveConflict(const std::string &,
+                              vxcore::SyncConflictResolution) override {
+    return VXCORE_OK;
+  }
+};
+
+}  // namespace
 
 int test_sync_error_codes() {
   std::cout << "  Running test_sync_error_codes..." << std::endl;
@@ -310,6 +349,69 @@ int test_sync_config_to_json_omits_empty_backend_options() {
   return 0;
 }
 
+int test_last_sync_utc_persistence() {
+  std::cout << "  Running test_last_sync_utc_persistence..." << std::endl;
+  const std::string root = get_test_path("test_last_sync_utc");
+  cleanup_test_dir(root);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(),
+                                   "{\"name\":\"LastSyncUtc Test\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Before any sync: should be 0 (never synced on this device).
+  int64_t before_utc = -1;
+  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, &before_utc), VXCORE_OK);
+  ASSERT_EQ(before_utc, 0);
+
+  // Inject the mock backend via the test-only API, then trigger sync via the
+  // public C API so we exercise the same code path as production callers.
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  vxcore::SyncConfig cfg;
+  cfg.enabled = true;
+  cfg.backend = "mock";
+  cfg.remote_url = "test://repo";
+  ASSERT_EQ(vctx->sync_manager->EnableSyncWithBackendForTesting(
+                std::string(notebook_id), cfg, nullptr,
+                std::make_unique<MockSyncBackend>()),
+            VXCORE_OK);
+
+  const int64_t before_trigger = TestNowMillis();
+  ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_OK);
+  const int64_t after_trigger = TestNowMillis();
+
+  // After successful trigger: should be a recent timestamp within the window.
+  int64_t after_utc = 0;
+  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, &after_utc), VXCORE_OK);
+  ASSERT_TRUE(after_utc >= before_trigger);
+  ASSERT_TRUE(after_utc <= after_trigger);
+
+  // Null-pointer guards.
+  int64_t dummy = 0;
+  ASSERT_EQ(vxcore_sync_get_last_sync_utc(nullptr, notebook_id, &dummy),
+            VXCORE_ERR_NULL_POINTER);
+  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, nullptr, &dummy), VXCORE_ERR_NULL_POINTER);
+  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, nullptr),
+            VXCORE_ERR_NULL_POINTER);
+
+  // Not-found case: unknown notebook id returns NOT_FOUND and zeros the out param.
+  int64_t nf = 42;
+  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, "nonexistent-nb-id", &nf),
+            VXCORE_ERR_NOT_FOUND);
+  ASSERT_EQ(nf, 0);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  std::cout << "  \xE2\x9C\x93 test_last_sync_utc_persistence passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running sync tests..." << std::endl;
 
@@ -330,6 +432,7 @@ int main() {
   RUN_TEST(test_sync_credentials_extra_field);
   RUN_TEST(test_sync_enable_with_backend_options_via_c_api);
   RUN_TEST(test_sync_config_to_json_omits_empty_backend_options);
+  RUN_TEST(test_last_sync_utc_persistence);
 
   std::cout << "\xE2\x9C\x93 All sync tests passed" << std::endl;
   return 0;

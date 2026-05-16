@@ -368,3 +368,32 @@ VXCORE_API VxCoreError vxcore_sync_enable_with_credentials(VxCoreContextHandle c
     return VXCORE_ERR_UNKNOWN;
   }
 }
+
+VXCORE_API VxCoreError vxcore_sync_get_last_sync_utc(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     int64_t *out_utc_millis) {
+  if (!context || !notebook_id || !out_utc_millis) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto *nb = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!nb) {
+      ctx->last_error = "Notebook not found";
+      *out_utc_millis = 0;
+      return VXCORE_ERR_NOT_FOUND;
+    }
+    *out_utc_millis = nb->GetLastSyncUtc();
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    *out_utc_millis = 0;
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error reading last sync timestamp";
+    *out_utc_millis = 0;
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
