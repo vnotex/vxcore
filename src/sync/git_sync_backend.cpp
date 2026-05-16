@@ -925,6 +925,10 @@ VxCoreError GitSyncBackend::StageAll() {
     git_index_free(idx);
     return err;
   }
+  {
+    size_t staged_count = git_index_entrycount(idx);
+    VXCORE_LOG_DEBUG("GitSyncBackend::StageAll: index now has %zu entries", staged_count);
+  }
 
   // Defensive removal: collect entry paths under vx_notebook/vx_sync first
   // (avoid mutating while iterating), then drop them by path/stage 0.

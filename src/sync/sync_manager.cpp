@@ -29,10 +29,13 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
   event_manager_ = event_manager;
   if (!event_manager_) return;
 
-  auto mark_dirty = [this](const std::string &, const nlohmann::json &data) {
+  auto mark_dirty = [this](const std::string &event_name, const nlohmann::json &data) {
     if (data.contains("notebookId") && data["notebookId"].is_string()) {
       std::string nb_id = data["notebookId"].get<std::string>();
-      if (configs_.count(nb_id) > 0) {
+      const bool sync_enabled = (configs_.count(nb_id) > 0);
+      VXCORE_LOG_DEBUG("SyncManager::mark_dirty: event=%s notebookId=%s sync_enabled=%d",
+                       event_name.c_str(), nb_id.c_str(), sync_enabled ? 1 : 0);
+      if (sync_enabled) {
         std::lock_guard<std::mutex> lock(dirty_mutex_);
         dirty_notebooks_.insert(nb_id);
         VXCORE_LOG_DEBUG("SyncManager: marked notebook dirty: %s", nb_id.c_str());
@@ -55,15 +58,29 @@ void SyncManager::SetWorkQueueManager(WorkQueueManager *work_queue_manager) {
 
 void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
   // Called under dirty_mutex_.
-  if (!work_queue_manager_ || !event_manager_) return;
+  VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: entry notebook_id=%s has_wqm=%d has_em=%d",
+                   notebook_id.c_str(), work_queue_manager_ != nullptr,
+                   event_manager_ != nullptr);
+  if (!work_queue_manager_ || !event_manager_) {
+    VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: skipped (missing wqm or em)");
+    return;
+  }
 
   auto cfg_it = configs_.find(notebook_id);
-  if (cfg_it == configs_.end() || cfg_it->second.interval_seconds <= 0) return;
+  if (cfg_it == configs_.end() || cfg_it->second.interval_seconds <= 0) {
+    VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: skipped (no config or interval<=0) notebook_id=%s",
+                     notebook_id.c_str());
+    return;
+  }
 
   auto now = std::chrono::steady_clock::now();
   auto interval = std::chrono::seconds(cfg_it->second.interval_seconds);
   auto &last = last_enqueue_time_[notebook_id];
-  if (last != std::chrono::steady_clock::time_point{} && (now - last) < interval) return;
+  if (last != std::chrono::steady_clock::time_point{} && (now - last) < interval) {
+    VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: debounced notebook_id=%s interval_s=%d",
+                     notebook_id.c_str(), cfg_it->second.interval_seconds);
+    return;
+  }
 
   last = now;
 

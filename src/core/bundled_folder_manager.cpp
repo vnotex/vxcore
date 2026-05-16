@@ -329,6 +329,8 @@ VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
     VXCORE_LOG_ERROR("Failed to save parent folder config: error=%d", error);
     return error;
   }
+  VXCORE_LOG_DEBUG("CreateFolder: wrote parent vx.json for parent=%s",
+                   clean_parent_path.c_str());
 
   const auto folder_relative_path = ConcatenatePaths(clean_parent_path, folder_name);
   std::unique_ptr<FolderConfig> new_config(new FolderConfig(folder_name));
@@ -337,6 +339,8 @@ VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
     VXCORE_LOG_ERROR("Failed to save new folder config: error=%d", error);
     return error;
   }
+  VXCORE_LOG_DEBUG("CreateFolder: wrote new folder vx.json at relative_path=%s",
+                   folder_relative_path.c_str());
 
   out_folder_id = new_config->id;
 
@@ -351,6 +355,8 @@ VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
 
   CacheConfig(folder_relative_path, std::move(new_config));
   VXCORE_LOG_INFO("Folder created successfully: id=%s", out_folder_id.c_str());
+  VXCORE_LOG_DEBUG("CreateFolder: emitting folder.created notebook_id=%s path=%s",
+                   notebook_->GetId().c_str(), folder_relative_path.c_str());
   EmitEvent(events::kFolderCreated,
             {{"notebookId", notebook_->GetId()}, {"path", folder_relative_path}});
   return VXCORE_OK;
