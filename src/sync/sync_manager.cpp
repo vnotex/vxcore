@@ -229,6 +229,10 @@ VxCoreError SyncManager::GetSyncConfig(const std::string &notebook_id, SyncConfi
 
 VxCoreError SyncManager::TriggerSync(const std::string &notebook_id) {
   VXCORE_LOG_DEBUG("SyncManager::TriggerSync: notebook_id=%s", notebook_id.c_str());
+  const size_t states_count = states_.count(notebook_id);
+  VXCORE_LOG_DEBUG("SyncManager::TriggerSync: states_ size=%zu count(notebook_id)=%zu "
+                   "(0 means reconcile-on-open did not populate runtime state)",
+                   states_.size(), states_count);
 
   VxCoreError err = ValidateNotebook(notebook_id);
   if (err != VXCORE_OK) {

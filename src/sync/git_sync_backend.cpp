@@ -655,7 +655,9 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
   const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::system_clock::now().time_since_epoch())
                           .count();
+  VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=commit starting");
   err = CommitIndex(std::string("VNote sync ") + std::to_string(now_ms));
+  VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=commit rc=%d", err);
   if (err != VXCORE_OK) {
     return err;
   }
@@ -667,8 +669,11 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
   static const int kBackoffMs[3] = {100, 500, 2000};
   bool pushed = false;
   for (int attempt = 0; attempt < 3; ++attempt) {
+    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=push attempt=%d", attempt);
     emit(SyncState::kFetching, "Fetching", 0.40f);
+    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=fetch starting");
     err = FetchOrigin();
+    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=fetch rc=%d", err);
     if (err != VXCORE_OK) {
       return err;
     }
@@ -676,7 +681,9 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
     emit(SyncState::kAnalyzing, "Analyzing", 0.50f);
 
     emit(SyncState::kMerging, "Rebasing", 0.70f);
+    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=rebase starting");
     err = RebaseOntoOrigin();
+    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=rebase rc=%d", err);
     if (err == VXCORE_ERR_SYNC_CONFLICT) {
       return VXCORE_ERR_SYNC_CONFLICT;
     }
@@ -685,7 +692,9 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
     }
 
     emit(SyncState::kPushing, "Pushing", 0.90f);
+    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=push starting");
     err = PushOrigin();
+    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=push rc=%d", err);
     if (err == VXCORE_OK) {
       pushed = true;
       break;
