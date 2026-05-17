@@ -1231,6 +1231,77 @@ VxCoreError GitSyncBackend::RebaseOntoOrigin() {
     return err;
   }
 
+  // ===== Pre-check: skip rebase if not needed =====
+  // libgit2's git_rebase_init unconditionally resets the working tree to the
+  // onto commit BEFORE replaying — even when there's nothing to replay. When
+  // it then fails mid-flight (e.g., GIT_ELOCKED on internal HEAD updates),
+  // the working tree is left mid-reset with files deleted. Avoid the whole
+  // class of failures by detecting trivial cases via merge-base.
+  const git_oid *local_oid = git_reference_target(head_ref);
+  const git_oid *remote_oid = git_reference_target(remote_ref);
+  if (local_oid == nullptr || remote_oid == nullptr) {
+    VXCORE_LOG_WARN("RebaseOntoOrigin: null OID from reference target, falling through");
+  } else {
+    git_oid merge_base_oid;
+    int mb_rc = git_merge_base(&merge_base_oid, repo_, local_oid, remote_oid);
+    if (mb_rc == 0) {
+      const bool base_eq_local = (git_oid_cmp(&merge_base_oid, local_oid) == 0);
+      const bool base_eq_remote = (git_oid_cmp(&merge_base_oid, remote_oid) == 0);
+
+      if (base_eq_local && base_eq_remote) {
+        VXCORE_LOG_DEBUG("RebaseOntoOrigin: in sync (local == remote), skipping rebase");
+        git_reference_free(remote_ref);
+        git_reference_free(head_ref);
+        return VXCORE_OK;
+      }
+      if (base_eq_remote && !base_eq_local) {
+        VXCORE_LOG_DEBUG(
+            "RebaseOntoOrigin: local ahead of remote (no rebase needed, push will publish)");
+        git_reference_free(remote_ref);
+        git_reference_free(head_ref);
+        return VXCORE_OK;
+      }
+      if (base_eq_local && !base_eq_remote) {
+        VXCORE_LOG_DEBUG("RebaseOntoOrigin: remote ahead of local (fast-forward)");
+        git_object *remote_obj = nullptr;
+        int lookup_rc = git_object_lookup(&remote_obj, repo_, remote_oid, GIT_OBJECT_COMMIT);
+        if (lookup_rc != 0) {
+          VxCoreError err = TranslateGitError(lookup_rc);
+          git_reference_free(remote_ref);
+          git_reference_free(head_ref);
+          return err;
+        }
+        git_checkout_options co_opts = GIT_CHECKOUT_OPTIONS_INIT;
+        co_opts.checkout_strategy = GIT_CHECKOUT_FORCE;
+        int co_rc = git_checkout_tree(repo_, remote_obj, &co_opts);
+        git_object_free(remote_obj);
+        if (co_rc != 0) {
+          VxCoreError err = TranslateGitError(co_rc);
+          git_reference_free(remote_ref);
+          git_reference_free(head_ref);
+          return err;
+        }
+        git_reference *new_local_ref = nullptr;
+        int set_rc = git_reference_set_target(&new_local_ref, head_ref, remote_oid,
+                                              "vnote: fast-forward to origin");
+        git_reference_free(new_local_ref);
+        git_reference_free(remote_ref);
+        git_reference_free(head_ref);
+        if (set_rc != 0) {
+          return TranslateGitError(set_rc);
+        }
+        return VXCORE_OK;
+      }
+      VXCORE_LOG_DEBUG("RebaseOntoOrigin: true divergence detected, running rebase");
+    } else if (mb_rc == GIT_ENOTFOUND) {
+      git_error_clear();
+      VXCORE_LOG_DEBUG("RebaseOntoOrigin: no merge-base (unrelated histories), running rebase");
+    } else {
+      VXCORE_LOG_WARN("RebaseOntoOrigin: git_merge_base failed rc=%d, falling through", mb_rc);
+    }
+  }
+  // ===== End pre-check =====
+
   git_annotated_commit *local_anno = nullptr;
   rc = git_annotated_commit_from_ref(&local_anno, repo_, head_ref);
   if (rc != 0) {
