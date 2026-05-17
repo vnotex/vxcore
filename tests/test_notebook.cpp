@@ -1,6 +1,11 @@
 #include <iostream>
 #include <string>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
 
@@ -1767,6 +1772,60 @@ int test_raw_ignored_config_roundtrip() {
   return 0;
 }
 
+int test_open_bundled_notebook_with_non_ascii_root() {
+  std::cout << "  Running test_open_bundled_notebook_with_non_ascii_root..." << std::endl;
+  const std::string root = get_test_path("\xE4\xB8\xAD\xE6\x96\x87\xE8\xAF\x86\xE5\x88\xAB");
+
+  // UTF-8-safe cleanup: the shared cleanup_test_dir() helper uses raw
+  // std::filesystem::remove_all(std::string), which reinterprets the bytes
+  // through the Windows ANSI codepage and silently fails on non-ASCII paths,
+  // so leftover state from a previous run would break this test.
+  auto utf8_cleanup = [](const std::string &path) {
+#ifdef _WIN32
+    int wide_size = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+    if (wide_size > 0) {
+      std::wstring wpath(static_cast<size_t>(wide_size - 1), L'\0');
+      MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wide_size);
+      std::error_code ec;
+      std::filesystem::remove_all(std::filesystem::path(wpath), ec);
+    }
+#else
+    std::error_code ec;
+    std::filesystem::remove_all(std::filesystem::path(path), ec);
+#endif
+  };
+  utf8_cleanup(root);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(
+                ctx, root.c_str(),
+                "{\"name\":\"\xE4\xB8\xAD\xE6\x96\x87\xE8\xAF\x86\xE5\x88\xAB Notebook\"}",
+                VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+  std::string created_id(notebook_id);
+  vxcore_string_free(notebook_id);
+
+  // Tear down context, re-create, reopen the notebook from disk.
+  vxcore_context_destroy(ctx);
+  ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *reopened_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_open(ctx, root.c_str(), &reopened_id), VXCORE_OK);
+  ASSERT_NOT_NULL(reopened_id);
+  ASSERT_EQ(std::string(reopened_id), created_id);
+  vxcore_string_free(reopened_id);
+
+  vxcore_context_destroy(ctx);
+  utf8_cleanup(root);
+  std::cout << "  \xE2\x9C\x93 test_open_bundled_notebook_with_non_ascii_root passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
 
@@ -1781,6 +1840,7 @@ int main() {
   RUN_TEST(test_notebook_set_properties);
   RUN_TEST(test_notebook_list);
   RUN_TEST(test_notebook_persistence);
+  RUN_TEST(test_open_bundled_notebook_with_non_ascii_root);
   RUN_TEST(test_notebook_rebuild_cache);
   RUN_TEST(test_notebook_ignored_config);
   RUN_TEST(test_notebook_ignored_empty_default);

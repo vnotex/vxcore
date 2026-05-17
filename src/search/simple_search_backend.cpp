@@ -6,6 +6,7 @@
 #include <future>
 
 #include "search_file_info.h"
+#include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/string_utils.h"
 #include "utils/utils.h"
@@ -120,7 +121,7 @@ VxCoreError SimpleSearchBackend::SearchSequential(
       break;
     }
 
-    std::ifstream file(file_info.absolute_path);
+    std::ifstream file(PathFromUtf8(file_info.absolute_path));
     if (!file.is_open()) {
       continue;
     }
@@ -199,7 +200,7 @@ VxCoreError SimpleSearchBackend::SearchParallel(
         }
 
         const auto &file_info = files[i];
-        std::ifstream file(file_info.absolute_path);
+        std::ifstream file(PathFromUtf8(file_info.absolute_path));
         if (!file.is_open()) {
           continue;
         }

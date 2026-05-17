@@ -1,5 +1,7 @@
 #include "bundled_notebook.h"
 
+#include <cerrno>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 
@@ -138,8 +140,17 @@ std::string BundledNotebook::GetConfigPath() const {
 }
 
 VxCoreError BundledNotebook::LoadConfig() {
-  std::ifstream file(PathFromUtf8(GetConfigPath()));
+  const std::string cfg_path = GetConfigPath();
+  std::ifstream file(PathFromUtf8(cfg_path));
   if (!file.is_open()) {
+    const int saved_errno = errno;
+    const bool exists = PathExists(cfg_path);
+    const bool is_regular = IsRegularFile(cfg_path);
+    VXCORE_LOG_WARN(
+        "LoadConfig: open failed for cfg_path=%s exists=%d is_regular=%d errno=%d (%s) "
+        "[hint: if path is under OneDrive, check 'Always keep on this device']",
+        cfg_path.c_str(), exists ? 1 : 0, is_regular ? 1 : 0, saved_errno,
+        std::strerror(saved_errno));
     return VXCORE_ERR_IO;
   }
 
