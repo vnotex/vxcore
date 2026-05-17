@@ -121,7 +121,22 @@ VxCoreError BundledFolderManager::InitOnCreation() {
   const std::string folder_path(".");
   std::unique_ptr<FolderConfig> root_config;
   VxCoreError err = LoadFolderConfig(folder_path, root_config);
-  assert(err == VXCORE_ERR_NOT_FOUND);
+  if (err == VXCORE_OK) {
+    // Root config already exists on disk — unexpected on a fresh creation
+    // path. This can happen if a prior creation attempt partially succeeded
+    // (e.g., wrote vx_notebook/contents/vx.json but crashed before completing
+    // the rest of init). Refuse rather than silently overwriting; the caller
+    // can decide whether to retry with a clean slate.
+    VXCORE_LOG_ERROR(
+        "InitOnCreation: root folder config already exists at notebook root; "
+        "refusing to overwrite. Did a prior init attempt crash mid-flight?");
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+  if (err != VXCORE_ERR_NOT_FOUND) {
+    VXCORE_LOG_ERROR(
+        "InitOnCreation: unexpected error loading root config: err=%d", err);
+    return err;
+  }
   root_config.reset(new FolderConfig(folder_path));
   err = SaveFolderConfig(folder_path, *root_config);
   if (err != VXCORE_OK) {
