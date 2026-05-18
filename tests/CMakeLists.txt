@@ -244,7 +244,8 @@ target_link_libraries(test_sync_manager_dispatch PRIVATE git_sync_test_helpers)
 # Windows DLL static-storage duplication problem.
 add_executable(test_git_sync_init test_git_sync_init.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp)
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_git_sync_init PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include
@@ -257,25 +258,22 @@ add_test(NAME test_git_sync_init COMMAND test_git_sync_init)
 
 add_executable(test_git_sync_credentials test_git_sync_credentials.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/libgit2_init.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_git_sync_credentials PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/third_party)
-target_link_libraries(test_git_sync_credentials PRIVATE libgit2package nlohmann_json)
+target_link_libraries(test_git_sync_credentials PRIVATE
+    git_sync_test_helpers
+    libgit2package
+    nlohmann_json)
 add_test(NAME test_git_sync_credentials COMMAND test_git_sync_credentials)
 
-# test_git_sync_status: T20 of git-sync-backend plan. Maps git_status_list
-# entries to SyncFileInfo. Compiles git_sync_backend.cpp directly and pulls
-# in libgit2_init.cpp / logger.cpp / file_utils.cpp via the
-# git_sync_test_helpers static library — same DLL-static-storage isolation
-# story as test_git_sync_init.
 add_executable(test_git_sync_status test_git_sync_status.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp)
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_git_sync_status PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include
@@ -309,7 +307,8 @@ add_test(NAME test_git_sync_roundtrip COMMAND test_git_sync_roundtrip)
 # test_git_sync_roundtrip — owns its own GitSyncBackend statics.
 add_executable(test_git_sync_conflicts test_git_sync_conflicts.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp)
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_git_sync_conflicts PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include
@@ -325,7 +324,8 @@ add_test(NAME test_git_sync_conflicts COMMAND test_git_sync_conflicts)
 # test_git_sync_roundtrip.
 add_executable(test_git_sync_pushpull test_git_sync_pushpull.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp)
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_git_sync_pushpull PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include
