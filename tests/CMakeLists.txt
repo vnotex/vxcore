@@ -22,6 +22,22 @@ add_vxcore_test(test_sync)
 add_vxcore_test(test_work_queue)
 add_vxcore_test(test_event_manager)
 
+# test_buffer_save_marks_dirty: T10 of auto-sync-on-save plan. Verifies that
+# vxcore_buffer_save fires file.saved events that propagate through
+# SyncManager's event subscription to mark notebooks dirty + enqueue sync
+# jobs. Uses MockSyncBackend (extra source) for backend injection without
+# touching libgit2 / network, so we cannot use the add_vxcore_test() helper
+# (it only takes a single .cpp).
+add_executable(test_buffer_save_marks_dirty
+    test_buffer_save_marks_dirty.cpp
+    mock_sync_backend.cpp)
+target_include_directories(test_buffer_save_marks_dirty PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_buffer_save_marks_dirty PRIVATE vxcore nlohmann_json)
+add_test(NAME test_buffer_save_marks_dirty COMMAND test_buffer_save_marks_dirty)
+
 
 # spike_libgit2: Phase-0 kill-switch test for the libgit2 vendoring (T1 of the
 # git-sync-backend plan). Exercises a separate gitdir/workdir + a full

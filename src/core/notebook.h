@@ -27,7 +27,7 @@ struct TagNode {
   nlohmann::json ToJson() const;
 };
 
-struct NotebookConfig {
+struct VXCORE_API NotebookConfig {
   std::string id;
   std::string name;
   std::string description;
@@ -39,7 +39,7 @@ struct NotebookConfig {
   bool sync_enabled = false;
   std::string sync_backend;
   std::string sync_remote_url;
-  int sync_interval_seconds = 300;
+  int sync_interval_seconds = 60;
 
   NotebookConfig();
 

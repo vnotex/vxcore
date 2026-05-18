@@ -211,7 +211,7 @@ int test_notebook_config_sync_fields() {
   nlohmann::json config = nlohmann::json::parse(config_json);
   ASSERT_EQ(config["syncEnabled"].get<bool>(), false);
   ASSERT_EQ(config["syncBackend"].get<std::string>(), "");
-  ASSERT_EQ(config["syncIntervalSeconds"].get<int>(), 300);
+  ASSERT_EQ(config["syncIntervalSeconds"].get<int>(), 60);
   vxcore_string_free(config_json);
 
   // Update with sync fields

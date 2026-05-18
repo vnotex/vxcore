@@ -61,7 +61,7 @@ struct SyncConfig {
   bool enabled = false;
   std::string backend;
   std::string remote_url;
-  int interval_seconds = 300;
+  int interval_seconds = 60;
   std::vector<std::string> exclude_paths = {"*.vswp", "vx_notebook/vx_sync/"};
   nlohmann::json backend_options;
 

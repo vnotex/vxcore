@@ -13,6 +13,7 @@
 namespace vxcore {
 
 class ConfigManager;
+class EventManager;
 class IBufferProvider;
 class NotebookManager;
 
@@ -83,6 +84,8 @@ class BufferManager {
   // Mark that shutdown has been called (prevents destructor from saving)
   void SetShutdownCalled(bool called) { shutdown_called_ = called; }
 
+  void SetEventManager(EventManager *event_manager) { event_manager_ = event_manager; }
+
   // Update buffer records in session config (in-memory only, no disk write)
   void UpdateSessionBuffers();
 
@@ -91,9 +94,11 @@ class BufferManager {
 
  private:
   void LoadBuffers();
+  void EmitEvent(const char *event_name, const nlohmann::json &event_data);
 
   ConfigManager *config_manager_ = nullptr;
   NotebookManager *notebook_manager_ = nullptr;
+  EventManager *event_manager_ = nullptr;
   std::map<std::string, std::unique_ptr<Buffer>> buffers_;
   bool shutdown_called_ = false;
 };

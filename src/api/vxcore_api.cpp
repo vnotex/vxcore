@@ -139,15 +139,16 @@ VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
 
     ctx->notebook_manager = std::make_unique<vxcore::NotebookManager>(ctx->config_manager.get());
     ctx->buffer_manager = std::make_unique<vxcore::BufferManager>(ctx->config_manager.get(),
-                                                                  ctx->notebook_manager.get());
+                                                                   ctx->notebook_manager.get());
     ctx->workspace_manager = std::make_unique<vxcore::WorkspaceManager>(ctx->config_manager.get(),
-                                                                        ctx->buffer_manager.get());
+                                                                         ctx->buffer_manager.get());
     ctx->template_manager = std::make_unique<vxcore::TemplateManager>(ctx->config_manager.get());
     ctx->snippet_manager = std::make_unique<vxcore::SnippetManager>(ctx->config_manager.get());
     ctx->sync_manager = std::make_unique<vxcore::SyncManager>(ctx->notebook_manager.get());
     ctx->work_queue_manager = std::make_unique<vxcore::WorkQueueManager>();
     ctx->event_manager = std::make_unique<vxcore::EventManager>();
     ctx->notebook_manager->SetEventManager(ctx->event_manager.get());
+    ctx->buffer_manager->SetEventManager(ctx->event_manager.get());
     ctx->sync_manager->SetEventManager(ctx->event_manager.get());
     ctx->sync_manager->SetWorkQueueManager(ctx->work_queue_manager.get());
 

@@ -5,6 +5,8 @@
 
 #include "buffer_provider.h"
 #include "config_manager.h"
+#include "core/event_manager.h"
+#include "core/event_names.h"
 #include "folder_manager.h"
 #include "history_manager.h"
 #include "metadata_store.h"
@@ -47,6 +49,12 @@ BufferManager::BufferManager(ConfigManager *config_manager, NotebookManager *not
 BufferManager::~BufferManager() {
   if (!shutdown_called_) {
     SaveBuffers();
+  }
+}
+
+void BufferManager::EmitEvent(const char *event_name, const nlohmann::json &data) {
+  if (event_manager_) {
+    event_manager_->Emit(event_name, data);
   }
 }
 
@@ -392,6 +400,13 @@ VxCoreError BufferManager::SaveBuffer(const std::string &id) {
   // Clean up backup file after successful save
   if (buffer->GetState() == VXCORE_BUFFER_NORMAL) {
     buffer->DiscardBackup();
+  }
+
+  // Emit file.saved for sync + plugin subscribers (skip external/non-notebook buffers).
+  const std::string nb_id = buffer->GetNotebookId();
+  if (!nb_id.empty()) {
+    EmitEvent(events::kFileSaved,
+              {{"notebookId", nb_id}, {"path", buffer->GetFilePath()}});
   }
 
   return VXCORE_OK;
