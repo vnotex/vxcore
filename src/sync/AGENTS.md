@@ -331,6 +331,70 @@ The following are explicitly **out of scope for v1** and tracked separately:
 
 See `docs/sync-evolution-plan.md` for implementation history and remaining ideas.
 
+## Gitkeep Injection (Git Sync Backend)
+
+`GitSyncBackend::EnsureGitkeepFiles()` is a pre-stage sweep called from `Sync()` and `Push()` immediately before `StageAll()`. It writes `.gitkeep` marker files into empty user folders so git preserves the folder structure on push + clone, and removes those markers when a folder later gains real content. Folders are otherwise dropped silently by git, so without this sweep an empty VNote folder vanishes from the remote.
+
+### Lifecycle
+
+- **Just-in-time at sync.** No event subscriptions, no `QFileSystemWatcher`. The sweep walks the notebook tree once per `Sync()`/`Push()` call, while `op_mutex_` is held by the caller.
+- **No-op on idempotent state.** Re-running sync without any tree change makes zero filesystem mutations.
+- **Always-on for sync-enabled notebooks.** No per-notebook setting, no user-facing toggle.
+- **Exceptions never escape.** All filesystem operations use `std::error_code` overloads; the iterator loop is wrapped in `try/catch`. Marker write/remove failures are logged via `VXCORE_LOG_WARN` and the sweep continues — the next sync retries.
+
+### Marker ownership (CRITICAL for data safety)
+
+| Marker file size | Treated as | Auto-cleanup eligible? |
+|---|---|---|
+| Exactly 0 bytes | VNote-owned (we wrote it) | YES — removed when folder becomes non-empty |
+| Any non-zero size | User-authored | **NEVER** removed, regardless of folder contents |
+
+This protects users who manually create a `.gitkeep` with custom content (e.g., a comment explaining why the folder must exist). The size check lives in `IsOwnedMarker()` at the top of `git_sync_backend.cpp`. Do NOT relax this rule without a deliberate plan-level decision.
+
+### Skip-list (folders that NEVER receive `.gitkeep`)
+
+| Pattern | Scope | Reason |
+|---|---|---|
+| `vx_notebook/...` | **Root-relative** (first path component only) | vxcore metadata; the `vx.json` files inside `vx_notebook/contents/` keep that subtree non-empty already |
+| `vx_recycle_bin/...` | **Root-relative** (first path component only) | Recycle-bin policy |
+| Notebook root itself (`""` or `"."`) | Always | Adding `.gitkeep` at root would trip the both-non-empty guard in `GitSyncBackend::Initialize()` against fresh remotes |
+| Any component starting with `.` | Every depth | Hidden directories — not VNote-managed |
+| Any component starting with `_v_` | Every depth | Reserved prefix |
+
+**Root-relative scope** means user folders nested with reserved names (e.g., `MyNotes/vx_notebook/`) ARE eligible for `.gitkeep` — those are legitimate user data. Only the actual top-level `vx_notebook/` and `vx_recycle_bin/` are skipped.
+
+### Effective emptiness
+
+A folder counts as "effectively empty" (and thus eligible for a `.gitkeep` seed) when its single-level `directory_iterator` yields zero entries that satisfy either:
+
+- **(a)** Regular file NOT matching `SyncConfig::exclude_paths` globs AND NOT named `.gitkeep`, OR
+- **(b)** Sub-directory whose POSIX relative path is NOT in the skip-list above.
+
+Consequences:
+- Folder containing only `*.vswp` (matches default `exclude_paths`) → effectively empty → gets `.gitkeep`.
+- Folder containing only `.cache/` (dot-prefix, skipped) → effectively empty → gets `.gitkeep`.
+- Folder `A` containing only `A/B/` where `B` itself has a `.gitkeep` → A is NOT effectively empty (B counts as content) → A does NOT get its own marker.
+
+Each folder is its own decision — the recursive walker naturally creates markers at the deepest empty point and the parent inherits "non-empty" status via the marker-bearing child.
+
+### Implementation pointers
+
+- File-local helpers in the anonymous namespace of `git_sync_backend.cpp` (~line 89-205): `kGitkeepFilename`, `GitkeepSkipPrefixes()`, `ShouldSkipForGitkeep()`, `IsOwnedMarker()`, `IsEffectivelyEmpty()`.
+- Method body: `GitSyncBackend::EnsureGitkeepFiles()` (~line 840) — uses the two-pass walker pattern documented in [libs/vxcore/AGENTS.md → Common Patterns → Two-pass directory walker](../../AGENTS.md#two-pass-directory-walker-recursive_directory_iterator).
+- Call sites: `Sync()` and `Push()`, each contains exactly one `EnsureGitkeepFiles();` line immediately before `StageAll(...)`. Both methods hold `op_mutex_` at the insertion point, so no extra synchronization is needed.
+- Header declaration: `void EnsureGitkeepFiles();` in the existing `private:` block of `git_sync_backend.h`.
+- The existing staging callback (the one that excludes `vx_notebook/vx_sync/`) does NOT filter `.gitkeep` — verified during T5 of the gitkeep plan; no exemption clause needed.
+
+### Tests
+
+| Test target | Cases | Covers |
+|---|---|---|
+| `tests/test_gitkeep_basic.cpp` | 10 | Empty folder seeding, nested empty, skip-list (vx_notebook, vx_recycle_bin, dot, `_v_`, root), idempotence, nested reserved names |
+| `tests/test_gitkeep_cleanup.cpp` | 7 | Auto-remove on real-file-added, user-authored preservation, owned-preserved-when-still-empty, excluded-only effective emptiness, skipped-subdir effective emptiness, gitkeep-bearing-subdir parent, zero-byte-only cleanup distinction |
+| `tests/test_gitkeep_roundtrip.cpp` | 1 | Full push → bare-remote → clone-elsewhere; empty folder survives with `.gitkeep` in clone, no `.gitkeep` at clone root, no `.gitkeep` under `vx_notebook/` or `vx_recycle_bin/` |
+
+All three test targets follow the [standalone test pattern](../../AGENTS.md#standalone-test-pattern-tests-touching-libgit2--gitsyncbackend) documented in `libs/vxcore/AGENTS.md` (direct-compile `git_sync_backend.cpp`, link `git_sync_test_helpers`, local `vxcore_set_test_mode` shim, `clone_bare_to_workdir` instead of `git_clone()`).
+
 ## How to Add a New Sync Backend
 
 ### Step 1: Create the Backend Class

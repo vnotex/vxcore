@@ -40,6 +40,34 @@ ctest --test-dir build -C Debug -V
   - Disabled: Uses real AppData paths (`%APPDATA%\VNote`, `%LOCALAPPDATA%\VNote`)
   - CLI tools do NOT enable test mode (use production paths)
 
+### Test binary build patterns
+
+Two CMake patterns coexist in `libs/vxcore/tests/CMakeLists.txt`:
+
+| Pattern | Helper | When to use |
+|---|---|---|
+| **Link via `vxcore.dll`** | `add_vxcore_test(test_name)` | Tests that only exercise the public C API (`vxcore_*` functions). The helper compiles `test_name.cpp`, links `vxcore`, and registers the ctest entry. |
+| **Direct-compile** | Manual `add_executable(...)` listing the under-test `.cpp` as a source | Tests that call C++-internal symbols not decorated with `VXCORE_API`. **All `GitSyncBackend` methods fall in this bucket** — `Initialize`, `Sync`, `Push`, etc. are not exported. Using `add_vxcore_test` for these yields `LNK2019` unresolved-external errors. |
+
+**Transitive-utility rule (CRITICAL for direct-compile tests):** when a test compiles `src/sync/git_sync_backend.cpp` (or any other internal .cpp) directly, it MUST also compile every utility `.cpp` that source transitively references. The `git_sync_test_helpers` STATIC library bundles `libgit2_init.cpp` + `logger.cpp` + `file_utils.cpp` — do NOT add those again (ODR violations), but anything else (e.g., `string_utils.cpp` for `vxcore::MatchesPatterns`) must be added explicitly to every affected target.
+
+Whenever you add a new `utils/*.h` call from inside `git_sync_backend.cpp` (or similar shared sources), audit EVERY `add_executable` block in `tests/CMakeLists.txt` that lists that source — each one needs the new utility `.cpp` added or it fails to link with `LNK2019`. The `test_gitkeep_*` plan caught this lesson the hard way: T7 wired `EnsureGitkeepFiles()` into `Sync()`/`Push()` but only updated 3 of 8 affected test targets; the remaining 5 (`test_git_sync_init`/`credentials`/`status`/`conflicts`/`pushpull`) needed a follow-up commit to compile from clean.
+
+### Test isolation on Windows
+
+- All vxcore tests share `%TEMP%\vxcore_test_data` + `%TEMP%\vxcore_test_config`. When run as the full ctest suite, leftover state plus Windows file-locks cascade: tests like `test_notebook`, `test_folder`, `test_history`, `test_template` commonly fail in the full suite but PASS individually after a clean temp dir.
+- The full-suite failures are NOT regressions per se — verify by running the failing test alone after `Remove-Item "$env:TEMP\vxcore_test_data" -Recurse -Force` + `Remove-Item "$env:TEMP\vxcore_test_config" -Recurse -Force`.
+- **Do NOT wipe the `vxcore_test_data` parent directory inside a QA script.** libgit2's `GIT_REPOSITORY_INIT_MKPATH` does not reliably create grandparent directories on Windows in this environment; libgit2-backed tests (including `test_git_sync_roundtrip` and the `test_gitkeep_*` set) rely on the parent persisting between runs. If you must clean state, only wipe leaf subdirectories.
+
+### Standalone test pattern (tests touching libgit2 / GitSyncBackend)
+
+For tests that drive `GitSyncBackend` end-to-end via libgit2 (e.g., `test_git_sync_*`, `test_gitkeep_*`):
+
+- `main()` must start with `vxcore_set_test_mode(1);` to redirect AppData → `%TEMP%`.
+- Tests that do NOT link `vxcore.dll` (because they direct-compile internal sources) must provide a local anonymous-namespace no-op shim for `vxcore_set_test_mode` so the call links — see `test_gitkeep_basic.cpp` for the canonical shim (a `void vxcore_set_test_mode(int) {}` stub in an anonymous namespace).
+- Link the `git_sync_test_helpers` STATIC library (defined in `tests/CMakeLists.txt`) for the libgit2 fixture API: `create_bare_repo(path) -> std::string`, `commit_file(...)`, `git_head_sha(...)`, `git_status_clean(...)`.
+- **NEVER call libgit2's `git_clone()` for local `file://` remotes on Windows** — it hangs. Use the init+remote+fetch+checkout sequence instead: `git_repository_init_ext` → `git_remote_create("origin", url)` → `git_remote_fetch` → `git_reference_lookup("refs/remotes/origin/main")` → `git_reference_peel` → `git_checkout_tree(FORCE)` → `git_reference_create("refs/heads/main")` → `git_repository_set_head`. See `clone_bare_to_workdir` in `test_gitkeep_roundtrip.cpp` for the canonical implementation; existing comments in `test_git_sync_init.cpp` and `test_git_sync_helpers.cpp` document the rationale.
+
 ## Code Style
 
 - **Language**: C++17 with C ABI for public API
@@ -361,3 +389,46 @@ VxCoreError MyFunction(const char* input, char** output) {
   }
 }
 ```
+
+### Two-pass directory walker (`recursive_directory_iterator`)
+
+When you need to mutate the filesystem during a recursive traversal, **never** mutate during iteration — `std::filesystem::recursive_directory_iterator` can invalidate. Always collect into a `std::vector<fs::path>` first, then mutate in a second pass:
+
+```cpp
+std::error_code ec;
+std::vector<std::filesystem::path> to_modify;
+
+// Pass 1: collect.
+try {
+  for (auto it = std::filesystem::recursive_directory_iterator(
+           root, std::filesystem::directory_options::skip_permission_denied, ec);
+       it != std::filesystem::recursive_directory_iterator();
+       it.increment(ec)) {
+    if (ec) { VXCORE_LOG_WARN("walker: %s", ec.message().c_str()); ec.clear(); continue; }
+    if (ShouldSkip(it->path())) {
+      it.disable_recursion_pending();  // do NOT descend into skipped dir
+      continue;
+    }
+    if (Matches(it->path())) to_modify.push_back(it->path());
+  }
+} catch (const std::exception &e) {
+  VXCORE_LOG_WARN("walker aborted: %s", e.what());
+  return;
+}
+
+// Pass 2: mutate.
+for (const auto &p : to_modify) {
+  std::error_code rm_ec;
+  std::filesystem::remove(p, rm_ec);
+  if (rm_ec) VXCORE_LOG_WARN("remove %s: %s",
+                              PathToUtf8(p).c_str(), rm_ec.message().c_str());
+}
+```
+
+Rules:
+- Use `directory_options::skip_permission_denied` + `std::error_code` overloads — no exceptions out of the walker.
+- Default iterator does NOT follow symlinks — leave the option flags alone unless you explicitly want symlink traversal (it's almost never what you want).
+- Call `disable_recursion_pending()` immediately after detecting a skip-listed directory so the walker doesn't descend into it (saves work and prevents touching things like `vx_notebook/vx_sync/`).
+- Wrap path strings with `PathFromUtf8(...)` at every `std::filesystem` boundary (Windows UTF-8 safety — see [UTF-8 Path Safety](#utf-8-path-safety-critical-on-windows) above).
+
+See `GitSyncBackend::EnsureGitkeepFiles()` in `src/sync/git_sync_backend.cpp` for a real production example.
