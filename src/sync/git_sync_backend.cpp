@@ -933,6 +933,7 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
   };
 
   emit(SyncState::kStaging, "Staging", 0.10f);
+  EnsureGitkeepFiles();
   VxCoreError err = StageAll();
   if (err != VXCORE_OK) {
     return err;
@@ -1036,6 +1037,7 @@ VxCoreError GitSyncBackend::Push(SyncProgressCallback callback, void *userdata) 
   };
 
   emit(SyncState::kStaging, "Staging", 0.20f);
+  EnsureGitkeepFiles();
   VxCoreError err = StageAll();
   if (err != VXCORE_OK) {
     return err;

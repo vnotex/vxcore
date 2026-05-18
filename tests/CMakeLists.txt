@@ -341,7 +341,8 @@ add_test(NAME test_git_sync_pushpull COMMAND test_git_sync_pushpull)
 # idempotent. Same compile pattern as test_git_sync_roundtrip.
 add_executable(test_gitkeep_basic test_gitkeep_basic.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp)
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_gitkeep_basic PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include
@@ -357,7 +358,8 @@ add_test(NAME test_gitkeep_basic COMMAND test_gitkeep_basic)
 # never deleted), effective-emptiness for excluded-only folders.
 add_executable(test_gitkeep_cleanup test_gitkeep_cleanup.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp)
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_gitkeep_cleanup PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include
@@ -372,7 +374,8 @@ add_test(NAME test_gitkeep_cleanup COMMAND test_gitkeep_cleanup)
 # roundtrip via libgit2; verifies empty folders survive on the remote.
 add_executable(test_gitkeep_roundtrip test_gitkeep_roundtrip.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp)
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_gitkeep_roundtrip PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include
