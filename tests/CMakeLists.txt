@@ -335,6 +335,53 @@ target_link_libraries(test_git_sync_pushpull PRIVATE
     nlohmann_json)
 add_test(NAME test_git_sync_pushpull COMMAND test_git_sync_pushpull)
 
+# test_gitkeep_basic: gitkeep injection plan — verifies .gitkeep is added
+# to empty user folders during sync, respects the skip-list, and is
+# idempotent. Same compile pattern as test_git_sync_roundtrip.
+add_executable(test_gitkeep_basic test_gitkeep_basic.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp)
+target_include_directories(test_gitkeep_basic PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_gitkeep_basic PRIVATE
+    git_sync_test_helpers
+    libgit2package
+    nlohmann_json)
+add_test(NAME test_gitkeep_basic COMMAND test_gitkeep_basic)
+
+# test_gitkeep_cleanup: gitkeep injection plan — auto-cleanup when folder
+# becomes non-empty, marker-ownership preservation (non-empty .gitkeep
+# never deleted), effective-emptiness for excluded-only folders.
+add_executable(test_gitkeep_cleanup test_gitkeep_cleanup.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp)
+target_include_directories(test_gitkeep_cleanup PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_gitkeep_cleanup PRIVATE
+    git_sync_test_helpers
+    libgit2package
+    nlohmann_json)
+add_test(NAME test_gitkeep_cleanup COMMAND test_gitkeep_cleanup)
+
+# test_gitkeep_roundtrip: gitkeep injection plan — full push + clone
+# roundtrip via libgit2; verifies empty folders survive on the remote.
+add_executable(test_gitkeep_roundtrip test_gitkeep_roundtrip.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp)
+target_include_directories(test_gitkeep_roundtrip PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_gitkeep_roundtrip PRIVATE
+    git_sync_test_helpers
+    libgit2package
+    nlohmann_json)
+add_test(NAME test_gitkeep_roundtrip COMMAND test_gitkeep_roundtrip)
+
 # test_sync_credentials_api: T1+T2 of notebook-git-sync-ui plan. Exercises the
 # C ABI wrappers vxcore_sync_set_credentials and vxcore_sync_enable_with_credentials
 # end-to-end against a real libgit2 file:// bare-repo fixture. Reuses the
