@@ -20,6 +20,7 @@
 
 set(VXCORE_GIT_SYNC_SOURCES_RELATIVE
     sync/git/libgit2_init.cpp
+    sync/git/git_config_fixer.cpp
     sync/git/git_defaults.cpp
     sync/git/git_error_translator.cpp
     sync/git_sync_backend.cpp
