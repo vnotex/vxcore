@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "sync/git/git_config_fixer.h"
+#include "sync/git/git_credential_callback.h"
 #include "sync/git/git_defaults.h"
 #include "sync/git/git_error_translator.h"
 #include "sync/git/gitkeep_sweeper.h"
@@ -223,8 +224,8 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
       }
 
       git_fetch_options fopts = GIT_FETCH_OPTIONS_INIT;
-      fopts.callbacks.credentials = &GitSyncBackendCredentialCb;
-      fopts.callbacks.payload = this;
+      GitCredentialPayload pl{credentials_.personal_access_token};
+      fopts.callbacks = MakeRemoteCallbacks(&pl);
 
       rc = git_remote_fetch(remote, /*refspecs=*/nullptr, &fopts,
                             "vnote initial fetch");
@@ -492,8 +493,8 @@ bool GitSyncBackend::RemoteHasRefs() {
   }
 
   git_remote_callbacks cb = GIT_REMOTE_CALLBACKS_INIT;
-  cb.credentials = &GitSyncBackendCredentialCb;
-  cb.payload = this;
+  GitCredentialPayload pl{credentials_.personal_access_token};
+  cb = MakeRemoteCallbacks(&pl);
 
   rc = git_remote_connect(remote, GIT_DIRECTION_FETCH, &cb,
                           /*proxy_opts=*/nullptr, /*custom_headers=*/nullptr);
@@ -996,8 +997,8 @@ VxCoreError GitSyncBackend::FetchOrigin() {
   }
 
   git_fetch_options fopts = GIT_FETCH_OPTIONS_INIT;
-  fopts.callbacks.credentials = &GitSyncBackendCredentialCb;
-  fopts.callbacks.payload = this;
+  GitCredentialPayload pl{credentials_.personal_access_token};
+  fopts.callbacks = MakeRemoteCallbacks(&pl);
 
   rc = git_remote_fetch(remote, /*refspecs=*/nullptr, &fopts,
                         "vnote sync fetch");
@@ -1238,8 +1239,8 @@ VxCoreError GitSyncBackend::PushOrigin() {
   }
 
   git_push_options popts = GIT_PUSH_OPTIONS_INIT;
-  popts.callbacks.credentials = &GitSyncBackendCredentialCb;
-  popts.callbacks.payload = this;
+  GitCredentialPayload pl{credentials_.personal_access_token};
+  popts.callbacks = MakeRemoteCallbacks(&pl);
 
   git_reference *head_ref = nullptr;
   rc = git_repository_head(&head_ref, repo_);
@@ -1737,28 +1738,6 @@ int GitSyncBackend::WriteDefaultIgnoreAndAttributesForTesting(const std::string 
 
 VxCoreError GitSyncBackend::TranslateGitErrorForTesting(int git_rc) {
   return vxcore::TranslateGitError(git_rc);
-}
-
-// T27: libgit2 credential callback. v1 only honors PAT (HTTPS) and anonymous;
-// the legacy SyncCredentials::username/password fields are intentionally
-// ignored here (forbidden by plan guardrails). Returning GIT_PASSTHROUGH lets
-// libgit2 try the next credential type or fail with an auth error which T28
-// then translates.
-int GitSyncBackendCredentialCb(git_credential **out, const char *url,
-                               const char *username_from_url,
-                               unsigned int allowed_types, void *payload) {
-  (void)url;
-  (void)username_from_url;
-  auto *self = static_cast<GitSyncBackend *>(payload);
-  if (self == nullptr) {
-    return GIT_PASSTHROUGH;
-  }
-  if (!self->credentials_.personal_access_token.empty() &&
-      (allowed_types & GIT_CREDENTIAL_USERPASS_PLAINTEXT) != 0) {
-    return git_credential_userpass_plaintext_new(
-        out, "x-access-token", self->credentials_.personal_access_token.c_str());
-  }
-  return GIT_PASSTHROUGH;
 }
 
 }  // namespace vxcore

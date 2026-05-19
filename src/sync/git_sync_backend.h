@@ -11,16 +11,8 @@
 // Forward declarations to keep libgit2 types out of the public header.
 typedef struct git_repository git_repository;
 struct git_rebase;
-struct git_credential;
 
 namespace vxcore {
-
-// T27 credential callback. File-scope (vxcore-namespace) so it can be passed
-// directly to libgit2's git_remote_callbacks::credentials. Exported so tests
-// can invoke it through the DLL boundary.
-VXCORE_API int GitSyncBackendCredentialCb(struct git_credential **out, const char *url,
-                                          const char *username_from_url,
-                                          unsigned int allowed_types, void *payload);
 
 // Concrete ISyncBackend implementation backed by libgit2.
 //
@@ -115,11 +107,6 @@ class GitSyncBackend : public ISyncBackend {
   // No-op (returns OK) if no rebase is in progress. Caller must hold
   // op_mutex_ and have repo_ open.
   VxCoreError ContinueRebaseAfterResolution();
-
-  // T27 credential callback friend; static C-style libgit2 callback needs to read credentials_.
-  friend int GitSyncBackendCredentialCb(struct git_credential **out, const char *url,
-                                        const char *username_from_url,
-                                        unsigned int allowed_types, void *payload);
 
   // T18: apply baseline repo-level config (filemode, autocrlf, gpgsign,
   // user.name, user.email). Caller must hold op_mutex_ and have repo_ open.

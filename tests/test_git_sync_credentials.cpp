@@ -11,6 +11,7 @@
 #include <string>
 
 #include "sync/git_sync_backend.h"
+#include "sync/git/git_credential_callback.h"
 #include "sync/git/libgit2_init.h"
 #include "sync/sync_types.h"
 #include "test_utils.h"
@@ -24,10 +25,11 @@ int test_git_credential_pat_used_when_set() {
   creds.personal_access_token = "secret_pat_xyz";
   ASSERT_EQ(backend.SetCredentials(creds), VXCORE_OK);
 
+  vxcore::GitCredentialPayload payload{creds.personal_access_token};
   git_credential *cred = nullptr;
   int rc = vxcore::GitSyncBackendCredentialCb(
       &cred, "https://github.com/example/repo.git", nullptr,
-      GIT_CREDENTIAL_USERPASS_PLAINTEXT, &backend);
+      GIT_CREDENTIAL_USERPASS_PLAINTEXT, &payload);
   ASSERT_EQ(rc, 0);
   ASSERT_NOT_NULL(cred);
   git_credential_free(cred);
@@ -41,10 +43,11 @@ int test_git_credential_anonymous_returns_passthrough() {
   vxcore::GitSyncBackend backend;
   // No credentials set -> personal_access_token is empty.
 
+  vxcore::GitCredentialPayload empty_payload{};
   git_credential *cred = nullptr;
   int rc = vxcore::GitSyncBackendCredentialCb(
       &cred, "https://github.com/example/repo.git", nullptr,
-      GIT_CREDENTIAL_USERPASS_PLAINTEXT, &backend);
+      GIT_CREDENTIAL_USERPASS_PLAINTEXT, &empty_payload);
   ASSERT_EQ(rc, GIT_PASSTHROUGH);
   ASSERT_NULL(cred);
 
@@ -53,9 +56,17 @@ int test_git_credential_anonymous_returns_passthrough() {
   vxcore::SyncCredentials creds;
   creds.personal_access_token = "tok";
   ASSERT_EQ(backend.SetCredentials(creds), VXCORE_OK);
+  vxcore::GitCredentialPayload payload{creds.personal_access_token};
   rc = vxcore::GitSyncBackendCredentialCb(
       &cred, "https://github.com/example/repo.git", nullptr,
-      /*allowed_types=*/0u, &backend);
+      /*allowed_types=*/0u, &payload);
+  ASSERT_EQ(rc, GIT_PASSTHROUGH);
+  ASSERT_NULL(cred);
+
+  // And: null payload -> passthrough (defensive).
+  rc = vxcore::GitSyncBackendCredentialCb(
+      &cred, "https://github.com/example/repo.git", nullptr,
+      GIT_CREDENTIAL_USERPASS_PLAINTEXT, nullptr);
   ASSERT_EQ(rc, GIT_PASSTHROUGH);
   ASSERT_NULL(cred);
 
