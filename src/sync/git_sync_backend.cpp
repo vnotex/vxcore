@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "sync/git/git_error_translator.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/string_utils.h"
@@ -204,54 +205,7 @@ bool IsEffectivelyEmpty(const std::filesystem::path &dir,
   return true;  // folder IS effectively empty
 }
 
-// T28: translate libgit2 return codes / error classes to VxCoreError. Always
-// reads git_error_last() (and logs it) so the original libgit2 message is
-// preserved in the log even when we collapse many klass values into a single
-// VxCoreError. libgit2 v1.7.x has no GIT_ERROR_TCP / GIT_ERROR_NOTFOUND klass
-// constants; we rely on the return-code constants (GIT_ENOTFOUND,
-// GIT_EINVALIDSPEC) for those cases instead.
-VxCoreError TranslateGitError(int git_rc) {
-  if (git_rc >= 0) {
-    return VXCORE_OK;
-  }
-
-  const git_error *err = git_error_last();
-  const char *message = (err && err->message) ? err->message : "(no message)";
-  int klass = err ? err->klass : 0;
-  VXCORE_LOG_ERROR("libgit2 error rc=%d klass=%d: %s", git_rc, klass, message);
-
-  if (git_rc == GIT_EAUTH) {
-    return VXCORE_ERR_SYNC_AUTH_FAILED;
-  }
-
-  if (klass == GIT_ERROR_HTTP) {
-    if (message != nullptr &&
-        (std::strstr(message, "401") != nullptr ||
-         std::strstr(message, "authenticat") != nullptr ||
-         std::strstr(message, "credentials") != nullptr)) {
-      return VXCORE_ERR_SYNC_AUTH_FAILED;
-    }
-    return VXCORE_ERR_SYNC_NETWORK;
-  }
-
-  if (klass == GIT_ERROR_NET || klass == GIT_ERROR_SSL || klass == GIT_ERROR_SSH) {
-    return VXCORE_ERR_SYNC_NETWORK;
-  }
-
-  if (klass == GIT_ERROR_MERGE || klass == GIT_ERROR_CHECKOUT) {
-    return VXCORE_ERR_SYNC_CONFLICT;
-  }
-
-  if (git_rc == GIT_ENOTFOUND) {
-    return VXCORE_ERR_NOT_FOUND;
-  }
-
-  if (klass == GIT_ERROR_INVALID || git_rc == GIT_EINVALIDSPEC) {
-    return VXCORE_ERR_INVALID_PARAM;
-  }
-
-  return VXCORE_ERR_UNKNOWN;
-}
+// T28: TranslateGitError moved to sync/git/git_error_translator.{h,cpp}.
 
 }  // namespace
 
@@ -2122,7 +2076,7 @@ int GitSyncBackend::WriteDefaultIgnoreAndAttributesForTesting(const std::string 
 }
 
 VxCoreError GitSyncBackend::TranslateGitErrorForTesting(int git_rc) {
-  return TranslateGitError(git_rc);
+  return vxcore::TranslateGitError(git_rc);
 }
 
 // T27: libgit2 credential callback. v1 only honors PAT (HTTPS) and anonymous;
