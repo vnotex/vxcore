@@ -11,7 +11,6 @@
 #include <string>
 
 #include "sync/git/git_error_translator.h"
-#include "sync/git/git_error_translator.h"
 #include "sync/git/git_sync_backend.h"
 #include "sync/git/git_credential_callback.h"
 #include "sync/git/libgit2_init.h"

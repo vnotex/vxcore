@@ -2,7 +2,6 @@
 
 #include <git2.h>
 
-#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -12,24 +11,14 @@
 
 #include "sync/git/git_config_fixer.h"
 #include "sync/git/git_conflict_resolver.h"
-#include "sync/git/git_repo_bootstrap.h"
-#include "sync/git/git_credential_callback.h"
-#include "sync/git/git_defaults.h"
 #include "sync/git/git_error_translator.h"
+#include "sync/git/git_repo_bootstrap.h"
 #include "sync/git/git_sync_pipeline.h"
 #include "sync/git/gitkeep_sweeper.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
-#include "utils/string_utils.h"
-#include "utils/utils.h"
 
 namespace vxcore {
-
-namespace {
-
-// T28: TranslateGitError moved to sync/git/git_error_translator.{h,cpp}.
-
-}  // namespace
 
 GitSyncBackend::GitSyncBackend() = default;
 
@@ -73,7 +62,6 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
     return VXCORE_ERR_UNKNOWN;
   }
 
-  // Pre-open fix moved to sync/git/git_config_fixer.{h,cpp}.
   RebindCoreWorktree(root_folder);
 
   // Branch 1 (T14): re-open an existing libgit2 repo at <git_dir_>.
@@ -175,8 +163,6 @@ VxCoreError GitSyncBackend::Shutdown() {
   initialized_ = false;
   return VXCORE_OK;
 }
-
-// T6: gitkeep sweep moved to sync/git/gitkeep_sweeper.{h,cpp}.
 
 VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) {
   std::unique_lock<std::mutex> lock(op_mutex_, std::try_to_lock);

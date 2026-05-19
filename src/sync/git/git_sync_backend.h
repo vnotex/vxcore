@@ -47,11 +47,15 @@ class GitSyncBackend : public ISyncBackend {
                               SyncConflictResolution resolution) override;
 
   // Construct a GitSyncPipeline wired to this backend's internal repo and
-  // config. Returned pipeline borrows references to backend state — caller
-  // must not let the backend outlive the returned pipeline.
+  // config. The returned pipeline borrows references to backend state, so
+  // the pipeline MUST NOT outlive this GitSyncBackend instance. Holding the
+  // returned unique_ptr beyond the backend's lifetime is undefined behavior.
   //
-  // Returns nullptr if the backend has not been initialized. No mutex held
-  // by the factory itself; callers serialize their own usage.
+  // Returns nullptr if the backend has not been initialized. op_mutex_ is
+  // held only during factory construction and released before return — the
+  // caller is responsible for serializing pipeline use against concurrent
+  // Initialize() / Shutdown() on the same backend (single-threaded callers
+  // need no extra synchronization).
   //
   // Exposed primarily for tests that drive Sync sub-phases (Stage / Commit /
   // Fetch / Rebase / Push) in isolation. Production code constructs pipelines
