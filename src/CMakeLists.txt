@@ -1,3 +1,5 @@
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/git_sync_sources.cmake)
+
 set(VXCORE_PUBLIC_HEADERS
     ${PROJECT_SOURCE_DIR}/include/vxcore/vxcore.h
     ${PROJECT_SOURCE_DIR}/include/vxcore/vxcore_types.h
@@ -56,8 +58,7 @@ set(VXCORE_SOURCES
     search/rg_search_backend.cpp
     search/simple_search_backend.cpp
     sync/sync_manager.cpp
-    sync/libgit2_init.cpp
-    sync/git_sync_backend.cpp
+    ${VXCORE_GIT_SYNC_SOURCES_RELATIVE}
     utils/utils.cpp
     utils/string_utils.cpp
     utils/base64.cpp
