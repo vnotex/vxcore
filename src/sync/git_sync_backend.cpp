@@ -14,6 +14,7 @@
 
 #include "utils/file_utils.h"
 #include "utils/logger.h"
+#include "utils/string_utils.h"
 #include "utils/utils.h"
 
 namespace vxcore {
@@ -81,6 +82,126 @@ std::string BuildGitignoreContent(const SyncConfig &config) {
     }
   }
   return out;
+}
+
+// ---------- gitkeep injection helpers ----------
+
+static constexpr const char kGitkeepFilename[] = ".gitkeep";
+
+// Root-relative POSIX prefixes that are always skipped.
+static const std::vector<std::string> &GitkeepSkipPrefixes() {
+  static const std::vector<std::string> prefixes = {
+    "vx_notebook",
+    "vx_recycle_bin",
+  };
+  return prefixes;
+}
+
+// True if rel_posix is the notebook root ("" or "."), begins with any
+// skip-prefix at the ROOT only (e.g. "vx_notebook" or "vx_notebook/..."
+// but NOT "MyFolder/vx_notebook/..."), or starts with "." or "_v_" at any
+// component (component-prefix check, not substring).
+bool ShouldSkipForGitkeep(const std::string &rel_posix) {
+  if (rel_posix.empty() || rel_posix == ".") {
+    return true;
+  }
+
+  // Split on '/' and check components
+  std::vector<std::string> components;
+  size_t start = 0;
+  for (size_t i = 0; i <= rel_posix.size(); ++i) {
+    if (i == rel_posix.size() || rel_posix[i] == '/') {
+      if (i > start) {
+        components.push_back(rel_posix.substr(start, i - start));
+      }
+      start = i + 1;
+    }
+  }
+
+  for (size_t idx = 0; idx < components.size(); ++idx) {
+    const auto &comp = components[idx];
+
+    // First component only: check skip-prefixes
+    if (idx == 0) {
+      for (const auto &prefix : GitkeepSkipPrefixes()) {
+        if (comp == prefix) {
+          return true;
+        }
+      }
+    }
+
+    // Every component: check for "." or "_v_" prefix
+    if (comp.rfind(".", 0) == 0 || comp.rfind("_v_", 0) == 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// True iff the file at gitkeep_path exists, is a regular file, and is
+// exactly 0 bytes (i.e., VNote-owned). Errors are reported via ec; on
+// error returns false (do not treat as owned).
+bool IsOwnedMarker(const std::filesystem::path &gitkeep_path, std::error_code &ec) {
+  auto s = std::filesystem::status(gitkeep_path, ec);
+  if (ec) {
+    ec.clear();
+    return false;
+  }
+  if (!std::filesystem::is_regular_file(s)) {
+    return false;
+  }
+  auto sz = std::filesystem::file_size(gitkeep_path, ec);
+  if (ec) {
+    return false;
+  }
+  return sz == 0;
+}
+
+// True iff dir's immediate children contain ZERO entries that are:
+//   (a) regular files not matching exclude_globs and not named ".gitkeep", OR
+//   (b) sub-directories whose POSIX-relative path (rel_posix + "/" + name) is
+//       NOT skipped per ShouldSkipForGitkeep.
+// Errors during iteration captured into ec; on error returns false.
+bool IsEffectivelyEmpty(const std::filesystem::path &dir,
+                        const std::string &rel_posix,
+                        const std::vector<std::string> &exclude_globs,
+                        std::error_code &ec) {
+  std::filesystem::directory_iterator it(dir, ec);
+  if (ec) {
+    ec.clear();
+    return false;
+  }
+
+  for (const auto &entry : it) {
+    std::error_code local_ec;
+
+    if (entry.is_regular_file(local_ec)) {
+      const auto entry_name_utf8 = PathFilename(PathToUtf8(entry.path()));
+      if (entry_name_utf8 == kGitkeepFilename) {
+        continue;  // never counts
+      }
+      if (MatchesPatterns(entry_name_utf8, exclude_globs)) {
+        continue;  // excluded by pattern
+      }
+      return false;  // a real file that counts
+    }
+
+    if (entry.is_directory(local_ec)) {
+      const auto entry_name_utf8 = PathFilename(PathToUtf8(entry.path()));
+      const std::string child_rel = rel_posix.empty()
+          ? entry_name_utf8
+          : rel_posix + "/" + entry_name_utf8;
+      if (ShouldSkipForGitkeep(child_rel)) {
+        continue;
+      }
+      return false;  // a real subdirectory that counts
+    }
+
+    // Symlink or special file — skip it
+  }
+
+  return true;  // folder IS effectively empty
 }
 
 // T28: translate libgit2 return codes / error classes to VxCoreError. Always
