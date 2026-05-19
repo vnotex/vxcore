@@ -70,10 +70,19 @@ Every SyncManager method that operates on a notebook follows this pattern:
 | `sync_backend.h` | `ISyncBackend` pure virtual class (9 methods including `SetCredentials`) |
 | `sync_manager.h` | `SyncManager` class: per-notebook dispatch, dirty tracking via `EventManager` |
 | `sync_manager.cpp` | `SyncManager` implementation (validation, state management, event subscription, dirty tracking) |
-| `git_sync_backend.h` | `GitSyncBackend` class declaration (inherits `ISyncBackend`, libgit2-based) |
-| `git_sync_backend.cpp` | Implementation: stage/commit/fetch/rebase/push, conflict handling |
-| `libgit2_init.h` | `LibGit2Init` RAII helper that calls `git_libgit2_init`/`shutdown` |
-| `libgit2_init.cpp` | Reference-counted `git_libgit2_init` wrapper (thread-safe) |
+| `git/git_sync_backend.h` | `GitSyncBackend` class declaration (inherits `ISyncBackend`) — composition root |
+| `git/git_sync_backend.cpp` | Composition root implementation: orchestrates Sync/Push/Pull, retry loop, delegates phases |
+| `git/git_handles.h` | `unique_ptr` aliases for libgit2 handle types (used in new extracted code only) |
+| `git/git_error_translator.{h,cpp}` | `TranslateGitError(int rc) -> VxCoreError` — libgit2 error class mapping |
+| `git/git_defaults.{h,cpp}` | `kDefaultGitignore`, `kDefaultGitattributes`, `WriteIfMissing`, `BuildGitignoreContent` |
+| `git/git_config_fixer.{h,cpp}` | `RebindCoreWorktree` — pre-open INI rewriter for stale `core.worktree` paths |
+| `git/gitkeep_sweeper.{h,cpp}` | `EnsureGitkeepFiles` + skip-list helpers + `IsOwnedMarker` (data-safety zero-byte rule) |
+| `git/git_credential_callback.{h,cpp}` | `GitCredentialPayload` struct + `GitSyncBackendCredentialCb` + `MakeRemoteCallbacks` (payload-based dispatch; no friend) |
+| `git/git_repo_bootstrap.{h,cpp}` | `Initialize` state machine: re-open / clone-into-empty / init-and-push helpers |
+| `git/git_sync_pipeline.{h,cpp}` | `GitSyncPipeline` class: Stage/Commit/Fetch/Rebase/Push + ApplyDefaultGitConfig + RemoteHasRefs + ContinueRebaseAfterResolution |
+| `git/git_conflict_resolver.{h,cpp}` | `GitConflictResolver` class: GetConflicts + ResolveConflict |
+| `git/libgit2_init.h` | `LibGit2Init` RAII helper that calls `git_libgit2_init`/`shutdown` |
+| `git/libgit2_init.cpp` | Reference-counted `git_libgit2_init` wrapper (thread-safe) |
 
 ### Related Files Outside src/sync
 
@@ -235,17 +244,30 @@ struct NotebookConfig {
 
 `GitSyncBackend` is the first concrete `ISyncBackend` implementation. It uses
 [libgit2](https://libgit2.org/) (vendored as a nested submodule under
-`libs/vxcore/third_party/libgit2`) and is built whenever `VXCORE_ENABLE_GIT_SYNC`
-is `ON` (default).
+`libs/vxcore/third_party/libgit2`). The implementation is split across multiple
+focused files under `libs/vxcore/src/sync/git/` (see File Map below).
+
+> **Note**: Earlier revisions of this doc claimed `GitSyncBackend` was built
+> "whenever `VXCORE_ENABLE_GIT_SYNC` is `ON` (default)". That option does NOT
+> exist in `libs/vxcore/CMakeLists.txt` — git sync is always built. The option
+> is tracked as a deferred audit doc-drift fix.
 
 ### File Map
 
 | File | Purpose |
 |------|---------|
-| `git_sync_backend.h` | `GitSyncBackend` class declaration (inherits `ISyncBackend`) |
-| `git_sync_backend.cpp` | Implementation: stage/commit/fetch/rebase/push, conflict handling |
-| `libgit2_init.h` | `LibGit2Init` RAII helper that calls `git_libgit2_init`/`shutdown` |
-| `libgit2_init.cpp` | Reference-counted `git_libgit2_init` wrapper (thread-safe) |
+| `git/git_sync_backend.h` | `GitSyncBackend` class declaration (inherits `ISyncBackend`) — composition root |
+| `git/git_sync_backend.cpp` | Composition root: Sync/Push/Pull orchestration + retry loop; delegates to extracted classes/helpers |
+| `git/git_handles.h` | RAII `unique_ptr` aliases for 14 libgit2 handle types (used in NEW extracted code only — existing manual cleanup blocks unchanged) |
+| `git/git_error_translator.{h,cpp}` | `TranslateGitError(int rc)` — collapses libgit2 error classes into `VxCoreError` |
+| `git/git_defaults.{h,cpp}` | Default `.gitignore`/`.gitattributes` content + `WriteIfMissing` + `BuildGitignoreContent` |
+| `git/git_config_fixer.{h,cpp}` | `RebindCoreWorktree` — pre-open INI rewriter that fixes stale `core.worktree` paths before libgit2 opens the repo |
+| `git/gitkeep_sweeper.{h,cpp}` | `EnsureGitkeepFiles` + 5 helpers (skip-list, IsOwnedMarker, IsEffectivelyEmpty); see Gitkeep Injection section below |
+| `git/git_credential_callback.{h,cpp}` | `GitCredentialPayload` (PAT-only struct), `GitSyncBackendCredentialCb`, `MakeRemoteCallbacks` (centralized wiring). Friend-free; payload-based dispatch |
+| `git/git_repo_bootstrap.{h,cpp}` | `Initialize` state machine: `OpenExistingRepo` / `BootstrapFromEmptyRemote` (clone) / `BootstrapToEmptyRemote` (init+push) / `ScrubGitlink` / `InitEmptyRepoWithRemote` |
+| `git/git_sync_pipeline.{h,cpp}` | `GitSyncPipeline` class — single-shot phase methods: `StageAll`, `CommitIndex`, `FetchOrigin`, `RebaseOntoOrigin`, `PushOrigin`, `ApplyDefaultGitConfig`, `RemoteHasRefs`, `ContinueRebaseAfterResolution`. Retry loop stays in `GitSyncBackend::Sync` (composition root). |
+| `git/git_conflict_resolver.{h,cpp}` | `GitConflictResolver` class — `GetConflicts` + `ResolveConflict` |
+| `git/libgit2_init.{h,cpp}` | `LibGit2Init` RAII helper (reference-counted `git_libgit2_init` wrapper) |
 
 ### Repository Layout
 
@@ -349,7 +371,7 @@ See `docs/sync-evolution-plan.md` for implementation history and remaining ideas
 | Exactly 0 bytes | VNote-owned (we wrote it) | YES — removed when folder becomes non-empty |
 | Any non-zero size | User-authored | **NEVER** removed, regardless of folder contents |
 
-This protects users who manually create a `.gitkeep` with custom content (e.g., a comment explaining why the folder must exist). The size check lives in `IsOwnedMarker()` at the top of `git_sync_backend.cpp`. Do NOT relax this rule without a deliberate plan-level decision.
+This protects users who manually create a `.gitkeep` with custom content (e.g., a comment explaining why the folder must exist). The size check lives in `IsOwnedMarker()` inside `git/gitkeep_sweeper.cpp` (anonymous-namespace helper). Do NOT relax this rule without a deliberate plan-level decision.
 
 ### Skip-list (folders that NEVER receive `.gitkeep`)
 
@@ -379,10 +401,9 @@ Each folder is its own decision — the recursive walker naturally creates marke
 
 ### Implementation pointers
 
-- File-local helpers in the anonymous namespace of `git_sync_backend.cpp` (~line 89-205): `kGitkeepFilename`, `GitkeepSkipPrefixes()`, `ShouldSkipForGitkeep()`, `IsOwnedMarker()`, `IsEffectivelyEmpty()`.
-- Method body: `GitSyncBackend::EnsureGitkeepFiles()` (~line 840) — uses the two-pass walker pattern documented in [libs/vxcore/AGENTS.md → Common Patterns → Two-pass directory walker](../../AGENTS.md#two-pass-directory-walker-recursive_directory_iterator).
-- Call sites: `Sync()` and `Push()`, each contains exactly one `EnsureGitkeepFiles();` line immediately before `StageAll(...)`. Both methods hold `op_mutex_` at the insertion point, so no extra synchronization is needed.
-- Header declaration: `void EnsureGitkeepFiles();` in the existing `private:` block of `git_sync_backend.h`.
+- File-local helpers in the anonymous namespace of `git/gitkeep_sweeper.cpp`: `kGitkeepFilename`, `GitkeepSkipPrefixes()`, `ShouldSkipForGitkeep()`, `IsOwnedMarker()`, `IsEffectivelyEmpty()`.
+- Public free function: `void EnsureGitkeepFiles(const std::string &root_folder, const SyncConfig &config);` in `git/gitkeep_sweeper.h` — uses the two-pass walker pattern documented in [libs/vxcore/AGENTS.md → Common Patterns → Two-pass directory walker](../../AGENTS.md#two-pass-directory-walker-recursive_directory_iterator).
+- Call sites: `Sync()` and `Push()` in `git/git_sync_backend.cpp`, each contains exactly one `EnsureGitkeepFiles(root_folder_, config_);` line immediately before `pipeline.StageAll(...)`. Both methods hold `op_mutex_` at the insertion point, so no extra synchronization is needed.
 - The existing staging callback (the one that excludes `vx_notebook/vx_sync/`) does NOT filter `.gitkeep` — verified during T5 of the gitkeep plan; no exemption clause needed.
 
 ### Tests
@@ -393,7 +414,7 @@ Each folder is its own decision — the recursive walker naturally creates marke
 | `tests/test_gitkeep_cleanup.cpp` | 7 | Auto-remove on real-file-added, user-authored preservation, owned-preserved-when-still-empty, excluded-only effective emptiness, skipped-subdir effective emptiness, gitkeep-bearing-subdir parent, zero-byte-only cleanup distinction |
 | `tests/test_gitkeep_roundtrip.cpp` | 1 | Full push → bare-remote → clone-elsewhere; empty folder survives with `.gitkeep` in clone, no `.gitkeep` at clone root, no `.gitkeep` under `vx_notebook/` or `vx_recycle_bin/` |
 
-All three test targets follow the [standalone test pattern](../../AGENTS.md#standalone-test-pattern-tests-touching-libgit2--gitsyncbackend) documented in `libs/vxcore/AGENTS.md` (direct-compile `git_sync_backend.cpp`, link `git_sync_test_helpers`, local `vxcore_set_test_mode` shim, `clone_bare_to_workdir` instead of `git_clone()`).
+All three test targets follow the [standalone test pattern](../../AGENTS.md#standalone-test-pattern-tests-touching-libgit2--gitsyncbackend) documented in `libs/vxcore/AGENTS.md` (direct-compile the git sync sources from `git/`, link `git_sync_test_helpers`, local `vxcore_set_test_mode` shim, `clone_bare_to_workdir` instead of `git_clone()`). The list of sources to direct-compile is centralized in `libs/vxcore/cmake/git_sync_sources.cmake` (`VXCORE_GIT_SYNC_SOURCES_ABS` variant) — both `src/CMakeLists.txt` and `tests/CMakeLists.txt` `include()` this file.
 
 ## How to Add a New Sync Backend
 
