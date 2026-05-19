@@ -2,7 +2,7 @@
 #define VXCORE_GIT_SYNC_BACKEND_H
 
 #include "sync/sync_backend.h"
-#include "sync/libgit2_init.h"
+#include "sync/git/libgit2_init.h"
 #include "vxcore/vxcore_types.h"
 
 #include <mutex>

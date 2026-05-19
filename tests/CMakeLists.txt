@@ -58,7 +58,7 @@ add_test(NAME spike_libgit2 COMMAND spike_libgit2)
 # boundaries duplicate static storage, which would otherwise pollute the
 # ref-count semantics with whatever vxcore did at load time.
 add_executable(test_libgit2_init test_libgit2_init.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/libgit2_init.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/libgit2_init.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_include_directories(test_libgit2_init PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
@@ -216,7 +216,7 @@ add_test(NAME test_sync_manager_dispatch COMMAND test_sync_manager_dispatch)
 # refcount statics independent of vxcore.dll.
 add_library(git_sync_test_helpers STATIC
     test_git_sync_helpers.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/libgit2_init.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/libgit2_init.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_include_directories(git_sync_test_helpers PUBLIC

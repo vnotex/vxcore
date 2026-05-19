@@ -1,4 +1,4 @@
-#include "sync/libgit2_init.h"
+#include "sync/git/libgit2_init.h"
 
 #include <git2.h>
 

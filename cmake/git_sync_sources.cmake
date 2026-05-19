@@ -19,7 +19,7 @@
 # ../src/ correctly points to libs/vxcore/src/.
 
 set(VXCORE_GIT_SYNC_SOURCES_RELATIVE
-    sync/libgit2_init.cpp
+    sync/git/libgit2_init.cpp
     sync/git_sync_backend.cpp
 )
 

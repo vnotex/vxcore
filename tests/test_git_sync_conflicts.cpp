@@ -17,7 +17,7 @@
 #include <vector>
 
 #include "sync/git_sync_backend.h"
-#include "sync/libgit2_init.h"
+#include "sync/git/libgit2_init.h"
 #include "sync/sync_types.h"
 #include "test_git_sync_helpers.h"
 #include "test_utils.h"

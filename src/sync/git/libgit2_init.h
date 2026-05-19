@@ -1,5 +1,5 @@
-#ifndef VXCORE_LIBGIT2_INIT_H
-#define VXCORE_LIBGIT2_INIT_H
+#ifndef VXCORE_SYNC_GIT_LIBGIT2_INIT_H
+#define VXCORE_SYNC_GIT_LIBGIT2_INIT_H
 namespace vxcore {
 // RAII wrapper for libgit2's process-global init/shutdown lifecycle.
 // Multiple instances are safe (ref-counted internally). The first instance
@@ -15,4 +15,4 @@ class LibGit2Init {
   LibGit2Init& operator=(LibGit2Init&&) = delete;
 };
 }  // namespace vxcore
-#endif  // VXCORE_LIBGIT2_INIT_H
+#endif  // VXCORE_SYNC_GIT_LIBGIT2_INIT_H

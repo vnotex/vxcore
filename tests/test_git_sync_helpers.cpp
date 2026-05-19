@@ -20,7 +20,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "sync/libgit2_init.h"
+#include "sync/git/libgit2_init.h"
 
 namespace vxcore_test {
 

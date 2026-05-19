@@ -2,7 +2,7 @@
 
 #include <iostream>
 
-#include "sync/libgit2_init.h"
+#include "sync/git/libgit2_init.h"
 #include "test_utils.h"
 
 static int test_libgit2_init_refcount() {
