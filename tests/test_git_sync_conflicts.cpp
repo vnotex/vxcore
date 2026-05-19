@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "sync/git/git_sync_backend.h"
+#include "sync/git/git_sync_pipeline.h"
 #include "sync/git/libgit2_init.h"
 #include "sync/sync_types.h"
 #include "test_git_sync_helpers.h"
@@ -255,19 +256,19 @@ void setup_conflicted_backend(vxcore::GitSyncBackend &backend,
   }
 
   write_file_at(notebook_root + "/note.md", local_content);
-  if (backend.StageAllForTesting() != VXCORE_OK) {
+  if (backend.MakePipeline()->StageAll() != VXCORE_OK) {
     throw std::runtime_error("setup: StageAll failed");
   }
-  if (backend.CommitIndexForTesting("local edit") != VXCORE_OK) {
+  if (backend.MakePipeline()->CommitIndex("local edit") != VXCORE_OK) {
     throw std::runtime_error("setup: CommitIndex failed");
   }
 
   push_follow_up_commit(bare_path, "note.md", remote_content, "remote edit");
 
-  if (backend.FetchOriginForTesting() != VXCORE_OK) {
+  if (backend.MakePipeline()->FetchOrigin() != VXCORE_OK) {
     throw std::runtime_error("setup: FetchOrigin failed");
   }
-  if (backend.RebaseOntoOriginForTesting() != VXCORE_ERR_SYNC_CONFLICT) {
+  if (backend.MakePipeline()->RebaseOntoOrigin() != VXCORE_ERR_SYNC_CONFLICT) {
     throw std::runtime_error("setup: rebase did not surface conflict");
   }
 }

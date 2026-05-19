@@ -457,54 +457,14 @@ VxCoreError GitSyncBackend::GetStatus(std::vector<SyncFileInfo> &out_files) {
   return VXCORE_OK;
 }
 
-VxCoreError GitSyncBackend::StageAllForTesting() {
+std::unique_ptr<GitSyncPipeline> GitSyncBackend::MakePipeline() {
   std::lock_guard<std::mutex> lock(op_mutex_);
   if (!initialized_) {
-    return VXCORE_ERR_UNKNOWN;
+    return nullptr;
   }
-  GitSyncPipeline pipeline(repo_, git_dir_, root_folder_, config_, credentials_,
-                           &rebase_in_progress_);
-  return pipeline.StageAll();
-}
-
-VxCoreError GitSyncBackend::CommitIndexForTesting(const std::string &message) {
-  std::lock_guard<std::mutex> lock(op_mutex_);
-  if (!initialized_) {
-    return VXCORE_ERR_UNKNOWN;
-  }
-  GitSyncPipeline pipeline(repo_, git_dir_, root_folder_, config_, credentials_,
-                           &rebase_in_progress_);
-  return pipeline.CommitIndex(message);
-}
-
-VxCoreError GitSyncBackend::FetchOriginForTesting() {
-  std::lock_guard<std::mutex> lock(op_mutex_);
-  if (!initialized_) {
-    return VXCORE_ERR_UNKNOWN;
-  }
-  GitSyncPipeline pipeline(repo_, git_dir_, root_folder_, config_, credentials_,
-                           &rebase_in_progress_);
-  return pipeline.FetchOrigin();
-}
-
-VxCoreError GitSyncBackend::RebaseOntoOriginForTesting() {
-  std::lock_guard<std::mutex> lock(op_mutex_);
-  if (!initialized_) {
-    return VXCORE_ERR_UNKNOWN;
-  }
-  GitSyncPipeline pipeline(repo_, git_dir_, root_folder_, config_, credentials_,
-                           &rebase_in_progress_);
-  return pipeline.RebaseOntoOrigin();
-}
-
-VxCoreError GitSyncBackend::PushOriginForTesting() {
-  std::lock_guard<std::mutex> lock(op_mutex_);
-  if (!initialized_) {
-    return VXCORE_ERR_UNKNOWN;
-  }
-  GitSyncPipeline pipeline(repo_, git_dir_, root_folder_, config_, credentials_,
-                           &rebase_in_progress_);
-  return pipeline.PushOrigin();
+  return std::unique_ptr<GitSyncPipeline>(
+      new GitSyncPipeline(repo_, git_dir_, root_folder_, config_, credentials_,
+                          &rebase_in_progress_));
 }
 
 VxCoreError GitSyncBackend::GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) {
@@ -526,18 +486,6 @@ VxCoreError GitSyncBackend::ResolveConflict(const std::string &path,
                            &rebase_in_progress_);
   GitConflictResolver resolver(repo_, root_folder_);
   return resolver.ResolveConflict(path, resolution, pipeline);
-}
-
-int GitSyncBackend::WriteDefaultIgnoreAndAttributesForTesting(const std::string &dir,
-                                                               const SyncConfig &config) {
-  int written = 0;
-  if (WriteIfMissing(dir + "/.gitignore", BuildGitignoreContent(config))) ++written;
-  if (WriteIfMissing(dir + "/.gitattributes", kDefaultGitattributes)) ++written;
-  return written;
-}
-
-VxCoreError GitSyncBackend::TranslateGitErrorForTesting(int git_rc) {
-  return vxcore::TranslateGitError(git_rc);
 }
 
 }  // namespace vxcore

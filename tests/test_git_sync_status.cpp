@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "sync/git/git_sync_backend.h"
+#include "sync/git/git_sync_pipeline.h"
 #include "sync/git/libgit2_init.h"
 #include "sync/sync_types.h"
 #include "test_git_sync_helpers.h"
@@ -162,9 +163,10 @@ int test_git_get_status_clean() {
 
     // Initialize wrote .gitignore + .gitattributes (untracked). Commit them
     // so the workdir is genuinely clean before we check status.
-    ASSERT_EQ(backend.StageAllForTesting(), VXCORE_OK);
-    ASSERT_EQ(backend.CommitIndexForTesting("vnote: commit defaults"),
-              VXCORE_OK);
+    auto pipeline = backend.MakePipeline();
+    ASSERT_NOT_NULL(pipeline.get());
+    ASSERT_EQ(pipeline->StageAll(), VXCORE_OK);
+    ASSERT_EQ(pipeline->CommitIndex("vnote: commit defaults"), VXCORE_OK);
 
     std::vector<vxcore::SyncFileInfo> files;
     ASSERT_EQ(backend.GetStatus(files), VXCORE_OK);

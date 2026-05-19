@@ -567,83 +567,11 @@ int test_sync_enable_unknown_backend_no_factory() {
   return 0;
 }
 
-int test_git_sync_writes_default_gitignore_attributes_when_missing() {
-  std::cout << "  Running test_git_sync_writes_default_gitignore_attributes_when_missing..."
-            << std::endl;
-  std::string dir = get_test_path("test_git_sync_defaults_missing");
-  cleanup_test_dir(dir);
-  std::filesystem::create_directories(vxcore::PathFromUtf8(dir));
-
-  SyncConfig config;
-  config.exclude_paths = {"*.bak", "scratch/"};
-
-  int written = GitSyncBackend::WriteDefaultIgnoreAndAttributesForTesting(dir, config);
-  ASSERT_EQ(written, 2);
-
-  std::string gi_path = dir + "/.gitignore";
-  std::string ga_path = dir + "/.gitattributes";
-  ASSERT_TRUE(vxcore::PathExists(gi_path));
-  ASSERT_TRUE(vxcore::PathExists(ga_path));
-
-  {
-    std::ifstream ifs(vxcore::PathFromUtf8(gi_path), std::ios::binary);
-    std::string content((std::istreambuf_iterator<char>(ifs)),
-                        std::istreambuf_iterator<char>());
-    ASSERT_TRUE(content.find("vx_notebook/vx_sync/") != std::string::npos);
-    ASSERT_TRUE(content.find("*.bak") != std::string::npos);
-    ASSERT_TRUE(content.find("scratch/") != std::string::npos);
-  }
-  {
-    std::ifstream ifs(vxcore::PathFromUtf8(ga_path), std::ios::binary);
-    std::string content((std::istreambuf_iterator<char>(ifs)),
-                        std::istreambuf_iterator<char>());
-    ASSERT_TRUE(content.find("text=auto eol=lf") != std::string::npos);
-    ASSERT_TRUE(content.find("*.png binary") != std::string::npos);
-  }
-
-  cleanup_test_dir(dir);
-  std::cout
-      << "  \xE2\x9C\x93 test_git_sync_writes_default_gitignore_attributes_when_missing passed"
-      << std::endl;
-  return 0;
-}
-
-int test_git_sync_preserves_existing_gitignore() {
-  std::cout << "  Running test_git_sync_preserves_existing_gitignore..." << std::endl;
-  std::string dir = get_test_path("test_git_sync_defaults_preserve");
-  cleanup_test_dir(dir);
-  std::filesystem::create_directories(vxcore::PathFromUtf8(dir));
-
-  std::string gi_path = dir + "/.gitignore";
-  std::string ga_path = dir + "/.gitattributes";
-  const std::string user_content = "# user customization\n*.user\n";
-  {
-    std::ofstream ofs(vxcore::PathFromUtf8(gi_path), std::ios::binary | std::ios::trunc);
-    ofs.write(user_content.data(), static_cast<std::streamsize>(user_content.size()));
-  }
-
-  SyncConfig config;
-  int written = GitSyncBackend::WriteDefaultIgnoreAndAttributesForTesting(dir, config);
-  ASSERT_EQ(written, 1);
-
-  {
-    std::ifstream ifs(vxcore::PathFromUtf8(gi_path), std::ios::binary);
-    std::string content((std::istreambuf_iterator<char>(ifs)),
-                        std::istreambuf_iterator<char>());
-    ASSERT_TRUE(content == user_content);
-  }
-  ASSERT_TRUE(vxcore::PathExists(ga_path));
-  {
-    std::ifstream ifs(vxcore::PathFromUtf8(ga_path), std::ios::binary);
-    std::string content((std::istreambuf_iterator<char>(ifs)),
-                        std::istreambuf_iterator<char>());
-    ASSERT_TRUE(content.find("text=auto eol=lf") != std::string::npos);
-  }
-
-  cleanup_test_dir(dir);
-  std::cout << "  \xE2\x9C\x93 test_git_sync_preserves_existing_gitignore passed" << std::endl;
-  return 0;
-}
+// Two default-gitignore/gitattributes tests previously lived here; they
+// moved to test_git_sync_init.cpp during T14 (git-folder-restructure plan)
+// because they now exercise vxcore::WriteIfMissing +
+// vxcore::BuildGitignoreContent directly instead of the removed
+// GitSyncBackend::WriteDefaultIgnoreAndAttributesForTesting shim.
 
 int main() {
   std::cout << "Running sync manager dispatch tests...\n";
@@ -669,8 +597,6 @@ int main() {
   RUN_TEST(test_sync_enable_creates_git_backend);
   RUN_TEST(test_sync_enable_with_credentials_calls_setcred_first);
   RUN_TEST(test_sync_enable_unknown_backend_no_factory);
-  RUN_TEST(test_git_sync_writes_default_gitignore_attributes_when_missing);
-  RUN_TEST(test_git_sync_preserves_existing_gitignore);
   std::cout << "All sync manager dispatch tests passed\n";
   return 0;
 }

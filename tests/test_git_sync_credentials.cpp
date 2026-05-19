@@ -10,6 +10,8 @@
 #include <iostream>
 #include <string>
 
+#include "sync/git/git_error_translator.h"
+#include "sync/git/git_error_translator.h"
 #include "sync/git/git_sync_backend.h"
 #include "sync/git/git_credential_callback.h"
 #include "sync/git/libgit2_init.h"
@@ -86,13 +88,13 @@ int test_git_error_translate_notfound() {
     git_repository_free(repo);
   }
 
-  VxCoreError mapped = vxcore::GitSyncBackend::TranslateGitErrorForTesting(rc);
+  VxCoreError mapped = vxcore::TranslateGitError(rc);
   // git_repository_open returns GIT_ENOTFOUND for missing paths.
   ASSERT_EQ(mapped, VXCORE_ERR_NOT_FOUND);
 
   // Also: pure GIT_ENOTFOUND -> NOT_FOUND regardless of err state.
   git_error_clear();
-  ASSERT_EQ(vxcore::GitSyncBackend::TranslateGitErrorForTesting(GIT_ENOTFOUND),
+  ASSERT_EQ(vxcore::TranslateGitError(GIT_ENOTFOUND),
             VXCORE_ERR_NOT_FOUND);
 
   std::cout << "  ✓ test_git_error_translate_notfound passed" << std::endl;
@@ -105,45 +107,45 @@ int test_git_error_translate_network() {
   // Synthesize a NET-class error and verify the translator reads klass via
   // git_error_last() and maps to SYNC_NETWORK.
   git_error_set_str(GIT_ERROR_NET, "fake network failure for test");
-  ASSERT_EQ(vxcore::GitSyncBackend::TranslateGitErrorForTesting(-1),
+  ASSERT_EQ(vxcore::TranslateGitError(-1),
             VXCORE_ERR_SYNC_NETWORK);
 
   // SSL/SSH klasses also map to NETWORK.
   git_error_set_str(GIT_ERROR_SSL, "fake ssl failure");
-  ASSERT_EQ(vxcore::GitSyncBackend::TranslateGitErrorForTesting(-1),
+  ASSERT_EQ(vxcore::TranslateGitError(-1),
             VXCORE_ERR_SYNC_NETWORK);
 
   // GIT_EAUTH always maps to AUTH_FAILED regardless of klass message.
   git_error_set_str(GIT_ERROR_HTTP, "anything");
-  ASSERT_EQ(vxcore::GitSyncBackend::TranslateGitErrorForTesting(GIT_EAUTH),
+  ASSERT_EQ(vxcore::TranslateGitError(GIT_EAUTH),
             VXCORE_ERR_SYNC_AUTH_FAILED);
 
   // HTTP klass with auth-keyword in message -> AUTH_FAILED.
   git_error_set_str(GIT_ERROR_HTTP, "401 Unauthorized");
-  ASSERT_EQ(vxcore::GitSyncBackend::TranslateGitErrorForTesting(-1),
+  ASSERT_EQ(vxcore::TranslateGitError(-1),
             VXCORE_ERR_SYNC_AUTH_FAILED);
 
   // HTTP klass without auth-keyword -> NETWORK.
   git_error_set_str(GIT_ERROR_HTTP, "503 Service Unavailable");
-  ASSERT_EQ(vxcore::GitSyncBackend::TranslateGitErrorForTesting(-1),
+  ASSERT_EQ(vxcore::TranslateGitError(-1),
             VXCORE_ERR_SYNC_NETWORK);
 
   // MERGE/CHECKOUT klasses -> SYNC_CONFLICT.
   git_error_set_str(GIT_ERROR_MERGE, "merge conflict");
-  ASSERT_EQ(vxcore::GitSyncBackend::TranslateGitErrorForTesting(-1),
+  ASSERT_EQ(vxcore::TranslateGitError(-1),
             VXCORE_ERR_SYNC_CONFLICT);
 
   // INVALID klass / GIT_EINVALIDSPEC -> INVALID_PARAM.
   git_error_set_str(GIT_ERROR_INVALID, "bad input");
-  ASSERT_EQ(vxcore::GitSyncBackend::TranslateGitErrorForTesting(-1),
+  ASSERT_EQ(vxcore::TranslateGitError(-1),
             VXCORE_ERR_INVALID_PARAM);
   git_error_clear();
-  ASSERT_EQ(vxcore::GitSyncBackend::TranslateGitErrorForTesting(GIT_EINVALIDSPEC),
+  ASSERT_EQ(vxcore::TranslateGitError(GIT_EINVALIDSPEC),
             VXCORE_ERR_INVALID_PARAM);
 
   // git_rc >= 0 -> OK (translator short-circuits).
-  ASSERT_EQ(vxcore::GitSyncBackend::TranslateGitErrorForTesting(0), VXCORE_OK);
-  ASSERT_EQ(vxcore::GitSyncBackend::TranslateGitErrorForTesting(1), VXCORE_OK);
+  ASSERT_EQ(vxcore::TranslateGitError(0), VXCORE_OK);
+  ASSERT_EQ(vxcore::TranslateGitError(1), VXCORE_OK);
 
   std::cout << "  ✓ test_git_error_translate_network passed" << std::endl;
   return 0;

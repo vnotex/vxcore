@@ -5,6 +5,7 @@
 #include "sync/git/libgit2_init.h"
 #include "vxcore/vxcore_types.h"
 
+#include <memory>
 #include <mutex>
 #include <string>
 
@@ -13,6 +14,8 @@ typedef struct git_repository git_repository;
 struct git_rebase;
 
 namespace vxcore {
+
+class GitSyncPipeline;
 
 // Concrete ISyncBackend implementation backed by libgit2.
 //
@@ -43,31 +46,17 @@ class GitSyncBackend : public ISyncBackend {
   VxCoreError ResolveConflict(const std::string &path,
                               SyncConflictResolution resolution) override;
 
-  // Test-only helper: writes default .gitignore + .gitattributes (using
-  // config.exclude_paths) into <dir>, preserving any pre-existing files.
-  // Returns count of files actually written.
-  // Internal callers (T15/T18) use the same helpers via Initialize.
-  static VXCORE_API int WriteDefaultIgnoreAndAttributesForTesting(const std::string &dir,
-                                                                  const SyncConfig &config);
-
-  // T28 test hook: exposes the file-scope TranslateGitError translator so
-  // unit tests can verify libgit2 error class -> VxCoreError mapping without
-  // reaching into anonymous-namespace internals.
-  static VXCORE_API VxCoreError TranslateGitErrorForTesting(int git_rc);
-
-  // T21/T22/T23 test hooks: each acquires op_mutex_ and delegates to the
-  // private helper. They allow unit tests to drive the Sync sub-steps in
-  // isolation without exercising the full Sync() orchestration (which lands
-  // in T24+T25+T26).
-  VXCORE_API VxCoreError StageAllForTesting();
-  VXCORE_API VxCoreError CommitIndexForTesting(const std::string &message);
-  VXCORE_API VxCoreError FetchOriginForTesting();
-
-  // T24/T25 test hooks: drive the rebase / push helpers in isolation. Each
-  // acquires op_mutex_, checks initialized_, then delegates to the private
-  // helper.
-  VXCORE_API VxCoreError RebaseOntoOriginForTesting();
-  VXCORE_API VxCoreError PushOriginForTesting();
+  // Construct a GitSyncPipeline wired to this backend's internal repo and
+  // config. Returned pipeline borrows references to backend state — caller
+  // must not let the backend outlive the returned pipeline.
+  //
+  // Returns nullptr if the backend has not been initialized. No mutex held
+  // by the factory itself; callers serialize their own usage.
+  //
+  // Exposed primarily for tests that drive Sync sub-phases (Stage / Commit /
+  // Fetch / Rebase / Push) in isolation. Production code constructs pipelines
+  // inline within Initialize / Sync / Push / Pull.
+  VXCORE_API std::unique_ptr<GitSyncPipeline> MakePipeline();
 
  private:
   LibGit2Init libgit2_;     // RAII; FIRST member so it's last destroyed

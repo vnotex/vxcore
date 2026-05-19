@@ -27,6 +27,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "sync/git/git_defaults.h"
 #include "sync/git/git_sync_backend.h"
 #include "sync/git/libgit2_init.h"
 #include "sync/sync_types.h"
@@ -656,6 +657,102 @@ int test_git_shutdown_idempotent() {
   return 0;
 }
 
+// Default .gitignore + .gitattributes writer tests. Migrated from
+// test_sync_manager_dispatch.cpp during T14 because they now exercise
+// vxcore::WriteIfMissing + vxcore::BuildGitignoreContent directly (the
+// GitSyncBackend::WriteDefaultIgnoreAndAttributesForTesting shim was
+// removed). This binary already direct-compiles git_defaults.cpp so the
+// helpers are reachable without any DLL-export gymnastics.
+int test_git_sync_writes_default_gitignore_attributes_when_missing() {
+  std::cout << "  Running test_git_sync_writes_default_gitignore_attributes_when_missing..."
+            << std::endl;
+  std::string dir = get_test_path("test_git_sync_defaults_missing");
+  cleanup_test_dir(dir);
+  std::filesystem::create_directories(vxcore::PathFromUtf8(dir));
+
+  vxcore::SyncConfig config;
+  config.exclude_paths = {"*.bak", "scratch/"};
+
+  int written = 0;
+  if (vxcore::WriteIfMissing(dir + "/.gitignore", vxcore::BuildGitignoreContent(config))) {
+    ++written;
+  }
+  if (vxcore::WriteIfMissing(dir + "/.gitattributes", vxcore::kDefaultGitattributes)) {
+    ++written;
+  }
+  ASSERT_EQ(written, 2);
+
+  std::string gi_path = dir + "/.gitignore";
+  std::string ga_path = dir + "/.gitattributes";
+  ASSERT_TRUE(vxcore::PathExists(gi_path));
+  ASSERT_TRUE(vxcore::PathExists(ga_path));
+
+  {
+    std::ifstream ifs(vxcore::PathFromUtf8(gi_path), std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(ifs)),
+                        std::istreambuf_iterator<char>());
+    ASSERT_TRUE(content.find("vx_notebook/vx_sync/") != std::string::npos);
+    ASSERT_TRUE(content.find("*.bak") != std::string::npos);
+    ASSERT_TRUE(content.find("scratch/") != std::string::npos);
+  }
+  {
+    std::ifstream ifs(vxcore::PathFromUtf8(ga_path), std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(ifs)),
+                        std::istreambuf_iterator<char>());
+    ASSERT_TRUE(content.find("text=auto eol=lf") != std::string::npos);
+    ASSERT_TRUE(content.find("*.png binary") != std::string::npos);
+  }
+
+  cleanup_test_dir(dir);
+  std::cout
+      << "  \xE2\x9C\x93 test_git_sync_writes_default_gitignore_attributes_when_missing passed"
+      << std::endl;
+  return 0;
+}
+
+int test_git_sync_preserves_existing_gitignore() {
+  std::cout << "  Running test_git_sync_preserves_existing_gitignore..." << std::endl;
+  std::string dir = get_test_path("test_git_sync_defaults_preserve");
+  cleanup_test_dir(dir);
+  std::filesystem::create_directories(vxcore::PathFromUtf8(dir));
+
+  std::string gi_path = dir + "/.gitignore";
+  std::string ga_path = dir + "/.gitattributes";
+  const std::string user_content = "# user customization\n*.user\n";
+  {
+    std::ofstream ofs(vxcore::PathFromUtf8(gi_path), std::ios::binary | std::ios::trunc);
+    ofs.write(user_content.data(), static_cast<std::streamsize>(user_content.size()));
+  }
+
+  vxcore::SyncConfig config;
+  int written = 0;
+  if (vxcore::WriteIfMissing(gi_path, vxcore::BuildGitignoreContent(config))) {
+    ++written;
+  }
+  if (vxcore::WriteIfMissing(ga_path, vxcore::kDefaultGitattributes)) {
+    ++written;
+  }
+  ASSERT_EQ(written, 1);
+
+  {
+    std::ifstream ifs(vxcore::PathFromUtf8(gi_path), std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(ifs)),
+                        std::istreambuf_iterator<char>());
+    ASSERT_TRUE(content == user_content);
+  }
+  ASSERT_TRUE(vxcore::PathExists(ga_path));
+  {
+    std::ifstream ifs(vxcore::PathFromUtf8(ga_path), std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(ifs)),
+                        std::istreambuf_iterator<char>());
+    ASSERT_TRUE(content.find("text=auto eol=lf") != std::string::npos);
+  }
+
+  cleanup_test_dir(dir);
+  std::cout << "  \xE2\x9C\x93 test_git_sync_preserves_existing_gitignore passed" << std::endl;
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -670,6 +767,8 @@ int main() {
   RUN_TEST(test_git_init_clone_uses_separate_gitdir);
   RUN_TEST(test_git_init_push_existing_notebook_to_empty_remote);
   RUN_TEST(test_git_shutdown_idempotent);
+  RUN_TEST(test_git_sync_writes_default_gitignore_attributes_when_missing);
+  RUN_TEST(test_git_sync_preserves_existing_gitignore);
   std::cout << "All git_sync_init tests passed" << std::endl;
   return 0;
 }

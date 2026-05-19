@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "sync/git/git_sync_backend.h"
+#include "sync/git/git_sync_pipeline.h"
 #include "sync/git/libgit2_init.h"
 #include "sync/sync_types.h"
 #include "test_git_sync_helpers.h"
@@ -376,7 +377,7 @@ int test_git_stage_all_includes_modified_files() {
     write_file_at(notebook_root + "/note.md", "hello world");
     write_file_at(notebook_root + "/extra.md", "new content");
 
-    ASSERT_EQ(backend.StageAllForTesting(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->StageAll(), VXCORE_OK);
 
     const std::string git_dir = notebook_root + "/vx_notebook/vx_sync";
     ASSERT_TRUE(index_contains(git_dir, "note.md"));
@@ -430,7 +431,7 @@ int test_git_stage_all_excludes_vx_sync_even_without_gitignore() {
                   "should never be staged");
     write_file_at(notebook_root + "/note.md", "hello world");
 
-    ASSERT_EQ(backend.StageAllForTesting(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->StageAll(), VXCORE_OK);
 
     const std::string git_dir = notebook_root + "/vx_notebook/vx_sync";
     ASSERT_FALSE(index_has_prefix(git_dir, "vx_notebook/vx_sync"));
@@ -477,8 +478,8 @@ int test_git_commit_creates_one_commit() {
     const std::string before = vxcore_test::git_head_sha(git_dir);
 
     write_file_at(notebook_root + "/note.md", "hello world");
-    ASSERT_EQ(backend.StageAllForTesting(), VXCORE_OK);
-    ASSERT_EQ(backend.CommitIndexForTesting("vnote: update note"), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->StageAll(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->CommitIndex("vnote: update note"), VXCORE_OK);
 
     const std::string after = vxcore_test::git_head_sha(git_dir);
     ASSERT_NE(before, after);
@@ -526,14 +527,14 @@ int test_git_commit_skips_empty() {
     // Initialize wrote .gitignore + .gitattributes — flush them into a real
     // commit first so the workdir is genuinely identical to HEAD before we
     // exercise the empty-commit suppression path.
-    ASSERT_EQ(backend.StageAllForTesting(), VXCORE_OK);
-    ASSERT_EQ(backend.CommitIndexForTesting("vnote: commit defaults"),
+    ASSERT_EQ(backend.MakePipeline()->StageAll(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->CommitIndex("vnote: commit defaults"),
               VXCORE_OK);
 
     const std::string before = vxcore_test::git_head_sha(git_dir);
 
-    ASSERT_EQ(backend.StageAllForTesting(), VXCORE_OK);
-    ASSERT_EQ(backend.CommitIndexForTesting("nothing to do"), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->StageAll(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->CommitIndex("nothing to do"), VXCORE_OK);
 
     const std::string after = vxcore_test::git_head_sha(git_dir);
     ASSERT_EQ(before, after);
@@ -575,8 +576,8 @@ int test_git_commit_uses_default_author() {
     const std::string git_dir = notebook_root + "/vx_notebook/vx_sync";
 
     write_file_at(notebook_root + "/note.md", "modified body");
-    ASSERT_EQ(backend.StageAllForTesting(), VXCORE_OK);
-    ASSERT_EQ(backend.CommitIndexForTesting("default author check"),
+    ASSERT_EQ(backend.MakePipeline()->StageAll(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->CommitIndex("default author check"),
               VXCORE_OK);
 
     CommitInfo info = head_commit_info(git_dir);
@@ -627,7 +628,7 @@ int test_git_fetch_updates_origin_main() {
     push_follow_up_commit(bare_path, "note.md", "hello v2", "second commit");
     const std::string bare_head = vxcore_test::git_head_sha(bare_path);
 
-    ASSERT_EQ(backend.FetchOriginForTesting(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->FetchOrigin(), VXCORE_OK);
 
     const std::string local_origin_main =
         ref_sha(git_dir, "refs/remotes/origin/main");
@@ -670,8 +671,8 @@ int test_git_rebase_clean_fast_forward() {
     push_follow_up_commit(bare_path, "note.md", "B", "second commit");
     const std::string bare_head = vxcore_test::git_head_sha(bare_path);
 
-    ASSERT_EQ(backend.FetchOriginForTesting(), VXCORE_OK);
-    ASSERT_EQ(backend.RebaseOntoOriginForTesting(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->FetchOrigin(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->RebaseOntoOrigin(), VXCORE_OK);
 
     const std::string git_dir = notebook_root + "/vx_notebook/vx_sync";
     const std::string local_head = vxcore_test::git_head_sha(git_dir);
@@ -713,15 +714,15 @@ int test_git_rebase_diverged_no_conflict() {
 
     // Local commit: add file X.
     write_file_at(notebook_root + "/local_X.md", "local change");
-    ASSERT_EQ(backend.StageAllForTesting(), VXCORE_OK);
-    ASSERT_EQ(backend.CommitIndexForTesting("add local X"), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->StageAll(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->CommitIndex("add local X"), VXCORE_OK);
 
     // Remote commit: add file Y on top of init.
     push_follow_up_commit(bare_path, "remote_Y.md", "remote change",
                           "add remote Y");
 
-    ASSERT_EQ(backend.FetchOriginForTesting(), VXCORE_OK);
-    ASSERT_EQ(backend.RebaseOntoOriginForTesting(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->FetchOrigin(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->RebaseOntoOrigin(), VXCORE_OK);
 
     ASSERT_TRUE(vxcore::PathExists(notebook_root + "/local_X.md"));
     ASSERT_TRUE(vxcore::PathExists(notebook_root + "/remote_Y.md"));
@@ -763,15 +764,15 @@ int test_git_rebase_conflict_surfaces() {
 
     // Local change to line 1 of note.md.
     write_file_at(notebook_root + "/note.md", "local edit\n");
-    ASSERT_EQ(backend.StageAllForTesting(), VXCORE_OK);
-    ASSERT_EQ(backend.CommitIndexForTesting("local edit note"), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->StageAll(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->CommitIndex("local edit note"), VXCORE_OK);
 
     // Remote change to the SAME line 1.
     push_follow_up_commit(bare_path, "note.md", "remote edit\n",
                           "remote edit note");
 
-    ASSERT_EQ(backend.FetchOriginForTesting(), VXCORE_OK);
-    ASSERT_EQ(backend.RebaseOntoOriginForTesting(),
+    ASSERT_EQ(backend.MakePipeline()->FetchOrigin(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->RebaseOntoOrigin(),
               VXCORE_ERR_SYNC_CONFLICT);
 
     // Verify the on-disk rebase state is preserved (libgit2 records this
@@ -818,13 +819,13 @@ int test_git_push_fast_forward() {
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
 
     write_file_at(notebook_root + "/note.md", "local update");
-    ASSERT_EQ(backend.StageAllForTesting(), VXCORE_OK);
-    ASSERT_EQ(backend.CommitIndexForTesting("local update"), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->StageAll(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->CommitIndex("local update"), VXCORE_OK);
 
     const std::string git_dir = notebook_root + "/vx_notebook/vx_sync";
     const std::string local_head = vxcore_test::git_head_sha(git_dir);
 
-    ASSERT_EQ(backend.PushOriginForTesting(), VXCORE_OK);
+    ASSERT_EQ(backend.MakePipeline()->PushOrigin(), VXCORE_OK);
 
     const std::string bare_head = vxcore_test::git_head_sha(bare_path);
     ASSERT_EQ(local_head, bare_head);
