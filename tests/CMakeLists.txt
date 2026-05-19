@@ -292,7 +292,8 @@ add_test(NAME test_git_sync_status COMMAND test_git_sync_status)
 # test_git_sync_status.
 add_executable(test_git_sync_roundtrip test_git_sync_roundtrip.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp)
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_git_sync_roundtrip PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/include

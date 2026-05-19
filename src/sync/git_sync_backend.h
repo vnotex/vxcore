@@ -131,6 +131,12 @@ class GitSyncBackend : public ISyncBackend {
   // network/auth failure (caller treats inability to reach as "no refs").
   bool RemoteHasRefs();
 
+  // T6: Two-pass sweep to ensure .gitkeep files exist in empty directories
+  // and are removed from non-empty directories. Pass 1 (no lock) collects
+  // candidates; Pass 2 (under op_mutex_) applies changes atomically.
+  // Individual file I/O errors are non-fatal (logged, continue).
+  void EnsureGitkeepFiles();
+
   LibGit2Init libgit2_;     // RAII; FIRST member so it's last destroyed
   std::mutex op_mutex_;     // serializes per-backend libgit2 calls
   std::string root_folder_; // notebook root (= libgit2 workdir)

@@ -830,6 +830,86 @@ bool GitSyncBackend::RemoteHasRefs() {
   return has_refs;
 }
 
+// T6: Two-pass sweep to keep empty/non-empty directory state aligned with
+// VNote-owned .gitkeep markers. Pass 1 walks the workdir (recursive_directory_
+// iterator with skip_permission_denied) and collects two disjoint candidate
+// lists; Pass 2 performs the file I/O. Mutating during traversal can invalidate
+// the iterator on some platforms, so we strictly collect-then-mutate. All
+// std::filesystem calls use the std::error_code overload and the loop is wrapped
+// in try/catch so no exceptions escape — failure to sweep is non-fatal.
+void GitSyncBackend::EnsureGitkeepFiles() {
+  // root_folder_ is the GitSyncBackend member set during Initialize.
+  const std::filesystem::path root = PathFromUtf8(root_folder_);
+
+  // Pass 1: collect candidates.
+  std::vector<std::filesystem::path> dirs_to_seed;     // need .gitkeep created
+  std::vector<std::filesystem::path> dirs_to_cleanup;  // need .gitkeep removed
+  std::error_code ec;
+  try {
+    for (auto it = std::filesystem::recursive_directory_iterator(
+             root, std::filesystem::directory_options::skip_permission_denied, ec);
+         it != std::filesystem::recursive_directory_iterator();
+         it.increment(ec)) {
+      if (ec) {
+        VXCORE_LOG_WARN("EnsureGitkeepFiles: iterator error: %s", ec.message().c_str());
+        ec.clear();
+        continue;
+      }
+      if (!it->is_directory(ec)) {
+        ec.clear();
+        continue;
+      }
+      const std::filesystem::path abs = it->path();
+      // Compute POSIX-style relative path (forward slashes).
+      const std::filesystem::path rel = std::filesystem::relative(abs, root, ec);
+      ec.clear();
+      std::string rel_posix = PathToUtf8(rel);
+      std::replace(rel_posix.begin(), rel_posix.end(), '\\', '/');
+      if (ShouldSkipForGitkeep(rel_posix)) {
+        it.disable_recursion_pending();  // do not descend into skipped dirs
+        continue;
+      }
+      const std::filesystem::path marker = abs / kGitkeepFilename;
+      const bool marker_exists = std::filesystem::exists(marker, ec);
+      ec.clear();
+      if (IsEffectivelyEmpty(abs, rel_posix, config_.exclude_paths, ec)) {
+        ec.clear();
+        if (!marker_exists) {
+          dirs_to_seed.push_back(abs);
+        }
+        // else: already has marker — leave alone (idempotent)
+      } else {
+        ec.clear();
+        if (marker_exists && IsOwnedMarker(marker, ec)) {
+          ec.clear();
+          dirs_to_cleanup.push_back(abs);
+        }
+      }
+    }
+  } catch (const std::exception &e) {
+    VXCORE_LOG_WARN("EnsureGitkeepFiles: traversal aborted: %s", e.what());
+    return;
+  }
+
+  // Pass 2: mutate.
+  for (const auto &dir : dirs_to_seed) {
+    const std::filesystem::path marker = dir / kGitkeepFilename;
+    if (!WriteIfMissing(PathToUtf8(marker), "")) {
+      VXCORE_LOG_WARN("EnsureGitkeepFiles: failed to write %s",
+                      PathToUtf8(marker).c_str());
+    }
+  }
+  for (const auto &dir : dirs_to_cleanup) {
+    const std::filesystem::path marker = dir / kGitkeepFilename;
+    std::error_code rm_ec;
+    std::filesystem::remove(marker, rm_ec);
+    if (rm_ec) {
+      VXCORE_LOG_WARN("EnsureGitkeepFiles: failed to remove %s: %s",
+                      PathToUtf8(marker).c_str(), rm_ec.message().c_str());
+    }
+  }
+}
+
 VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) {
   std::unique_lock<std::mutex> lock(op_mutex_, std::try_to_lock);
   if (!lock.owns_lock()) {
@@ -2032,7 +2112,7 @@ VxCoreError GitSyncBackend::ResolveConflict(const std::string &path,
 }
 
 int GitSyncBackend::WriteDefaultIgnoreAndAttributesForTesting(const std::string &dir,
-                                                              const SyncConfig &config) {
+                                                               const SyncConfig &config) {
   int written = 0;
   if (WriteIfMissing(dir + "/.gitignore", BuildGitignoreContent(config))) ++written;
   if (WriteIfMissing(dir + "/.gitattributes", kDefaultGitattributes)) ++written;
