@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "sync/git/git_defaults.h"
 #include "sync/git/git_error_translator.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
@@ -21,69 +22,6 @@
 namespace vxcore {
 
 namespace {
-
-// Default .gitignore for VNote sync repos. Excludes the libgit2 gitdir
-// (vx_notebook/vx_sync/) and common transient/OS files. User edits to the
-// on-disk .gitignore are preserved (WriteIfMissing skips existing files).
-constexpr const char *kDefaultGitignore =
-    "# VNote sync defaults — feel free to edit; this file is preserved on update.\n"
-    "vx_notebook/vx_sync/\n"
-    "*.vswp\n"
-    "*.tmp\n"
-    ".DS_Store\n"
-    "Thumbs.db\n";
-
-// Default .gitattributes: normalize text line endings, mark common binary types
-// so libgit2 / git skips text merges on them.
-constexpr const char *kDefaultGitattributes =
-    "# VNote sync defaults — feel free to edit; this file is preserved on update.\n"
-    "* text=auto eol=lf\n"
-    "*.png binary\n"
-    "*.jpg binary\n"
-    "*.jpeg binary\n"
-    "*.gif binary\n"
-    "*.pdf binary\n"
-    "*.zip binary\n"
-    "*.mp4 binary\n";
-
-// Write |content| to |abs_path| only if the file does not already exist.
-// Returns true if the file was created, false if it already existed or on error.
-// UTF-8 safe on Windows: uses PathExists / PathFromUtf8.
-bool WriteIfMissing(const std::string &abs_path, const std::string &content) {
-  if (PathExists(abs_path)) {
-    return false;
-  }
-  try {
-    std::ofstream ofs(PathFromUtf8(abs_path), std::ios::binary | std::ios::trunc);
-    if (!ofs) {
-      VXCORE_LOG_ERROR("WriteIfMissing: failed to open %s for writing", abs_path.c_str());
-      return false;
-    }
-    ofs.write(content.data(), static_cast<std::streamsize>(content.size()));
-    if (!ofs) {
-      VXCORE_LOG_ERROR("WriteIfMissing: failed to write %s", abs_path.c_str());
-      return false;
-    }
-    return true;
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("WriteIfMissing(%s) exception: %s", abs_path.c_str(), e.what());
-    return false;
-  }
-}
-
-// Build the full .gitignore content for a given config: defaults plus any
-// user-configured extra excludes from SyncConfig::exclude_paths.
-std::string BuildGitignoreContent(const SyncConfig &config) {
-  std::string out(kDefaultGitignore);
-  if (!config.exclude_paths.empty()) {
-    out += "\n# From SyncConfig::exclude_paths\n";
-    for (const auto &p : config.exclude_paths) {
-      out += p;
-      out += '\n';
-    }
-  }
-  return out;
-}
 
 // ---------- gitkeep injection helpers ----------
 
