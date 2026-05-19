@@ -249,6 +249,7 @@ add_executable(test_git_sync_init test_git_sync_init.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_git_sync_init PRIVATE
@@ -266,6 +267,7 @@ add_executable(test_git_sync_credentials test_git_sync_credentials.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_git_sync_credentials PRIVATE
@@ -283,6 +285,7 @@ add_executable(test_git_sync_status test_git_sync_status.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_git_sync_status PRIVATE
@@ -304,6 +307,7 @@ add_executable(test_git_sync_roundtrip test_git_sync_roundtrip.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_git_sync_roundtrip PRIVATE
@@ -324,6 +328,7 @@ add_executable(test_git_sync_conflicts test_git_sync_conflicts.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_git_sync_conflicts PRIVATE
@@ -344,6 +349,7 @@ add_executable(test_git_sync_pushpull test_git_sync_pushpull.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_git_sync_pushpull PRIVATE
@@ -364,6 +370,7 @@ add_executable(test_gitkeep_basic test_gitkeep_basic.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_gitkeep_basic PRIVATE
@@ -384,6 +391,7 @@ add_executable(test_gitkeep_cleanup test_gitkeep_cleanup.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_gitkeep_cleanup PRIVATE
@@ -403,6 +411,7 @@ add_executable(test_gitkeep_roundtrip test_gitkeep_roundtrip.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
 target_include_directories(test_gitkeep_roundtrip PRIVATE

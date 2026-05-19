@@ -23,6 +23,7 @@ set(VXCORE_GIT_SYNC_SOURCES_RELATIVE
     sync/git/git_config_fixer.cpp
     sync/git/git_defaults.cpp
     sync/git/git_error_translator.cpp
+    sync/git/gitkeep_sweeper.cpp
     sync/git_sync_backend.cpp
 )
 
