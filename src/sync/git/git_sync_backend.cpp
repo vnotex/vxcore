@@ -1,4 +1,4 @@
-#include "sync/git_sync_backend.h"
+#include "sync/git/git_sync_backend.h"
 
 #include <git2.h>
 

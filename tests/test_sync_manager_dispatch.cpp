@@ -8,7 +8,7 @@
 
 #include "core/context.h"
 #include "mock_sync_backend.h"
-#include "sync/git_sync_backend.h"
+#include "sync/git/git_sync_backend.h"
 #include "sync/sync_backend.h"
 #include "sync/sync_manager.h"
 #include "sync/sync_types.h"

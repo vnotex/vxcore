@@ -10,7 +10,7 @@
 #include <iostream>
 #include <string>
 
-#include "sync/git_sync_backend.h"
+#include "sync/git/git_sync_backend.h"
 #include "sync/git/git_credential_callback.h"
 #include "sync/git/libgit2_init.h"
 #include "sync/sync_types.h"

@@ -28,7 +28,7 @@ set(VXCORE_GIT_SYNC_SOURCES_RELATIVE
     sync/git/git_sync_pipeline.cpp
     sync/git/git_conflict_resolver.cpp
     sync/git/gitkeep_sweeper.cpp
-    sync/git_sync_backend.cpp
+    sync/git/git_sync_backend.cpp
 )
 
 set(VXCORE_GIT_SYNC_SOURCES_ABS "")

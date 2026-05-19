@@ -5,7 +5,7 @@
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
 #include "core/work_queue.h"
-#include "sync/git_sync_backend.h"
+#include "sync/git/git_sync_backend.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
 

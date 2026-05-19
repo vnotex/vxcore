@@ -1,5 +1,5 @@
-#ifndef VXCORE_GIT_SYNC_BACKEND_H
-#define VXCORE_GIT_SYNC_BACKEND_H
+#ifndef VXCORE_SYNC_GIT_GIT_SYNC_BACKEND_H
+#define VXCORE_SYNC_GIT_GIT_SYNC_BACKEND_H
 
 #include "sync/sync_backend.h"
 #include "sync/git/libgit2_init.h"
@@ -83,4 +83,4 @@ class GitSyncBackend : public ISyncBackend {
 
 }  // namespace vxcore
 
-#endif  // VXCORE_GIT_SYNC_BACKEND_H
+#endif  // VXCORE_SYNC_GIT_GIT_SYNC_BACKEND_H

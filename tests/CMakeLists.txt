@@ -245,7 +245,7 @@ target_link_libraries(test_sync_manager_dispatch PRIVATE git_sync_test_helpers)
 # the GitSyncBackend symbols and libgit2 ref-count statics, avoiding the
 # Windows DLL static-storage duplication problem.
 add_executable(test_git_sync_init test_git_sync_init.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -267,7 +267,7 @@ target_link_libraries(test_git_sync_init PRIVATE
 add_test(NAME test_git_sync_init COMMAND test_git_sync_init)
 
 add_executable(test_git_sync_credentials test_git_sync_credentials.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -289,7 +289,7 @@ target_link_libraries(test_git_sync_credentials PRIVATE
 add_test(NAME test_git_sync_credentials COMMAND test_git_sync_credentials)
 
 add_executable(test_git_sync_status test_git_sync_status.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -315,7 +315,7 @@ add_test(NAME test_git_sync_status COMMAND test_git_sync_status)
 # through the public *ForTesting hooks. Compiled the same way as
 # test_git_sync_status.
 add_executable(test_git_sync_roundtrip test_git_sync_roundtrip.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -340,7 +340,7 @@ add_test(NAME test_git_sync_roundtrip COMMAND test_git_sync_roundtrip)
 # variants) of git-sync-backend plan. Same compile pattern as
 # test_git_sync_roundtrip — owns its own GitSyncBackend statics.
 add_executable(test_git_sync_conflicts test_git_sync_conflicts.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -365,7 +365,7 @@ add_test(NAME test_git_sync_conflicts COMMAND test_git_sync_conflicts)
 # Pull-auto-commits-local-first semantic). Same compile pattern as
 # test_git_sync_roundtrip.
 add_executable(test_git_sync_pushpull test_git_sync_pushpull.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -390,7 +390,7 @@ add_test(NAME test_git_sync_pushpull COMMAND test_git_sync_pushpull)
 # to empty user folders during sync, respects the skip-list, and is
 # idempotent. Same compile pattern as test_git_sync_roundtrip.
 add_executable(test_gitkeep_basic test_gitkeep_basic.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -415,7 +415,7 @@ add_test(NAME test_gitkeep_basic COMMAND test_gitkeep_basic)
 # becomes non-empty, marker-ownership preservation (non-empty .gitkeep
 # never deleted), effective-emptiness for excluded-only folders.
 add_executable(test_gitkeep_cleanup test_gitkeep_cleanup.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -439,7 +439,7 @@ add_test(NAME test_gitkeep_cleanup COMMAND test_gitkeep_cleanup)
 # test_gitkeep_roundtrip: gitkeep injection plan — full push + clone
 # roundtrip via libgit2; verifies empty folders survive on the remote.
 add_executable(test_gitkeep_roundtrip test_gitkeep_roundtrip.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
