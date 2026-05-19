@@ -250,6 +250,7 @@ add_executable(test_git_sync_init test_git_sync_init.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
@@ -269,6 +270,7 @@ add_executable(test_git_sync_credentials test_git_sync_credentials.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
@@ -288,6 +290,7 @@ add_executable(test_git_sync_status test_git_sync_status.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
@@ -311,6 +314,7 @@ add_executable(test_git_sync_roundtrip test_git_sync_roundtrip.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
@@ -333,6 +337,7 @@ add_executable(test_git_sync_conflicts test_git_sync_conflicts.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
@@ -355,6 +360,7 @@ add_executable(test_git_sync_pushpull test_git_sync_pushpull.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
@@ -377,6 +383,7 @@ add_executable(test_gitkeep_basic test_gitkeep_basic.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
@@ -399,6 +406,7 @@ add_executable(test_gitkeep_cleanup test_gitkeep_cleanup.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
@@ -420,6 +428,7 @@ add_executable(test_gitkeep_roundtrip test_gitkeep_roundtrip.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
@@ -441,5 +450,4 @@ add_test(NAME test_gitkeep_roundtrip COMMAND test_gitkeep_roundtrip)
 # test, plus git_sync_test_helpers + nlohmann_json for the fixture and JSON.
 add_vxcore_test(test_sync_credentials_api)
 target_link_libraries(test_sync_credentials_api PRIVATE git_sync_test_helpers nlohmann_json)
-
 

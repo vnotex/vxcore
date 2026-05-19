@@ -70,54 +70,6 @@ class GitSyncBackend : public ISyncBackend {
   VXCORE_API VxCoreError PushOriginForTesting();
 
  private:
-  // T21: stage everything tracked + untracked under repo workdir, then
-  // defensively remove any index entry under vx_notebook/vx_sync/ (our
-  // gitdir lives there; .gitignore should already exclude it but we belt-
-  // and-brace it). Caller must hold op_mutex_ and have repo_ open.
-  VxCoreError StageAll();
-
-  // T22: write the current index out as a tree, compare to HEAD's tree, and
-  // create a commit on HEAD if the trees differ. Empty (no-op) commits are
-  // suppressed and return VXCORE_OK. Author/committer come from
-  // credentials_.author_name/_email with sensible defaults. Caller must
-  // hold op_mutex_ and have repo_ open.
-  VxCoreError CommitIndex(const std::string &message);
-
-  // T23: git_remote_lookup("origin") + git_remote_fetch with our credential
-  // callback wired in. Caller must hold op_mutex_ and have repo_ open.
-  VxCoreError FetchOrigin();
-
-  // T24: rebase the current branch onto refs/remotes/origin/<branch>. If HEAD
-  // is unborn or the remote-tracking ref does not exist, returns OK (nothing
-  // to rebase). On a conflict, leaves rebase_in_progress_ set so a later
-  // ResolveConflict (T29-T32) can complete the rebase, and returns
-  // VXCORE_ERR_SYNC_CONFLICT. Caller must hold op_mutex_ and have repo_ open.
-  VxCoreError RebaseOntoOrigin();
-
-  // T25: push the current branch to origin/<branch>. Wires the credential
-  // callback so PAT auth works. Caller must hold op_mutex_ and have repo_
-  // open.
-  VxCoreError PushOrigin();
-
-  // T29-T32: After a single conflict has been resolved by the caller (index
-  // staged + conflict cleared), continue the in-progress rebase. Commits the
-  // current operation via git_rebase_commit, then loops git_rebase_next:
-  // on a fresh conflict leaves rebase_in_progress_ set and returns OK; on
-  // GIT_ITEROVER calls git_rebase_finish and clears rebase_in_progress_.
-  // No-op (returns OK) if no rebase is in progress. Caller must hold
-  // op_mutex_ and have repo_ open.
-  VxCoreError ContinueRebaseAfterResolution();
-
-  // T18: apply baseline repo-level config (filemode, autocrlf, gpgsign,
-  // user.name, user.email). Caller must hold op_mutex_ and have repo_ open.
-  VxCoreError ApplyDefaultGitConfig();
-
-  // T17 helper: returns true if the remote at config_.remote_url advertises
-  // any refs. Uses an in-memory repo + anonymous remote with the credential
-  // callback so PAT auth (if set) is honored. Logs and returns false on
-  // network/auth failure (caller treats inability to reach as "no refs").
-  bool RemoteHasRefs();
-
   LibGit2Init libgit2_;     // RAII; FIRST member so it's last destroyed
   std::mutex op_mutex_;     // serializes per-backend libgit2 calls
   std::string root_folder_; // notebook root (= libgit2 workdir)
