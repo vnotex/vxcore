@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "sync/git/git_error_translator.h"
+#include "sync/git/git_handles.h"
 #include "sync/git/git_sync_pipeline.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
@@ -32,19 +33,19 @@ GitConflictResolver::GitConflictResolver(git_repository *repo, const std::string
 VxCoreError GitConflictResolver::GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) {
   out_conflicts.clear();
 
-  git_index *idx = nullptr;
-  int rc = git_repository_index(&idx, repo_);
+  git_index *idx_raw = nullptr;
+  int rc = git_repository_index(&idx_raw, repo_);
   if (rc != 0) {
     return TranslateGitError(rc);
   }
+  git_indexPtr idx(idx_raw);
 
-  git_index_conflict_iterator *iter = nullptr;
-  rc = git_index_conflict_iterator_new(&iter, idx);
+  git_index_conflict_iterator *iter_raw = nullptr;
+  rc = git_index_conflict_iterator_new(&iter_raw, idx.get());
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_index_free(idx);
-    return err;
+    return TranslateGitError(rc);
   }
+  git_index_conflict_iteratorPtr iter(iter_raw);
 
   const auto now_unix_secs = static_cast<int64_t>(
       std::chrono::duration_cast<std::chrono::seconds>(
@@ -55,16 +56,13 @@ VxCoreError GitConflictResolver::GetConflicts(std::vector<SyncConflictInfo> &out
     const git_index_entry *ancestor = nullptr;
     const git_index_entry *our = nullptr;
     const git_index_entry *their = nullptr;
-    rc = git_index_conflict_next(&ancestor, &our, &their, iter);
+    rc = git_index_conflict_next(&ancestor, &our, &their, iter.get());
     if (rc == GIT_ITEROVER) {
       git_error_clear();
       break;
     }
     if (rc != 0) {
-      VxCoreError err = TranslateGitError(rc);
-      git_index_conflict_iterator_free(iter);
-      git_index_free(idx);
-      return err;
+      return TranslateGitError(rc);
     }
 
     const char *path = nullptr;
@@ -105,11 +103,11 @@ VxCoreError GitConflictResolver::GetConflicts(std::vector<SyncConflictInfo> &out
     // is_binary: query libgit2's blob heuristic on the THEIR side (if any).
     info.is_binary = false;
     if (their != nullptr) {
-      git_blob *blob = nullptr;
-      int brc = git_blob_lookup(&blob, repo_, &their->id);
-      if (brc == 0 && blob != nullptr) {
-        info.is_binary = (git_blob_is_binary(blob) != 0);
-        git_blob_free(blob);
+      git_blob *blob_raw = nullptr;
+      int brc = git_blob_lookup(&blob_raw, repo_, &their->id);
+      if (brc == 0 && blob_raw != nullptr) {
+        git_blobPtr blob(blob_raw);
+        info.is_binary = (git_blob_is_binary(blob.get()) != 0);
       } else {
         git_error_clear();
       }
@@ -118,8 +116,6 @@ VxCoreError GitConflictResolver::GetConflicts(std::vector<SyncConflictInfo> &out
     out_conflicts.push_back(std::move(info));
   }
 
-  git_index_conflict_iterator_free(iter);
-  git_index_free(idx);
   return VXCORE_OK;
 }
 
@@ -139,11 +135,12 @@ ResolveResult GitConflictResolver::ResolveConflictEx(const std::string &path,
     return ResolveResult::Failed;
   }
 
-  git_index *idx = nullptr;
-  int rc = git_repository_index(&idx, repo_);
+  git_index *idx_raw = nullptr;
+  int rc = git_repository_index(&idx_raw, repo_);
   if (rc != 0) {
     return ResolveResult::Failed;
   }
+  git_indexPtr idx(idx_raw);
 
   // Look up the conflict triple for this path. KeepLocal doesn't strictly
   // need it (just clears + stages), but every branch needs to know the
@@ -153,14 +150,12 @@ ResolveResult GitConflictResolver::ResolveConflictEx(const std::string &path,
   const git_index_entry *ancestor = nullptr;
   const git_index_entry *our = nullptr;
   const git_index_entry *their = nullptr;
-  rc = git_index_conflict_get(&ancestor, &our, &their, idx, path.c_str());
+  rc = git_index_conflict_get(&ancestor, &our, &their, idx.get(), path.c_str());
   if (rc == GIT_ENOTFOUND) {
     git_error_clear();
-    git_index_free(idx);
     return ResolveResult::NoConflict;
   }
   if (rc != 0) {
-    git_index_free(idx);
     return ResolveResult::Failed;
   }
 
@@ -181,27 +176,26 @@ ResolveResult GitConflictResolver::ResolveConflictEx(const std::string &path,
     if (entry == nullptr) {
       return VXCORE_OK;
     }
-    git_blob *blob = nullptr;
-    int brc = git_blob_lookup(&blob, repo_, &entry->id);
-    if (brc != 0 || blob == nullptr) {
+    git_blob *blob_raw = nullptr;
+    int brc = git_blob_lookup(&blob_raw, repo_, &entry->id);
+    if (brc != 0 || blob_raw == nullptr) {
       return TranslateGitError(brc);
     }
-    const void *raw = git_blob_rawcontent(blob);
-    git_object_size_t raw_size = git_blob_rawsize(blob);
+    git_blobPtr blob(blob_raw);
+    const void *raw = git_blob_rawcontent(blob.get());
+    git_object_size_t raw_size = git_blob_rawsize(blob.get());
     try {
       std::filesystem::create_directories(PathFromUtf8(abs).parent_path());
     } catch (...) {
     }
     std::ofstream ofs(PathFromUtf8(abs), std::ios::binary | std::ios::trunc);
     if (!ofs) {
-      git_blob_free(blob);
       return VXCORE_ERR_UNKNOWN;
     }
     if (raw != nullptr && raw_size > 0) {
       ofs.write(static_cast<const char *>(raw),
                 static_cast<std::streamsize>(raw_size));
     }
-    git_blob_free(blob);
     return VXCORE_OK;
   };
 
@@ -229,19 +223,19 @@ ResolveResult GitConflictResolver::ResolveConflictEx(const std::string &path,
       std::filesystem::remove(PathFromUtf8(abs_original), ec);
     }
 
-    int rc2 = git_index_add_bypath(idx, path.c_str());
+    int rc2 = git_index_add_bypath(idx.get(), path.c_str());
     if (rc2 != 0) {
       git_error_clear();
-      rc2 = git_index_remove_bypath(idx, path.c_str());
+      rc2 = git_index_remove_bypath(idx.get(), path.c_str());
       if (rc2 != 0) {
         return TranslateGitError(rc2);
       }
     }
-    int rc3 = git_index_conflict_remove(idx, path.c_str());
+    int rc3 = git_index_conflict_remove(idx.get(), path.c_str());
     if (rc3 != 0) {
       return TranslateGitError(rc3);
     }
-    rc3 = git_index_write(idx);
+    rc3 = git_index_write(idx.get());
     if (rc3 != 0) {
       return TranslateGitError(rc3);
     }
@@ -277,35 +271,29 @@ ResolveResult GitConflictResolver::ResolveConflictEx(const std::string &path,
       // Write LOCAL blob (rebase "their") to the .sync-conflict file.
       VxCoreError werr = write_blob_to_path(local_side, abs_conflict);
       if (werr != VXCORE_OK) {
-        git_index_free(idx);
         return ResolveResult::Failed;
       }
       // Overwrite original with REMOTE blob (rebase "our").
       werr = write_blob_to_path(remote_side, abs_original);
       if (werr != VXCORE_OK) {
-        git_index_free(idx);
         return ResolveResult::Failed;
       }
 
       // Stage both the original (now REMOTE content) and the conflict file.
-      int rc2 = git_index_add_bypath(idx, path.c_str());
+      int rc2 = git_index_add_bypath(idx.get(), path.c_str());
       if (rc2 != 0) {
-        git_index_free(idx);
         return ResolveResult::Failed;
       }
-      rc2 = git_index_add_bypath(idx, conflict_rel.c_str());
+      rc2 = git_index_add_bypath(idx.get(), conflict_rel.c_str());
       if (rc2 != 0) {
-        git_index_free(idx);
         return ResolveResult::Failed;
       }
-      rc2 = git_index_conflict_remove(idx, path.c_str());
+      rc2 = git_index_conflict_remove(idx.get(), path.c_str());
       if (rc2 != 0) {
-        git_index_free(idx);
         return ResolveResult::Failed;
       }
-      rc2 = git_index_write(idx);
-      git_index_free(idx);
-      idx = nullptr;
+      rc2 = git_index_write(idx.get());
+      idx.reset();
       if (rc2 != 0) {
         return ResolveResult::Failed;
       }
@@ -316,8 +304,7 @@ ResolveResult GitConflictResolver::ResolveConflictEx(const std::string &path,
       // Materialize LOCAL blob (rebase "their") to workdir so the file
       // doesn't retain any conflict markers libgit2 may have written.
       VxCoreError err = write_resolved_side(Side::Local);
-      git_index_free(idx);
-      idx = nullptr;
+      idx.reset();
       if (err != VXCORE_OK) {
         return ResolveResult::Failed;
       }
@@ -327,8 +314,7 @@ ResolveResult GitConflictResolver::ResolveConflictEx(const std::string &path,
     case SyncConflictResolution::kKeepRemote: {
       // Overwrite workdir with REMOTE blob (rebase "our"), stage, clear.
       VxCoreError err = write_resolved_side(Side::Remote);
-      git_index_free(idx);
-      idx = nullptr;
+      idx.reset();
       if (err != VXCORE_OK) {
         return ResolveResult::Failed;
       }
