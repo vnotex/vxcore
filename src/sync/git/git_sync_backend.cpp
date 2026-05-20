@@ -11,10 +11,13 @@
 
 #include "sync/git/git_config_fixer.h"
 #include "sync/git/git_conflict_resolver.h"
+#include "sync/git/git_defaults.h"
 #include "sync/git/git_error_translator.h"
+#include "sync/git/git_handles.h"
 #include "sync/git/git_repo_bootstrap.h"
 #include "sync/git/git_sync_pipeline.h"
 #include "sync/git/gitkeep_sweeper.h"
+#include "sync/git/libgit2_init.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 
@@ -377,15 +380,17 @@ VxCoreError GitSyncBackend::GetStatus(std::vector<SyncFileInfo> &out_files) {
                GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX |
                GIT_STATUS_OPT_RENAMES_INDEX_TO_WORKDIR;
 
-  git_status_list *list = nullptr;
-  int rc = git_status_list_new(&list, repo_, &opts);
+  git_status_listPtr list;
+  git_status_list *raw_list = nullptr;
+  int rc = git_status_list_new(&raw_list, repo_, &opts);
   if (rc != 0) {
     return TranslateGitError(rc);
   }
+  list.reset(raw_list);
 
-  const size_t n = git_status_list_entrycount(list);
+  const size_t n = git_status_list_entrycount(list.get());
   for (size_t i = 0; i < n; ++i) {
-    const git_status_entry *entry = git_status_byindex(list, i);
+    const git_status_entry *entry = git_status_byindex(list.get(), i);
     if (entry == nullptr) {
       continue;
     }
@@ -401,7 +406,7 @@ VxCoreError GitSyncBackend::GetStatus(std::vector<SyncFileInfo> &out_files) {
     } else if ((s & (GIT_STATUS_INDEX_DELETED | GIT_STATUS_WT_DELETED)) != 0) {
       mapped = SyncFileStatus::kDeletedLocal;
     } else {
-      // RENAMED / TYPECHANGE / IGNORED / CURRENT etc. — not in our enum.
+      // RENAMED / TYPECHANGE / IGNORED / CURRENT etc. - not in our enum.
       continue;
     }
 
@@ -423,7 +428,6 @@ VxCoreError GitSyncBackend::GetStatus(std::vector<SyncFileInfo> &out_files) {
     out_files.push_back(std::move(info));
   }
 
-  git_status_list_free(list);
   return VXCORE_OK;
 }
 
