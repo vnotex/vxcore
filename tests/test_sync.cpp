@@ -325,9 +325,9 @@ int test_sync_enable_with_backend_options_via_c_api() {
                                &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  // Enable sync with backendOptions
+  // Enable sync with backendOptions (using mock backend since webdav is not implemented)
   const char *config_json =
-      R"({"backend":"webdav","remoteUrl":"https://dav.example.com","backendOptions":{"depth":2}})";
+      R"({"backend":"mock","remoteUrl":"https://dav.example.com","backendOptions":{"depth":2}})";
   err = vxcore_sync_enable(ctx, notebook_id, config_json);
   ASSERT_EQ(err, VXCORE_OK);
 

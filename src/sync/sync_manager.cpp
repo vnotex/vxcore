@@ -6,6 +6,7 @@
 #include "core/notebook_manager.h"
 #include "core/work_queue.h"
 #include "sync/git/git_sync_backend.h"
+#include "sync/git/libgit2_init.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
 
@@ -131,10 +132,24 @@ VxCoreError SyncManager::EnableSync(const std::string &notebook_id, const SyncCo
 }
 
 VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
-                                        const SyncCredentials *credentials) {
+                                         const SyncCredentials *credentials) {
   VxCoreError err = ValidateNotebook(notebook_id);
   if (err != VXCORE_OK) {
     return err;
+  }
+
+  // Fail-fast on unknown backend (F1.4/B3) — check BEFORE init to catch config errors early.
+  if (!config.backend.empty() && config.backend != "git" && config.backend != "mock") {
+    VXCORE_LOG_ERROR("SyncManager::EnableSyncImpl: unknown backend '%s' for notebook: %s",
+                     config.backend.c_str(), notebook_id.c_str());
+    return VXCORE_ERR_UNKNOWN_BACKEND;
+  }
+
+  // Check if libgit2 initialization succeeded (F2.5/B4) — only for git backend.
+  if (config.backend == "git" && !LibGit2Init::ok()) {
+    VXCORE_LOG_ERROR("SyncManager::EnableSyncImpl: libgit2 init failed for notebook: %s",
+                     notebook_id.c_str());
+    return VXCORE_ERR_GIT_INIT_FAILED;
   }
 
   const bool had_config = configs_.count(notebook_id) > 0;
