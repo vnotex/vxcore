@@ -3,12 +3,15 @@
 
 #include <git2.h>
 
+#include <memory>
 #include <string>
 
 #include "sync/sync_types.h"
 #include "vxcore/vxcore_types.h"
 
 namespace vxcore {
+
+class ICredentialProvider;
 
 // Remove the libgit2-managed `.git` gitlink file from the workdir.
 //
@@ -28,74 +31,30 @@ void ScrubGitlink(const std::string &root_folder, const std::string &context);
 
 // Branch 1 (T14): re-open an existing libgit2 repo at |git_dir|.
 //
-// Preconditions: |git_dir| exists, contains HEAD (caller has verified the
-// corrupt-repo guard). The caller has just called RebindCoreWorktree to fix
-// up any stale core.worktree before this is invoked.
-//
-// Behavior:
-//   1. git_repository_open(git_dir)
-//   2. git_repository_set_workdir(repo, root_folder, update_gitlink=0)
-//   3. git_remote_lookup("origin") — missing origin returns INVALID_PARAM
-//   4. Verify origin URL matches config.remote_url — mismatch returns
-//      INVALID_PARAM
-//   5. GitSyncPipeline::ApplyDefaultGitConfig() — enforces filemode, autocrlf,
-//      gpgsign, author
-//
-// On success: *out_repo holds the opened repo (caller owns; must
-// git_repository_free on Shutdown).
-// On failure: *out_repo is nullptr; any partially-acquired libgit2 handles
-// have been freed inside.
+// Wave 6.3 F4.4 of sync-backend-phase4: the credentials parameter has been
+// replaced with a shared_ptr<ICredentialProvider>. The pipeline forwards it
+// to MakeRemoteCallbacks at each network-touching phase, taking a fresh
+// SyncCredentials snapshot per callback build.
 VxCoreError OpenExistingRepo(const std::string &root_folder,
                              const std::string &git_dir,
                              const SyncConfig &config,
-                             const SyncCredentials &credentials,
+                             std::shared_ptr<ICredentialProvider> creds_provider,
                              git_rebase **rebase_in_progress,
                              git_repository **out_repo);
 
-// Branch 2 (T15): clone-into-empty-remote. The notebook root has no user
-// files (only vx_notebook/ at most) and a remote URL is configured.
-//
-// Preconditions: !PathExists(git_dir), notebook root has no user files
-// (excluding vx_notebook/), config.remote_url is non-empty.
-//
-// Behavior: init a libgit2 repo with the separate gitdir layout
-// (vx_notebook/vx_sync/), attach origin, fetch with credentials, then
-// checkout the remote's default branch (main, fall back to master).
-// git_clone is intentionally avoided — its Windows local-transport path
-// hangs on file:// URLs.
-//
-// If the remote is truly empty (no refs at all), we return VXCORE_OK with
-// the local repo left as-is (HEAD symbolic to refs/heads/main); future
-// Sync() will create the first commit.
-//
-// On success: *out_repo holds the opened repo + ScrubGitlink has been
-// invoked.
-// On failure: *out_repo is nullptr; any partially-created handles freed.
+// Branch 2 (T15): clone-into-empty-remote.
 VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
                                      const std::string &git_dir,
                                      const SyncConfig &config,
-                                     const SyncCredentials &credentials,
+                                     std::shared_ptr<ICredentialProvider> creds_provider,
                                      git_rebase **rebase_in_progress,
                                      git_repository **out_repo);
 
-// Branch 3 (T16): init+push to empty-remote. The notebook root has user
-// files, the configured remote is empty (caller has verified RemoteHasRefs
-// returned false), and a remote URL is set.
-//
-// Preconditions: !PathExists(git_dir), notebook root has user files,
-// config.remote_url non-empty, remote has no refs.
-//
-// Behavior: init a libgit2 repo with the separate-gitdir layout, write
-// .gitignore + .gitattributes defaults, create origin, stage + commit
-// everything, push refs/heads/main to publish the notebook.
-//
-// On success: *out_repo holds the opened repo + ScrubGitlink has been
-// invoked.
-// On failure: *out_repo is nullptr; any partially-created handles freed.
+// Branch 3 (T16): init+push to empty-remote.
 VxCoreError BootstrapToEmptyRemote(const std::string &root_folder,
                                    const std::string &git_dir,
                                    const SyncConfig &config,
-                                   const SyncCredentials &credentials,
+                                   std::shared_ptr<ICredentialProvider> creds_provider,
                                    git_rebase **rebase_in_progress,
                                    git_repository **out_repo);
 

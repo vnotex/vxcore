@@ -2,6 +2,7 @@
 #define VXCORE_SYNC_BACKEND_H
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -9,6 +10,8 @@
 #include "vxcore/vxcore_types.h"
 
 namespace vxcore {
+
+class ICredentialProvider;
 
 // Capability bits advertised by an ISyncBackend implementation. The set of
 // bits returned by GetCapabilities() lets callers query optional features
@@ -60,12 +63,29 @@ class ISyncBackend {
   virtual VxCoreError Initialize(const std::string &root_folder,
                                  const SyncConfig &config) = 0;
 
-  // Called by SyncManager BEFORE Initialize/Sync when credentials are
-  // available. Backend caches them. Idempotent. Default no-op for backends that
-  // don't need credentials (e.g., MockSyncBackend).
-  virtual VxCoreError SetCredentials(const SyncCredentials &creds) {
-    (void)creds;
-    return VXCORE_OK;
+  // Task 6.3 (F4.4) of sync-backend-phase4: credential rotation contract.
+  //
+  // Atomically swap the backend's ICredentialProvider. Implementations MUST
+  // hold a short-lived internal mutex while replacing the stored shared_ptr,
+  // and MUST NOT block the libgit2 credential callback thread for any
+  // operation longer than the swap itself. Default no-op for backends that
+  // don't need credentials (e.g., MockSyncBackend without auth requirements).
+  //
+  // Replaces the legacy SetCredentials path (removed in Wave 6.3 — backends
+  // no longer cache a SyncCredentials snapshot; they pull a fresh snapshot
+  // from the provider at each call site that needs auth or commit-author
+  // info).
+  virtual void ReplaceCredsProvider(
+      std::shared_ptr<ICredentialProvider> provider) {
+    (void)provider;
+  }
+
+  // Returns a snapshot of the currently-stored provider shared_ptr. Used by
+  // pipeline code paths to grab their own ref so the provider stays alive
+  // for the duration of the libgit2 operation even if ReplaceCredsProvider
+  // is called concurrently. Default returns null (no provider).
+  virtual std::shared_ptr<ICredentialProvider> GetCredsProviderSnapshot() const {
+    return nullptr;
   }
 
   // Sync is the composite remote-roundtrip operation (stage/commit/fetch/

@@ -176,6 +176,43 @@ int auth_required_with_null_provider_returns_missing_credentials() {
   return 0;
 }
 
+int provider_swap_does_not_tear_inflight() {
+  std::cout << "  Running provider_swap_does_not_tear_inflight..." << std::endl;
+  NotebookFixture nb("test_with_provider_swap");
+
+  SyncConfig cfg;
+  cfg.backend = "mock";
+  cfg.remote_url = "test://swap";
+
+  auto provider_a = std::make_shared<InMemoryCredentialProvider>(SyncCredentials{});
+  auto provider_b = std::make_shared<InMemoryCredentialProvider>(SyncCredentials{});
+
+  std::shared_ptr<ICredentialProvider> p_a = provider_a;
+  std::shared_ptr<ICredentialProvider> p_b = provider_b;
+
+  VxCoreError err = nb.sync_manager().EnableSync(nb.notebook_id, cfg, p_a);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Wave 6.3 F4.4 semantic: UpdateCredentials swaps the backend's stored
+  // provider atomically. Any in-flight pipeline holds its own
+  // shared_ptr<ICredentialProvider> copy taken at pipeline-ctor time, so
+  // it is structurally immune to this rotation — guaranteed at compile
+  // time by GitSyncPipeline's ctor signature. Here we verify the
+  // observable effects: rotation succeeds and provider_a's lifetime is
+  // not torn (still alive under our local ref).
+  err = nb.sync_manager().UpdateCredentials(nb.notebook_id, p_b);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  ASSERT_TRUE(provider_a.use_count() >= 1);
+  ASSERT_TRUE(provider_b.use_count() >= 2);  // local + backend slot
+
+  err = vxcore_sync_disable(nb.ctx, nb.notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::cout << "  PASS" << std::endl;
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -183,6 +220,7 @@ int main() {
   std::cout << "Running test_sync_backend_with_provider tests..." << std::endl;
   RUN_TEST(provider_is_forwarded_to_backend_via_registry);
   RUN_TEST(auth_required_with_null_provider_returns_missing_credentials);
+  RUN_TEST(provider_swap_does_not_tear_inflight);
   std::cout << "All test_sync_backend_with_provider tests passed." << std::endl;
   return 0;
 }

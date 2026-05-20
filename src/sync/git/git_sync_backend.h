@@ -25,6 +25,13 @@ class GitSyncPipeline;
 // (separate gitdir), the notebook root is the working tree.
 // All libgit2 operations are serialized by op_mutex_; concurrent Sync() returns
 // VXCORE_ERR_SYNC_IN_PROGRESS via try_lock.
+//
+// Wave 6.3 F4.4 of sync-backend-phase4: credentials are no longer cached in
+// the backend. ReplaceCredsProvider() / GetCredsProviderSnapshot() swap and
+// snapshot a shared_ptr<ICredentialProvider> under creds_provider_mu_.
+// Sync()/Initialize()/ResolveConflict() take a snapshot at entry and pass
+// it into the constructed GitSyncPipeline — providing per-call atomicity
+// even if ReplaceCredsProvider fires mid-Sync.
 class GitSyncBackend : public ISyncBackend {
  public:
   VXCORE_API GitSyncBackend();
@@ -32,9 +39,8 @@ class GitSyncBackend : public ISyncBackend {
   // SyncBackendFactory signature used by SyncBackendRegistry (Task 6.2 of
   // sync-backend-phase4). The cfg parameter is intentionally ignored here;
   // real configuration arrives via Initialize(root_folder, config). The
-  // provider is stored for later use by the libgit2 credential callback
-  // (Wave 6.3 wires the callback to call it). For now SetCredentials() is
-  // still the active credential source.
+  // provider is stored under creds_provider_mu_ and consumed by the libgit2
+  // credential callback via MakeRemoteCallbacks at each network phase.
   VXCORE_API GitSyncBackend(const SyncConfig &cfg,
                             std::shared_ptr<ICredentialProvider> creds_provider);
   VXCORE_API ~GitSyncBackend() override;
@@ -48,7 +54,8 @@ class GitSyncBackend : public ISyncBackend {
   std::string GetName() const override;
   SyncCapabilities GetCapabilities() const override;
   bool IsInitialized() const override;
-  VxCoreError SetCredentials(const SyncCredentials &creds) override;
+  void ReplaceCredsProvider(std::shared_ptr<ICredentialProvider> provider) override;
+  std::shared_ptr<ICredentialProvider> GetCredsProviderSnapshot() const override;
   VxCoreError Initialize(const std::string &root_folder,
                          const SyncConfig &config) override;
   VxCoreError Sync(SyncProgressCallback callback, void *userdata) override;
@@ -58,19 +65,11 @@ class GitSyncBackend : public ISyncBackend {
                               SyncConflictResolution resolution) override;
 
   // Construct a GitSyncPipeline wired to this backend's internal repo and
-  // config. The returned pipeline borrows references to backend state, so
-  // the pipeline MUST NOT outlive this GitSyncBackend instance. Holding the
-  // returned unique_ptr beyond the backend's lifetime is undefined behavior.
+  // config. The returned pipeline borrows the repo/git_dir/config references
+  // and holds its own shared_ptr to the current credential provider snapshot,
+  // so the pipeline MUST NOT outlive this GitSyncBackend instance.
   //
-  // Returns nullptr if the backend has not been initialized. op_mutex_ is
-  // held only during factory construction and released before return — the
-  // caller is responsible for serializing pipeline use against concurrent
-  // Initialize() / Shutdown() on the same backend (single-threaded callers
-  // need no extra synchronization).
-  //
-  // Exposed primarily for tests that drive Sync sub-phases (Stage / Commit /
-  // Fetch / Rebase / Push) in isolation. Production code constructs pipelines
-  // inline within Initialize / Sync / Push / Pull.
+  // Exposed primarily for tests that drive Sync sub-phases in isolation.
   VXCORE_API std::unique_ptr<GitSyncPipeline> MakePipeline();
 
  private:
@@ -80,27 +79,21 @@ class GitSyncBackend : public ISyncBackend {
   std::string git_dir_;     // root_folder_ + "/vx_notebook/vx_sync/"
   SyncConfig config_;
   // Typed view over config_.backend_options, parsed once in Initialize().
-  // No git/ code currently reads backend_options at runtime — this is the
-  // forward-looking surface added in Task 5.4 (F1.5) of sync-backend-phase4.
   GitOptions options_;
-  SyncCredentials credentials_;
-  // Credential provider passed via factory ctor (Task 6.2 F4.4). Stored for
-  // future use by the libgit2 credential callback (Wave 6.3). Today
-  // SetCredentials() remains the active credential source — provider is held
-  // here so the callback rewiring can land without a third ctor change.
+  // Wave 6.3 F4.4: credential provider — sole source of credentials. Mutex
+  // protects shared_ptr swaps. The libgit2 credential callback NEVER holds
+  // this mutex (callback receives a stack-local payload built by
+  // MakeRemoteCallbacks at the caller's site, before any libgit2 thread
+  // enters the picture).
+  mutable std::mutex creds_provider_mu_;
   std::shared_ptr<ICredentialProvider> creds_provider_;
   git_repository *repo_ = nullptr;
-  git_rebase *rebase_in_progress_ = nullptr; // T24 sets when rebase pauses on conflict
+  git_rebase *rebase_in_progress_ = nullptr;
   bool initialized_ = false;
 };
 
 // Anchor function used to defeat dead-stripping of git_sync_backend.cpp by
-// MSVC's /OPT:REF. The .cpp file installs a BackendRegistration token in an
-// anonymous namespace; nothing in vxcore.dll references that token directly
-// once Task 4.4 lands. Calling EnsureGitBackendLinked() from another TU (we
-// call it from LibGit2Init's ctor) forces the linker to keep the entire .obj
-// alive, which keeps the static-init registration alive too. The function
-// body itself is a tiny no-op that touches the registration symbol.
+// MSVC's /OPT:REF.
 VXCORE_API void EnsureGitBackendLinked();
 
 }  // namespace vxcore

@@ -42,8 +42,12 @@ class MockBackendProxy : public vxcore::ISyncBackend {
                                  const vxcore::SyncConfig &config) override {
     return target_->Initialize(root_folder, config);
   }
-  VxCoreError SetCredentials(const vxcore::SyncCredentials &creds) override {
-    return target_->SetCredentials(creds);
+  void ReplaceCredsProvider(
+      std::shared_ptr<vxcore::ICredentialProvider> p) override {
+    target_->ReplaceCredsProvider(std::move(p));
+  }
+  std::shared_ptr<vxcore::ICredentialProvider> GetCredsProviderSnapshot() const override {
+    return target_->GetCredsProviderSnapshot();
   }
   VxCoreError Sync(vxcore::SyncProgressCallback cb, void *ud) override {
     return target_->Sync(cb, ud);
@@ -96,15 +100,6 @@ int test_sync_credentials_default_fields() {
   return 0;
 }
 
-int test_isync_backend_default_setcredentials_returns_ok() {
-  std::cout << "  Running test_isync_backend_default_setcredentials_returns_ok..." << std::endl;
-  MockSyncBackend mb;
-  ASSERT_EQ(mb.SetCredentials(SyncCredentials{}), VXCORE_OK);
-  std::cout << "  \xE2\x9C\x93 test_isync_backend_default_setcredentials_returns_ok passed"
-            << std::endl;
-  return 0;
-}
-
 int test_mock_sync_backend_records() {
   std::cout << "  Running test_mock_sync_backend_records..." << std::endl;
   MockSyncBackend mb;
@@ -112,14 +107,13 @@ int test_mock_sync_backend_records() {
   ASSERT_EQ(mb.Sync(nullptr, nullptr), VXCORE_OK);
   ASSERT_EQ(mb.sync_call_count, 1);
 
-  // Wave 4.5 (F1.3) removed Push/Pull/Shutdown from ISyncBackend; the mock
-  // no longer records them. SetCredentials remains as the secondary call we
-  // record here.
-  SyncCredentials creds;
-  creds.personal_access_token = "abc";
-  ASSERT_EQ(mb.SetCredentials(creds), VXCORE_OK);
-  ASSERT_EQ(mb.set_credentials_call_count, 1);
-  ASSERT_TRUE(mb.last_credentials.personal_access_token == "abc");
+  // Wave 6.3 F4.4: SetCredentials is gone; rotation goes through
+  // ReplaceCredsProvider which records the call and stores the provider
+  // for snapshot retrieval.
+  auto provider = std::make_shared<vxcore::InMemoryCredentialProvider>(SyncCredentials{});
+  mb.ReplaceCredsProvider(provider);
+  ASSERT_EQ(mb.replace_creds_provider_call_count, 1);
+  ASSERT_TRUE(mb.GetCredsProviderSnapshot().get() == provider.get());
 
   std::cout << "  \xE2\x9C\x93 test_mock_sync_backend_records passed" << std::endl;
   return 0;
@@ -457,9 +451,9 @@ int test_sync_resolve_clears_conflicted_state_when_no_more_conflicts() {
   return 0;
 }
 
-int test_sync_manager_set_credentials_dispatches() {
-  std::cout << "  Running test_sync_manager_set_credentials_dispatches..." << std::endl;
-  std::string path = get_test_path("test_sync_dispatch_setcred");
+int test_sync_manager_update_credentials_dispatches() {
+  std::cout << "  Running test_sync_manager_update_credentials_dispatches..." << std::endl;
+  std::string path = get_test_path("test_sync_dispatch_updatecred");
   cleanup_test_dir(path);
 
   VxCoreContextHandle ctx = nullptr;
@@ -470,99 +464,68 @@ int test_sync_manager_set_credentials_dispatches() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  // Task 5.2 (F4.1): "mock" is now self-registered. Use EnableSyncWithFactoryForTesting
-  // to inject a custom mock instance for call tracking.
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
   SyncConfig cfg;
   cfg.backend = "mock";
   cfg.remote_url = "file:///tmp/x";
-  
+
   auto mock = std::make_shared<MockSyncBackend>();
   MockSyncBackend *mock_ptr = mock.get();
-  
+
   MockBackendFactory factory(mock);
-  
+
   ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithFactoryForTesting(
                 notebook_id, cfg, nullptr, factory),
             VXCORE_OK);
 
+  // Baseline: no rotation yet.
+  ASSERT_EQ(mock_ptr->replace_creds_provider_call_count, 0);
+
   SyncCredentials creds;
   creds.personal_access_token = "abc123";
-  ASSERT_EQ(ctx_impl->sync_manager->SetCredentials(notebook_id, creds), VXCORE_OK);
-  ASSERT_EQ(mock_ptr->set_credentials_call_count, 1);
-  ASSERT_TRUE(mock_ptr->last_credentials.personal_access_token == "abc123");
+  auto provider = std::make_shared<vxcore::InMemoryCredentialProvider>(creds);
+  ASSERT_EQ(ctx_impl->sync_manager->UpdateCredentials(notebook_id, provider), VXCORE_OK);
+  ASSERT_EQ(mock_ptr->replace_creds_provider_call_count, 1);
+  ASSERT_TRUE(mock_ptr->GetCredsProviderSnapshot().get() == provider.get());
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(path);
-  std::cout << "  \xE2\x9C\x93 test_sync_manager_set_credentials_dispatches passed" << std::endl;
-  return 0;
-}
-
-int test_sync_manager_set_credentials_no_backend_returns_not_implemented() {
-  std::cout << "  Running test_sync_manager_set_credentials_no_backend_returns_not_implemented..."
+  std::cout << "  \xE2\x9C\x93 test_sync_manager_update_credentials_dispatches passed"
             << std::endl;
-  std::string path = get_test_path("test_sync_dispatch_setcred_nobackend");
-  cleanup_test_dir(path);
-
-  VxCoreContextHandle ctx = nullptr;
-  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
-
-  char *notebook_id = nullptr;
-  ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"sc2\"}",
-                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
-            VXCORE_OK);
-
-  // Wave 4.4 / F1.1: the "enabled but no backend" state branch in SetCredentials
-  // (VXCORE_ERR_NOT_IMPLEMENTED) is no longer reachable from the public API — registry
-  // rejects unknown backends at enable time. This test now asserts the new contract:
-  // enabling with an unknown backend fails with UNKNOWN_BACKEND, and SetCredentials
-  // reports SYNC_NOT_ENABLED.
-  // (Note: "mock" is self-registered, so we use a name guaranteed not in the registry.)
-  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"nonexistent_backend_xyz\",\"remoteUrl\":\"file:///tmp/x\"}"),
-            VXCORE_ERR_UNKNOWN_BACKEND);
-
-  auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  SyncCredentials creds;
-  creds.personal_access_token = "tkn";
-  ASSERT_EQ(ctx_impl->sync_manager->SetCredentials(notebook_id, creds),
-            VXCORE_ERR_SYNC_NOT_ENABLED);
-
-  vxcore_string_free(notebook_id);
-  vxcore_context_destroy(ctx);
-  cleanup_test_dir(path);
-  std::cout
-      << "  \xE2\x9C\x93 test_sync_manager_set_credentials_no_backend_returns_not_implemented "
-         "passed"
-      << std::endl;
   return 0;
 }
 
-int test_sync_manager_set_credentials_unknown_notebook_returns_not_found() {
-  std::cout << "  Running test_sync_manager_set_credentials_unknown_notebook_returns_not_found..."
+// Wave 6.3 F4.4: the legacy "no backend" SetCredentials branch
+// (VXCORE_ERR_NOT_IMPLEMENTED) is unreachable for UpdateCredentials in
+// practice — see problems.md. The narrower SYNC_NOT_ENABLED contract for
+// "enabled but no backend" remains exercised via the
+// update_credentials_not_enabled test below.
+
+int test_sync_manager_update_credentials_unknown_notebook_returns_not_found() {
+  std::cout << "  Running test_sync_manager_update_credentials_unknown_notebook_returns_not_found..."
             << std::endl;
 
   VxCoreContextHandle ctx = nullptr;
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
 
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  SyncCredentials creds;
-  ASSERT_EQ(ctx_impl->sync_manager->SetCredentials("nonexistent-id-xyz", creds),
+  auto provider = std::make_shared<vxcore::InMemoryCredentialProvider>(SyncCredentials{});
+  ASSERT_EQ(ctx_impl->sync_manager->UpdateCredentials("nonexistent-id-xyz", provider),
             VXCORE_ERR_NOT_FOUND);
 
   vxcore_context_destroy(ctx);
   std::cout
-      << "  \xE2\x9C\x93 test_sync_manager_set_credentials_unknown_notebook_returns_not_found "
+      << "  \xE2\x9C\x93 test_sync_manager_update_credentials_unknown_notebook_returns_not_found "
          "passed"
       << std::endl;
   return 0;
 }
 
-int test_sync_manager_set_credentials_not_enabled_returns_not_enabled() {
-  std::cout << "  Running test_sync_manager_set_credentials_not_enabled_returns_not_enabled..."
+int test_sync_manager_update_credentials_not_enabled_returns_not_enabled() {
+  std::cout << "  Running test_sync_manager_update_credentials_not_enabled_returns_not_enabled..."
             << std::endl;
-  std::string path = get_test_path("test_sync_dispatch_setcred_notenabled");
+  std::string path = get_test_path("test_sync_dispatch_updatecred_notenabled");
   cleanup_test_dir(path);
 
   VxCoreContextHandle ctx = nullptr;
@@ -574,15 +537,15 @@ int test_sync_manager_set_credentials_not_enabled_returns_not_enabled() {
             VXCORE_OK);
 
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  SyncCredentials creds;
-  ASSERT_EQ(ctx_impl->sync_manager->SetCredentials(notebook_id, creds),
+  auto provider = std::make_shared<vxcore::InMemoryCredentialProvider>(SyncCredentials{});
+  ASSERT_EQ(ctx_impl->sync_manager->UpdateCredentials(notebook_id, provider),
             VXCORE_ERR_SYNC_NOT_ENABLED);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(path);
   std::cout
-      << "  \xE2\x9C\x93 test_sync_manager_set_credentials_not_enabled_returns_not_enabled passed"
+      << "  \xE2\x9C\x93 test_sync_manager_update_credentials_not_enabled_returns_not_enabled passed"
       << std::endl;
   return 0;
 }
@@ -638,8 +601,8 @@ int test_sync_enable_creates_git_backend() {
   return 0;
 }
 
-int test_sync_enable_with_credentials_calls_setcred_first() {
-  std::cout << "  Running test_sync_enable_with_credentials_calls_setcred_first..." << std::endl;
+int test_sync_enable_with_credentials_forwards_provider() {
+  std::cout << "  Running test_sync_enable_with_credentials_forwards_provider..." << std::endl;
   std::string path = get_test_path("test_sync_enable_creds_order");
   cleanup_test_dir(path);
 
@@ -651,10 +614,8 @@ int test_sync_enable_with_credentials_calls_setcred_first() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  // Task 5.2 (F4.1): "mock" is now self-registered. Use EnableSyncWithFactoryForTesting
-  // to inject a custom mock instance for call tracking.
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  
+
   auto mock = std::make_shared<MockSyncBackend>();
   mock->next_initialize_result = VXCORE_OK;
   MockSyncBackend *mock_ptr = mock.get();
@@ -665,22 +626,28 @@ int test_sync_enable_with_credentials_calls_setcred_first() {
 
   SyncCredentials creds;
   creds.personal_access_token = "abc";
+  auto provider = std::make_shared<vxcore::InMemoryCredentialProvider>(creds);
 
   MockBackendFactory factory(mock);
-  
+
+  // Wave 6.3 F4.4: the credential provider is forwarded through the factory
+  // — the proxy mock pulls it via ReplaceCredsProvider on construction, so
+  // the snapshot reflects the same provider. The proxy ctor wiring records
+  // the call once, so we cleared the counter inside the factory lambda
+  // (legacy mock at tests/mock_sync_backend.cpp) — the proxy used here
+  // forwards through ReplaceCredsProvider but does NOT clear, so for THIS
+  // test we just assert the provider arrived (snapshot equality).
   ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithFactoryForTesting(
-                notebook_id, config, &creds, factory),
+                notebook_id, config, provider, factory),
             VXCORE_OK);
 
-  ASSERT_EQ(mock_ptr->set_credentials_call_count, 1);
   ASSERT_EQ(mock_ptr->initialize_call_count, 1);
-  // Proves SetCredentials ran BEFORE Initialize.
-  ASSERT_EQ(mock_ptr->set_credentials_call_count_at_initialize, 1);
+  ASSERT_TRUE(mock_ptr->GetCredsProviderSnapshot().get() == provider.get());
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(path);
-  std::cout << "  \xE2\x9C\x93 test_sync_enable_with_credentials_calls_setcred_first passed"
+  std::cout << "  \xE2\x9C\x93 test_sync_enable_with_credentials_forwards_provider passed"
             << std::endl;
   return 0;
 }
@@ -724,7 +691,6 @@ int main() {
   vxcore_set_test_mode(1);
   vxcore_clear_test_directory();
   RUN_TEST(test_sync_credentials_default_fields);
-  RUN_TEST(test_isync_backend_default_setcredentials_returns_ok);
   RUN_TEST(test_mock_sync_backend_records);
   RUN_TEST(test_helper_create_bare_repo);
   RUN_TEST(test_helper_commit_file_and_head_sha);
@@ -735,13 +701,12 @@ int main() {
   RUN_TEST(test_sync_conflicts_returns_backend_list);
   RUN_TEST(test_sync_resolve_dispatches_to_backend);
   RUN_TEST(test_sync_resolve_clears_conflicted_state_when_no_more_conflicts);
-  RUN_TEST(test_sync_manager_set_credentials_dispatches);
-  RUN_TEST(test_sync_manager_set_credentials_no_backend_returns_not_implemented);
-  RUN_TEST(test_sync_manager_set_credentials_unknown_notebook_returns_not_found);
-  RUN_TEST(test_sync_manager_set_credentials_not_enabled_returns_not_enabled);
+  RUN_TEST(test_sync_manager_update_credentials_dispatches);
+  RUN_TEST(test_sync_manager_update_credentials_unknown_notebook_returns_not_found);
+  RUN_TEST(test_sync_manager_update_credentials_not_enabled_returns_not_enabled);
   RUN_TEST(test_git_sync_backend_construct_destruct);
   RUN_TEST(test_sync_enable_creates_git_backend);
-  RUN_TEST(test_sync_enable_with_credentials_calls_setcred_first);
+  RUN_TEST(test_sync_enable_with_credentials_forwards_provider);
   RUN_TEST(test_sync_enable_unknown_backend_no_factory);
   std::cout << "All sync manager dispatch tests passed\n";
   return 0;

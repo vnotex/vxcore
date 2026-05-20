@@ -67,7 +67,7 @@ Every SyncManager method that operates on a notebook follows this pattern:
 | File | Purpose |
 |------|---------|
 | `sync_types.h` | Enums (`SyncState`, `SyncFileStatus`, `SyncConflictResolution`), structs (`SyncConfig`, `SyncProgress`, `SyncFileInfo`, `SyncConflictInfo`, `SyncCredentials`), `SyncProgressCallback` typedef, `SyncConfig::FromJson()`/`ToJson()` |
-| `sync_backend.h` | `ISyncBackend` pure virtual class (7 methods including virtual destructor; `SetCredentials` has a default no-op body, the other 5 are pure-virtual). Wave 4.5 of sync-backend-phase4 removed the dead Push/Pull/Shutdown virtuals. |
+| `sync_backend.h` | `ISyncBackend` pure virtual class. Wave 4.5 removed Push/Pull/Shutdown. Wave 6.3 F4.4 removed `SetCredentials` and added `ReplaceCredsProvider`/`GetCredsProviderSnapshot` (default no-op/null). Credentials are now supplied via `ICredentialProvider` at construction time and rotated via `ReplaceCredsProvider`. |
 | `sync_manager.h` | `SyncManager` class: per-notebook dispatch, dirty tracking via `EventManager` |
 | `sync_manager.cpp` | `SyncManager` implementation (validation, state management, event subscription, dirty tracking) |
 | `git/git_sync_backend.h` | `GitSyncBackend` class declaration (inherits `ISyncBackend`) — composition root |
@@ -161,7 +161,7 @@ public:
   virtual bool IsInitialized() const = 0;
   virtual VxCoreError Initialize(const std::string &root_folder,
                                  const SyncConfig &config) = 0;
-  virtual VxCoreError SetCredentials(const SyncCredentials &creds);  // default no-op
+  virtual VxCoreError SetCredentials(const SyncCredentials &creds);  // REMOVED in Wave 6.3 F4.4 — credentials flow via ICredentialProvider
   virtual VxCoreError Sync(SyncProgressCallback callback, void *userdata) = 0;
   virtual VxCoreError GetStatus(std::vector<SyncFileInfo> &out_files) = 0;
   virtual VxCoreError GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) = 0;
@@ -247,7 +247,7 @@ struct NotebookConfig {
 | Bundled notebooks only | Raw notebooks have no `vx_notebook/` folder for sync state |
 | No Qt dependencies | vxcore is a pure C/C++ library |
 | No network code in skeleton | Backends implement their own transport |
-| No credential storage | Credentials are per-device; the Qt layer stores the PAT in the OS keychain via `SyncCredentialsStore`. vxcore receives credentials at runtime via `SetCredentials` and never persists them. |
+| No credential storage | Credentials are per-device; the Qt layer stores the PAT in the OS keychain via `SyncCredentialsStore`. Wave 6.3 F4.4: vxcore receives credentials at runtime via `ICredentialProvider` (supplied at factory time and rotated via `SyncManager::UpdateCredentials` → `ISyncBackend::ReplaceCredsProvider`) and never persists them. |
 | Recycle bin IS synced | `vx_recycle_bin/` is included so deletions propagate across devices |
 | Sync state directory: `vx_notebook/vx_sync/` | Backend-specific state (e.g., `.git/`) lives here |
 | Conflict naming: `file.sync-conflict-{timestamp}.ext` | Syncthing-style, keeps both versions |
@@ -625,7 +625,7 @@ int test_my_sync_backend_init() {
 ### Checklist for New Backend
 
 - [ ] Create `src/sync/{name}_sync_backend.h` with class inheriting `ISyncBackend`
-- [ ] Create `src/sync/{name}_sync_backend.cpp` implementing all required methods (the 8 pure virtuals plus optionally overriding `SetCredentials`)
+- [ ] Create `src/sync/{name}_sync_backend.cpp` implementing all required methods (the pure virtuals plus optionally overriding `ReplaceCredsProvider`/`GetCredsProviderSnapshot` if you need to store the provider for credential access)
 - [ ] Add factory branch in `SyncManager::EnableSyncImpl()`
 - [ ] Add `.cpp` to `src/CMakeLists.txt` `VXCORE_SOURCES`
 - [ ] Add test cases to the most relevant existing file under `tests/` (e.g., `test_sync.cpp` for SyncManager wiring, `test_git_sync_*.cpp` for libgit2-backed coverage) or create a new `tests/test_{topic}.cpp`

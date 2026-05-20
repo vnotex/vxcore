@@ -4,6 +4,7 @@
 #include <atomic>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -41,12 +42,17 @@ class MockSyncBackend : public ISyncBackend {
   bool IsInitialized() const override;
   VxCoreError Initialize(const std::string &root_folder,
                          const SyncConfig &config) override;
-  VxCoreError SetCredentials(const SyncCredentials &creds) override;
   VxCoreError Sync(SyncProgressCallback callback, void *userdata) override;
   VxCoreError GetStatus(std::vector<SyncFileInfo> &out_files) override;
   VxCoreError GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) override;
   VxCoreError ResolveConflict(const std::string &path,
                               SyncConflictResolution resolution) override;
+
+  // Wave 6.3 F4.4: ReplaceCredsProvider override records the rotation so
+  // tests can assert that SyncManager::UpdateCredentials forwarded the new
+  // provider. The base-class default is a no-op.
+  void ReplaceCredsProvider(std::shared_ptr<ICredentialProvider> provider) override;
+  std::shared_ptr<ICredentialProvider> GetCredsProviderSnapshot() const override;
 
   // Configuration methods
   void SetReturnCode(const std::string &method_name, VxCoreError code);
@@ -68,7 +74,14 @@ class MockSyncBackend : public ISyncBackend {
   // Task 6.2 (F4.4): expose the provider supplied via the factory ctor so
   // tests can assert that the registry forwarded it correctly. Returns
   // nullptr for instances constructed via the default ctor.
+  //
+  // Wave 6.3 F4.4: also reflects the latest ReplaceCredsProvider() call —
+  // when SyncManager::UpdateCredentials rotates the provider, this getter
+  // returns the new shared_ptr.
   std::shared_ptr<ICredentialProvider> GetCredsProvider() const;
+
+  // Wave 6.3 F4.4 rotation recorder.
+  int replace_creds_provider_call_count = 0;
 
   // Task 6.2 (F4.4) capability override for registry-built mocks. The
   // registration lambda has no per-instance hook, so AuthRequired tests set
@@ -100,6 +113,7 @@ class MockSyncBackend : public ISyncBackend {
   SyncCapabilities capabilities_ = static_cast<SyncCapabilities>(SyncCapability::None);
   bool initialized_override_ = true;
   std::shared_ptr<ICredentialProvider> creds_provider_;
+  mutable std::mutex creds_provider_mu_;
 
   VxCoreError GetReturnCode(const std::string &method_name);
   void RecordCall(const std::string &method_name);

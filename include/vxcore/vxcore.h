@@ -876,7 +876,12 @@ VXCORE_API VxCoreError vxcore_sync_resolve_conflict(VxCoreContextHandle context,
 // Set credentials for an already-enabled sync notebook (rotation path).
 // credentials_json shape (all fields optional, missing = empty string):
 //   {"pat":"...","authorName":"...","authorEmail":"..."}
-// Forwards to the registered backend's SetCredentials. Returns:
+// Wave 6.3 F4.4: internally wraps the parsed SyncCredentials in an
+// InMemoryCredentialProvider and routes through
+// SyncManager::UpdateCredentials. The backend reads credentials via
+// ICredentialProvider exclusively — there is no SetCredentials method on
+// ISyncBackend anymore. The C ABI signature is unchanged.
+// Returns:
 //   VXCORE_ERR_NOT_FOUND        - notebook unknown
 //   VXCORE_ERR_SYNC_NOT_ENABLED - sync not enabled for notebook
 //   VXCORE_ERR_NOT_IMPLEMENTED  - no concrete backend registered

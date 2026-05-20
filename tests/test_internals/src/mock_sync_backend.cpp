@@ -65,10 +65,16 @@ VxCoreError MockSyncBackend::Initialize(const std::string &root_folder,
   return GetReturnCode("Initialize");
 }
 
-VxCoreError MockSyncBackend::SetCredentials(const SyncCredentials &creds) {
-  RecordCall("SetCredentials");
-  (void)creds;
-  return GetReturnCode("SetCredentials");
+void MockSyncBackend::ReplaceCredsProvider(std::shared_ptr<ICredentialProvider> provider) {
+  RecordCall("ReplaceCredsProvider");
+  std::lock_guard<std::mutex> lk(creds_provider_mu_);
+  creds_provider_ = std::move(provider);
+  ++replace_creds_provider_call_count;
+}
+
+std::shared_ptr<ICredentialProvider> MockSyncBackend::GetCredsProviderSnapshot() const {
+  std::lock_guard<std::mutex> lk(creds_provider_mu_);
+  return creds_provider_;
 }
 
 VxCoreError MockSyncBackend::Sync(SyncProgressCallback callback,
@@ -149,6 +155,7 @@ void MockSyncBackend::RecordCall(const std::string &method_name) {
 }
 
 std::shared_ptr<ICredentialProvider> MockSyncBackend::GetCredsProvider() const {
+  std::lock_guard<std::mutex> lk(creds_provider_mu_);
   return creds_provider_;
 }
 

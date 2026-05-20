@@ -34,6 +34,7 @@
 #include <iostream>
 #include <string>
 
+#include "sync/credential_provider.h"
 #include "sync/git/git_conflict_resolver.h"
 #include "sync/git/git_sync_pipeline.h"
 #include "sync/git/libgit2_init.h"
@@ -100,10 +101,10 @@ int test_returns_no_conflict_when_clean() {
   // GIT_ENOTFOUND), so the pipeline's other inputs (config, credentials,
   // git_dir) don't need to be meaningful.
   vxcore::SyncConfig cfg;
-  vxcore::SyncCredentials creds;
+  std::shared_ptr<vxcore::ICredentialProvider> creds_provider;  // null OK — ResolveResult path doesn't fire auth
   git_rebase *rebase_in_progress = nullptr;
   const std::string git_dir = workdir + "/.git";
-  vxcore::GitSyncPipeline pipeline(repo, git_dir, workdir, cfg, creds,
+  vxcore::GitSyncPipeline pipeline(repo, git_dir, workdir, cfg, creds_provider,
                                    &rebase_in_progress);
 
   vxcore::ResolveResult r = resolver.ResolveConflictEx(
@@ -136,10 +137,10 @@ int test_returns_failed_on_unrecoverable_error() {
   ASSERT_NOT_NULL(real_repo);
 
   vxcore::SyncConfig cfg;
-  vxcore::SyncCredentials creds;
+  std::shared_ptr<vxcore::ICredentialProvider> creds_provider;  // null OK
   git_rebase *rebase_in_progress = nullptr;
   const std::string git_dir = workdir + "/.git";
-  vxcore::GitSyncPipeline pipeline(real_repo, git_dir, workdir, cfg, creds,
+  vxcore::GitSyncPipeline pipeline(real_repo, git_dir, workdir, cfg, creds_provider,
                                    &rebase_in_progress);
 
   vxcore::GitConflictResolver bad_resolver(/*repo=*/nullptr, workdir);

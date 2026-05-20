@@ -4,6 +4,7 @@
 #include "core/context.h"
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
+#include "sync/credential_provider.h"
 #include "sync/sync_manager.h"
 #include "sync/sync_types.h"
 #include "utils/logger.h"
@@ -292,7 +293,12 @@ VXCORE_API VxCoreError vxcore_sync_set_credentials(VxCoreContextHandle context,
 
     vxcore::SyncCredentials creds = ParseCredentials(credentials_json);
     // NOTE: never log the PAT value itself.
-    return ctx->sync_manager->SetCredentials(notebook_id, creds);
+    // Wave 6.3 F4.4: route through UpdateCredentials by wrapping the
+    // incoming creds in an InMemoryCredentialProvider. The backend reads
+    // credentials via ICredentialProvider exclusively — there is no
+    // SetCredentials path anymore.
+    auto provider = std::make_shared<vxcore::InMemoryCredentialProvider>(std::move(creds));
+    return ctx->sync_manager->UpdateCredentials(notebook_id, std::move(provider));
   } catch (const nlohmann::json::exception &e) {
     ctx->last_error = e.what();
     return VXCORE_ERR_JSON_PARSE;

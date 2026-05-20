@@ -1,4 +1,6 @@
 #include "sync/git/git_credential_callback.h"
+
+#include "sync/credential_provider.h"
 #include "sync/sync_types.h"
 
 namespace vxcore {
@@ -20,9 +22,21 @@ int GitSyncBackendCredentialCb(git_credential **out, const char *url,
   return GIT_PASSTHROUGH;
 }
 
-RemoteCallbacksBundle MakeRemoteCallbacks(const SyncCredentials &credentials) {
+RemoteCallbacksBundle MakeRemoteCallbacks(ICredentialProvider *provider,
+                                          const std::string &remote_url) {
   RemoteCallbacksBundle bundle;
-  bundle.payload.personal_access_token = credentials.personal_access_token;
+  // Wave 6.3 (F4.4): snapshot creds from the provider at callback-build time.
+  // The libgit2 thread never touches the provider — it only reads the
+  // stack-local payload built here on the caller's thread. If the provider
+  // is null or declines to supply creds, the payload PAT stays empty and
+  // the callback returns GIT_PASSTHROUGH for anonymous transport.
+  if (provider != nullptr) {
+    SyncCredentials snapshot;
+    if (provider->GetCredentials(remote_url, /*username_from_url=*/"x-access-token",
+                                 &snapshot)) {
+      bundle.payload.personal_access_token = snapshot.personal_access_token;
+    }
+  }
   bundle.callbacks = GIT_REMOTE_CALLBACKS_INIT;
   bundle.callbacks.payload = &bundle.payload;
   bundle.callbacks.credentials = &GitSyncBackendCredentialCb;

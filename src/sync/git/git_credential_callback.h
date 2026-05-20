@@ -7,14 +7,21 @@
 
 namespace vxcore {
 
-// Forward declaration
+// Forward declarations
 struct SyncCredentials;
+class ICredentialProvider;
 
 // Payload carried into libgit2 credential callbacks. Holds only the data
 // the callback actually reads (PAT). Per-call snapshot — lifetime must
 // span the entire libgit2 operation (fetch/push/ls-remote).
 //
-// Lifetime contract: callers MUST declare a GitCredentialPayload in the
+// Wave 6.3 (F4.4): the payload is built ONCE per libgit2 operation by
+// MakeRemoteCallbacks, which calls ICredentialProvider::GetCredentials at
+// callback-build time. The libgit2 thread reads the snapshot without ever
+// touching the provider or any vxcore mutex.
+//
+// Lifetime contract: callers MUST declare a GitCredentialPayload (typically
+// via the RemoteCallbacksBundle returned by MakeRemoteCallbacks) in the
 // enclosing scope before the libgit2 call and ensure it lives until that
 // call returns. Passing a pointer to a temporary is UB.
 struct GitCredentialPayload {
@@ -32,17 +39,29 @@ int GitSyncBackendCredentialCb(git_credential **out, const char *url,
                                 const char *username_from_url,
                                 unsigned int allowed_types, void *payload);
 
-// Helper that constructs a per-call GitCredentialPayload snapshot from
-// credentials and returns a bundle of {git_remote_callbacks, payload}.
-// Caller must keep the returned bundle alive for the duration of the libgit2
-// operation (fetch/push/ls-remote). This preserves F2.6 stack-local snapshot
-// semantics: each call gets a fresh copy, not a shared reference.
+// Helper that constructs a per-call GitCredentialPayload snapshot from a
+// credential provider (Wave 6.3 F4.4 of sync-backend-phase4) and returns a
+// bundle of {git_remote_callbacks, payload}. Caller must keep the returned
+// bundle alive for the duration of the libgit2 operation (fetch/push/
+// ls-remote).
+//
+// When |provider| is null OR provider->GetCredentials returns false, the
+// payload's PAT is left empty — the callback will then return GIT_PASSTHROUGH
+// and libgit2 falls through to anonymous transport (correct for public
+// HTTPS remotes).
+//
+// Snapshot semantics: the provider is queried EXACTLY ONCE per libgit2
+// operation, even if libgit2 re-invokes the credential callback multiple
+// times (e.g. after a 401 retry). This matches F2.6's stack-local snapshot
+// contract — each call gets a fresh copy, not a shared reference. Calling
+// the provider on the libgit2 thread is explicitly avoided.
 struct RemoteCallbacksBundle {
   git_remote_callbacks callbacks;
   GitCredentialPayload payload;
 };
 
-RemoteCallbacksBundle MakeRemoteCallbacks(const SyncCredentials &credentials);
+RemoteCallbacksBundle MakeRemoteCallbacks(ICredentialProvider *provider,
+                                          const std::string &remote_url);
 
 }  // namespace vxcore
 

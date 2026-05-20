@@ -21,10 +21,11 @@ namespace {
 
 int test_git_credential_pat_used_when_set() {
   vxcore::LibGit2Init init;
-  vxcore::GitSyncBackend backend;
+  // Wave 6.3 F4.4: SetCredentials is gone. The callback no longer reads
+  // credentials from the backend — it reads them from the payload built at
+  // callback-construction time. Test the payload path directly.
   vxcore::SyncCredentials creds;
   creds.personal_access_token = "secret_pat_xyz";
-  ASSERT_EQ(backend.SetCredentials(creds), VXCORE_OK);
 
   vxcore::GitCredentialPayload payload{creds.personal_access_token};
   git_credential *cred = nullptr;
@@ -41,7 +42,6 @@ int test_git_credential_pat_used_when_set() {
 
 int test_git_credential_anonymous_returns_passthrough() {
   vxcore::LibGit2Init init;
-  vxcore::GitSyncBackend backend;
   // No credentials set -> personal_access_token is empty.
 
   vxcore::GitCredentialPayload empty_payload{};
@@ -56,7 +56,6 @@ int test_git_credential_anonymous_returns_passthrough() {
   // still passthrough (no fallback to other auth types in v1).
   vxcore::SyncCredentials creds;
   creds.personal_access_token = "tok";
-  ASSERT_EQ(backend.SetCredentials(creds), VXCORE_OK);
   vxcore::GitCredentialPayload payload{creds.personal_access_token};
   rc = vxcore::GitSyncBackendCredentialCb(
       &cred, "https://github.com/example/repo.git", nullptr,

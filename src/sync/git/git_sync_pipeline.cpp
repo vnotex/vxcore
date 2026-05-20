@@ -3,6 +3,7 @@
 #include <cstring>
 #include <vector>
 
+#include "sync/credential_provider.h"
 #include "sync/git/git_defaults.h"
 #include "sync/git/git_error_translator.h"
 #include "sync/git/git_handles.h"
@@ -28,6 +29,17 @@
 //   - Pull() stages and auto-commits before rebase (current behavior)
 //   - Rebase replays on top of the auto-commit
 //   - Caller sees a clean working tree after Pull()
+//
+// CREDENTIAL HANDLING (Wave 6.3 F4.4 of sync-backend-phase4):
+// The pipeline holds a non-owning ICredentialProvider* (its lifetime is
+// the caller's responsibility; backend keeps a shared_ptr alive on the
+// stack across the pipeline's scope). Each phase that touches the network
+// invokes MakeRemoteCallbacks(provider, url) which takes a FRESH snapshot
+// at callback-build time. The commit-author identity (user.name / user.email)
+// is snapshotted ONCE at ctor and reused for ApplyDefaultGitConfig +
+// CommitIndex + RebaseOntoOrigin + ContinueRebaseAfterResolution so all
+// commits made through one pipeline use a stable signature even if the
+// provider is rotated mid-sync.
 // ============================================================================
 
 namespace vxcore {
@@ -119,18 +131,39 @@ VxCoreError DriveRebaseLoop(git_repository *repo, git_rebase **rebase_out,
   }
 }
 
+// Snapshot author identity from a provider at pipeline-construction time.
+// If the provider is null or declines, the snapshot fields stay empty
+// (the consuming methods then fall back to kDefaultAuthorName/Email).
+void SnapshotAuthor(ICredentialProvider *provider, const std::string &remote_url,
+                    std::string *out_name, std::string *out_email) {
+  if (provider == nullptr) {
+    return;
+  }
+  SyncCredentials snapshot;
+  if (provider->GetCredentials(remote_url, /*username_from_url=*/"x-access-token",
+                               &snapshot)) {
+    *out_name = snapshot.author_name;
+    *out_email = snapshot.author_email;
+  }
+}
+
 }  // namespace
 
 GitSyncPipeline::GitSyncPipeline(git_repository *repo, const std::string &git_dir,
                                  const std::string &root_folder, const SyncConfig &config,
-                                 const SyncCredentials &credentials,
+                                 std::shared_ptr<ICredentialProvider> creds_provider,
                                  git_rebase **rebase_in_progress)
     : repo_(repo),
       git_dir_(git_dir),
       root_folder_(root_folder),
       config_(config),
-      credentials_(credentials),
-      rebase_in_progress_(rebase_in_progress) {}
+      creds_provider_(std::move(creds_provider)),
+      rebase_in_progress_(rebase_in_progress) {
+  // Wave 6.3 F4.4: stable per-pipeline author identity snapshot. Defaults
+  // to empty (-> built-in VNote defaults at use site) when no provider is
+  // supplied or when the provider declines.
+  SnapshotAuthor(creds_provider_.get(), config_.remote_url, &author_name_, &author_email_);
+}
 
 // T18: open the repo-level config and force the four invariants. Caller holds
 // op_mutex_ and has repo_ open. Returns the first failing translation, or
@@ -149,9 +182,9 @@ VxCoreError GitSyncPipeline::ApplyDefaultGitConfig() {
   }
 
   const char *user_name =
-      credentials_.author_name.empty() ? kDefaultAuthorName : credentials_.author_name.c_str();
+      author_name_.empty() ? kDefaultAuthorName : author_name_.c_str();
   const char *user_email =
-      credentials_.author_email.empty() ? kDefaultAuthorEmail : credentials_.author_email.c_str();
+      author_email_.empty() ? kDefaultAuthorEmail : author_email_.c_str();
 
   // core.autocrlf is set as a string ("false") to match git's textual config
   // representation; the others are booleans.
@@ -188,9 +221,8 @@ bool GitSyncPipeline::RemoteHasRefs() {
     return false;
   }
 
-  git_remote_callbacks cb = GIT_REMOTE_CALLBACKS_INIT;
-  auto bundle = MakeRemoteCallbacks(credentials_);
-  cb = bundle.callbacks;
+  auto bundle = MakeRemoteCallbacks(creds_provider_.get(), config_.remote_url);
+  git_remote_callbacks cb = bundle.callbacks;
 
   rc = git_remote_connect(remote.get(), GIT_DIRECTION_FETCH, &cb,
                           /*proxy_opts=*/nullptr, /*custom_headers=*/nullptr);
@@ -293,8 +325,8 @@ VxCoreError GitSyncPipeline::StageAll() {
 }
 
 // T22: if the index's tree differs from HEAD's tree, create a commit on HEAD
-// using credentials_.author_name/_email (or the VNote defaults). If HEAD
-// doesn't exist yet (initial commit), the new commit becomes the root.
+// using author_name_/author_email_ (or the VNote defaults). If HEAD doesn't
+// exist yet (initial commit), the new commit becomes the root.
 // Returns VXCORE_OK both when a commit was made and when there was nothing
 // to commit (empty-commit suppression).
 VxCoreError GitSyncPipeline::CommitIndex(const std::string &message) {
@@ -353,9 +385,9 @@ VxCoreError GitSyncPipeline::CommitIndex(const std::string &message) {
   }
 
   const char *user_name =
-      credentials_.author_name.empty() ? kDefaultAuthorName : credentials_.author_name.c_str();
+      author_name_.empty() ? kDefaultAuthorName : author_name_.c_str();
   const char *user_email =
-      credentials_.author_email.empty() ? kDefaultAuthorEmail : credentials_.author_email.c_str();
+      author_email_.empty() ? kDefaultAuthorEmail : author_email_.c_str();
 
   git_signature *raw_sig = nullptr;
   int rc = git_signature_now(&raw_sig, user_name, user_email);
@@ -403,7 +435,7 @@ VxCoreError GitSyncPipeline::FetchOrigin() {
   }
 
   git_fetch_options fopts = GIT_FETCH_OPTIONS_INIT;
-  auto bundle = MakeRemoteCallbacks(credentials_);
+  auto bundle = MakeRemoteCallbacks(creds_provider_.get(), config_.remote_url);
   fopts.callbacks = bundle.callbacks;
 
   rc = git_remote_fetch(remote.get(), /*refspecs=*/nullptr, &fopts, "vnote sync fetch");
@@ -533,9 +565,9 @@ VxCoreError GitSyncPipeline::RebaseOntoOrigin() {
 
   // Default signature for new commits created during rebase replay.
   const char *user_name =
-      credentials_.author_name.empty() ? kDefaultAuthorName : credentials_.author_name.c_str();
+      author_name_.empty() ? kDefaultAuthorName : author_name_.c_str();
   const char *user_email =
-      credentials_.author_email.empty() ? kDefaultAuthorEmail : credentials_.author_email.c_str();
+      author_email_.empty() ? kDefaultAuthorEmail : author_email_.c_str();
   git_signature *raw_sig = nullptr;
   rc = git_signature_now(&raw_sig, user_name, user_email);
   git_signaturePtr sig(raw_sig);
@@ -569,7 +601,7 @@ VxCoreError GitSyncPipeline::PushOrigin() {
   }
 
   git_push_options popts = GIT_PUSH_OPTIONS_INIT;
-  auto bundle = MakeRemoteCallbacks(credentials_);
+  auto bundle = MakeRemoteCallbacks(creds_provider_.get(), config_.remote_url);
   popts.callbacks = bundle.callbacks;
 
   git_reference *raw_head_ref = nullptr;
@@ -616,9 +648,9 @@ VxCoreError GitSyncPipeline::ContinueRebaseAfterResolution() {
   }
 
   const char *user_name =
-      credentials_.author_name.empty() ? kDefaultAuthorName : credentials_.author_name.c_str();
+      author_name_.empty() ? kDefaultAuthorName : author_name_.c_str();
   const char *user_email =
-      credentials_.author_email.empty() ? kDefaultAuthorEmail : credentials_.author_email.c_str();
+      author_email_.empty() ? kDefaultAuthorEmail : author_email_.c_str();
   git_signature *raw_sig = nullptr;
   int rc = git_signature_now(&raw_sig, user_name, user_email);
   git_signaturePtr sig(raw_sig);

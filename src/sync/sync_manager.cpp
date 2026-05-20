@@ -5,6 +5,7 @@
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
 #include "core/work_queue.h"
+#include "sync/credential_provider.h"
 #include "sync/git/libgit2_init.h"
 #include "sync/sync_backend_registry.h"
 #include "utils/logger.h"
@@ -122,28 +123,26 @@ VxCoreError SyncManager::ValidateNotebook(const std::string &notebook_id) {
 
 VxCoreError SyncManager::EnableSync(const std::string &notebook_id, const SyncConfig &config) {
   VXCORE_LOG_DEBUG("SyncManager::EnableSync: notebook_id=%s", notebook_id.c_str());
-  return EnableSyncImpl(notebook_id, config, nullptr);
+  return EnableSyncImpl(notebook_id, config, nullptr, nullptr);
 }
 
 VxCoreError SyncManager::EnableSync(const std::string &notebook_id, const SyncConfig &config,
                                     const SyncCredentials &credentials) {
   VXCORE_LOG_DEBUG("SyncManager::EnableSync(creds): notebook_id=%s", notebook_id.c_str());
-  return EnableSyncImpl(notebook_id, config, &credentials);
+  // Wave 6.3 F4.4: legacy SyncCredentials overload is now a thin wrapper —
+  // creds get wrapped in an InMemoryCredentialProvider and routed through
+  // the provider pipeline. The backend never sees the raw SyncCredentials.
+  auto provider = std::make_shared<InMemoryCredentialProvider>(credentials);
+  return EnableSyncImpl(notebook_id, config, std::move(provider), nullptr);
 }
 
 VxCoreError SyncManager::EnableSync(const std::string &notebook_id, const SyncConfig &config,
                                     std::shared_ptr<ICredentialProvider> creds_provider) {
   VXCORE_LOG_DEBUG("SyncManager::EnableSync(provider): notebook_id=%s", notebook_id.c_str());
-  return EnableSyncImpl(notebook_id, config, nullptr, std::move(creds_provider), nullptr);
+  return EnableSyncImpl(notebook_id, config, std::move(creds_provider), nullptr);
 }
 
 VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
-                                         const SyncCredentials *credentials) {
-  return EnableSyncImpl(notebook_id, config, credentials, nullptr, nullptr);
-}
-
-VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
-                                         const SyncCredentials *credentials,
                                          std::shared_ptr<ICredentialProvider> provider,
                                          SyncBackendFactory factory_override) {
   VxCoreError err = ValidateNotebook(notebook_id);
@@ -156,7 +155,6 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
   // libgit2 init guard is bypassed so tests can run on hosts where libgit2 init
   // failed (e.g., the mock-only test executable).
   if (!factory_override) {
-    // Check if libgit2 initialization succeeded (F2.5/B4) — only for git backend.
     if (config.backend == "git" && !LibGit2Init::ok()) {
       VXCORE_LOG_ERROR("SyncManager::EnableSyncImpl: libgit2 init failed for notebook: %s",
                        notebook_id.c_str());
@@ -187,9 +185,7 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
     }
   };
 
-  // Factory dispatch: factory_override takes precedence (test path); otherwise
-  // build via the registry (F1.1 — decoupled from concrete types). Task 6.2
-  // (F4.4) forwards the credential provider to both paths.
+  // Factory dispatch (Task 6.2 F4.4). Provider is forwarded to both paths.
   std::unique_ptr<ISyncBackend> backend;
   if (factory_override) {
     backend = factory_override(config, provider);
@@ -205,30 +201,29 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
     return VXCORE_ERR_UNKNOWN_BACKEND;
   }
 
-  // Task 6.2 (F4.4): enforce AuthRequired capability. Backends that need auth
-  // MUST receive either a non-null provider OR a non-null credentials struct
-  // (the legacy SetCredentials path remains valid until Wave 6.3 rewires the
-  // libgit2 credential callback to consume the provider exclusively). Rolls
-  // back maps and returns a dedicated error so the caller can prompt for
-  // credentials and retry without leaving the notebook half-enabled.
+  // Wave 6.3 F4.4: AuthRequired now demands a non-null provider. The legacy
+  // SetCredentials escape hatch is gone — callers that have raw SyncCredentials
+  // must wrap them in an InMemoryCredentialProvider (the EnableSync(id, cfg,
+  // creds) overload does this transparently). Rolls back maps so the caller
+  // can retry without leaving the notebook half-enabled.
   if ((backend->GetCapabilities() &
        static_cast<uint32_t>(SyncCapability::AuthRequired)) &&
-      !provider && credentials == nullptr) {
+      !provider) {
     VXCORE_LOG_WARN("SyncManager::EnableSyncImpl: backend '%s' requires AuthRequired "
-                    "but neither ICredentialProvider nor SyncCredentials were supplied "
-                    "(notebook: %s)",
+                    "but no ICredentialProvider was supplied (notebook: %s)",
                     config.backend.c_str(), notebook_id.c_str());
     backend.reset();
     rollback();
     return VXCORE_ERR_MISSING_CREDENTIALS;
   }
 
-  if (credentials != nullptr) {
-    err = backend->SetCredentials(*credentials);
-    if (err != VXCORE_OK) {
-      rollback();
-      return err;
-    }
+  // Wave 6.3 F4.4: defense-in-depth — even when the factory's ctor took the
+  // provider, we also forward it through ReplaceCredsProvider so backends
+  // that ignore the ctor arg (e.g., the legacy MockBackendProxy used in
+  // tests) still receive the provider. The base-class default is a no-op,
+  // so backends that don't need credentials pay no cost.
+  if (provider) {
+    backend->ReplaceCredsProvider(provider);
   }
 
   auto *notebook = notebook_manager_->GetNotebook(notebook_id);
@@ -395,9 +390,9 @@ VxCoreError SyncManager::ResolveConflict(const std::string &notebook_id, const s
   return resolve_err;
 }
 
-VxCoreError SyncManager::SetCredentials(const std::string &notebook_id,
-                                        const SyncCredentials &credentials) {
-  VXCORE_LOG_DEBUG("SyncManager::SetCredentials: notebook_id=%s", notebook_id.c_str());
+VxCoreError SyncManager::UpdateCredentials(const std::string &notebook_id,
+                                           std::shared_ptr<ICredentialProvider> provider) {
+  VXCORE_LOG_DEBUG("SyncManager::UpdateCredentials: notebook_id=%s", notebook_id.c_str());
 
   VxCoreError err = ValidateNotebook(notebook_id);
   if (err != VXCORE_OK) {
@@ -413,15 +408,20 @@ VxCoreError SyncManager::SetCredentials(const std::string &notebook_id,
     return VXCORE_ERR_NOT_IMPLEMENTED;
   }
 
-  return backend_it->second->SetCredentials(credentials);
+  // Wave 6.3 F4.4: atomic provider swap on the backend. The backend's
+  // own creds_provider_mu_ serializes the shared_ptr replacement; any
+  // in-flight Sync() uses the snapshot it captured at its own entry point
+  // and is unaffected by this rotation.
+  backend_it->second->ReplaceCredsProvider(std::move(provider));
+  return VXCORE_OK;
 }
 
 VxCoreError SyncManager::EnableSyncWithFactoryForTesting(
     const std::string &notebook_id, const SyncConfig &config,
-    const SyncCredentials *credentials, SyncBackendFactory factory_override) {
+    std::shared_ptr<ICredentialProvider> provider, SyncBackendFactory factory_override) {
   VXCORE_LOG_DEBUG("SyncManager::EnableSyncWithFactoryForTesting: notebook_id=%s",
                    notebook_id.c_str());
-  return EnableSyncImpl(notebook_id, config, credentials, nullptr, std::move(factory_override));
+  return EnableSyncImpl(notebook_id, config, std::move(provider), std::move(factory_override));
 }
 
 }  // namespace vxcore

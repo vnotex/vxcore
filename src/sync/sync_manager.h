@@ -63,30 +63,31 @@ class SyncManager {
 
   VXCORE_API VxCoreError GetSyncConfig(const std::string &notebook_id, SyncConfig &out_config);
 
-  // C++-only: forwards credentials to the registered backend (rotation path).
+  // C++-only: rotate credentials on an already-enabled notebook by swapping
+  // the backend's ICredentialProvider. Wave 6.3 (F4.4) replaces the legacy
+  // SetCredentials path — callers wrap a SyncCredentials in an
+  // InMemoryCredentialProvider and pass it here.
+  //
   // Returns:
   //   VXCORE_ERR_NOT_FOUND if notebook unknown
   //   VXCORE_ERR_SYNC_NOT_ENABLED if state absent
   //   VXCORE_ERR_NOT_IMPLEMENTED if no backend registered
-  //   otherwise whatever backend->SetCredentials returns
-  // Intentionally NOT exposed via vxcore.h C API in v1.
-  VXCORE_API VxCoreError SetCredentials(const std::string &notebook_id,
-                                        const SyncCredentials &credentials);
+  //   VXCORE_OK on success
+  // Intentionally NOT exposed via vxcore.h C API in v1 (the C ABI's
+  // vxcore_sync_set_credentials wraps a SyncCredentials and calls this).
+  VXCORE_API VxCoreError UpdateCredentials(const std::string &notebook_id,
+                                           std::shared_ptr<ICredentialProvider> provider);
 
   // Task 5.1 (F4.2): test-only EnableSync that injects a backend FACTORY instead
-  // of a fully-constructed backend instance. This exercises the same factory
-  // dispatch the production path uses, just with the registry bypassed. When
-  // factory_override is non-null it is used to construct the backend; the
-  // unknown-backend allow-list and libgit2 ok() guards are skipped because the
-  // factory is the source of truth in this path. When factory_override is null,
-  // behavior is identical to the public EnableSync(id, cfg) overload.
+  // of a fully-constructed backend instance. Wave 6.3 F4.4 reshaped the
+  // signature: SyncCredentials* parameter replaced with
+  // shared_ptr<ICredentialProvider>. Tests that need to inject creds wrap
+  // them in an InMemoryCredentialProvider.
   //
-  // Intentionally NOT exposed on the C ABI (vxcore.h). Public-overload callers
-  // always reach the registry path via EnableSync(id, cfg) which delegates to
-  // EnableSyncImpl(id, cfg, nullptr, nullptr).
+  // Intentionally NOT exposed on the C ABI (vxcore.h).
   VXCORE_API VxCoreError EnableSyncWithFactoryForTesting(const std::string &notebook_id,
                                                          const SyncConfig &config,
-                                                         const SyncCredentials *credentials,
+                                                         std::shared_ptr<ICredentialProvider> provider,
                                                          SyncBackendFactory factory_override);
 
   VXCORE_API std::vector<std::string> GetDirtyNotebooks() const;
@@ -96,27 +97,21 @@ class SyncManager {
  private:
   VxCoreError ValidateNotebook(const std::string &notebook_id);
 
-  // Shared implementation for both EnableSync overloads. When credentials != nullptr,
-  // calls backend->SetCredentials(*credentials) BEFORE backend->Initialize(...).
-  // On any failure, rolls back configs_/states_/backends_ to their prior state.
-  // Delegates to the 5-arg overload with provider = nullptr and
-  // factory_override = nullptr (registry path).
+  // Shared implementation for EnableSync overloads. Wave 6.3 F4.4 collapsed
+  // the legacy SyncCredentials* parameter — callers that have a
+  // SyncCredentials wrap it in an InMemoryCredentialProvider before calling
+  // here. When provider is non-null and the backend declares
+  // SyncCapability::AuthRequired, the provider is the sole credential source
+  // (no separate SetCredentials hop).
+  //
+  // When factory_override is non-null it is used to construct the backend
+  // (test path, registry guards bypassed). Otherwise
+  // SyncBackendRegistry::Instance().Create(...) runs with the full production
+  // guards (libgit2 init check for "git", unknown-backend rejection).
+  //
+  // On any failure rolls back configs_/states_/backends_ to their prior
+  // state. NEVER exposed on the C ABI.
   VxCoreError EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
-                             const SyncCredentials *credentials);
-
-  // Task 6.2 (F4.4): private overload that allows injecting a credential
-  // provider and/or backend factory directly. The provider is forwarded to
-  // the registry/factory and the resulting backend's GetCapabilities() is
-  // checked for SyncCapability::AuthRequired — if set, the call requires
-  // either a non-null provider OR a non-null credentials snapshot (the
-  // legacy SetCredentials path remains valid until Wave 6.3 rewires the
-  // libgit2 credential callback). When both are null, construction is
-  // aborted with VXCORE_ERR_MISSING_CREDENTIALS and NO maps are mutated.
-  // When factory_override is non-null it is used to construct the backend;
-  // otherwise SyncBackendRegistry::Instance().Create(...) runs with the full
-  // production guards. NEVER exposed on the C ABI.
-  VxCoreError EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
-                             const SyncCredentials *credentials,
                              std::shared_ptr<ICredentialProvider> provider,
                              SyncBackendFactory factory_override);
 
