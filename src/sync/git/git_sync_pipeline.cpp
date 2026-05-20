@@ -5,6 +5,7 @@
 
 #include "sync/git/git_defaults.h"
 #include "sync/git/git_error_translator.h"
+#include "sync/git/git_handles.h"
 #include "utils/logger.h"
 
 // ============================================================================
@@ -48,6 +49,11 @@ namespace {
 // replays never observe GIT_EAPPLIED so they pass `false`;
 // `ContinueRebaseAfterResolution` passes `true`.
 //
+// NOTE: `rebase_out` is a BORROWED pointer managed by the caller
+// (GitSyncBackend's rebase_in_progress_ member). The git_rebase_free()
+// calls in this function are part of the borrowed-pointer contract and
+// must NOT be replaced with RAII.
+//
 // Behaviour quirks preserved verbatim from the two pre-refactor call sites:
 //   - On any non-iterover/non-conflict error, the rebase IS freed and
 //     `*rebase_out` set to nullptr before returning. Caller does NOT need
@@ -66,7 +72,7 @@ VxCoreError DriveRebaseLoop(git_repository *repo, git_rebase **rebase_out,
     if (rc == GIT_ITEROVER) {
       git_error_clear();
       rc = git_rebase_finish(*rebase_out, sig);
-      git_rebase_free(*rebase_out);
+      git_rebase_free(*rebase_out);  // BORROWED: keep as-is
       *rebase_out = nullptr;
       if (rc != 0) {
         return TranslateGitError(rc);
@@ -75,21 +81,22 @@ VxCoreError DriveRebaseLoop(git_repository *repo, git_rebase **rebase_out,
     }
     if (rc != 0) {
       VxCoreError err = TranslateGitError(rc);
-      git_rebase_free(*rebase_out);
+      git_rebase_free(*rebase_out);  // BORROWED: keep as-is
       *rebase_out = nullptr;
       return err;
     }
 
-    git_index *idx = nullptr;
-    int irc = git_repository_index(&idx, repo);
+    git_index *raw_idx = nullptr;
+    int irc = git_repository_index(&raw_idx, repo);
+    git_indexPtr idx(raw_idx);
     if (irc != 0) {
       VxCoreError err = TranslateGitError(irc);
-      git_rebase_free(*rebase_out);
+      git_rebase_free(*rebase_out);  // BORROWED: keep as-is
       *rebase_out = nullptr;
       return err;
     }
-    bool has_conflicts = (git_index_has_conflicts(idx) != 0);
-    git_index_free(idx);
+    bool has_conflicts = (git_index_has_conflicts(idx.get()) != 0);
+    idx.reset();
 
     if (has_conflicts) {
       // LEAVE *rebase_out set; caller's ResolveConflict will resume.
@@ -102,7 +109,7 @@ VxCoreError DriveRebaseLoop(git_repository *repo, git_rebase **rebase_out,
                            /*message=*/nullptr);
     if (rc != 0 && !(allow_eapplied && rc == GIT_EAPPLIED)) {
       VxCoreError err = TranslateGitError(rc);
-      git_rebase_free(*rebase_out);
+      git_rebase_free(*rebase_out);  // BORROWED: keep as-is
       *rebase_out = nullptr;
       return err;
     }
@@ -127,15 +134,16 @@ GitSyncPipeline::GitSyncPipeline(git_repository *repo, const std::string &git_di
 
 // T18: open the repo-level config and force the four invariants. Caller holds
 // op_mutex_ and has repo_ open. Returns the first failing translation, or
-// VXCORE_OK on full success. Always frees the cfg handle.
+// VXCORE_OK on full success. RAII frees the cfg handle.
 VxCoreError GitSyncPipeline::ApplyDefaultGitConfig() {
   (void)git_dir_;
   (void)root_folder_;
   if (repo_ == nullptr) {
     return VXCORE_ERR_UNKNOWN;
   }
-  git_config *cfg = nullptr;
-  int rc = git_repository_config(&cfg, repo_);
+  git_config *raw_cfg = nullptr;
+  int rc = git_repository_config(&raw_cfg, repo_);
+  git_configPtr cfg(raw_cfg);
   if (rc != 0) {
     return TranslateGitError(rc);
   }
@@ -147,13 +155,12 @@ VxCoreError GitSyncPipeline::ApplyDefaultGitConfig() {
 
   // core.autocrlf is set as a string ("false") to match git's textual config
   // representation; the others are booleans.
-  rc = git_config_set_bool(cfg, "core.filemode", 0);
-  if (rc == 0) rc = git_config_set_string(cfg, "core.autocrlf", "false");
-  if (rc == 0) rc = git_config_set_bool(cfg, "commit.gpgsign", 0);
-  if (rc == 0) rc = git_config_set_string(cfg, "user.name", user_name);
-  if (rc == 0) rc = git_config_set_string(cfg, "user.email", user_email);
+  rc = git_config_set_bool(cfg.get(), "core.filemode", 0);
+  if (rc == 0) rc = git_config_set_string(cfg.get(), "core.autocrlf", "false");
+  if (rc == 0) rc = git_config_set_bool(cfg.get(), "commit.gpgsign", 0);
+  if (rc == 0) rc = git_config_set_string(cfg.get(), "user.name", user_name);
+  if (rc == 0) rc = git_config_set_string(cfg.get(), "user.email", user_email);
 
-  git_config_free(cfg);
   if (rc != 0) {
     return TranslateGitError(rc);
   }
@@ -171,8 +178,9 @@ bool GitSyncPipeline::RemoteHasRefs() {
     return false;
   }
 
-  git_remote *remote = nullptr;
-  int rc = git_remote_create_detached(&remote, config_.remote_url.c_str());
+  git_remote *raw_remote = nullptr;
+  int rc = git_remote_create_detached(&raw_remote, config_.remote_url.c_str());
+  git_remotePtr remote(raw_remote);
   if (rc != 0) {
     const git_error *err = git_error_last();
     VXCORE_LOG_ERROR("RemoteHasRefs: git_remote_create_detached failed rc=%d: %s", rc,
@@ -184,19 +192,18 @@ bool GitSyncPipeline::RemoteHasRefs() {
   auto bundle = MakeRemoteCallbacks(credentials_);
   cb = bundle.callbacks;
 
-  rc = git_remote_connect(remote, GIT_DIRECTION_FETCH, &cb,
+  rc = git_remote_connect(remote.get(), GIT_DIRECTION_FETCH, &cb,
                           /*proxy_opts=*/nullptr, /*custom_headers=*/nullptr);
   if (rc != 0) {
     const git_error *err = git_error_last();
     VXCORE_LOG_ERROR("RemoteHasRefs: git_remote_connect failed rc=%d: %s", rc,
                      (err && err->message) ? err->message : "(no message)");
-    git_remote_free(remote);
     return false;
   }
 
   const git_remote_head **heads = nullptr;
   size_t n_heads = 0;
-  rc = git_remote_ls(&heads, &n_heads, remote);
+  rc = git_remote_ls(&heads, &n_heads, remote.get());
   bool has_refs = false;
   if (rc == 0) {
     has_refs = (n_heads > 0);
@@ -206,8 +213,7 @@ bool GitSyncPipeline::RemoteHasRefs() {
                      (err && err->message) ? err->message : "(no message)");
   }
 
-  git_remote_disconnect(remote);
-  git_remote_free(remote);
+  git_remote_disconnect(remote.get());
   return has_refs;
 }
 
@@ -228,8 +234,9 @@ VxCoreError GitSyncPipeline::StageAll() {
     return VXCORE_ERR_UNKNOWN;
   }
 
-  git_index *idx = nullptr;
-  int rc = git_repository_index(&idx, repo_);
+  git_index *raw_idx = nullptr;
+  int rc = git_repository_index(&raw_idx, repo_);
+  git_indexPtr idx(raw_idx);
   if (rc != 0) {
     return TranslateGitError(rc);
   }
@@ -245,15 +252,13 @@ VxCoreError GitSyncPipeline::StageAll() {
     return 0;  // include
   };
 
-  rc = git_index_add_all(idx, /*pathspec=*/nullptr, GIT_INDEX_ADD_DEFAULT, add_cb,
+  rc = git_index_add_all(idx.get(), /*pathspec=*/nullptr, GIT_INDEX_ADD_DEFAULT, add_cb,
                          /*payload=*/nullptr);
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_index_free(idx);
-    return err;
+    return TranslateGitError(rc);
   }
   {
-    size_t staged_count = git_index_entrycount(idx);
+    size_t staged_count = git_index_entrycount(idx.get());
     VXCORE_LOG_DEBUG("GitSyncBackend::StageAll: index now has %zu entries", staged_count);
   }
 
@@ -261,9 +266,9 @@ VxCoreError GitSyncPipeline::StageAll() {
   // (avoid mutating while iterating), then drop them by path/stage 0.
   static const std::string kExcludePrefix = "vx_notebook/vx_sync";
   std::vector<std::string> to_remove;
-  const size_t n = git_index_entrycount(idx);
+  const size_t n = git_index_entrycount(idx.get());
   for (size_t i = 0; i < n; ++i) {
-    const git_index_entry *e = git_index_get_byindex(idx, i);
+    const git_index_entry *e = git_index_get_byindex(idx.get(), i);
     if (e == nullptr || e->path == nullptr) {
       continue;
     }
@@ -273,22 +278,17 @@ VxCoreError GitSyncPipeline::StageAll() {
     }
   }
   for (const auto &p : to_remove) {
-    int rrc = git_index_remove(idx, p.c_str(), /*stage=*/0);
+    int rrc = git_index_remove(idx.get(), p.c_str(), /*stage=*/0);
     if (rrc != 0) {
-      VxCoreError err = TranslateGitError(rrc);
-      git_index_free(idx);
-      return err;
+      return TranslateGitError(rrc);
     }
   }
 
-  rc = git_index_write(idx);
+  rc = git_index_write(idx.get());
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_index_free(idx);
-    return err;
+    return TranslateGitError(rc);
   }
 
-  git_index_free(idx);
   return VXCORE_OK;
 }
 
@@ -302,54 +302,54 @@ VxCoreError GitSyncPipeline::CommitIndex(const std::string &message) {
     return VXCORE_ERR_UNKNOWN;
   }
 
-  git_index *idx = nullptr;
-  int rc = git_repository_index(&idx, repo_);
-  if (rc != 0) {
-    return TranslateGitError(rc);
-  }
-
   git_oid tree_oid;
-  rc = git_index_write_tree(&tree_oid, idx);
-  git_index_free(idx);
-  idx = nullptr;
-  if (rc != 0) {
-    return TranslateGitError(rc);
+  {
+    git_index *raw_idx = nullptr;
+    int rc = git_repository_index(&raw_idx, repo_);
+    git_indexPtr idx(raw_idx);
+    if (rc != 0) {
+      return TranslateGitError(rc);
+    }
+
+    rc = git_index_write_tree(&tree_oid, idx.get());
+    if (rc != 0) {
+      return TranslateGitError(rc);
+    }
   }
 
   // Look up parent commit + its tree (if HEAD resolves) so we can suppress
   // empty commits and supply a parent to git_commit_create_v.
-  git_object *parent_obj = nullptr;
-  int head_rc = git_revparse_single(&parent_obj, repo_, "HEAD");
-  git_commit *parent_commit = nullptr;
+  git_commitPtr parent_commit;
   bool have_parent = false;
-  if (head_rc == 0) {
-    rc = git_commit_lookup(&parent_commit, repo_, git_object_id(parent_obj));
-    git_object_free(parent_obj);
-    parent_obj = nullptr;
-    if (rc != 0) {
-      return TranslateGitError(rc);
-    }
-    have_parent = true;
+  {
+    git_object *raw_parent_obj = nullptr;
+    int head_rc = git_revparse_single(&raw_parent_obj, repo_, "HEAD");
+    git_objectPtr parent_obj(raw_parent_obj);
+    if (head_rc == 0) {
+      git_commit *raw_parent_commit = nullptr;
+      int rc = git_commit_lookup(&raw_parent_commit, repo_, git_object_id(parent_obj.get()));
+      parent_commit.reset(raw_parent_commit);
+      if (rc != 0) {
+        return TranslateGitError(rc);
+      }
+      have_parent = true;
 
-    // Compare trees; suppress empty commit when identical.
-    git_tree *parent_tree = nullptr;
-    rc = git_commit_tree(&parent_tree, parent_commit);
-    if (rc != 0) {
-      VxCoreError err = TranslateGitError(rc);
-      git_commit_free(parent_commit);
-      return err;
+      // Compare trees; suppress empty commit when identical.
+      git_tree *raw_parent_tree = nullptr;
+      rc = git_commit_tree(&raw_parent_tree, parent_commit.get());
+      git_treePtr parent_tree(raw_parent_tree);
+      if (rc != 0) {
+        return TranslateGitError(rc);
+      }
+      const git_oid *parent_tree_oid = git_tree_id(parent_tree.get());
+      if (parent_tree_oid != nullptr && git_oid_equal(parent_tree_oid, &tree_oid) != 0) {
+        return VXCORE_OK;  // Nothing to commit.
+      }
+    } else {
+      // No HEAD yet — initial commit. Clear the "not found" libgit2 state so
+      // a later TranslateGitError doesn't pick it up.
+      git_error_clear();
     }
-    const git_oid *parent_tree_oid = git_tree_id(parent_tree);
-    if (parent_tree_oid != nullptr && git_oid_equal(parent_tree_oid, &tree_oid) != 0) {
-      git_tree_free(parent_tree);
-      git_commit_free(parent_commit);
-      return VXCORE_OK;  // Nothing to commit.
-    }
-    git_tree_free(parent_tree);
-  } else {
-    // No HEAD yet — initial commit. Clear the "not found" libgit2 state so
-    // a later TranslateGitError doesn't pick it up.
-    git_error_clear();
   }
 
   const char *user_name =
@@ -357,37 +357,31 @@ VxCoreError GitSyncPipeline::CommitIndex(const std::string &message) {
   const char *user_email =
       credentials_.author_email.empty() ? kDefaultAuthorEmail : credentials_.author_email.c_str();
 
-  git_signature *sig = nullptr;
-  rc = git_signature_now(&sig, user_name, user_email);
+  git_signature *raw_sig = nullptr;
+  int rc = git_signature_now(&raw_sig, user_name, user_email);
+  git_signaturePtr sig(raw_sig);
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    if (parent_commit) git_commit_free(parent_commit);
-    return err;
+    return TranslateGitError(rc);
   }
 
-  git_tree *tree = nullptr;
-  rc = git_tree_lookup(&tree, repo_, &tree_oid);
+  git_tree *raw_tree = nullptr;
+  rc = git_tree_lookup(&raw_tree, repo_, &tree_oid);
+  git_treePtr tree(raw_tree);
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_signature_free(sig);
-    if (parent_commit) git_commit_free(parent_commit);
-    return err;
+    return TranslateGitError(rc);
   }
 
   git_oid commit_oid;
   if (have_parent) {
-    rc = git_commit_create_v(&commit_oid, repo_, "HEAD", sig, sig,
-                             /*message_encoding=*/nullptr, message.c_str(), tree,
-                             /*parent_count=*/1, parent_commit);
+    rc = git_commit_create_v(&commit_oid, repo_, "HEAD", sig.get(), sig.get(),
+                             /*message_encoding=*/nullptr, message.c_str(), tree.get(),
+                             /*parent_count=*/1, parent_commit.get());
   } else {
-    rc = git_commit_create_v(&commit_oid, repo_, "HEAD", sig, sig,
-                             /*message_encoding=*/nullptr, message.c_str(), tree,
+    rc = git_commit_create_v(&commit_oid, repo_, "HEAD", sig.get(), sig.get(),
+                             /*message_encoding=*/nullptr, message.c_str(), tree.get(),
                              /*parent_count=*/0);
   }
 
-  git_tree_free(tree);
-  git_signature_free(sig);
-  if (parent_commit) git_commit_free(parent_commit);
   if (rc != 0) {
     return TranslateGitError(rc);
   }
@@ -401,8 +395,9 @@ VxCoreError GitSyncPipeline::FetchOrigin() {
     return VXCORE_ERR_UNKNOWN;
   }
 
-  git_remote *remote = nullptr;
-  int rc = git_remote_lookup(&remote, repo_, "origin");
+  git_remote *raw_remote = nullptr;
+  int rc = git_remote_lookup(&raw_remote, repo_, "origin");
+  git_remotePtr remote(raw_remote);
   if (rc != 0) {
     return TranslateGitError(rc);
   }
@@ -411,8 +406,7 @@ VxCoreError GitSyncPipeline::FetchOrigin() {
   auto bundle = MakeRemoteCallbacks(credentials_);
   fopts.callbacks = bundle.callbacks;
 
-  rc = git_remote_fetch(remote, /*refspecs=*/nullptr, &fopts, "vnote sync fetch");
-  git_remote_free(remote);
+  rc = git_remote_fetch(remote.get(), /*refspecs=*/nullptr, &fopts, "vnote sync fetch");
   if (rc != 0) {
     return TranslateGitError(rc);
   }
@@ -427,8 +421,8 @@ VxCoreError GitSyncPipeline::RebaseOntoOrigin() {
 
   // Resolve current HEAD ref. UNBORNBRANCH means there are no local commits
   // yet (e.g. fresh init+empty remote) — nothing to rebase.
-  git_reference *head_ref = nullptr;
-  int rc = git_repository_head(&head_ref, repo_);
+  git_reference *raw_head_ref = nullptr;
+  int rc = git_repository_head(&raw_head_ref, repo_);
   if (rc == GIT_EUNBORNBRANCH) {
     git_error_clear();
     return VXCORE_OK;
@@ -436,27 +430,25 @@ VxCoreError GitSyncPipeline::RebaseOntoOrigin() {
   if (rc != 0) {
     return TranslateGitError(rc);
   }
+  git_referencePtr head_ref(raw_head_ref);
 
-  const char *branch_short = git_reference_shorthand(head_ref);
+  const char *branch_short = git_reference_shorthand(head_ref.get());
   if (branch_short == nullptr) {
-    git_reference_free(head_ref);
     return VXCORE_ERR_UNKNOWN;
   }
   std::string remote_ref_name = std::string("refs/remotes/origin/") + branch_short;
 
-  git_reference *remote_ref = nullptr;
-  rc = git_reference_lookup(&remote_ref, repo_, remote_ref_name.c_str());
+  git_reference *raw_remote_ref = nullptr;
+  rc = git_reference_lookup(&raw_remote_ref, repo_, remote_ref_name.c_str());
   if (rc == GIT_ENOTFOUND) {
     // No upstream tracking ref yet — push will publish the branch later.
     git_error_clear();
-    git_reference_free(head_ref);
     return VXCORE_OK;
   }
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_reference_free(head_ref);
-    return err;
+    return TranslateGitError(rc);
   }
+  git_referencePtr remote_ref(raw_remote_ref);
 
   // ===== Pre-check: skip rebase if not needed =====
   // libgit2's git_rebase_init unconditionally resets the working tree to the
@@ -464,8 +456,8 @@ VxCoreError GitSyncPipeline::RebaseOntoOrigin() {
   // it then fails mid-flight (e.g., GIT_ELOCKED on internal HEAD updates),
   // the working tree is left mid-reset with files deleted. Avoid the whole
   // class of failures by detecting trivial cases via merge-base.
-  const git_oid *local_oid = git_reference_target(head_ref);
-  const git_oid *remote_oid = git_reference_target(remote_ref);
+  const git_oid *local_oid = git_reference_target(head_ref.get());
+  const git_oid *remote_oid = git_reference_target(remote_ref.get());
   if (local_oid == nullptr || remote_oid == nullptr) {
     VXCORE_LOG_WARN("RebaseOntoOrigin: null OID from reference target, falling through");
   } else {
@@ -477,43 +469,31 @@ VxCoreError GitSyncPipeline::RebaseOntoOrigin() {
 
       if (base_eq_local && base_eq_remote) {
         VXCORE_LOG_DEBUG("RebaseOntoOrigin: in sync (local == remote), skipping rebase");
-        git_reference_free(remote_ref);
-        git_reference_free(head_ref);
         return VXCORE_OK;
       }
       if (base_eq_remote && !base_eq_local) {
         VXCORE_LOG_DEBUG(
             "RebaseOntoOrigin: local ahead of remote (no rebase needed, push will publish)");
-        git_reference_free(remote_ref);
-        git_reference_free(head_ref);
         return VXCORE_OK;
       }
       if (base_eq_local && !base_eq_remote) {
         VXCORE_LOG_DEBUG("RebaseOntoOrigin: remote ahead of local (fast-forward)");
-        git_object *remote_obj = nullptr;
-        int lookup_rc = git_object_lookup(&remote_obj, repo_, remote_oid, GIT_OBJECT_COMMIT);
+        git_object *raw_remote_obj = nullptr;
+        int lookup_rc = git_object_lookup(&raw_remote_obj, repo_, remote_oid, GIT_OBJECT_COMMIT);
+        git_objectPtr remote_obj(raw_remote_obj);
         if (lookup_rc != 0) {
-          VxCoreError err = TranslateGitError(lookup_rc);
-          git_reference_free(remote_ref);
-          git_reference_free(head_ref);
-          return err;
+          return TranslateGitError(lookup_rc);
         }
         git_checkout_options co_opts = GIT_CHECKOUT_OPTIONS_INIT;
         co_opts.checkout_strategy = GIT_CHECKOUT_FORCE;
-        int co_rc = git_checkout_tree(repo_, remote_obj, &co_opts);
-        git_object_free(remote_obj);
+        int co_rc = git_checkout_tree(repo_, remote_obj.get(), &co_opts);
         if (co_rc != 0) {
-          VxCoreError err = TranslateGitError(co_rc);
-          git_reference_free(remote_ref);
-          git_reference_free(head_ref);
-          return err;
+          return TranslateGitError(co_rc);
         }
-        git_reference *new_local_ref = nullptr;
-        int set_rc = git_reference_set_target(&new_local_ref, head_ref, remote_oid,
+        git_reference *raw_new_local_ref = nullptr;
+        int set_rc = git_reference_set_target(&raw_new_local_ref, head_ref.get(), remote_oid,
                                               "vnote: fast-forward to origin");
-        git_reference_free(new_local_ref);
-        git_reference_free(remote_ref);
-        git_reference_free(head_ref);
+        git_referencePtr new_local_ref(raw_new_local_ref);
         if (set_rc != 0) {
           return TranslateGitError(set_rc);
         }
@@ -529,31 +509,23 @@ VxCoreError GitSyncPipeline::RebaseOntoOrigin() {
   }
   // ===== End pre-check =====
 
-  git_annotated_commit *local_anno = nullptr;
-  rc = git_annotated_commit_from_ref(&local_anno, repo_, head_ref);
+  git_annotated_commit *raw_local_anno = nullptr;
+  rc = git_annotated_commit_from_ref(&raw_local_anno, repo_, head_ref.get());
+  git_annotated_commitPtr local_anno(raw_local_anno);
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_reference_free(remote_ref);
-    git_reference_free(head_ref);
-    return err;
+    return TranslateGitError(rc);
   }
 
-  git_annotated_commit *remote_anno = nullptr;
-  rc = git_annotated_commit_from_ref(&remote_anno, repo_, remote_ref);
+  git_annotated_commit *raw_remote_anno = nullptr;
+  rc = git_annotated_commit_from_ref(&raw_remote_anno, repo_, remote_ref.get());
+  git_annotated_commitPtr remote_anno(raw_remote_anno);
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_annotated_commit_free(local_anno);
-    git_reference_free(remote_ref);
-    git_reference_free(head_ref);
-    return err;
+    return TranslateGitError(rc);
   }
 
-  rc = git_rebase_init(rebase_in_progress_, repo_, local_anno, remote_anno,
+  rc = git_rebase_init(rebase_in_progress_, repo_, local_anno.get(), remote_anno.get(),
                        /*onto=*/nullptr, /*opts=*/nullptr);
-  git_annotated_commit_free(local_anno);
-  git_annotated_commit_free(remote_anno);
-  git_reference_free(remote_ref);
-  git_reference_free(head_ref);
+  // local_anno / remote_anno / refs RAII-freed at scope exit.
   if (rc != 0) {
     *rebase_in_progress_ = nullptr;
     return TranslateGitError(rc);
@@ -564,23 +536,21 @@ VxCoreError GitSyncPipeline::RebaseOntoOrigin() {
       credentials_.author_name.empty() ? kDefaultAuthorName : credentials_.author_name.c_str();
   const char *user_email =
       credentials_.author_email.empty() ? kDefaultAuthorEmail : credentials_.author_email.c_str();
-  git_signature *sig = nullptr;
-  rc = git_signature_now(&sig, user_name, user_email);
+  git_signature *raw_sig = nullptr;
+  rc = git_signature_now(&raw_sig, user_name, user_email);
+  git_signaturePtr sig(raw_sig);
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_rebase_free(*rebase_in_progress_);
+    git_rebase_free(*rebase_in_progress_);  // BORROWED: keep as-is
     *rebase_in_progress_ = nullptr;
-    return err;
+    return TranslateGitError(rc);
   }
 
   // Replay each rebase operation. On conflict, leave rebase_in_progress_
   // set so ResolveConflict can resume (the on-disk rebase state under
   // .git/rebase-merge is also preserved).
-  VxCoreError loop_err = DriveRebaseLoop(repo_, rebase_in_progress_, sig,
-                                         /*allow_eapplied=*/false,
-                                         /*on_conflict_result=*/VXCORE_ERR_SYNC_CONFLICT);
-  git_signature_free(sig);
-  return loop_err;
+  return DriveRebaseLoop(repo_, rebase_in_progress_, sig.get(),
+                         /*allow_eapplied=*/false,
+                         /*on_conflict_result=*/VXCORE_ERR_SYNC_CONFLICT);
 }
 
 // T25: push the current branch back to origin. Refspec is built explicitly
@@ -591,8 +561,9 @@ VxCoreError GitSyncPipeline::PushOrigin() {
     return VXCORE_ERR_UNKNOWN;
   }
 
-  git_remote *remote = nullptr;
-  int rc = git_remote_lookup(&remote, repo_, "origin");
+  git_remote *raw_remote = nullptr;
+  int rc = git_remote_lookup(&raw_remote, repo_, "origin");
+  git_remotePtr remote(raw_remote);
   if (rc != 0) {
     return TranslateGitError(rc);
   }
@@ -601,27 +572,24 @@ VxCoreError GitSyncPipeline::PushOrigin() {
   auto bundle = MakeRemoteCallbacks(credentials_);
   popts.callbacks = bundle.callbacks;
 
-  git_reference *head_ref = nullptr;
-  rc = git_repository_head(&head_ref, repo_);
+  git_reference *raw_head_ref = nullptr;
+  rc = git_repository_head(&raw_head_ref, repo_);
+  git_referencePtr head_ref(raw_head_ref);
   if (rc != 0) {
-    git_remote_free(remote);
     return TranslateGitError(rc);
   }
-  const char *branch_short = git_reference_shorthand(head_ref);
+  const char *branch_short = git_reference_shorthand(head_ref.get());
   if (branch_short == nullptr) {
-    git_reference_free(head_ref);
-    git_remote_free(remote);
     return VXCORE_ERR_UNKNOWN;
   }
   std::string refspec = std::string("refs/heads/") + branch_short + ":refs/heads/" + branch_short;
-  git_reference_free(head_ref);
+  head_ref.reset();
 
   // git_strarray takes a non-const char**; refspec.data() is valid since C++17.
   char *arr[1] = {refspec.data()};
   git_strarray refspecs = {arr, 1};
 
-  rc = git_remote_push(remote, &refspecs, &popts);
-  git_remote_free(remote);
+  rc = git_remote_push(remote.get(), &refspecs, &popts);
   if (rc != 0) {
     return TranslateGitError(rc);
   }
@@ -651,8 +619,9 @@ VxCoreError GitSyncPipeline::ContinueRebaseAfterResolution() {
       credentials_.author_name.empty() ? kDefaultAuthorName : credentials_.author_name.c_str();
   const char *user_email =
       credentials_.author_email.empty() ? kDefaultAuthorEmail : credentials_.author_email.c_str();
-  git_signature *sig = nullptr;
-  int rc = git_signature_now(&sig, user_name, user_email);
+  git_signature *raw_sig = nullptr;
+  int rc = git_signature_now(&raw_sig, user_name, user_email);
+  git_signaturePtr sig(raw_sig);
   if (rc != 0) {
     return TranslateGitError(rc);
   }
@@ -661,21 +630,17 @@ VxCoreError GitSyncPipeline::ContinueRebaseAfterResolution() {
   // produced an empty commit (e.g. KeepRemote on an exact match) — treat as
   // success and continue.
   git_oid commit_oid;
-  rc = git_rebase_commit(&commit_oid, *rebase_in_progress_, /*author=*/sig,
-                         /*committer=*/sig, /*message_encoding=*/nullptr,
+  rc = git_rebase_commit(&commit_oid, *rebase_in_progress_, /*author=*/sig.get(),
+                         /*committer=*/sig.get(), /*message_encoding=*/nullptr,
                          /*message=*/nullptr);
   if (rc != 0 && rc != GIT_EAPPLIED) {
-    VxCoreError err = TranslateGitError(rc);
-    git_signature_free(sig);
-    return err;
+    return TranslateGitError(rc);
   }
   git_error_clear();
 
-  VxCoreError loop_err = DriveRebaseLoop(repo_, rebase_in_progress_, sig,
-                                         /*allow_eapplied=*/true,
-                                         /*on_conflict_result=*/VXCORE_OK);
-  git_signature_free(sig);
-  return loop_err;
+  return DriveRebaseLoop(repo_, rebase_in_progress_, sig.get(),
+                         /*allow_eapplied=*/true,
+                         /*on_conflict_result=*/VXCORE_OK);
 }
 
 }  // namespace vxcore
