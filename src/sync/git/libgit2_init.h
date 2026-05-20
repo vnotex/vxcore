@@ -13,6 +13,10 @@ class LibGit2Init {
   LibGit2Init& operator=(const LibGit2Init&) = delete;
   LibGit2Init(LibGit2Init&&) = delete;
   LibGit2Init& operator=(LibGit2Init&&) = delete;
+
+  // Returns true if git_libgit2_init() succeeded, false if it failed or was
+  // never called.
+  static bool ok();
 };
 }  // namespace vxcore
 #endif  // VXCORE_SYNC_GIT_LIBGIT2_INIT_H
