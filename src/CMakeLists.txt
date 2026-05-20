@@ -59,6 +59,7 @@ set(VXCORE_SOURCES
     search/simple_search_backend.cpp
     sync/sync_types.cpp
     sync/sync_manager.cpp
+    sync/sync_backend_registry.cpp
     ${VXCORE_GIT_SYNC_SOURCES_RELATIVE}
     utils/utils.cpp
     utils/string_utils.cpp

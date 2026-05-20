@@ -28,6 +28,11 @@ int64_t TestNowMillis() {
 // observe the side effect that persists last_sync_utc.
 class MockSyncBackend : public vxcore::ISyncBackend {
  public:
+  // Task 4.1 identity methods (added so this local stub implements the full
+  // ISyncBackend surface; Task 4.2 leaves these untouched).
+  std::string GetName() const override { return "mock"; }
+  vxcore::SyncCapabilities GetCapabilities() const override { return 0; }
+  bool IsInitialized() const override { return true; }
   VxCoreError Initialize(const std::string &, const vxcore::SyncConfig &) override {
     return VXCORE_OK;
   }
