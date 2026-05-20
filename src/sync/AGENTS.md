@@ -652,6 +652,18 @@ file.created event → SyncManager marks notebook dirty
                    → on success, dirty state cleared
 ```
 
+## Threading & Callback Contract
+
+These rules govern every code path that crosses a thread boundary, fires a callback, or invokes a hook from inside the sync subsystem. They are the landmine rules: violating any of them risks deadlock, use-after-free, or torn state. Treat each rule as load-bearing.
+
+1. `SyncManager` methods serialize via `state_mutex_` (Wave 10 makes this real).
+2. NO Qt signal, hook invocation, progress callback, credential callback fired while holding any mutex.
+3. Credential callback receives stack-allocated `GitCredentialPayload` snapshot (already true).
+4. libgit2 progress callbacks must check cancellation token (Wave 12).
+5. Qt cross-thread signals MUST use `Qt::QueuedConnection`.
+
+The Qt-side mirror of these rules lives in `src/core/services/AGENTS.md` § Threading rules for SyncService.
+
 ## Thread Safety
 
 `SyncManager` methods (`EnableSync`, `TriggerSync`, etc.) are NOT thread-safe.
