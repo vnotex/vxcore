@@ -23,11 +23,11 @@ class SyncManager {
   explicit SyncManager(NotebookManager *notebook_manager);
   ~SyncManager();
 
-  void SetEventManager(EventManager *event_manager);
+  VXCORE_API void SetEventManager(EventManager *event_manager);
 
-  void SetWorkQueueManager(WorkQueueManager *work_queue_manager);
+  VXCORE_API void SetWorkQueueManager(WorkQueueManager *work_queue_manager);
 
-  VxCoreError EnableSync(const std::string &notebook_id, const SyncConfig &config);
+  VXCORE_API VxCoreError EnableSync(const std::string &notebook_id, const SyncConfig &config);
 
   // C++-only overload: EnableSync that sets credentials BEFORE Initialize().
   // Required for backends whose Initialize() needs auth (e.g., authenticated git clone).
@@ -35,20 +35,20 @@ class SyncManager {
   VXCORE_API VxCoreError EnableSync(const std::string &notebook_id, const SyncConfig &config,
                                     const SyncCredentials &credentials);
 
-  VxCoreError DisableSync(const std::string &notebook_id);
+  VXCORE_API VxCoreError DisableSync(const std::string &notebook_id);
 
-  VxCoreError TriggerSync(const std::string &notebook_id);
+  VXCORE_API VxCoreError TriggerSync(const std::string &notebook_id);
 
-  VxCoreError GetSyncStatus(const std::string &notebook_id, SyncState &out_state,
+  VXCORE_API VxCoreError GetSyncStatus(const std::string &notebook_id, SyncState &out_state,
                             std::vector<SyncFileInfo> &out_files);
 
-  VxCoreError GetConflicts(const std::string &notebook_id,
+  VXCORE_API VxCoreError GetConflicts(const std::string &notebook_id,
                            std::vector<SyncConflictInfo> &out_conflicts);
 
-  VxCoreError ResolveConflict(const std::string &notebook_id, const std::string &path,
+  VXCORE_API VxCoreError ResolveConflict(const std::string &notebook_id, const std::string &path,
                               SyncConflictResolution resolution);
 
-  VxCoreError GetSyncConfig(const std::string &notebook_id, SyncConfig &out_config);
+  VXCORE_API VxCoreError GetSyncConfig(const std::string &notebook_id, SyncConfig &out_config);
 
   // C++-only: forwards credentials to the registered backend (rotation path).
   // Returns:
