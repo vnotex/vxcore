@@ -332,9 +332,11 @@ VxCoreError GitSyncBackend::Pull(SyncProgressCallback callback, void *userdata) 
     return err;
   }
   ReportProgress(callback, userdata, SyncState::kStaging, "Committing", 0.20f);
-  err = pipeline.CommitIndex("VNote sync auto-commit before pull");
-  if (err != VXCORE_OK) {
-    return err;
+  if (config_.auto_commit_merges) {
+    err = pipeline.CommitIndex("VNote sync auto-commit before pull");
+    if (err != VXCORE_OK) {
+      return err;
+    }
   }
 
   ReportProgress(callback, userdata, SyncState::kFetching, "Fetching", 0.50f);

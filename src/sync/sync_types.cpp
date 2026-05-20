@@ -22,6 +22,8 @@ SyncConfig SyncConfig::FromJson(const nlohmann::json &json) {
   }
   if (json.contains("backendOptions") && json["backendOptions"].is_object())
     config.backend_options = json["backendOptions"];
+  if (json.contains("autoCommitMerges") && json["autoCommitMerges"].is_boolean())
+    config.auto_commit_merges = json["autoCommitMerges"].get<bool>();
   return config;
 }
 
@@ -32,6 +34,7 @@ nlohmann::json SyncConfig::ToJson() const {
   j["intervalSeconds"] = interval_seconds;
   j["enabled"] = enabled;
   j["excludePaths"] = exclude_paths;
+  j["autoCommitMerges"] = auto_commit_merges;
   if (!backend_options.is_null() && !backend_options.empty())
     j["backendOptions"] = backend_options;
   return j;

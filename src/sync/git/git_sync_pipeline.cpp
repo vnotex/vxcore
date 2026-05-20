@@ -7,6 +7,28 @@
 #include "sync/git/git_error_translator.h"
 #include "utils/logger.h"
 
+// ============================================================================
+// GitSyncPipeline: Single-shot phase methods for git sync operations.
+//
+// AUTO-COMMIT BEHAVIOR (B5):
+// The Pull() path auto-commits staged changes before fetch+rebase via
+// CommitIndex("VNote sync auto-commit before pull"). This ensures uncommitted
+// local edits survive the rebase. The auto-commit is GATED by
+// SyncConfig::auto_commit_merges (default true to preserve current behavior).
+//
+// When auto_commit_merges is false:
+//   - Pull() stages changes but skips the commit
+//   - Staged changes remain in the index for the caller to handle
+//   - Rebase proceeds with a clean working tree (staged changes are committed
+//     by the rebase itself as part of the replay)
+//   - Caller is responsible for managing the staged state
+//
+// When auto_commit_merges is true (default):
+//   - Pull() stages and auto-commits before rebase (current behavior)
+//   - Rebase replays on top of the auto-commit
+//   - Caller sees a clean working tree after Pull()
+// ============================================================================
+
 namespace vxcore {
 
 namespace {

@@ -38,8 +38,6 @@ add_vxcore_test(test_sync)
 add_vxcore_test(test_work_queue)
 add_vxcore_test(test_event_manager)
 add_vxcore_test(test_mock_sync_backend INTERNALS)
-add_vxcore_test(test_sync_manager_unknown_backend)
-add_vxcore_test(test_libgit2_init_propagation)
 
 # test_buffer_save_marks_dirty: T10 of auto-sync-on-save plan. Verifies that
 # vxcore_buffer_save fires file.saved events that propagate through
@@ -81,6 +79,29 @@ add_executable(test_libgit2_init test_libgit2_init.cpp
 target_include_directories(test_libgit2_init PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(test_libgit2_init PRIVATE libgit2package)
 add_test(NAME test_libgit2_init COMMAND test_libgit2_init)
+
+# test_libgit2_init_propagation: Task 2.4 of sync-backend-phase4. Verifies that
+# LibGit2Init::ok() tracks initialization success and SyncManager::EnableSync
+# checks it. Direct-compile test (like test_libgit2_init) to own its own
+# LibGit2Init statics.
+add_executable(test_libgit2_init_propagation test_libgit2_init_propagation.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/libgit2_init.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
+target_include_directories(test_libgit2_init_propagation PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_libgit2_init_propagation PRIVATE vxcore libgit2package)
+add_test(NAME test_libgit2_init_propagation COMMAND test_libgit2_init_propagation)
+
+# test_sync_manager_unknown_backend: Task 2.3 of sync-backend-phase4. Verifies that
+# SyncManager::EnableSync fails with VXCORE_ERR_UNKNOWN_BACKEND for unknown backends
+# and succeeds for empty/git backends. Direct-compile test to access LibGit2Init.
+add_executable(test_sync_manager_unknown_backend test_sync_manager_unknown_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/libgit2_init.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
+target_include_directories(test_sync_manager_unknown_backend PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_sync_manager_unknown_backend PRIVATE vxcore libgit2package)
+add_test(NAME test_sync_manager_unknown_backend COMMAND test_sync_manager_unknown_backend)
 
 add_executable(test_content_processor test_content_processor.cpp
     ${CMAKE_SOURCE_DIR}/src/core/content_processor/markdown_handler.cpp

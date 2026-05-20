@@ -131,7 +131,7 @@ enum class SyncConflictResolution {
 
 | Struct | Fields | Notes |
 |--------|--------|-------|
-| `SyncConfig` | `enabled`, `backend`, `remote_url`, `interval_seconds`, `exclude_paths`, `backend_options` | Has `FromJson()`/`ToJson()`. Default interval: 60 seconds. Default excludes: `*.vswp`, `vx_notebook/vx_sync/`. `backend_options` is an opaque JSON bag for backend-specific config. |
+| `SyncConfig` | `enabled`, `backend`, `remote_url`, `interval_seconds`, `exclude_paths`, `backend_options`, `auto_commit_merges` | Has `FromJson()`/`ToJson()`. Default interval: 60 seconds. Default excludes: `*.vswp`, `vx_notebook/vx_sync/`. `backend_options` is an opaque JSON bag for backend-specific config. `auto_commit_merges` (default true) gates Pull auto-commit behavior — see Pull Auto-Commit Semantics below. |
 | `SyncProgress` | `message`, `percentage`, `current_state` | Passed to `SyncProgressCallback` during sync operations |
 | `SyncFileInfo` | `path`, `status` | Per-file sync status |
 | `SyncConflictInfo` | `path`, `local_modified_utc`, `remote_modified_utc`, `is_binary` | Conflict metadata for resolution UI |
@@ -313,6 +313,22 @@ which keeps editor swap files and the gitdir itself out of every commit.
 Defaults to `"VNote Sync" <sync@vnote.local>`. Callers may override per-sync via
 `SyncCredentials::author_name` and `SyncCredentials::author_email`. The commit
 author is NOT persisted in `NotebookConfig` (kept session-local).
+
+### Pull Auto-Commit Semantics (B5)
+
+The `Pull()` method stages all local changes and optionally auto-commits them
+before fetch+rebase. This ensures uncommitted edits survive the rebase.
+
+**Behavior controlled by `SyncConfig::auto_commit_merges` (default true):**
+
+| Setting | Behavior | Use Case |
+|---------|----------|----------|
+| `true` (default) | Pull stages + auto-commits before rebase. Rebase replays on top of the auto-commit. Working tree is clean after Pull. | Preserves current behavior; recommended for most users. |
+| `false` | Pull stages but skips the commit. Staged changes remain in the index. Rebase proceeds with clean working tree (staged changes are committed by rebase as part of replay). Caller is responsible for managing staged state. | Advanced: caller wants explicit control over commit messages or timing. |
+
+**JSON field name:** `autoCommitMerges` (camelCase, matches `intervalSeconds`, `remoteUrl` style).
+
+**Default preservation:** Setting defaults to `true` so existing notebooks and callers see no behavior change.
 
 ### Sync Semantics
 

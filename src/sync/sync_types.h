@@ -64,6 +64,7 @@ struct SyncConfig {
   int interval_seconds = 60;
   std::vector<std::string> exclude_paths = {"*.vswp", "vx_notebook/vx_sync/"};
   nlohmann::json backend_options;
+  bool auto_commit_merges = true;
 
   static VXCORE_API SyncConfig FromJson(const nlohmann::json &json);
   VXCORE_API nlohmann::json ToJson() const;
