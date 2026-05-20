@@ -95,14 +95,20 @@ int test_sync_trigger_dispatches_to_backend() {
   ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"d1\"}",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
-  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
-            VXCORE_OK);
 
+  // Wave 4.4 / F1.1: "mock" is no longer an allow-listed placeholder backend; inject
+  // via EnableSyncWithBackendForTesting instead of the deprecated placeholder-then-
+  // RegisterBackendForTesting pattern. Wave 5.3 will register a "mock" factory in the
+  // registry; until then, tests bypass the factory with the test-only API.
   auto mock = std::make_unique<MockSyncBackend>();
   MockSyncBackend *mock_ptr = mock.get();
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  ctx_impl->sync_manager->RegisterBackendForTesting(notebook_id, std::move(mock));
+  SyncConfig cfg;
+  cfg.backend = "mock";
+  cfg.remote_url = "file:///tmp/x";
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
+                notebook_id, cfg, nullptr, std::move(mock)),
+            VXCORE_OK);
 
   ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_OK);
   ASSERT_EQ(mock_ptr->sync_call_count, 1);
@@ -126,11 +132,17 @@ int test_sync_trigger_no_backend_returns_not_implemented() {
   ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"d2\"}",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
+
+  // Wave 4.4 / F1.1: the original "enable mock placeholder → trigger NOT_IMPLEMENTED"
+  // semantic is no longer reachable (registry rejects unknown backends at enable time).
+  // The "state-without-backend" branch in TriggerSync (VXCORE_ERR_NOT_IMPLEMENTED) is now
+  // dead code from the public API surface and only reachable via direct private-state
+  // manipulation. This test instead asserts the new contract: enabling with an unknown
+  // backend fails with UNKNOWN_BACKEND, and trigger reports SYNC_NOT_ENABLED.
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
-            VXCORE_OK);
-
-  ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_ERR_NOT_IMPLEMENTED);
+            VXCORE_ERR_UNKNOWN_BACKEND);
+  ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_ERR_SYNC_NOT_ENABLED);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
@@ -152,14 +164,16 @@ int test_sync_trigger_state_transitions() {
   ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"d3\"}",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
-  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
-            VXCORE_OK);
 
   auto mock = std::make_unique<MockSyncBackend>();
   mock->next_sync_result = VXCORE_ERR_SYNC_CONFLICT;
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  ctx_impl->sync_manager->RegisterBackendForTesting(notebook_id, std::move(mock));
+  SyncConfig cfg;
+  cfg.backend = "mock";
+  cfg.remote_url = "file:///tmp/x";
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
+                notebook_id, cfg, nullptr, std::move(mock)),
+            VXCORE_OK);
 
   ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_ERR_SYNC_CONFLICT);
 
@@ -188,15 +202,17 @@ int test_sync_status_returns_files_from_backend() {
   ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"d4\"}",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
-  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
-            VXCORE_OK);
 
   auto mock = std::make_unique<MockSyncBackend>();
   mock->canned_status.push_back({"a.md", SyncFileStatus::kModifiedLocal});
   mock->canned_status.push_back({"b.md", SyncFileStatus::kAddedLocal});
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  ctx_impl->sync_manager->RegisterBackendForTesting(notebook_id, std::move(mock));
+  SyncConfig cfg;
+  cfg.backend = "mock";
+  cfg.remote_url = "file:///tmp/x";
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
+                notebook_id, cfg, nullptr, std::move(mock)),
+            VXCORE_OK);
 
   char *status_json = nullptr;
   ASSERT_EQ(vxcore_sync_get_status(ctx, notebook_id, &status_json), VXCORE_OK);
@@ -224,9 +240,6 @@ int test_sync_conflicts_returns_backend_list() {
   ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"d5\"}",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
-  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
-            VXCORE_OK);
 
   auto mock = std::make_unique<MockSyncBackend>();
   SyncConflictInfo c;
@@ -236,7 +249,12 @@ int test_sync_conflicts_returns_backend_list() {
   c.is_binary = false;
   mock->canned_conflicts.push_back(c);
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  ctx_impl->sync_manager->RegisterBackendForTesting(notebook_id, std::move(mock));
+  SyncConfig cfg;
+  cfg.backend = "mock";
+  cfg.remote_url = "file:///tmp/x";
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
+                notebook_id, cfg, nullptr, std::move(mock)),
+            VXCORE_OK);
 
   char *conflicts_json = nullptr;
   ASSERT_EQ(vxcore_sync_get_conflicts(ctx, notebook_id, &conflicts_json), VXCORE_OK);
@@ -263,14 +281,16 @@ int test_sync_resolve_dispatches_to_backend() {
   ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"d6\"}",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
-  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
-            VXCORE_OK);
 
   auto mock = std::make_unique<MockSyncBackend>();
   MockSyncBackend *mock_ptr = mock.get();
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  ctx_impl->sync_manager->RegisterBackendForTesting(notebook_id, std::move(mock));
+  SyncConfig cfg;
+  cfg.backend = "mock";
+  cfg.remote_url = "file:///tmp/x";
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
+                notebook_id, cfg, nullptr, std::move(mock)),
+            VXCORE_OK);
 
   ASSERT_EQ(vxcore_sync_resolve_conflict(ctx, notebook_id, "x.md", "keep_local"), VXCORE_OK);
   ASSERT_EQ(mock_ptr->resolve_conflict_call_count, 1);
@@ -297,15 +317,17 @@ int test_sync_resolve_clears_conflicted_state_when_no_more_conflicts() {
   ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"d7\"}",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
-  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
-            VXCORE_OK);
 
   auto mock = std::make_unique<MockSyncBackend>();
   mock->next_sync_result = VXCORE_ERR_SYNC_CONFLICT;
   MockSyncBackend *mock_ptr = mock.get();
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  ctx_impl->sync_manager->RegisterBackendForTesting(notebook_id, std::move(mock));
+  SyncConfig cfg;
+  cfg.backend = "mock";
+  cfg.remote_url = "file:///tmp/x";
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
+                notebook_id, cfg, nullptr, std::move(mock)),
+            VXCORE_OK);
 
   // Trigger -> state becomes conflicted
   ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_ERR_SYNC_CONFLICT);
@@ -343,14 +365,16 @@ int test_sync_manager_set_credentials_dispatches() {
   ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"sc1\"}",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
-  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
-            VXCORE_OK);
 
   auto mock = std::make_unique<MockSyncBackend>();
   MockSyncBackend *mock_ptr = mock.get();
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  ctx_impl->sync_manager->RegisterBackendForTesting(notebook_id, std::move(mock));
+  SyncConfig cfg;
+  cfg.backend = "mock";
+  cfg.remote_url = "file:///tmp/x";
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
+                notebook_id, cfg, nullptr, std::move(mock)),
+            VXCORE_OK);
 
   SyncCredentials creds;
   creds.personal_access_token = "abc123";
@@ -378,15 +402,21 @@ int test_sync_manager_set_credentials_no_backend_returns_not_implemented() {
   ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"sc2\"}",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
+
+  // Wave 4.4 / F1.1: the "enabled but no backend" state branch in SetCredentials
+  // (VXCORE_ERR_NOT_IMPLEMENTED) is no longer reachable from the public API — registry
+  // rejects unknown backends at enable time. This test now asserts the new contract:
+  // enabling with an unknown backend fails with UNKNOWN_BACKEND, and SetCredentials
+  // reports SYNC_NOT_ENABLED.
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
-            VXCORE_OK);
+            VXCORE_ERR_UNKNOWN_BACKEND);
 
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
   SyncCredentials creds;
   creds.personal_access_token = "tkn";
   ASSERT_EQ(ctx_impl->sync_manager->SetCredentials(notebook_id, creds),
-            VXCORE_ERR_NOT_IMPLEMENTED);
+            VXCORE_ERR_SYNC_NOT_ENABLED);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);

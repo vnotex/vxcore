@@ -87,6 +87,18 @@ int test_sync_enable_disable() {
   err = vxcore_sync_enable(
       ctx, notebook_id,
       "{\"backend\":\"mock\",\"remoteUrl\":\"test://repo\",\"intervalSeconds\":60}");
+  ASSERT_EQ(err, VXCORE_ERR_UNKNOWN_BACKEND);
+
+  // Migrate placeholder-enable to EnableSyncWithBackendForTesting (Wave 4.4 / F1.1).
+  // Wave 5.3 will register a "mock" factory in the registry; until then, tests inject
+  // their backend directly.
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  vxcore::SyncConfig cfg;
+  cfg.backend = "mock";
+  cfg.remote_url = "test://repo";
+  cfg.interval_seconds = 60;
+  err = vctx->sync_manager->EnableSyncWithBackendForTesting(
+      notebook_id, cfg, nullptr, std::make_unique<MockSyncBackend>());
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_sync_disable(ctx, notebook_id);
@@ -140,11 +152,13 @@ int test_sync_trigger_not_implemented() {
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
 
-  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}");
-  ASSERT_EQ(err, VXCORE_OK);
-
+  // Wave 4.4 / F1.1: "mock" is no longer an allow-listed placeholder backend; without a
+  // factory in the registry, enable would fail. With no backend ever enabled, trigger
+  // reports SYNC_NOT_ENABLED. The "enabled but no backend → NOT_IMPLEMENTED" path is
+  // covered by test_sync_trigger_no_backend_returns_not_implemented in
+  // test_sync_manager_dispatch.cpp (which uses C++-side EnableSync paths).
   err = vxcore_sync_trigger(ctx, notebook_id);
-  ASSERT_EQ(err, VXCORE_ERR_NOT_IMPLEMENTED);
+  ASSERT_EQ(err, VXCORE_ERR_SYNC_NOT_ENABLED);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
@@ -330,11 +344,13 @@ int test_sync_enable_with_backend_options_via_c_api() {
                                &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  // Enable sync with backendOptions (using mock backend since webdav is not implemented)
+  // Enable sync with backendOptions. Wave 4.4 / F1.1: unknown backends fail-fast with
+  // UNKNOWN_BACKEND. The C API still parses the JSON (no parse error returned) — only
+  // the registry lookup fails. This preserves coverage of the JSON parsing path.
   const char *config_json =
       R"({"backend":"mock","remoteUrl":"https://dav.example.com","backendOptions":{"depth":2}})";
   err = vxcore_sync_enable(ctx, notebook_id, config_json);
-  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(err, VXCORE_ERR_UNKNOWN_BACKEND);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);

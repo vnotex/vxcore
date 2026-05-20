@@ -5,8 +5,8 @@
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
 #include "core/work_queue.h"
-#include "sync/git/git_sync_backend.h"
 #include "sync/git/libgit2_init.h"
+#include "sync/sync_backend_registry.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
 
@@ -139,7 +139,11 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
   }
 
   // Fail-fast on unknown backend (F1.4/B3) — check BEFORE init to catch config errors early.
-  if (!config.backend.empty() && config.backend != "git" && config.backend != "mock") {
+  // "mock" used to be an allow-listed placeholder backend pre-W4.4; with the registry as
+  // source of truth, unknown names (including "mock" until Wave 5.3 registers a factory)
+  // fail-fast here. Tests that previously enabled "mock" must use
+  // EnableSyncWithBackendForTesting.
+  if (!config.backend.empty() && config.backend != "git") {
     VXCORE_LOG_ERROR("SyncManager::EnableSyncImpl: unknown backend '%s' for notebook: %s",
                      config.backend.c_str(), notebook_id.c_str());
     return VXCORE_ERR_UNKNOWN_BACKEND;
@@ -175,16 +179,15 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
     }
   };
 
-  // Factory: build a backend if config.backend matches a known type.
-  std::unique_ptr<ISyncBackend> backend;
-  if (config.backend == "git") {
-    backend = std::make_unique<GitSyncBackend>();
-  }
-  // Unknown backend: leave config + state stored, no backend registered.
+  // Factory: build a backend via the registry (F1.1 — decoupled from concrete types).
+  const std::string backend_name = config.backend.empty() ? "git" : config.backend;
+  std::unique_ptr<ISyncBackend> backend =
+      SyncBackendRegistry::Instance().Create(backend_name, config);
   if (!backend) {
-    VXCORE_LOG_INFO("Sync enabled for notebook: %s, backend: %s (no factory)",
-                    notebook_id.c_str(), config.backend.c_str());
-    return VXCORE_OK;
+    VXCORE_LOG_WARN("SyncManager::EnableSyncImpl: no factory for backend '%s' (notebook: %s)",
+                    backend_name.c_str(), notebook_id.c_str());
+    rollback();
+    return VXCORE_ERR_UNKNOWN_BACKEND;
   }
 
   if (credentials != nullptr) {
