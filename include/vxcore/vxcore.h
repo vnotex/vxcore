@@ -839,7 +839,9 @@ VXCORE_API VxCoreError vxcore_snippet_apply(VxCoreContextHandle context, const c
 // Enable sync for a notebook.
 // notebook_id: ID of the notebook.
 // config_json: JSON object with sync configuration:
-//   {"backend":"git","remoteUrl":"...","intervalSeconds":300}
+//   {"backend":"git","remoteUrl":"...","intervalSeconds":60}
+// Default intervalSeconds is 60 (matches SyncConfig::interval_seconds in
+// libs/vxcore/src/sync/sync_types.h).
 // Returns VXCORE_ERR_UNSUPPORTED for raw notebooks.
 VXCORE_API VxCoreError vxcore_sync_enable(VxCoreContextHandle context, const char *notebook_id,
                                           const char *config_json);

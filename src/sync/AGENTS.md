@@ -17,7 +17,7 @@ SyncManager                         ← Orchestrator (per-notebook backend dispa
     ├── configs_   map<id, SyncConfig>                  ← Per-notebook sync config (runtime)
     └── dirty_notebooks_  set<id>                       ← Notebooks with unsynced changes (via EventManager)
 
-ISyncBackend                        ← Pure virtual interface (8 methods)
+ISyncBackend                        ← Pure virtual interface (10 methods including virtual destructor; will drop to 7 in Wave 4.5 of sync-backend-phase4)
     │
     ├── GitSyncBackend (libgit2-based)
     ├── WebDavSyncBackend (future)
@@ -67,7 +67,7 @@ Every SyncManager method that operates on a notebook follows this pattern:
 | File | Purpose |
 |------|---------|
 | `sync_types.h` | Enums (`SyncState`, `SyncFileStatus`, `SyncConflictResolution`), structs (`SyncConfig`, `SyncProgress`, `SyncFileInfo`, `SyncConflictInfo`, `SyncCredentials`), `SyncProgressCallback` typedef, `SyncConfig::FromJson()`/`ToJson()` |
-| `sync_backend.h` | `ISyncBackend` pure virtual class (9 methods including `SetCredentials`) |
+| `sync_backend.h` | `ISyncBackend` pure virtual class (10 methods including virtual destructor; `SetCredentials` has a default no-op body, the other 8 are pure-virtual). Will drop to 7 in Wave 4.5 of sync-backend-phase4. |
 | `sync_manager.h` | `SyncManager` class: per-notebook dispatch, dirty tracking via `EventManager` |
 | `sync_manager.cpp` | `SyncManager` implementation (validation, state management, event subscription, dirty tracking) |
 | `git/git_sync_backend.h` | `GitSyncBackend` class declaration (inherits `ISyncBackend`) — composition root |
@@ -89,7 +89,7 @@ Every SyncManager method that operates on a notebook follows this pattern:
 | File | What's There |
 |------|-------------|
 | `include/vxcore/vxcore_types.h` | Error codes 21-25 (`SYNC_IN_PROGRESS`, `CONFLICT`, `AUTH_FAILED`, `NETWORK`, `NOT_ENABLED`), `VxCoreEventCallback` typedef |
-| `include/vxcore/vxcore.h` | 8 C API declarations (`vxcore_sync_{enable,disable,trigger,get_status,get_conflicts,resolve_conflict,set_credentials,enable_with_credentials}`) |
+| `include/vxcore/vxcore.h` | 10 C API declarations (`vxcore_sync_{enable,disable,trigger,get_status,get_conflicts,resolve_conflict,set_credentials,enable_with_credentials,is_ready,get_last_sync_utc}`) |
 | `src/api/vxcore_sync_api.cpp` | C API implementations with JSON serialization and null checks |
 | `src/core/context.h` | `VxCoreContext` owns `sync_manager`, `event_manager`, `work_queue_manager` (member order matters — see Thread Safety) |
 | `src/core/event_manager.h/.cpp` | `EventManager` subscribe/emit system — SyncManager subscribes to file/folder events |
@@ -131,17 +131,23 @@ enum class SyncConflictResolution {
 
 | Struct | Fields | Notes |
 |--------|--------|-------|
-| `SyncConfig` | `enabled`, `backend`, `remote_url`, `interval_seconds`, `exclude_paths`, `backend_options` | Has `FromJson()`/`ToJson()`. Default interval: 300s. Default excludes: `*.vswp`, `vx_notebook/vx_sync/`. `backend_options` is an opaque JSON bag for backend-specific config. |
+| `SyncConfig` | `enabled`, `backend`, `remote_url`, `interval_seconds`, `exclude_paths`, `backend_options` | Has `FromJson()`/`ToJson()`. Default interval: 60 seconds. Default excludes: `*.vswp`, `vx_notebook/vx_sync/`. `backend_options` is an opaque JSON bag for backend-specific config. |
 | `SyncProgress` | `message`, `percentage`, `current_state` | Passed to `SyncProgressCallback` during sync operations |
 | `SyncFileInfo` | `path`, `status` | Per-file sync status |
 | `SyncConflictInfo` | `path`, `local_modified_utc`, `remote_modified_utc`, `is_binary` | Conflict metadata for resolution UI |
-| `SyncCredentials` | `username`, `password`, `ssh_public_key_path`, `ssh_private_key_path`, `personal_access_token`, `author_name`, `author_email`, `extra` | NOT stored in notebook config (lives in session config, per-device). `extra` is an opaque JSON bag for backend-specific credentials. |
+| `SyncCredentials` | `username`, `password`, `ssh_public_key_path`, `ssh_private_key_path`, `personal_access_token`, `author_name`, `author_email`, `extra` | NOT stored in notebook config. On the Qt side the PAT lives in the OS keychain via `SyncCredentialsStore` (see `src/core/services/syncservice.cpp`); vxcore itself never persists credentials. `extra` is an opaque JSON bag for backend-specific credentials. |
 
 ### Callback
 
 ```cpp
 using SyncProgressCallback = std::function<void(const SyncProgress &progress, void *userdata)>;
 ```
+
+> **Integration note (audit D10)**: backends MUST honour a non-null callback
+> when one is supplied, but as of today the orchestrator (`SyncManager::TriggerSync`)
+> passes `nullptr, nullptr` to backends — so the callback is currently a
+> contract-only feature. Wiring a real callback through the C API is tracked
+> as a follow-up.
 
 ## ISyncBackend Interface
 
@@ -189,6 +195,8 @@ Output strings must be freed with `vxcore_string_free()`.
 | `vxcore_sync_resolve_conflict` | `notebook_id`, `path`, `resolution` | Resolution strings: `"keep_both"`, `"keep_local"`, `"keep_remote"` |
 | `vxcore_sync_set_credentials` | `notebook_id`, `credentials_json` | Rotate credentials on already-enabled notebook. JSON keys: `pat`, `authorName`, `authorEmail`, `extra` |
 | `vxcore_sync_enable_with_credentials` | `notebook_id`, `config_json`, `credentials_json` | Enable + set credentials atomically (needed when Initialize requires auth, e.g., authenticated git clone) |
+| `vxcore_sync_is_ready` | `notebook_id`, `out_ready` | Returns 1 if `syncEnabled` is true AND `syncBackend` is non-empty AND `syncRemoteUrl` is non-empty. Reads notebook JSON directly; **bypasses `SyncManager`** (no `states_`/`backends_` check). |
+| `vxcore_sync_get_last_sync_utc` | `notebook_id`, `out_utc_millis` | Returns the per-device last successful sync timestamp (ms since Unix epoch) from `metadata.db`. **Bypasses `SyncManager`**. Returns 0 if never synced on this device. |
 
 ### JSON Key Mapping (C API ↔ C++ Struct)
 
@@ -218,14 +226,14 @@ struct NotebookConfig {
   bool sync_enabled = false;
   std::string sync_backend;          // e.g., "git", "webdav"
   std::string sync_remote_url;       // e.g., "https://github.com/user/repo.git"
-  int sync_interval_seconds = 300;   // Auto-sync interval (default 5 minutes)
+  int sync_interval_seconds = 60;    // Auto-sync interval (default 60 seconds)
 };
 ```
 
 **Design decisions:**
 - Flat fields (not a nested `SyncConfig` struct) — keeps `NotebookConfig` simple
 - Backend type + remote URL are portable (stored in notebook folder)
-- Credentials are NOT stored here (see `SyncCredentials` — lives in session config, per-device)
+- Credentials are NOT stored here (see `SyncCredentials` — PAT lives in the OS keychain via `SyncCredentialsStore` on the Qt side; vxcore itself never persists credentials)
 - `metadata.db` is NOT in the notebook folder (lives in `local_data_folder`)
 
 ## Design Constraints
@@ -235,7 +243,7 @@ struct NotebookConfig {
 | Bundled notebooks only | Raw notebooks have no `vx_notebook/` folder for sync state |
 | No Qt dependencies | vxcore is a pure C/C++ library |
 | No network code in skeleton | Backends implement their own transport |
-| No credential storage | Credentials are per-device, stored in session config by the Qt layer |
+| No credential storage | Credentials are per-device; the Qt layer stores the PAT in the OS keychain via `SyncCredentialsStore`. vxcore receives credentials at runtime via `SetCredentials` and never persists them. |
 | Recycle bin IS synced | `vx_recycle_bin/` is included so deletions propagate across devices |
 | Sync state directory: `vx_notebook/vx_sync/` | Backend-specific state (e.g., `.git/`) lives here |
 | Conflict naming: `file.sync-conflict-{timestamp}.ext` | Syncthing-style, keeps both versions |
@@ -245,7 +253,7 @@ struct NotebookConfig {
 `GitSyncBackend` is the first concrete `ISyncBackend` implementation. It uses
 [libgit2](https://libgit2.org/) (vendored as a nested submodule under
 `libs/vxcore/third_party/libgit2`). The implementation is split across multiple
-focused files under `libs/vxcore/src/sync/git/` (see File Map below).
+focused files under `libs/vxcore/src/sync/git/` (21 files: 10 `{name}.h` + 10 `{name}.cpp` pairs plus `git_handles.h` which is header-only). See File Map below.
 
 > **Note**: Earlier revisions of this doc claimed `GitSyncBackend` was built
 > "whenever `VXCORE_ENABLE_GIT_SYNC` is `ON` (default)". That option does NOT
@@ -321,6 +329,12 @@ backoff (`100ms`, `500ms`, `2000ms`), each retry refetching and rebasing.
 `Sync()` is **synchronous** in v1 — it blocks the calling thread until the
 round-trip finishes or a non-recoverable error is returned.
 
+> **Cancellation contract (audit D9, pre-Wave 12)**: there is currently NO
+> cooperative cancellation. If `Shutdown()` is invoked while `Sync()` is
+> in flight on another thread, `Shutdown()` blocks until the in-flight call
+> returns on its own. Wave 12 of `sync-backend-phase4` adds a cancellation
+> token honoured by libgit2 progress callbacks.
+
 ### Conflict Workflow
 
 If the rebase hits a conflict, libgit2 leaves the rebase **in progress** on
@@ -343,7 +357,7 @@ The following are explicitly **out of scope for v1** and tracked separately:
 - SSH transport (libssh2 not linked, no key-based auth)
 - Username/password basic auth (only PAT is supported over HTTPS)
 - OAuth flows (device code, PKCE, refresh tokens)
-- QtKeychain integration (PAT lives in session config in plaintext for now)
+- QtKeychain integration (the Qt layer DOES use the OS keychain via `SyncCredentialsStore`; this bullet refers to deeper keychain UX such as biometric unlock, which is deferred)
 - Public C API for `Push` / `Pull` (only `Sync` is wired through `vxcore_sync_*`)
 - Branch switching / non-default branches per push
 - Commit log / history inspection API
@@ -521,6 +535,10 @@ VxCoreError MySyncBackend::Sync(SyncProgressCallback callback, void *userdata) {
 
 Add a factory branch to `SyncManager::EnableSyncImpl()` in `sync_manager.cpp`:
 
+> **Note**: The factory-branch approach is an explicit code smell tracked as
+> F1.1 in `sync-backend-phase4.md`. A registry-based replacement is planned;
+> until it lands, the if/else chain remains the integration point.
+
 ```cpp
 // In SyncManager::EnableSyncImpl(), after the existing "git" branch:
 if (config.backend == "git") {
@@ -546,7 +564,11 @@ set(VXCORE_SOURCES
 
 ### Step 5: Add Tests
 
-Add test cases to `tests/test_sync.cpp` or create a new test file. Follow the existing test pattern:
+Most sync coverage now lives in dedicated test files (`tests/test_sync.cpp`
+for the SyncManager + JSON contract, plus the `test_git_sync_*.cpp` and
+`test_gitkeep_*.cpp` suites for end-to-end libgit2 fixtures). Add cases to
+the most specific existing file, or create a new `tests/test_{topic}.cpp`
+when you are exercising a separate concern. Follow the existing test pattern:
 
 ```cpp
 int test_my_sync_backend_init() {
@@ -583,10 +605,10 @@ int test_my_sync_backend_init() {
 ### Checklist for New Backend
 
 - [ ] Create `src/sync/{name}_sync_backend.h` with class inheriting `ISyncBackend`
-- [ ] Create `src/sync/{name}_sync_backend.cpp` implementing all 9 methods (including `SetCredentials`)
+- [ ] Create `src/sync/{name}_sync_backend.cpp` implementing all required methods (the 8 pure virtuals plus optionally overriding `SetCredentials`)
 - [ ] Add factory branch in `SyncManager::EnableSyncImpl()`
 - [ ] Add `.cpp` to `src/CMakeLists.txt` `VXCORE_SOURCES`
-- [ ] Add test cases to `tests/test_sync.cpp`
+- [ ] Add test cases to the most relevant existing file under `tests/` (e.g., `test_sync.cpp` for SyncManager wiring, `test_git_sync_*.cpp` for libgit2-backed coverage) or create a new `tests/test_{topic}.cpp`
 - [ ] If backend needs external library (e.g., libgit2), add `find_package` + `target_link_libraries` in `CMakeLists.txt`
 - [ ] Use `SyncProgressCallback` to report progress during `Sync()`, `Push()`, `Pull()`
 - [ ] Handle credentials via `SyncCredentials` struct (passed at runtime, not stored in config)
@@ -668,6 +690,13 @@ The Qt-side mirror of these rules lives in `src/core/services/AGENTS.md` § Thre
 
 `SyncManager` methods (`EnableSync`, `TriggerSync`, etc.) are NOT thread-safe.
 The caller must serialize access (e.g., via signals/slots or a mutex).
+
+> **Known issue (audit D5 / pre-Wave 10)**: The event-driven dirty path reads
+> `configs_` from whatever thread emits the file/folder event. Today that read
+> is unsynchronized with mutations from the orchestrator thread, i.e.
+> undefined behaviour. Wave 10 of `sync-backend-phase4` introduces
+> `state_mutex_` to fix this; until that lands, callers should ensure
+> `EnableSync`/`DisableSync` and event emission happen on the same thread.
 
 `SyncManager` dirty tracking (`GetDirtyNotebooks`/`ClearDirty`) IS thread-safe
 (protected by its own mutex), since events may fire from any thread.
