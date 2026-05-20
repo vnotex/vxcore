@@ -37,6 +37,7 @@ add_vxcore_test(test_e2e_assets)
 add_vxcore_test(test_sync)
 add_vxcore_test(test_work_queue)
 add_vxcore_test(test_event_manager)
+add_vxcore_test(test_mock_sync_backend INTERNALS)
 
 # test_buffer_save_marks_dirty: T10 of auto-sync-on-save plan. Verifies that
 # vxcore_buffer_save fires file.saved events that propagate through

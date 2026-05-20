@@ -15,6 +15,8 @@
 
 add_library(vxcore_test_internals STATIC
     src/sync_test_helpers.cpp
+    src/mock_sync_backend.cpp
+    src/mock_credential_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp)
 
