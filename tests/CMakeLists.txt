@@ -39,6 +39,11 @@ add_vxcore_test(test_work_queue)
 add_vxcore_test(test_event_manager)
 add_vxcore_test(test_mock_sync_backend INTERNALS)
 
+# test_credential_provider: Task 6.1 (F4.4) of sync-backend-phase4. Tests the
+# ICredentialProvider interface, InMemoryCredentialProvider (in vxcore.dll),
+# and the migrated MockCredentialProvider (in vxcore_test_internals).
+add_vxcore_test(test_credential_provider INTERNALS)
+
 # test_sync_backend_registry: Task 4.2 (F1.1) of sync-backend-phase4. Tests
 # the SyncBackendRegistry public surface (Register / Create / Names plus
 # BackendRegistration token) against local lambda factories — does NOT

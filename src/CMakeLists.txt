@@ -60,6 +60,7 @@ set(VXCORE_SOURCES
     sync/sync_types.cpp
     sync/sync_manager.cpp
     sync/sync_backend_registry.cpp
+    sync/credential_provider.cpp
     ${VXCORE_GIT_SYNC_SOURCES_RELATIVE}
     utils/utils.cpp
     utils/string_utils.cpp

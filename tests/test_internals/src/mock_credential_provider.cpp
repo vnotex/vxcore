@@ -10,22 +10,46 @@ MockCredentialProvider::MockCredentialProvider() {
 
 MockCredentialProvider::~MockCredentialProvider() = default;
 
-bool MockCredentialProvider::GetCredentials(const std::string &notebook_id,
-                                            SyncCredentials &out_creds) {
-  (void)notebook_id;
+bool MockCredentialProvider::GetCredentials(const std::string &url,
+                                            const std::string &username_from_url,
+                                            SyncCredentials *out) {
+  if (out == nullptr) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(mu_);
+  ++call_count_;
+  last_url_ = url;
+  last_username_ = username_from_url;
   if (!available_) {
     return false;
   }
-  out_creds = credentials_;
+  *out = credentials_;
   return true;
 }
 
 void MockCredentialProvider::SetCredentials(const SyncCredentials &creds) {
+  std::lock_guard<std::mutex> lock(mu_);
   credentials_ = creds;
 }
 
 void MockCredentialProvider::SetAvailable(bool available) {
+  std::lock_guard<std::mutex> lock(mu_);
   available_ = available;
+}
+
+std::size_t MockCredentialProvider::GetCallCount() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return call_count_;
+}
+
+std::string MockCredentialProvider::GetLastUrl() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return last_url_;
+}
+
+std::string MockCredentialProvider::GetLastUsername() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return last_username_;
 }
 
 }  // namespace vxcore

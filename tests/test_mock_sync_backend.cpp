@@ -107,7 +107,7 @@ int test_mock_credential_provider() {
 
   // Get default credentials
   vxcore::SyncCredentials creds;
-  bool ok = provider.GetCredentials("test-notebook", creds);
+  bool ok = provider.GetCredentials("https://example/repo.git", "x-access-token", &creds);
   ASSERT_TRUE(ok);
   ASSERT_EQ(creds.personal_access_token, "test-pat-token");
   ASSERT_EQ(creds.author_name, "Test Author");
@@ -121,14 +121,14 @@ int test_mock_credential_provider() {
   provider.SetCredentials(custom);
 
   creds = vxcore::SyncCredentials();
-  ok = provider.GetCredentials("test-notebook", creds);
+  ok = provider.GetCredentials("https://example/repo.git", "x-access-token", &creds);
   ASSERT_TRUE(ok);
   ASSERT_EQ(creds.personal_access_token, "custom-token");
   ASSERT_EQ(creds.author_name, "Custom Author");
 
   // Disable credentials
   provider.SetAvailable(false);
-  ok = provider.GetCredentials("test-notebook", creds);
+  ok = provider.GetCredentials("https://example/repo.git", "x-access-token", &creds);
   ASSERT_FALSE(ok);
 
   std::cout << "  ✓ test_mock_credential_provider passed" << std::endl;
