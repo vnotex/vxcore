@@ -16,6 +16,12 @@ extern const char *const kDefaultGitignore;
 // so libgit2 / git skips text merges on them.
 extern const char *const kDefaultGitattributes;
 
+// Default commit author name when credentials_.author_name is empty.
+extern const char *const kDefaultAuthorName;
+
+// Default commit author email when credentials_.author_email is empty.
+extern const char *const kDefaultAuthorEmail;
+
 // Write |content| to |abs_path| only if the file does not already exist.
 // Returns true if the file was created, false if it already existed or on error.
 // UTF-8 safe on Windows: uses PathExists / PathFromUtf8.

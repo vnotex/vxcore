@@ -20,6 +20,19 @@
 
 namespace vxcore {
 
+// Helper to report progress via callback. Handles null callback gracefully.
+static void ReportProgress(const SyncProgressCallback &callback, void *userdata,
+                           SyncState state, std::string_view message, float percentage) {
+  if (!callback) {
+    return;
+  }
+  SyncProgress progress;
+  progress.current_state = state;
+  progress.message = std::string(message);
+  progress.percentage = percentage;
+  callback(progress, userdata);
+}
+
 GitSyncBackend::GitSyncBackend() = default;
 
 GitSyncBackend::~GitSyncBackend() {
@@ -173,30 +186,17 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
     return VXCORE_ERR_UNKNOWN;
   }
 
-  // T26: build SyncProgress and dispatch to user callback. Inline lambda
-  // keeps the noisy nullable-callback guard out of every phase site.
-  auto emit = [&](SyncState state, const char *msg, float pct) {
-    if (!callback) {
-      return;
-    }
-    SyncProgress progress;
-    progress.message = msg;
-    progress.percentage = pct;
-    progress.current_state = state;
-    callback(progress, userdata);
-  };
-
   GitSyncPipeline pipeline(repo_, git_dir_, root_folder_, config_, credentials_,
                            &rebase_in_progress_);
 
-  emit(SyncState::kStaging, "Staging", 0.10f);
+  ReportProgress(callback, userdata, SyncState::kStaging, "Staging", 0.10f);
   EnsureGitkeepFiles(root_folder_, config_);
   VxCoreError err = pipeline.StageAll();
   if (err != VXCORE_OK) {
     return err;
   }
 
-  emit(SyncState::kStaging, "Committing", 0.20f);
+  ReportProgress(callback, userdata, SyncState::kStaging, "Committing", 0.20f);
   const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::system_clock::now().time_since_epoch())
                           .count();
@@ -215,7 +215,7 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
   bool pushed = false;
   for (int attempt = 0; attempt < 3; ++attempt) {
     VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=push attempt=%d", attempt);
-    emit(SyncState::kFetching, "Fetching", 0.40f);
+    ReportProgress(callback, userdata, SyncState::kFetching, "Fetching", 0.40f);
     VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=fetch starting");
     err = pipeline.FetchOrigin();
     VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=fetch rc=%d", err);
@@ -223,9 +223,9 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
       return err;
     }
 
-    emit(SyncState::kAnalyzing, "Analyzing", 0.50f);
+    ReportProgress(callback, userdata, SyncState::kAnalyzing, "Analyzing", 0.50f);
 
-    emit(SyncState::kMerging, "Rebasing", 0.70f);
+    ReportProgress(callback, userdata, SyncState::kMerging, "Rebasing", 0.70f);
     VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=rebase starting");
     err = pipeline.RebaseOntoOrigin();
     VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=rebase rc=%d", err);
@@ -236,7 +236,7 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
       return err;
     }
 
-    emit(SyncState::kPushing, "Pushing", 0.90f);
+    ReportProgress(callback, userdata, SyncState::kPushing, "Pushing", 0.90f);
     VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=push starting");
     err = pipeline.PushOrigin();
     VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=push rc=%d", err);
@@ -271,7 +271,7 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
     return VXCORE_ERR_SYNC_NETWORK;
   }
 
-  emit(SyncState::kIdle, "Sync complete", 1.0f);
+  ReportProgress(callback, userdata, SyncState::kIdle, "Sync complete", 1.0f);
   return VXCORE_OK;
 }
 
@@ -284,38 +284,29 @@ VxCoreError GitSyncBackend::Push(SyncProgressCallback callback, void *userdata) 
     return VXCORE_ERR_UNKNOWN;
   }
 
-  auto emit = [&](SyncState state, const char *msg, float pct) {
-    if (!callback) return;
-    SyncProgress progress;
-    progress.message = msg;
-    progress.percentage = pct;
-    progress.current_state = state;
-    callback(progress, userdata);
-  };
-
   GitSyncPipeline pipeline(repo_, git_dir_, root_folder_, config_, credentials_,
                            &rebase_in_progress_);
 
-  emit(SyncState::kStaging, "Staging", 0.20f);
+  ReportProgress(callback, userdata, SyncState::kStaging, "Staging", 0.20f);
   EnsureGitkeepFiles(root_folder_, config_);
   VxCoreError err = pipeline.StageAll();
   if (err != VXCORE_OK) {
     return err;
   }
 
-  emit(SyncState::kStaging, "Committing", 0.40f);
+  ReportProgress(callback, userdata, SyncState::kStaging, "Committing", 0.40f);
   err = pipeline.CommitIndex("VNote sync push");
   if (err != VXCORE_OK) {
     return err;
   }
 
-  emit(SyncState::kPushing, "Pushing", 0.80f);
+  ReportProgress(callback, userdata, SyncState::kPushing, "Pushing", 0.80f);
   err = pipeline.PushOrigin();
   if (err != VXCORE_OK) {
     return err;
   }
 
-  emit(SyncState::kIdle, "Push complete", 1.0f);
+  ReportProgress(callback, userdata, SyncState::kIdle, "Push complete", 1.0f);
   return VXCORE_OK;
 }
 
@@ -328,15 +319,6 @@ VxCoreError GitSyncBackend::Pull(SyncProgressCallback callback, void *userdata) 
     return VXCORE_ERR_UNKNOWN;
   }
 
-  auto emit = [&](SyncState state, const char *msg, float pct) {
-    if (!callback) return;
-    SyncProgress progress;
-    progress.message = msg;
-    progress.percentage = pct;
-    progress.current_state = state;
-    callback(progress, userdata);
-  };
-
   GitSyncPipeline pipeline(repo_, git_dir_, root_folder_, config_, credentials_,
                            &rebase_in_progress_);
 
@@ -344,24 +326,24 @@ VxCoreError GitSyncBackend::Pull(SyncProgressCallback callback, void *userdata) 
   // the upcoming rebase has a clean working tree to replay onto. Without
   // this, a Pull on a notebook with edits in flight would either lose them
   // or refuse to rebase.
-  emit(SyncState::kStaging, "Staging", 0.10f);
+  ReportProgress(callback, userdata, SyncState::kStaging, "Staging", 0.10f);
   VxCoreError err = pipeline.StageAll();
   if (err != VXCORE_OK) {
     return err;
   }
-  emit(SyncState::kStaging, "Committing", 0.20f);
+  ReportProgress(callback, userdata, SyncState::kStaging, "Committing", 0.20f);
   err = pipeline.CommitIndex("VNote sync auto-commit before pull");
   if (err != VXCORE_OK) {
     return err;
   }
 
-  emit(SyncState::kFetching, "Fetching", 0.50f);
+  ReportProgress(callback, userdata, SyncState::kFetching, "Fetching", 0.50f);
   err = pipeline.FetchOrigin();
   if (err != VXCORE_OK) {
     return err;
   }
 
-  emit(SyncState::kMerging, "Rebasing", 0.80f);
+  ReportProgress(callback, userdata, SyncState::kMerging, "Rebasing", 0.80f);
   err = pipeline.RebaseOntoOrigin();
   if (err == VXCORE_ERR_SYNC_CONFLICT) {
     return VXCORE_ERR_SYNC_CONFLICT;
@@ -370,7 +352,7 @@ VxCoreError GitSyncBackend::Pull(SyncProgressCallback callback, void *userdata) 
     return err;
   }
 
-  emit(SyncState::kIdle, "Pull complete", 1.0f);
+  ReportProgress(callback, userdata, SyncState::kIdle, "Pull complete", 1.0f);
   return VXCORE_OK;
 }
 

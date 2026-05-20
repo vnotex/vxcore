@@ -28,6 +28,10 @@ const char *const kDefaultGitattributes =
     "*.zip binary\n"
     "*.mp4 binary\n";
 
+const char *const kDefaultAuthorName = "VNote Sync";
+
+const char *const kDefaultAuthorEmail = "sync@vnote.local";
+
 bool WriteIfMissing(const std::string &abs_path, const std::string &content) {
   if (PathExists(abs_path)) {
     return false;
