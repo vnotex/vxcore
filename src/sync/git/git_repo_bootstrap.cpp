@@ -7,6 +7,7 @@
 #include "sync/git/git_credential_callback.h"
 #include "sync/git/git_defaults.h"
 #include "sync/git/git_error_translator.h"
+#include "sync/git/git_handles.h"
 #include "sync/git/git_sync_pipeline.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
@@ -70,17 +71,20 @@ VxCoreError InitEmptyRepoWithRemote(const std::string &root_folder,
   iopts.workdir_path = root_folder.c_str();
   iopts.initial_head = "main";
 
-  git_repository *repo = nullptr;
-  rc = git_repository_init_ext(&repo, git_dir.c_str(), &iopts);
+  git_repositoryPtr repo;
+  {
+    git_repository *raw = nullptr;
+    rc = git_repository_init_ext(&raw, git_dir.c_str(), &iopts);
+    repo.reset(raw);
+  }
   if (rc != 0) {
     return TranslateGitError(rc);
   }
 
-  GitSyncPipeline pipeline(repo, git_dir, root_folder, config, credentials,
+  GitSyncPipeline pipeline(repo.get(), git_dir, root_folder, config, credentials,
                            rebase_in_progress);
   VxCoreError cfg_err = pipeline.ApplyDefaultGitConfig();
   if (cfg_err != VXCORE_OK) {
-    git_repository_free(repo);
     return cfg_err;
   }
 
@@ -88,16 +92,18 @@ VxCoreError InitEmptyRepoWithRemote(const std::string &root_folder,
   WriteIfMissing(root_folder + "/.gitignore", BuildGitignoreContent(config));
   WriteIfMissing(root_folder + "/.gitattributes", kDefaultGitattributes);
 
-  git_remote *remote = nullptr;
-  rc = git_remote_create(&remote, repo, "origin", config.remote_url.c_str());
-  if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_repository_free(repo);
-    return err;
+  git_remotePtr remote;
+  {
+    git_remote *raw = nullptr;
+    rc = git_remote_create(&raw, repo.get(), "origin", config.remote_url.c_str());
+    remote.reset(raw);
   }
-  git_remote_free(remote);
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+  remote.reset();
 
-  *out_repo = repo;
+  *out_repo = repo.release();
   return VXCORE_OK;
 }
 
@@ -124,8 +130,13 @@ VxCoreError OpenExistingRepo(const std::string &root_folder,
                              git_repository **out_repo) {
   *out_repo = nullptr;
 
-  git_repository *repo = nullptr;
-  int rc = git_repository_open(&repo, git_dir.c_str());
+  git_repositoryPtr repo;
+  int rc;
+  {
+    git_repository *raw = nullptr;
+    rc = git_repository_open(&raw, git_dir.c_str());
+    repo.reset(raw);
+  }
   if (rc != 0) {
     // Corrupt or unreadable repo — surface the libgit2 error class via
     // TranslateGitError, but do NOT auto-delete vx_sync (user data).
@@ -133,48 +144,46 @@ VxCoreError OpenExistingRepo(const std::string &root_folder,
   }
 
   // Bind the working tree to the notebook root.
-  rc = git_repository_set_workdir(repo, root_folder.c_str(), /*update_gitlink=*/0);
+  rc = git_repository_set_workdir(repo.get(), root_folder.c_str(), /*update_gitlink=*/0);
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_repository_free(repo);
-    return err;
+    return TranslateGitError(rc);
   }
 
   // Look up the "origin" remote.
-  git_remote *remote = nullptr;
-  rc = git_remote_lookup(&remote, repo, "origin");
+  git_remotePtr remote;
+  {
+    git_remote *raw = nullptr;
+    rc = git_remote_lookup(&raw, repo.get(), "origin");
+    remote.reset(raw);
+  }
   if (rc != 0) {
     // Missing origin: T14 contract says reject with INVALID_PARAM.
     VXCORE_LOG_ERROR(
         "GitSyncBackend::Initialize: existing repo at %s has no 'origin' remote",
         git_dir.c_str());
-    git_repository_free(repo);
     return VXCORE_ERR_INVALID_PARAM;
   }
 
-  const char *remote_url = git_remote_url(remote);
+  const char *remote_url = git_remote_url(remote.get());
   if (remote_url == nullptr || config.remote_url != remote_url) {
     VXCORE_LOG_ERROR(
         "GitSyncBackend::Initialize: origin URL mismatch (existing='%s' config='%s')",
         remote_url ? remote_url : "(null)", config.remote_url.c_str());
-    git_remote_free(remote);
-    git_repository_free(repo);
     return VXCORE_ERR_INVALID_PARAM;
   }
 
-  git_remote_free(remote);
+  remote.reset();
 
-  GitSyncPipeline pipeline(repo, git_dir, root_folder, config, credentials,
+  GitSyncPipeline pipeline(repo.get(), git_dir, root_folder, config, credentials,
                            rebase_in_progress);
 
   // T18: enforce baseline git config (filemode, autocrlf, gpgsign, author).
   VxCoreError cfg_err = pipeline.ApplyDefaultGitConfig();
   if (cfg_err != VXCORE_OK) {
-    git_repository_free(repo);
     return cfg_err;
   }
 
-  *out_repo = repo;
+  *out_repo = repo.release();
   return VXCORE_OK;
 }
 
@@ -186,92 +195,101 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
                                      git_repository **out_repo) {
   *out_repo = nullptr;
 
-  git_repository *repo = nullptr;
-  VxCoreError init_err = InitEmptyRepoWithRemote(
-      root_folder, git_dir, config, credentials, rebase_in_progress,
-      "Initialize(clone)", &repo);
-  if (init_err != VXCORE_OK) {
-    return init_err;
+  git_repositoryPtr repo;
+  {
+    git_repository *raw = nullptr;
+    VxCoreError init_err = InitEmptyRepoWithRemote(
+        root_folder, git_dir, config, credentials, rebase_in_progress,
+        "Initialize(clone)", &raw);
+    repo.reset(raw);
+    if (init_err != VXCORE_OK) {
+      return init_err;
+    }
   }
 
   // Re-acquire the origin remote handle for the fetch — InitEmptyRepoWithRemote
   // freed its create-time handle to keep the helper symmetric.
-  git_remote *remote = nullptr;
-  int rc = git_remote_lookup(&remote, repo, "origin");
+  git_remotePtr remote;
+  int rc;
+  {
+    git_remote *raw = nullptr;
+    rc = git_remote_lookup(&raw, repo.get(), "origin");
+    remote.reset(raw);
+  }
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_repository_free(repo);
-    return err;
+    return TranslateGitError(rc);
   }
 
   git_fetch_options fopts = GIT_FETCH_OPTIONS_INIT;
   auto bundle = MakeRemoteCallbacks(credentials);
   fopts.callbacks = bundle.callbacks;
 
-  rc = git_remote_fetch(remote, /*refspecs=*/nullptr, &fopts,
+  rc = git_remote_fetch(remote.get(), /*refspecs=*/nullptr, &fopts,
                         "vnote initial fetch");
-  git_remote_free(remote);
-  remote = nullptr;
+  remote.reset();
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_repository_free(repo);
-    return err;
+    return TranslateGitError(rc);
   }
 
   // Resolve the remote default branch. Prefer main, fall back to master.
   // If neither exists, the remote is truly empty (no commits yet) — leave
   // the local repo as-is with HEAD symbolically pointing at refs/heads/main
   // and let the future Sync() create the first commit.
-  git_reference *origin_ref = nullptr;
-  rc = git_reference_lookup(&origin_ref, repo, "refs/remotes/origin/main");
-  if (rc != 0) {
-    git_error_clear();
-    rc = git_reference_lookup(&origin_ref, repo,
-                              "refs/remotes/origin/master");
+  git_referencePtr origin_ref;
+  {
+    git_reference *raw = nullptr;
+    rc = git_reference_lookup(&raw, repo.get(), "refs/remotes/origin/main");
+    origin_ref.reset(raw);
   }
   if (rc != 0) {
     git_error_clear();
-    *out_repo = repo;
+    git_reference *raw = nullptr;
+    rc = git_reference_lookup(&raw, repo.get(),
+                              "refs/remotes/origin/master");
+    origin_ref.reset(raw);
+  }
+  if (rc != 0) {
+    git_error_clear();
+    *out_repo = repo.release();
     return VXCORE_OK;
   }
 
-  git_object *target = nullptr;
-  rc = git_reference_peel(&target, origin_ref, GIT_OBJECT_COMMIT);
+  git_objectPtr target;
+  {
+    git_object *raw = nullptr;
+    rc = git_reference_peel(&raw, origin_ref.get(), GIT_OBJECT_COMMIT);
+    target.reset(raw);
+  }
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_reference_free(origin_ref);
-    git_repository_free(repo);
-    return err;
+    return TranslateGitError(rc);
   }
 
   git_checkout_options copts = GIT_CHECKOUT_OPTIONS_INIT;
   copts.checkout_strategy = GIT_CHECKOUT_SAFE;
-  rc = git_checkout_tree(repo, target, &copts);
+  rc = git_checkout_tree(repo.get(), target.get(), &copts);
   if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_object_free(target);
-    git_reference_free(origin_ref);
-    git_repository_free(repo);
-    return err;
+    return TranslateGitError(rc);
   }
 
   // Snapshot the OID before freeing the peeled object, then create the
   // local refs/heads/main pointing at it. HEAD was set to a symbolic
   // refs/heads/main by init_ext; this binding makes it resolve.
-  git_oid target_oid = *git_object_id(target);
-  git_object_free(target);
-  git_reference_free(origin_ref);
+  git_oid target_oid = *git_object_id(target.get());
+  target.reset();
+  origin_ref.reset();
 
-  git_reference *local_ref = nullptr;
-  rc = git_reference_create(&local_ref, repo, "refs/heads/main",
-                            &target_oid, /*force=*/0,
-                            "vnote initial checkout");
-  if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
-    git_repository_free(repo);
-    return err;
+  git_referencePtr local_ref;
+  {
+    git_reference *raw = nullptr;
+    rc = git_reference_create(&raw, repo.get(), "refs/heads/main",
+                              &target_oid, /*force=*/0,
+                              "vnote initial checkout");
+    local_ref.reset(raw);
   }
-  git_reference_free(local_ref);
+  if (rc != 0) {
+    return TranslateGitError(rc);
+  }
+  local_ref.reset();
 
   // libgit2 writes a `.git` gitlink file in the workdir when the gitdir
   // lives elsewhere (so plain `git` CLI can find it). VNote doesn't want
@@ -282,7 +300,7 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
   // user `.git` directory.
   ScrubGitlink(root_folder, "Initialize(clone)");
 
-  *out_repo = repo;
+  *out_repo = repo.release();
   return VXCORE_OK;
 }
 
@@ -294,15 +312,19 @@ VxCoreError BootstrapToEmptyRemote(const std::string &root_folder,
                                    git_repository **out_repo) {
   *out_repo = nullptr;
 
-  git_repository *repo = nullptr;
-  VxCoreError init_err = InitEmptyRepoWithRemote(
-      root_folder, git_dir, config, credentials, rebase_in_progress,
-      "Initialize(initpush)", &repo);
-  if (init_err != VXCORE_OK) {
-    return init_err;
+  git_repositoryPtr repo;
+  {
+    git_repository *raw = nullptr;
+    VxCoreError init_err = InitEmptyRepoWithRemote(
+        root_folder, git_dir, config, credentials, rebase_in_progress,
+        "Initialize(initpush)", &raw);
+    repo.reset(raw);
+    if (init_err != VXCORE_OK) {
+      return init_err;
+    }
   }
 
-  GitSyncPipeline pipeline(repo, git_dir, root_folder, config, credentials,
+  GitSyncPipeline pipeline(repo.get(), git_dir, root_folder, config, credentials,
                            rebase_in_progress);
 
   // Stage everything currently on disk (user files + just-written
@@ -312,17 +334,14 @@ VxCoreError BootstrapToEmptyRemote(const std::string &root_folder,
   // whole call so don't re-lock.
   VxCoreError err = pipeline.StageAll();
   if (err != VXCORE_OK) {
-    git_repository_free(repo);
     return err;
   }
   err = pipeline.CommitIndex("VNote sync: initial commit");
   if (err != VXCORE_OK) {
-    git_repository_free(repo);
     return err;
   }
   err = pipeline.PushOrigin();
   if (err != VXCORE_OK) {
-    git_repository_free(repo);
     return err;
   }
 
@@ -333,7 +352,7 @@ VxCoreError BootstrapToEmptyRemote(const std::string &root_folder,
   // a real user `.git` directory.
   ScrubGitlink(root_folder, "Initialize(initpush)");
 
-  *out_repo = repo;
+  *out_repo = repo.release();
   return VXCORE_OK;
 }
 
