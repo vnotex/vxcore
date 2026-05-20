@@ -24,6 +24,7 @@ set(VXCORE_GIT_SYNC_SOURCES_RELATIVE
     sync/git/git_credential_callback.cpp
     sync/git/git_defaults.cpp
     sync/git/git_error_translator.cpp
+    sync/git/git_options.cpp
     sync/git/git_repo_bootstrap.cpp
     sync/git/git_sync_pipeline.cpp
     sync/git/git_conflict_resolver.cpp

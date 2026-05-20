@@ -2,6 +2,7 @@
 #define VXCORE_SYNC_GIT_GIT_SYNC_BACKEND_H
 
 #include "sync/sync_backend.h"
+#include "sync/git/git_options.h"
 #include "sync/git/libgit2_init.h"
 #include "vxcore/vxcore_types.h"
 
@@ -73,6 +74,10 @@ class GitSyncBackend : public ISyncBackend {
   std::string root_folder_; // notebook root (= libgit2 workdir)
   std::string git_dir_;     // root_folder_ + "/vx_notebook/vx_sync/"
   SyncConfig config_;
+  // Typed view over config_.backend_options, parsed once in Initialize().
+  // No git/ code currently reads backend_options at runtime — this is the
+  // forward-looking surface added in Task 5.4 (F1.5) of sync-backend-phase4.
+  GitOptions options_;
   SyncCredentials credentials_;
   git_repository *repo_ = nullptr;
   git_rebase *rebase_in_progress_ = nullptr; // T24 sets when rebase pauses on conflict

@@ -209,7 +209,7 @@ Output strings must be freed with `vxcore_string_free()`.
 | `backend` | `SyncConfig::backend` | string |
 | `remoteUrl` | `SyncConfig::remote_url` | string |
 | `intervalSeconds` | `SyncConfig::interval_seconds` | int |
-| `backendOptions` | `SyncConfig::backend_options` | object (opaque) |
+| `backendOptions` | `SyncConfig::backend_options` | object (opaque). For the git backend, parsed into the typed `GitOptions` struct (`src/sync/git/git_options.h`) once during `Initialize()`. Known keys: `sslVerify` (bool, default true), `connectTimeoutMs` (int, default 30000), `proxyUrl` (string, default empty). Unknown keys are ignored; malformed values silently fall back to defaults. |
 | `excludePaths` | `SyncConfig::exclude_paths` | string array |
 | `extra` | `SyncCredentials::extra` | object (opaque) |
 | `syncEnabled` | `NotebookConfig::sync_enabled` | bool |

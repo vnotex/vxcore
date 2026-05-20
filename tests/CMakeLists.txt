@@ -46,6 +46,11 @@ add_vxcore_test(test_mock_sync_backend INTERNALS)
 # vxcore.dll's VXCORE_API-exported registry symbols.
 add_vxcore_test(test_sync_backend_registry)
 
+# test_git_options: Task 5.4 (F1.5) of sync-backend-phase4. Pure value-type
+# tests for GitOptions::FromJson — no libgit2, no SyncManager. Links via
+# add_vxcore_test() through vxcore.dll's VXCORE_API-exported FromJson symbol.
+add_vxcore_test(test_git_options)
+
 # test_sync_manager_factory_override: Task 5.1 (F4.2) of sync-backend-phase4.
 # Tests SyncManager::EnableSyncImpl factory-override overload via the
 # EnableSyncWithFactoryForTesting hook. Uses MockSyncBackend (from
@@ -303,6 +308,7 @@ add_executable(test_git_sync_init test_git_sync_init.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
@@ -326,6 +332,7 @@ add_executable(test_git_sync_credentials test_git_sync_credentials.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
@@ -349,6 +356,7 @@ add_executable(test_git_sync_status test_git_sync_status.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
@@ -376,6 +384,7 @@ add_executable(test_git_sync_roundtrip test_git_sync_roundtrip.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
@@ -403,6 +412,7 @@ add_executable(test_git_sync_conflicts test_git_sync_conflicts.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
@@ -458,6 +468,7 @@ add_executable(test_gitkeep_basic test_gitkeep_basic.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
@@ -484,6 +495,7 @@ add_executable(test_gitkeep_cleanup test_gitkeep_cleanup.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
@@ -509,6 +521,7 @@ add_executable(test_gitkeep_roundtrip test_gitkeep_roundtrip.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
@@ -547,6 +560,7 @@ add_executable(test_sync_backend_metadata test_sync_backend_metadata.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
@@ -580,6 +594,7 @@ add_executable(test_git_backend_autoreg test_git_backend_autoreg.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp

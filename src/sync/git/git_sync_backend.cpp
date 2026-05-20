@@ -113,6 +113,11 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
 
   root_folder_ = root_folder;
   config_ = config;
+  // Task 5.4 (F1.5): parse the opaque backend_options blob into a typed
+  // view exactly once, so future tunables (ssl_verify, connect_timeout_ms,
+  // proxy_url, ...) are addressed via options_.* instead of stringly-typed
+  // json lookups scattered across the backend.
+  options_ = GitOptions::FromJson(config_.backend_options);
   git_dir_ = root_folder_ + "/vx_notebook/vx_sync";
 
   // T17 corrupt-repo guard: vx_sync exists as a directory but has no HEAD —
