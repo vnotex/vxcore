@@ -552,13 +552,13 @@ int test_sync_enable_unknown_backend_no_factory() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  // Unknown backend: factory ignores it, just stores config + state.
+  // Unknown backend: factory rejects with VXCORE_ERR_UNKNOWN_BACKEND (B3 fail-fast).
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
                                "{\"backend\":\"unknown_xyz\",\"remoteUrl\":\"x\"}"),
-            VXCORE_OK);
+            VXCORE_ERR_UNKNOWN_BACKEND);
 
-  // No backend registered, so trigger returns NOT_IMPLEMENTED.
-  ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_ERR_NOT_IMPLEMENTED);
+  // Sync was never enabled, so trigger returns SYNC_NOT_ENABLED.
+  ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_ERR_SYNC_NOT_ENABLED);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
