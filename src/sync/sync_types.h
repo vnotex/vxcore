@@ -100,11 +100,6 @@ struct SyncConfig {
 };
 
 struct SyncCredentials {
-  std::string username;
-  std::string password;
-  std::string ssh_public_key_path;
-  std::string ssh_private_key_path;
-
   // When non-empty, HTTPS auth via libgit2 callback uses ("x-access-token", PAT).
   std::string personal_access_token;
 
