@@ -126,27 +126,42 @@ VxCoreError GitConflictResolver::GetConflicts(std::vector<SyncConflictInfo> &out
 VxCoreError GitConflictResolver::ResolveConflict(const std::string &path,
                                                 SyncConflictResolution resolution,
                                                 GitSyncPipeline &pipeline) {
+  // Legacy C-ABI-shaped wrapper: delegates to the tri-state Ex variant and
+  // collapses the result back to a single VxCoreError. Kept until Wave 7
+  // widens the public C ABI.
+  return MapResolveResult(ResolveConflictEx(path, resolution, pipeline));
+}
+
+ResolveResult GitConflictResolver::ResolveConflictEx(const std::string &path,
+                                                    SyncConflictResolution resolution,
+                                                    GitSyncPipeline &pipeline) {
   if (repo_ == nullptr) {
-    return VXCORE_ERR_UNKNOWN;
+    return ResolveResult::Failed;
   }
 
   git_index *idx = nullptr;
   int rc = git_repository_index(&idx, repo_);
   if (rc != 0) {
-    return TranslateGitError(rc);
+    return ResolveResult::Failed;
   }
 
   // Look up the conflict triple for this path. KeepLocal doesn't strictly
   // need it (just clears + stages), but every branch needs to know the
-  // conflict actually exists, so we look it up once.
+  // conflict actually exists, so we look it up once. A GIT_ENOTFOUND here
+  // means there is simply no conflict to resolve for this path — that is
+  // NoConflict (trivial success), not Failed.
   const git_index_entry *ancestor = nullptr;
   const git_index_entry *our = nullptr;
   const git_index_entry *their = nullptr;
   rc = git_index_conflict_get(&ancestor, &our, &their, idx, path.c_str());
-  if (rc != 0) {
-    VxCoreError err = TranslateGitError(rc);
+  if (rc == GIT_ENOTFOUND) {
+    git_error_clear();
     git_index_free(idx);
-    return err;
+    return ResolveResult::NoConflict;
+  }
+  if (rc != 0) {
+    git_index_free(idx);
+    return ResolveResult::Failed;
   }
 
   const std::string abs_original = root_folder_ + "/" + path;
@@ -263,39 +278,36 @@ VxCoreError GitConflictResolver::ResolveConflict(const std::string &path,
       VxCoreError werr = write_blob_to_path(local_side, abs_conflict);
       if (werr != VXCORE_OK) {
         git_index_free(idx);
-        return werr;
+        return ResolveResult::Failed;
       }
       // Overwrite original with REMOTE blob (rebase "our").
       werr = write_blob_to_path(remote_side, abs_original);
       if (werr != VXCORE_OK) {
         git_index_free(idx);
-        return werr;
+        return ResolveResult::Failed;
       }
 
       // Stage both the original (now REMOTE content) and the conflict file.
       int rc2 = git_index_add_bypath(idx, path.c_str());
       if (rc2 != 0) {
-        VxCoreError err = TranslateGitError(rc2);
         git_index_free(idx);
-        return err;
+        return ResolveResult::Failed;
       }
       rc2 = git_index_add_bypath(idx, conflict_rel.c_str());
       if (rc2 != 0) {
-        VxCoreError err = TranslateGitError(rc2);
         git_index_free(idx);
-        return err;
+        return ResolveResult::Failed;
       }
       rc2 = git_index_conflict_remove(idx, path.c_str());
       if (rc2 != 0) {
-        VxCoreError err = TranslateGitError(rc2);
         git_index_free(idx);
-        return err;
+        return ResolveResult::Failed;
       }
       rc2 = git_index_write(idx);
       git_index_free(idx);
       idx = nullptr;
       if (rc2 != 0) {
-        return TranslateGitError(rc2);
+        return ResolveResult::Failed;
       }
       break;
     }
@@ -307,7 +319,7 @@ VxCoreError GitConflictResolver::ResolveConflict(const std::string &path,
       git_index_free(idx);
       idx = nullptr;
       if (err != VXCORE_OK) {
-        return err;
+        return ResolveResult::Failed;
       }
       break;
     }
@@ -318,13 +330,20 @@ VxCoreError GitConflictResolver::ResolveConflict(const std::string &path,
       git_index_free(idx);
       idx = nullptr;
       if (err != VXCORE_OK) {
-        return err;
+        return ResolveResult::Failed;
       }
       break;
     }
   }
 
-  return pipeline.ContinueRebaseAfterResolution();
+  // Final step: resume the in-progress rebase. OK → Resolved (the conflict
+  // existed AND was applied AND rebase continued); any error from the
+  // rebase resume collapses to Failed.
+  VxCoreError cont_err = pipeline.ContinueRebaseAfterResolution();
+  if (cont_err != VXCORE_OK) {
+    return ResolveResult::Failed;
+  }
+  return ResolveResult::Resolved;
 }
 
 }  // namespace vxcore
