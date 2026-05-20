@@ -23,6 +23,7 @@
 #include "sync/git/libgit2_init.h"
 #include "sync/sync_types.h"
 #include "test_git_sync_helpers.h"
+#include "test_internals/sync_test_helpers.h"
 #include "test_utils.h"
 #include "utils/file_utils.h"
 #include "vxcore/vxcore_types.h"
@@ -955,6 +956,34 @@ int test_git_sync_emits_progress_phases() {
   return 0;
 }
 
+// Smoke proof that the vxcore_test_internals static library is linked.
+// Task 0.1 of sync-backend-phase4: exercises MakeTempWorkspace,
+// MakeBareRemote, CreateTestSignature, RunGitCommand so future tests can
+// rely on these helpers without re-discovering the linkage.
+int test_internals_smoke() {
+  std::cout << "  Running test_internals_smoke..." << std::endl;
+
+  vxcore::LibGit2Init guard;
+
+  const std::string ws = vxcore_test_internals::MakeTempWorkspace();
+  ASSERT_FALSE(ws.empty());
+
+  const std::string bare = ws + "/smoke.git";
+  const std::string url = vxcore_test_internals::MakeBareRemote(bare);
+  ASSERT_TRUE(url.rfind("file://", 0) == 0);
+
+  git_signature *sig = vxcore_test_internals::CreateTestSignature();
+  ASSERT_NOT_NULL(sig);
+  git_signature_free(sig);
+
+  const int rc = vxcore_test_internals::RunGitCommand(
+      {"init", "--bare", ws + "/cmd.git"});
+  ASSERT_EQ(rc, 0);
+
+  std::cout << "  test_internals_smoke passed" << std::endl;
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -970,6 +999,7 @@ int main() {
   RUN_TEST(test_git_push_fast_forward);
   RUN_TEST(test_git_sync_round_trip_succeeds);
   RUN_TEST(test_git_sync_emits_progress_phases);
+  RUN_TEST(test_internals_smoke);
   std::cout << "All git_sync_roundtrip tests passed" << std::endl;
   return 0;
 }

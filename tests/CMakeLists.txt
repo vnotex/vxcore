@@ -1,9 +1,23 @@
 include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/git_sync_sources.cmake)
 
+# Shared static-library test helpers (Task 0.1 of sync-backend-phase4 plan).
+# Must be added BEFORE add_vxcore_test() invocations so the target exists
+# when INTERNALS-flagged tests reference it.
+add_subdirectory(test_internals)
+
+# add_vxcore_test(<name> [INTERNALS])
+#   INTERNALS  Link against vxcore_test_internals static lib (sync test helpers,
+#              mocks, etc.). Use for tests that need shared sync-test fixtures.
 function(add_vxcore_test test_name)
+    set(options INTERNALS)
+    cmake_parse_arguments(VXCORE_TEST "${options}" "" "" ${ARGN})
+
     add_executable(${test_name} ${test_name}.cpp)
     target_link_libraries(${test_name} PRIVATE vxcore)
     target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+    if(VXCORE_TEST_INTERNALS)
+        target_link_libraries(${test_name} PRIVATE vxcore_test_internals)
+    endif()
     add_test(NAME ${test_name} COMMAND ${test_name})
 endfunction()
 
@@ -332,6 +346,7 @@ target_include_directories(test_git_sync_roundtrip PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(test_git_sync_roundtrip PRIVATE
     git_sync_test_helpers
+    vxcore_test_internals
     libgit2package
     nlohmann_json)
 add_test(NAME test_git_sync_roundtrip COMMAND test_git_sync_roundtrip)
