@@ -842,9 +842,18 @@ VXCORE_API VxCoreError vxcore_snippet_apply(VxCoreContextHandle context, const c
 //   {"backend":"git","remoteUrl":"...","intervalSeconds":60}
 // Default intervalSeconds is 60 (matches SyncConfig::interval_seconds in
 // libs/vxcore/src/sync/sync_types.h).
+// credentials_json: OPTIONAL JSON object with credentials. May be NULL.
+//   When non-NULL, same shape as vxcore_sync_set_credentials (all fields
+//   optional): {"pat":"...","authorName":"...","authorEmail":"..."}.
+//   When NULL, the C ABI installs a NoOpCredentialProvider, which preserves
+//   the legacy creds-less path: backends that declare AuthRequired will be
+//   rejected by SyncManager with VXCORE_ERR_MISSING_CREDENTIALS without
+//   mutating internal state, while backends that tolerate absent credentials
+//   (e.g., public-read git remotes, future local backends) proceed normally.
 // Returns VXCORE_ERR_UNSUPPORTED for raw notebooks.
 VXCORE_API VxCoreError vxcore_sync_enable(VxCoreContextHandle context, const char *notebook_id,
-                                          const char *config_json);
+                                          const char *config_json,
+                                          const char *credentials_json);
 
 // Disable sync for a notebook.
 VXCORE_API VxCoreError vxcore_sync_disable(VxCoreContextHandle context, const char *notebook_id);
@@ -896,14 +905,8 @@ VXCORE_API VxCoreError vxcore_sync_is_ready(VxCoreContextHandle context, const c
                                             int *out_ready);
 
 // Enable sync for a notebook with credentials supplied BEFORE backend Initialize().
-// Required for backends whose Initialize step needs auth (e.g., authenticated git clone).
-// config_json: same shape as vxcore_sync_enable.
-// credentials_json: same shape as vxcore_sync_set_credentials (all fields optional).
-// Returns VXCORE_ERR_UNSUPPORTED for raw notebooks.
-VXCORE_API VxCoreError vxcore_sync_enable_with_credentials(VxCoreContextHandle context,
-                                                           const char *notebook_id,
-                                                           const char *config_json,
-                                                           const char *credentials_json);
+// REMOVED in Wave 7.1 (sync-backend-phase4): the unified vxcore_sync_enable
+// now accepts a nullable credentials_json parameter; call that instead.
 
 // Return the per-device last successful sync timestamp for a notebook, in
 // milliseconds since Unix epoch. Sets *out_utc_millis to 0 when the notebook

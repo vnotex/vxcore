@@ -97,9 +97,7 @@ int test_sync_enable_disable() {
    // test_internals. The force-link reference at the top of this file ensures
    // the registration TU is pulled into the test binary, so the public C API
    // can enable the mock backend directly.
-   err = vxcore_sync_enable(
-       ctx, notebook_id,
-       "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}");
+   err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}", nullptr);
    ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_sync_disable(ctx, notebook_id);
@@ -182,7 +180,7 @@ int test_sync_raw_notebook_rejected() {
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
 
-  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}");
+  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}", nullptr);
   ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
 
   vxcore_string_free(notebook_id);
@@ -199,7 +197,7 @@ int test_sync_nonexistent_notebook() {
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
-  err = vxcore_sync_enable(ctx, "nonexistent-id", "{\"backend\":\"mock\"}");
+  err = vxcore_sync_enable(ctx, "nonexistent-id", "{\"backend\":\"mock\"}", nullptr);
   ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
 
   vxcore_context_destroy(ctx);
@@ -351,7 +349,7 @@ int test_sync_enable_with_backend_options_via_c_api() {
   // (Note: "mock" is self-registered, so we use a name guaranteed not in the registry.)
   const char *config_json =
       R"({"backend":"nonexistent_backend_xyz","remoteUrl":"https://dav.example.com","backendOptions":{"depth":2}})";
-  err = vxcore_sync_enable(ctx, notebook_id, config_json);
+  err = vxcore_sync_enable(ctx, notebook_id, config_json, nullptr);
   ASSERT_EQ(err, VXCORE_ERR_UNKNOWN_BACKEND);
 
   vxcore_string_free(notebook_id);
@@ -395,8 +393,7 @@ int test_last_sync_utc_persistence() {
    // Task 5.2 (F4.1): "mock" is self-registered via BackendRegistration in
    // test_internals. The force-link reference at the top of this file ensures
    // the registration TU is pulled into the test binary.
-   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
+   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}", nullptr),
              VXCORE_OK);
 
    const int64_t before_trigger = TestNowMillis();

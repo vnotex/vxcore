@@ -36,6 +36,27 @@ class VXCORE_API ICredentialProvider {
                               SyncCredentials *out) = 0;
 };
 
+// NoOpCredentialProvider — stateless provider that always returns false.
+// Used when the caller declares no credentials are needed (local sync) or
+// wants to defer to the system git credential helper / a backend that
+// handles absent credentials gracefully. Stateless; safe to share across
+// threads. No mutex (no internal state to protect).
+//
+// Wave 7.1 (sync-backend-phase4): The unified vxcore_sync_enable accepts
+// a nullable credentials_json. When null, the C ABI constructs a
+// NoOpCredentialProvider and forwards it to SyncManager::EnableSync, which
+// preserves the legacy creds-less code path while satisfying the
+// non-null-provider contract documented on EnableSync.
+class VXCORE_API NoOpCredentialProvider : public ICredentialProvider {
+ public:
+  NoOpCredentialProvider() = default;
+  ~NoOpCredentialProvider() override = default;
+
+  bool GetCredentials(const std::string &url,
+                      const std::string &username_from_url,
+                      SyncCredentials *out) override;
+};
+
 // InMemoryCredentialProvider — URL-agnostic provider that returns a
 // fixed-at-construction SyncCredentials snapshot under a self-contained
 // mutex. The mutex is held only across the copy into *out; it does not

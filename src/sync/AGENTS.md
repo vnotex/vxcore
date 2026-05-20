@@ -89,7 +89,7 @@ Every SyncManager method that operates on a notebook follows this pattern:
 | File | What's There |
 |------|-------------|
 | `include/vxcore/vxcore_types.h` | Error codes 21-25 (`SYNC_IN_PROGRESS`, `CONFLICT`, `AUTH_FAILED`, `NETWORK`, `NOT_ENABLED`), `VxCoreEventCallback` typedef |
-| `include/vxcore/vxcore.h` | 10 C API declarations (`vxcore_sync_{enable,disable,trigger,get_status,get_conflicts,resolve_conflict,set_credentials,enable_with_credentials,is_ready,get_last_sync_utc}`) |
+| `include/vxcore/vxcore.h` | 9 C API declarations (`vxcore_sync_{enable,disable,trigger,get_status,get_conflicts,resolve_conflict,set_credentials,is_ready,get_last_sync_utc}`) |
 | `src/api/vxcore_sync_api.cpp` | C API implementations with JSON serialization and null checks |
 | `src/core/context.h` | `VxCoreContext` owns `sync_manager`, `event_manager`, `work_queue_manager` (member order matters — see Thread Safety) |
 | `src/core/event_manager.h/.cpp` | `EventManager` subscribe/emit system — SyncManager subscribes to file/folder events |
@@ -191,14 +191,14 @@ Output strings must be freed with `vxcore_string_free()`.
 
 | Function | Parameters | Notes |
 |----------|-----------|-------|
-| `vxcore_sync_enable` | `notebook_id`, `config_json` | JSON keys: `backend`, `remoteUrl`, `intervalSeconds`, `backendOptions` |
+| `vxcore_sync_enable` | `notebook_id`, `config_json`, `credentials_json` (nullable, see next row) | JSON keys: `backend`, `remoteUrl`, `intervalSeconds`, `backendOptions` |
 | `vxcore_sync_disable` | `notebook_id` | Clears backend, state, and config for notebook |
 | `vxcore_sync_trigger` | `notebook_id` | Returns `SYNC_NOT_ENABLED` or `NOT_IMPLEMENTED` until backend exists. Clears dirty state on success. |
 | `vxcore_sync_get_status` | `notebook_id`, `out_status_json` | Output: `{"state":"idle","files":[{"path":"...","status":"..."}]}` |
 | `vxcore_sync_get_conflicts` | `notebook_id`, `out_conflicts_json` | Output: `{"conflicts":[{"path":"...","localModifiedUtc":0,"remoteModifiedUtc":0,"isBinary":false}]}` |
 | `vxcore_sync_resolve_conflict` | `notebook_id`, `path`, `resolution` | Resolution strings: `"keep_both"`, `"keep_local"`, `"keep_remote"` |
 | `vxcore_sync_set_credentials` | `notebook_id`, `credentials_json` | Rotate credentials on already-enabled notebook. JSON keys: `pat`, `authorName`, `authorEmail`, `extra` |
-| `vxcore_sync_enable_with_credentials` | `notebook_id`, `config_json`, `credentials_json` | Enable + set credentials atomically (needed when Initialize requires auth, e.g., authenticated git clone) |
+| `vxcore_sync_enable` (cont.) | `credentials_json` (4th arg, nullable) | When non-NULL: enable + set credentials atomically (needed when Initialize requires auth, e.g., authenticated git clone). When NULL: legacy creds-less path via NoOpCredentialProvider. |
 | `vxcore_sync_is_ready` | `notebook_id`, `out_ready` | Returns 1 if `syncEnabled` is true AND `syncBackend` is non-empty AND `syncRemoteUrl` is non-empty. Reads notebook JSON directly; **bypasses `SyncManager`** (no `states_`/`backends_` check). |
 | `vxcore_sync_get_last_sync_utc` | `notebook_id`, `out_utc_millis` | Returns the per-device last successful sync timestamp (ms since Unix epoch) from `metadata.db`. **Bypasses `SyncManager`**. Returns 0 if never synced on this device. |
 

@@ -32,6 +32,7 @@
 #include "sync/git/libgit2_init.h"
 #include "sync/sync_types.h"
 #include "test_git_sync_helpers.h"
+#include "test_internals/mock_credential_provider.h"
 #include "test_utils.h"
 #include "utils/file_utils.h"
 #include "vxcore/vxcore_types.h"
@@ -368,10 +369,12 @@ int test_git_init_uses_credential_author_when_set() {
 
     {
       vxcore::GitSyncBackend backend;
+      auto provider = std::make_shared<vxcore::MockCredentialProvider>();
       vxcore::SyncCredentials creds;
       creds.author_name = "Alice";
       creds.author_email = "alice@a.com";
-      ASSERT_EQ(backend.SetCredentials(creds), VXCORE_OK);
+      provider->SetCredentials(creds);
+      backend.ReplaceCredsProvider(provider);
       VxCoreError rc = backend.Initialize(notebook_root, config);
       ASSERT_EQ(rc, VXCORE_OK);
     }
@@ -466,9 +469,11 @@ int test_git_init_clone_with_pat_uses_3arg_overload() {
     config.interval_seconds = 300;
 
     vxcore::GitSyncBackend backend;
+    auto provider = std::make_shared<vxcore::MockCredentialProvider>();
     vxcore::SyncCredentials creds;
     creds.personal_access_token = "dummy";
-    ASSERT_EQ(backend.SetCredentials(creds), VXCORE_OK);
+    provider->SetCredentials(creds);
+    backend.ReplaceCredsProvider(provider);
 
     VxCoreError rc = backend.Initialize(notebook_root, config);
     ASSERT_EQ(rc, VXCORE_OK);

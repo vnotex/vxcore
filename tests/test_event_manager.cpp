@@ -12,6 +12,18 @@
 #include "core/event_names.h"
 #include "core/work_queue.h"
 #include "sync/sync_manager.h"
+#include "test_internals/mock_sync_backend.h"
+
+// Force-link the test_internals TU so its anonymous-namespace
+// BackendRegistration token runs at static-init time. Without this reference,
+// MSVC's linker would drop the entire mock_sync_backend.cpp TU from the static
+// library and the "mock" backend would never be registered in
+// SyncBackendRegistry::Instance(), causing vxcore_sync_enable(...,"mock",...)
+// to fail with VXCORE_ERR_UNKNOWN_BACKEND.
+namespace {
+[[maybe_unused]] vxcore::MockSyncBackend *g_force_link_test_internals_mock =
+    new vxcore::MockSyncBackend();
+}  // namespace
 
 // ============ EventManager unit tests ============
 
@@ -435,7 +447,7 @@ int test_sync_dirty_on_file_created() {
   ASSERT_EQ(err, VXCORE_OK);
 
   // Enable sync so SyncManager tracks this notebook
-  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}");
+  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}", nullptr);
   ASSERT_EQ(err, VXCORE_OK);
 
   auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
@@ -475,7 +487,7 @@ int test_sync_dirty_cleared_after_trigger() {
                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}");
+  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}", nullptr);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file_id = nullptr;
@@ -546,7 +558,7 @@ int test_sync_dirty_multiple_ops_single_entry() {
                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}");
+  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}", nullptr);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file_id1 = nullptr;

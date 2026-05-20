@@ -1,5 +1,5 @@
 // T1+T2 (notebook-git-sync-ui): C ABI tests for vxcore_sync_set_credentials and
-// vxcore_sync_enable_with_credentials.
+// vxcore_sync_enable (with credentials arg).
 //
 // The binary dispatches by argv[1] when given a case name; with no args it runs
 // all four cases sequentially. Each case prints "PASS <name>" on success or
@@ -65,9 +65,7 @@ static int test_valid_pat() {
 
   std::string enable_cfg =
       std::string("{\"backend\":\"git\",\"remoteUrl\":\"") + url + "\"}";
-  ASSERT_EQ(vxcore_sync_enable_with_credentials(
-                ctx, notebook_id, enable_cfg.c_str(),
-                "{\"pat\":\"\",\"authorName\":\"\",\"authorEmail\":\"\"}"),
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id, enable_cfg.c_str(), "{\"pat\":\"\",\"authorName\":\"\",\"authorEmail\":\"\"}"),
             VXCORE_OK);
 
   // Now rotate credentials via set_credentials.
@@ -124,10 +122,8 @@ static int test_enable_clone() {
   ASSERT_NOT_NULL(notebook_id);
 
   std::string cfg = std::string("{\"backend\":\"git\",\"remoteUrl\":\"") + url + "\"}";
-  VxCoreError err = vxcore_sync_enable_with_credentials(
-      ctx, notebook_id, cfg.c_str(),
-      "{\"pat\":\"\",\"authorName\":\"VNote Test\","
-      "\"authorEmail\":\"test@vnote.local\"}");
+  VxCoreError err = vxcore_sync_enable(ctx, notebook_id, cfg.c_str(), "{\"pat\":\"\",\"authorName\":\"VNote Test\","
+  "\"authorEmail\":\"test@vnote.local\"}");
   ASSERT_EQ(err, VXCORE_OK);
 
   // The seeded file should now be in the workdir root.
@@ -171,9 +167,7 @@ static int test_enable_auth_fail() {
                         : "file:///" + bogus_path;
 
   std::string cfg = std::string("{\"backend\":\"git\",\"remoteUrl\":\"") + url + "\"}";
-  VxCoreError err = vxcore_sync_enable_with_credentials(
-      ctx, notebook_id, cfg.c_str(),
-      "{\"pat\":\"irrelevant\",\"authorName\":\"\",\"authorEmail\":\"\"}");
+  VxCoreError err = vxcore_sync_enable(ctx, notebook_id, cfg.c_str(), "{\"pat\":\"irrelevant\",\"authorName\":\"\",\"authorEmail\":\"\"}");
   // See file-header AUTH-FAILURE NOTE: GIT_ERROR_OS falls through
   // TranslateGitError's klass switch to VXCORE_ERR_UNKNOWN. The point of this
   // case is to exercise the failure path, not to nail down a specific code.

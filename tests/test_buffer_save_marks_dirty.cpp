@@ -63,8 +63,7 @@ int test_save_emits_for_sync_enabled_notebook() {
 
   // Task 5.2 (F4.1): "mock" is now self-registered via BackendRegistration in
   // test_internals, so the registry path works. Use the public C API.
-  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}", nullptr),
             VXCORE_OK);
 
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
@@ -170,8 +169,7 @@ int test_failed_save_does_not_emit() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}", nullptr),
             VXCORE_OK);
 
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
@@ -240,8 +238,7 @@ int test_virtual_buffer_save_does_not_emit() {
   ASSERT_EQ(vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"VirtualEmitNb\"}",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
-  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}", nullptr),
             VXCORE_OK);
 
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);

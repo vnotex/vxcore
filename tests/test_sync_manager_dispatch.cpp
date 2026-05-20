@@ -206,8 +206,7 @@ int test_sync_trigger_no_backend_returns_not_implemented() {
   // backend fails with UNKNOWN_BACKEND, and trigger reports SYNC_NOT_ENABLED.
   // (Note: "mock" is self-registered by tests/mock_sync_backend.cpp, so we use a
   // name that is guaranteed not to be in the registry.)
-  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"nonexistent_backend_xyz\",\"remoteUrl\":\"file:///tmp/x\"}"),
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"nonexistent_backend_xyz\",\"remoteUrl\":\"file:///tmp/x\"}", nullptr),
             VXCORE_ERR_UNKNOWN_BACKEND);
   ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_ERR_SYNC_NOT_ENABLED);
 
@@ -583,9 +582,7 @@ int test_sync_enable_creates_git_backend() {
   // the file:// URL doesn't exist (libgit2 reports the missing path → fetch fails →
   // TranslateGitError surfaces NOT_FOUND/NETWORK). Either error proves the factory
   // ran AND Initialize was attempted; with rollback, the state is gone.
-  VxCoreError enable_rc = vxcore_sync_enable(
-      ctx, notebook_id,
-      "{\"backend\":\"git\",\"remoteUrl\":\"file:///tmp/nonexistent_xyz\"}");
+  VxCoreError enable_rc = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"git\",\"remoteUrl\":\"file:///tmp/nonexistent_xyz\"}", nullptr);
   ASSERT_TRUE(enable_rc != VXCORE_OK);  // factory ran, Initialize failed, rollback fired
 
   // Verify rollback: state should be absent, so GetStatus reports SYNC_NOT_ENABLED.
@@ -601,8 +598,8 @@ int test_sync_enable_creates_git_backend() {
   return 0;
 }
 
-int test_sync_enable_with_credentials_forwards_provider() {
-  std::cout << "  Running test_sync_enable_with_credentials_forwards_provider..." << std::endl;
+int test_sync_enable_passes_credentials_to_provider() {
+  std::cout << "  Running test_sync_enable_passes_credentials_to_provider..." << std::endl;
   std::string path = get_test_path("test_sync_enable_creds_order");
   cleanup_test_dir(path);
 
@@ -647,7 +644,7 @@ int test_sync_enable_with_credentials_forwards_provider() {
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(path);
-  std::cout << "  \xE2\x9C\x93 test_sync_enable_with_credentials_forwards_provider passed"
+  std::cout << "  \xE2\x9C\x93 test_sync_enable_passes_credentials_to_provider passed"
             << std::endl;
   return 0;
 }
@@ -666,8 +663,7 @@ int test_sync_enable_unknown_backend_no_factory() {
             VXCORE_OK);
 
   // Unknown backend: factory rejects with VXCORE_ERR_UNKNOWN_BACKEND (B3 fail-fast).
-  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"unknown_xyz\",\"remoteUrl\":\"x\"}"),
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"unknown_xyz\",\"remoteUrl\":\"x\"}", nullptr),
             VXCORE_ERR_UNKNOWN_BACKEND);
 
   // Sync was never enabled, so trigger returns SYNC_NOT_ENABLED.
@@ -706,7 +702,7 @@ int main() {
   RUN_TEST(test_sync_manager_update_credentials_not_enabled_returns_not_enabled);
   RUN_TEST(test_git_sync_backend_construct_destruct);
   RUN_TEST(test_sync_enable_creates_git_backend);
-  RUN_TEST(test_sync_enable_with_credentials_forwards_provider);
+  RUN_TEST(test_sync_enable_passes_credentials_to_provider);
   RUN_TEST(test_sync_enable_unknown_backend_no_factory);
   std::cout << "All sync manager dispatch tests passed\n";
   return 0;

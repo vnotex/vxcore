@@ -153,9 +153,7 @@ int factory_bypasses_unknown_backend_guard() {
   // First disable so we can re-enable.
   err = vxcore_sync_disable(nb.ctx, nb.notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
-  err = vxcore_sync_enable(
-      nb.ctx, nb.notebook_id,
-      "{\"backend\":\"__nonexistent_backend__\",\"remoteUrl\":\"test://x\"}");
+  err = vxcore_sync_enable(nb.ctx, nb.notebook_id, "{\"backend\":\"__nonexistent_backend__\",\"remoteUrl\":\"test://x\"}", nullptr);
   ASSERT_EQ(err, VXCORE_ERR_UNKNOWN_BACKEND);
 
   std::cout << "  PASS" << std::endl;

@@ -21,7 +21,7 @@ int test_empty_backend_defaults_to_git() {
   ASSERT_EQ(err, VXCORE_OK);
 
   // Enable with empty backend (should default to git, not fail with unknown backend error)
-  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"\",\"remoteUrl\":\"test://repo\"}");
+  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"\",\"remoteUrl\":\"test://repo\"}", nullptr);
   // Should NOT be VXCORE_ERR_UNKNOWN_BACKEND (empty backend is allowed)
   ASSERT_NE(err, VXCORE_ERR_UNKNOWN_BACKEND);
 
@@ -50,8 +50,7 @@ int test_unknown_backend_returns_error() {
 
   // Enable with unknown backend (should fail with VXCORE_ERR_UNKNOWN_BACKEND)
   // This is the fail-fast check, so it should fire BEFORE the init check
-  err = vxcore_sync_enable(ctx, notebook_id,
-                           "{\"backend\":\"webdav\",\"remoteUrl\":\"test://repo\"}");
+  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"webdav\",\"remoteUrl\":\"test://repo\"}", nullptr);
   ASSERT_EQ(err, VXCORE_ERR_UNKNOWN_BACKEND);
 
   vxcore_string_free(notebook_id);
@@ -78,8 +77,7 @@ int test_git_backend_succeeds() {
   ASSERT_EQ(err, VXCORE_OK);
 
   // Enable with git backend (should NOT return VXCORE_ERR_UNKNOWN_BACKEND)
-  err = vxcore_sync_enable(ctx, notebook_id,
-                           "{\"backend\":\"git\",\"remoteUrl\":\"test://repo\"}");
+  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"git\",\"remoteUrl\":\"test://repo\"}", nullptr);
   // We don't assert VXCORE_OK because Initialize might fail for other reasons
   // (e.g., invalid remote URL), but it should NOT be VXCORE_ERR_UNKNOWN_BACKEND
   ASSERT_NE(err, VXCORE_ERR_UNKNOWN_BACKEND);

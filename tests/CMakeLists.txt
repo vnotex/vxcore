@@ -36,7 +36,7 @@ add_vxcore_test(test_template)
 add_vxcore_test(test_e2e_assets)
 add_vxcore_test(test_sync INTERNALS)
 add_vxcore_test(test_work_queue)
-add_vxcore_test(test_event_manager)
+add_vxcore_test(test_event_manager INTERNALS)
 add_vxcore_test(test_mock_sync_backend INTERNALS)
 
 # test_credential_provider: Task 6.1 (F4.4) of sync-backend-phase4. Tests the
@@ -332,6 +332,7 @@ target_include_directories(test_git_sync_init PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(test_git_sync_init PRIVATE
     git_sync_test_helpers
+    vxcore_test_internals
     libgit2package
     nlohmann_json)
 add_test(NAME test_git_sync_init COMMAND test_git_sync_init)

@@ -4,6 +4,18 @@
 
 namespace vxcore {
 
+bool NoOpCredentialProvider::GetCredentials(const std::string &url,
+                                            const std::string &username_from_url,
+                                            SyncCredentials *out) {
+  // Stateless: always declines. The C ABI uses this when the caller passes
+  // a null credentials_json to vxcore_sync_enable, preserving the legacy
+  // creds-less code path.
+  (void)url;
+  (void)username_from_url;
+  (void)out;
+  return false;
+}
+
 InMemoryCredentialProvider::InMemoryCredentialProvider(SyncCredentials creds)
     : creds_(std::move(creds)) {}
 

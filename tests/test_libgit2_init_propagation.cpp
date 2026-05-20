@@ -62,16 +62,14 @@ int test_enable_sync_checks_init() {
 
   // Test that unknown backend is checked BEFORE init check (fail-fast).
   // This should return VXCORE_ERR_UNKNOWN_BACKEND, not VXCORE_ERR_GIT_INIT_FAILED.
-  err = vxcore_sync_enable(ctx, notebook_id,
-                           "{\"backend\":\"webdav\",\"remoteUrl\":\"test://repo\"}");
+  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"webdav\",\"remoteUrl\":\"test://repo\"}", nullptr);
   ASSERT_EQ(err, VXCORE_ERR_UNKNOWN_BACKEND);
 
   // Now test that when backend is valid, the init check fires.
   // If libgit2 is not initialized, we should get VXCORE_ERR_GIT_INIT_FAILED.
   // If libgit2 IS initialized (from a previous test), we'll get a different error
   // (e.g., invalid remote URL), but NOT VXCORE_ERR_UNKNOWN_BACKEND.
-  err = vxcore_sync_enable(ctx, notebook_id,
-                           "{\"backend\":\"git\",\"remoteUrl\":\"test://repo\"}");
+  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"git\",\"remoteUrl\":\"test://repo\"}", nullptr);
   // The error could be GIT_INIT_FAILED or something else, but NOT UNKNOWN_BACKEND
   ASSERT_NE(err, VXCORE_ERR_UNKNOWN_BACKEND);
 
