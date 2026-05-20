@@ -39,6 +39,13 @@ add_vxcore_test(test_work_queue)
 add_vxcore_test(test_event_manager)
 add_vxcore_test(test_mock_sync_backend INTERNALS)
 
+# test_sync_backend_registry: Task 4.2 (F1.1) of sync-backend-phase4. Tests
+# the SyncBackendRegistry public surface (Register / Create / Names plus
+# BackendRegistration token) against local lambda factories — does NOT
+# instantiate GitSyncBackend, so links via add_vxcore_test() through
+# vxcore.dll's VXCORE_API-exported registry symbols.
+add_vxcore_test(test_sync_backend_registry)
+
 # test_buffer_save_marks_dirty: T10 of auto-sync-on-save plan. Verifies that
 # vxcore_buffer_save fires file.saved events that propagate through
 # SyncManager's event subscription to mark notebooks dirty + enqueue sync
@@ -283,6 +290,7 @@ target_link_libraries(test_sync_manager_dispatch PRIVATE git_sync_test_helpers)
 # the GitSyncBackend symbols and libgit2 ref-count statics, avoiding the
 # Windows DLL static-storage duplication problem.
 add_executable(test_git_sync_init test_git_sync_init.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
@@ -305,6 +313,7 @@ target_link_libraries(test_git_sync_init PRIVATE
 add_test(NAME test_git_sync_init COMMAND test_git_sync_init)
 
 add_executable(test_git_sync_credentials test_git_sync_credentials.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
@@ -327,6 +336,7 @@ target_link_libraries(test_git_sync_credentials PRIVATE
 add_test(NAME test_git_sync_credentials COMMAND test_git_sync_credentials)
 
 add_executable(test_git_sync_status test_git_sync_status.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
@@ -353,6 +363,7 @@ add_test(NAME test_git_sync_status COMMAND test_git_sync_status)
 # through the public *ForTesting hooks. Compiled the same way as
 # test_git_sync_status.
 add_executable(test_git_sync_roundtrip test_git_sync_roundtrip.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
@@ -379,6 +390,7 @@ add_test(NAME test_git_sync_roundtrip COMMAND test_git_sync_roundtrip)
 # variants) of git-sync-backend plan. Same compile pattern as
 # test_git_sync_roundtrip — owns its own GitSyncBackend statics.
 add_executable(test_git_sync_conflicts test_git_sync_conflicts.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
@@ -427,6 +439,7 @@ add_test(NAME test_resolve_result COMMAND test_resolve_result)
 # Pull-auto-commits-local-first semantic). Same compile pattern as
 # test_git_sync_roundtrip.
 add_executable(test_git_sync_pushpull test_git_sync_pushpull.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
@@ -453,6 +466,7 @@ add_test(NAME test_git_sync_pushpull COMMAND test_git_sync_pushpull)
 # When true (default), Pull stages + commits before rebase.
 # When false, Pull stages but skips commit, leaving staged changes for caller.
 add_executable(test_sync_pull_auto_commit test_sync_pull_auto_commit.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
@@ -478,6 +492,7 @@ add_test(NAME test_sync_pull_auto_commit COMMAND test_sync_pull_auto_commit)
 # to empty user folders during sync, respects the skip-list, and is
 # idempotent. Same compile pattern as test_git_sync_roundtrip.
 add_executable(test_gitkeep_basic test_gitkeep_basic.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
@@ -503,6 +518,7 @@ add_test(NAME test_gitkeep_basic COMMAND test_gitkeep_basic)
 # becomes non-empty, marker-ownership preservation (non-empty .gitkeep
 # never deleted), effective-emptiness for excluded-only folders.
 add_executable(test_gitkeep_cleanup test_gitkeep_cleanup.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
@@ -527,6 +543,7 @@ add_test(NAME test_gitkeep_cleanup COMMAND test_gitkeep_cleanup)
 # test_gitkeep_roundtrip: gitkeep injection plan — full push + clone
 # roundtrip via libgit2; verifies empty folders survive on the remote.
 add_executable(test_gitkeep_roundtrip test_gitkeep_roundtrip.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
@@ -564,6 +581,7 @@ target_link_libraries(test_sync_credentials_api PRIVATE git_sync_test_helpers nl
 # test_git_sync_init — owns its own GitSyncBackend + libgit2 ref-count
 # statics, bypassing the Windows DLL static-storage duplication problem.
 add_executable(test_sync_backend_metadata test_sync_backend_metadata.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
@@ -585,3 +603,35 @@ target_link_libraries(test_sync_backend_metadata PRIVATE
     libgit2package
     nlohmann_json)
 add_test(NAME test_sync_backend_metadata COMMAND test_sync_backend_metadata)
+
+# test_git_backend_autoreg: Task 4.3 (F1.1) of sync-backend-phase4. Verifies
+# GitSyncBackend's anonymous-namespace BackendRegistration token actually
+# registers "git" into SyncBackendRegistry::Instance(), and that the
+# EnsureGitBackendLinked anchor wired through LibGit2Init keeps it alive.
+# Direct-compile pattern (mirrors test_sync_backend_metadata) — owns its own
+# GitSyncBackend + libgit2 ref-count statics + registry static. Also
+# direct-compiles sync_backend_registry.cpp because vxcore.dll is NOT linked
+# here.
+add_executable(test_git_backend_autoreg test_git_backend_autoreg.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
+target_include_directories(test_git_backend_autoreg PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_git_backend_autoreg PRIVATE
+    git_sync_test_helpers
+    libgit2package
+    nlohmann_json)
+add_test(NAME test_git_backend_autoreg COMMAND test_git_backend_autoreg)

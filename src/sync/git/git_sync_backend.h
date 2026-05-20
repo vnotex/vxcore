@@ -26,6 +26,11 @@ class GitSyncPipeline;
 class GitSyncBackend : public ISyncBackend {
  public:
   VXCORE_API GitSyncBackend();
+  // Constructor accepting a SyncConfig — exists to match the
+  // SyncBackendFactory signature used by SyncBackendRegistry (Task 4.2 of
+  // sync-backend-phase4). The cfg parameter is intentionally ignored here;
+  // real configuration arrives via Initialize(root_folder, config).
+  VXCORE_API explicit GitSyncBackend(const SyncConfig &cfg);
   VXCORE_API ~GitSyncBackend() override;
 
   GitSyncBackend(const GitSyncBackend&) = delete;
@@ -76,6 +81,15 @@ class GitSyncBackend : public ISyncBackend {
   git_rebase *rebase_in_progress_ = nullptr; // T24 sets when rebase pauses on conflict
   bool initialized_ = false;
 };
+
+// Anchor function used to defeat dead-stripping of git_sync_backend.cpp by
+// MSVC's /OPT:REF. The .cpp file installs a BackendRegistration token in an
+// anonymous namespace; nothing in vxcore.dll references that token directly
+// once Task 4.4 lands. Calling EnsureGitBackendLinked() from another TU (we
+// call it from LibGit2Init's ctor) forces the linker to keep the entire .obj
+// alive, which keeps the static-init registration alive too. The function
+// body itself is a tiny no-op that touches the registration symbol.
+VXCORE_API void EnsureGitBackendLinked();
 
 }  // namespace vxcore
 

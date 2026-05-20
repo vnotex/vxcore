@@ -1,7 +1,10 @@
 #include "sync/git/git_sync_backend.h"
 
+#include "sync/sync_backend_registry.h"
+
 #include <git2.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -37,6 +40,11 @@ static void ReportProgress(const SyncProgressCallback &callback, void *userdata,
 }
 
 GitSyncBackend::GitSyncBackend() = default;
+
+// SyncConfig-accepting ctor required by the SyncBackendRegistry factory
+// signature (Task 4.2 of sync-backend-phase4). Real config is applied later
+// via Initialize() — this overload exists solely to match the factory shape.
+GitSyncBackend::GitSyncBackend(const SyncConfig & /*cfg*/) : GitSyncBackend() {}
 
 GitSyncBackend::~GitSyncBackend() {
   // Best-effort shutdown to release libgit2 handles.
@@ -490,5 +498,42 @@ VxCoreError GitSyncBackend::ResolveConflict(const std::string &path,
   GitConflictResolver resolver(repo_, root_folder_);
   return resolver.ResolveConflict(path, resolution, pipeline);
 }
+
+// Task 4.3 (sync-backend-phase4 F1.1): self-registration of the git backend
+// into SyncBackendRegistry. The token's constructor runs at static-init time
+// and calls Registry::Register("git", factory). BackendRegistration swallows
+// any exception so static-init can never crash the program.
+namespace {
+const BackendRegistration kGitRegistration{
+    "git", [](const SyncConfig &cfg) -> std::unique_ptr<ISyncBackend> {
+      return std::make_unique<GitSyncBackend>(cfg);
+    }};
+}  // namespace
+
+// Anchor — touches the static registration token so MSVC /OPT:REF cannot
+// dead-strip this translation unit once Task 4.4 removes SyncManager's
+// direct std::make_unique<GitSyncBackend> reference. Called once from
+// LibGit2Init::ctor via the g_git_backend_link_anchor function-pointer hook
+// installed below at static-init time. The static_cast<void>(...) is a
+// no-op load that the optimizer cannot prove is dead because
+// kGitRegistration has a non-trivial ctor with side effects.
+void EnsureGitBackendLinked() {
+  static_cast<void>(&kGitRegistration);
+}
+
+// Cross-TU anchor hook installer — see libgit2_init.cpp for the matching
+// std::atomic<void(*)()> declaration. Setting the pointer at static-init
+// time means the first LibGit2Init ctor call (on any thread) will dispatch
+// through it. When git_sync_backend.cpp is NOT linked into a test binary,
+// the hook simply remains null and LibGit2Init's no-op branch is taken.
+extern std::atomic<void (*)()> g_git_backend_link_anchor;
+namespace {
+struct GitBackendAnchorInstaller {
+  GitBackendAnchorInstaller() noexcept {
+    g_git_backend_link_anchor.store(&EnsureGitBackendLinked);
+  }
+};
+const GitBackendAnchorInstaller kGitBackendAnchorInstaller;
+}  // namespace
 
 }  // namespace vxcore
