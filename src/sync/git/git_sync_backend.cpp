@@ -40,11 +40,16 @@ static void ReportProgress(const SyncProgressCallback &callback, void *userdata,
 }
 
 GitSyncBackend::GitSyncBackend() = default;
-
-// SyncConfig-accepting ctor required by the SyncBackendRegistry factory
-// signature (Task 4.2 of sync-backend-phase4). Real config is applied later
-// via Initialize() — this overload exists solely to match the factory shape.
-GitSyncBackend::GitSyncBackend(const SyncConfig & /*cfg*/) : GitSyncBackend() {}
+// SyncConfig + ICredentialProvider ctor required by the SyncBackendRegistry
+// factory signature (Task 6.2 F4.4 of sync-backend-phase4). Real config is
+// applied later via Initialize(); the provider is stored for the libgit2
+// credential callback rewiring landing in Wave 6.3. Today SetCredentials()
+// remains the active credential source.
+GitSyncBackend::GitSyncBackend(const SyncConfig & /*cfg*/,
+                               std::shared_ptr<ICredentialProvider> creds_provider)
+    : GitSyncBackend() {
+  creds_provider_ = std::move(creds_provider);
+}
 
 GitSyncBackend::~GitSyncBackend() {
   // Best-effort teardown — inline the former Shutdown() body. Wave 4.5
@@ -426,8 +431,10 @@ VxCoreError GitSyncBackend::ResolveConflict(const std::string &path,
 // any exception so static-init can never crash the program.
 namespace {
 const BackendRegistration kGitRegistration{
-    "git", [](const SyncConfig &cfg) -> std::unique_ptr<ISyncBackend> {
-      return std::make_unique<GitSyncBackend>(cfg);
+    "git",
+    [](const SyncConfig &cfg,
+       std::shared_ptr<ICredentialProvider> provider) -> std::unique_ptr<ISyncBackend> {
+      return std::make_unique<GitSyncBackend>(cfg, std::move(provider));
     }};
 }  // namespace
 

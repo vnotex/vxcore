@@ -1,6 +1,7 @@
 #ifndef VXCORE_SYNC_GIT_GIT_SYNC_BACKEND_H
 #define VXCORE_SYNC_GIT_GIT_SYNC_BACKEND_H
 
+#include "sync/credential_provider.h"
 #include "sync/sync_backend.h"
 #include "sync/git/git_options.h"
 #include "sync/git/libgit2_init.h"
@@ -27,11 +28,15 @@ class GitSyncPipeline;
 class GitSyncBackend : public ISyncBackend {
  public:
   VXCORE_API GitSyncBackend();
-  // Constructor accepting a SyncConfig — exists to match the
-  // SyncBackendFactory signature used by SyncBackendRegistry (Task 4.2 of
+  // Constructor accepting a SyncConfig + ICredentialProvider — matches the
+  // SyncBackendFactory signature used by SyncBackendRegistry (Task 6.2 of
   // sync-backend-phase4). The cfg parameter is intentionally ignored here;
-  // real configuration arrives via Initialize(root_folder, config).
-  VXCORE_API explicit GitSyncBackend(const SyncConfig &cfg);
+  // real configuration arrives via Initialize(root_folder, config). The
+  // provider is stored for later use by the libgit2 credential callback
+  // (Wave 6.3 wires the callback to call it). For now SetCredentials() is
+  // still the active credential source.
+  VXCORE_API GitSyncBackend(const SyncConfig &cfg,
+                            std::shared_ptr<ICredentialProvider> creds_provider);
   VXCORE_API ~GitSyncBackend() override;
 
   GitSyncBackend(const GitSyncBackend&) = delete;
@@ -79,6 +84,11 @@ class GitSyncBackend : public ISyncBackend {
   // forward-looking surface added in Task 5.4 (F1.5) of sync-backend-phase4.
   GitOptions options_;
   SyncCredentials credentials_;
+  // Credential provider passed via factory ctor (Task 6.2 F4.4). Stored for
+  // future use by the libgit2 credential callback (Wave 6.3). Today
+  // SetCredentials() remains the active credential source — provider is held
+  // here so the callback rewiring can land without a third ctor change.
+  std::shared_ptr<ICredentialProvider> creds_provider_;
   git_repository *repo_ = nullptr;
   git_rebase *rebase_in_progress_ = nullptr; // T24 sets when rebase pauses on conflict
   bool initialized_ = false;

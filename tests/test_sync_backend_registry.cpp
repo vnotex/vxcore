@@ -20,6 +20,7 @@
 #include <thread>
 #include <vector>
 
+#include "sync/credential_provider.h"
 #include "sync/sync_backend.h"
 #include "sync/sync_backend_registry.h"
 #include "sync/sync_types.h"
@@ -70,7 +71,8 @@ class StubBackend : public ISyncBackend {
 };
 
 SyncBackendFactory make_stub_factory(const std::string &name) {
-  return [name](const SyncConfig &) -> std::unique_ptr<ISyncBackend> {
+  return [name](const SyncConfig &,
+                std::shared_ptr<vxcore::ICredentialProvider>) -> std::unique_ptr<ISyncBackend> {
     return std::make_unique<StubBackend>(name);
   };
 }
@@ -108,7 +110,7 @@ int register_returns_false_for_duplicate_name() {
   // Second registration must fail — first-wins semantics.
   ASSERT_FALSE(r.Register(n, make_stub_factory("second")));
   // And the still-resolvable factory must be "first" (sentinel via GetName).
-  auto inst = r.Create(n, SyncConfig{});
+  auto inst = r.Create(n, SyncConfig{}, nullptr);
   ASSERT_NOT_NULL(inst.get());
   ASSERT_EQ(inst->GetName(), std::string("first"));
   std::cout << "  PASS" << std::endl;
@@ -120,7 +122,7 @@ int create_returns_factory_result_for_known_name() {
   auto &r = SyncBackendRegistry::Instance();
   const std::string n = "__test_create_known";
   ASSERT_TRUE(r.Register(n, make_stub_factory("hello")));
-  auto inst = r.Create(n, SyncConfig{});
+  auto inst = r.Create(n, SyncConfig{}, nullptr);
   ASSERT_NOT_NULL(inst.get());
   ASSERT_EQ(inst->GetName(), std::string("hello"));
   std::cout << "  PASS" << std::endl;
@@ -130,7 +132,7 @@ int create_returns_factory_result_for_known_name() {
 int create_returns_nullptr_for_unknown_name() {
   std::cout << "  Running create_returns_nullptr_for_unknown_name..." << std::endl;
   auto &r = SyncBackendRegistry::Instance();
-  auto inst = r.Create("__definitely_not_a_backend_name_xyz", SyncConfig{});
+  auto inst = r.Create("__definitely_not_a_backend_name_xyz", SyncConfig{}, nullptr);
   ASSERT_NULL(inst.get());
   std::cout << "  PASS" << std::endl;
   return 0;
@@ -174,7 +176,7 @@ int concurrent_register_and_create_is_safe() {
           const std::string n =
               "__test_concurrent_" + std::to_string(t) + "_" + std::to_string(i);
           r.Register(n, make_stub_factory(n));
-          (void)r.Create(n, SyncConfig{});
+          (void)r.Create(n, SyncConfig{}, nullptr);
         }
       } catch (...) {
         crashes.fetch_add(1);

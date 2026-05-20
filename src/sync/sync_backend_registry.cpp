@@ -27,7 +27,8 @@ bool SyncBackendRegistry::Register(const std::string &name,
 }
 
 std::unique_ptr<ISyncBackend> SyncBackendRegistry::Create(
-    const std::string &name, const SyncConfig &cfg) const {
+    const std::string &name, const SyncConfig &cfg,
+    std::shared_ptr<ICredentialProvider> provider) const {
   // Copy the factory out under the lock, then release the lock before
   // invoking — respect the no-callback-under-mutex contract.
   SyncBackendFactory factory_copy;
@@ -42,7 +43,7 @@ std::unique_ptr<ISyncBackend> SyncBackendRegistry::Create(
   if (!factory_copy) {
     return nullptr;
   }
-  return factory_copy(cfg);
+  return factory_copy(cfg, std::move(provider));
 }
 
 std::vector<std::string> SyncBackendRegistry::Names() const {

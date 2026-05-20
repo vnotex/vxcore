@@ -7,6 +7,7 @@
 
 #include "core/context.h"
 #include "mock_sync_backend.h"
+#include "sync/credential_provider.h"
 #include "sync/git/git_sync_backend.h"
 #include "sync/sync_backend.h"
 #include "sync/sync_manager.h"
@@ -74,7 +75,8 @@ class MockBackendFactory {
   explicit MockBackendFactory(std::shared_ptr<MockSyncBackend> mock)
       : mock_(std::move(mock)) {}
 
-  std::unique_ptr<ISyncBackend> operator()(const SyncConfig &) const {
+  std::unique_ptr<ISyncBackend> operator()(
+      const SyncConfig &, std::shared_ptr<vxcore::ICredentialProvider>) const {
     return std::make_unique<MockBackendProxy>(mock_);
   }
 

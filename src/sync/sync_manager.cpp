@@ -131,13 +131,20 @@ VxCoreError SyncManager::EnableSync(const std::string &notebook_id, const SyncCo
   return EnableSyncImpl(notebook_id, config, &credentials);
 }
 
+VxCoreError SyncManager::EnableSync(const std::string &notebook_id, const SyncConfig &config,
+                                    std::shared_ptr<ICredentialProvider> creds_provider) {
+  VXCORE_LOG_DEBUG("SyncManager::EnableSync(provider): notebook_id=%s", notebook_id.c_str());
+  return EnableSyncImpl(notebook_id, config, nullptr, std::move(creds_provider), nullptr);
+}
+
 VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
                                          const SyncCredentials *credentials) {
-  return EnableSyncImpl(notebook_id, config, credentials, nullptr);
+  return EnableSyncImpl(notebook_id, config, credentials, nullptr, nullptr);
 }
 
 VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
                                          const SyncCredentials *credentials,
+                                         std::shared_ptr<ICredentialProvider> provider,
                                          SyncBackendFactory factory_override) {
   VxCoreError err = ValidateNotebook(notebook_id);
   if (err != VXCORE_OK) {
@@ -181,13 +188,14 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
   };
 
   // Factory dispatch: factory_override takes precedence (test path); otherwise
-  // build via the registry (F1.1 — decoupled from concrete types).
+  // build via the registry (F1.1 — decoupled from concrete types). Task 6.2
+  // (F4.4) forwards the credential provider to both paths.
   std::unique_ptr<ISyncBackend> backend;
   if (factory_override) {
-    backend = factory_override(config);
+    backend = factory_override(config, provider);
   } else {
     const std::string backend_name = config.backend.empty() ? "git" : config.backend;
-    backend = SyncBackendRegistry::Instance().Create(backend_name, config);
+    backend = SyncBackendRegistry::Instance().Create(backend_name, config, provider);
   }
   if (!backend) {
     VXCORE_LOG_WARN("SyncManager::EnableSyncImpl: factory returned null for backend '%s' "
@@ -195,6 +203,24 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
                     config.backend.c_str(), notebook_id.c_str());
     rollback();
     return VXCORE_ERR_UNKNOWN_BACKEND;
+  }
+
+  // Task 6.2 (F4.4): enforce AuthRequired capability. Backends that need auth
+  // MUST receive either a non-null provider OR a non-null credentials struct
+  // (the legacy SetCredentials path remains valid until Wave 6.3 rewires the
+  // libgit2 credential callback to consume the provider exclusively). Rolls
+  // back maps and returns a dedicated error so the caller can prompt for
+  // credentials and retry without leaving the notebook half-enabled.
+  if ((backend->GetCapabilities() &
+       static_cast<uint32_t>(SyncCapability::AuthRequired)) &&
+      !provider && credentials == nullptr) {
+    VXCORE_LOG_WARN("SyncManager::EnableSyncImpl: backend '%s' requires AuthRequired "
+                    "but neither ICredentialProvider nor SyncCredentials were supplied "
+                    "(notebook: %s)",
+                    config.backend.c_str(), notebook_id.c_str());
+    backend.reset();
+    rollback();
+    return VXCORE_ERR_MISSING_CREDENTIALS;
   }
 
   if (credentials != nullptr) {
@@ -395,7 +421,7 @@ VxCoreError SyncManager::EnableSyncWithFactoryForTesting(
     const SyncCredentials *credentials, SyncBackendFactory factory_override) {
   VXCORE_LOG_DEBUG("SyncManager::EnableSyncWithFactoryForTesting: notebook_id=%s",
                    notebook_id.c_str());
-  return EnableSyncImpl(notebook_id, config, credentials, std::move(factory_override));
+  return EnableSyncImpl(notebook_id, config, credentials, nullptr, std::move(factory_override));
 }
 
 }  // namespace vxcore

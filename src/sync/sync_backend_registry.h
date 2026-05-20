@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "credential_provider.h"
 #include "sync_backend.h"
 #include "sync_types.h"
 #include "vxcore/vxcore_types.h"
@@ -15,10 +16,17 @@
 namespace vxcore {
 
 // Factory signature for constructing an ISyncBackend instance from a
-// SyncConfig. Returning nullptr indicates "this factory declined to build a
-// backend" and is treated identically to "unknown name" by Create().
-using SyncBackendFactory =
-    std::function<std::unique_ptr<ISyncBackend>(const SyncConfig &)>;
+// SyncConfig + ICredentialProvider. Returning nullptr indicates "this
+// factory declined to build a backend" and is treated identically to
+// "unknown name" by Create().
+//
+// Task 6.2 (F4.4) of sync-backend-phase4: the provider parameter is passed
+// to the backend constructor. Backends that declare SyncCapability::AuthRequired
+// MUST receive a non-null provider OR a non-null credentials snapshot via
+// SyncManager::EnableSync; SyncManager enforces this after factory invocation
+// but before registering the backend in states_.
+using SyncBackendFactory = std::function<std::unique_ptr<ISyncBackend>(
+    const SyncConfig &, std::shared_ptr<ICredentialProvider>)>;
 
 // Process-wide registry mapping backend names (e.g. "git") to factory
 // callables. Populated at static-init time via BackendRegistration tokens
@@ -49,8 +57,11 @@ class SyncBackendRegistry {
   // Returns a fresh backend instance from the registered factory for name,
   // or nullptr if the name is not registered (or the factory returns null).
   // The factory is invoked with mu_ released (callback-under-lock rule).
-  VXCORE_API std::unique_ptr<ISyncBackend> Create(const std::string &name,
-                                                  const SyncConfig &cfg) const;
+  // The provider is forwarded to the factory; callers SHOULD pass non-null
+  // for backends with SyncCapability::AuthRequired.
+  VXCORE_API std::unique_ptr<ISyncBackend> Create(
+      const std::string &name, const SyncConfig &cfg,
+      std::shared_ptr<ICredentialProvider> provider) const;
 
   // Returns the registered names sorted lexicographically. Sort order is
   // guaranteed for deterministic test assertions.

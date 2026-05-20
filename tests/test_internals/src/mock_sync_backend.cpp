@@ -1,23 +1,46 @@
 #include "test_internals/mock_sync_backend.h"
 
+#include <atomic>
 #include <sstream>
 
 #include "sync/sync_backend_registry.h"
 
 namespace vxcore {
 
+namespace {
+// Task 6.2 (F4.4) capability override plumbing: registry-built mocks pick up
+// the next override on construction. A simple atomic uint32 holds the bits,
+// with kNoOverride = UINT32_MAX as the sentinel (real capability sets never
+// reach that value because SyncCapability is a small bitfield).
+constexpr uint32_t kNoCapabilityOverride = 0xFFFFFFFFu;
+std::atomic<uint32_t> g_next_caps_override{kNoCapabilityOverride};
+}  // namespace
+
 // Task 5.2 (sync-backend-phase4 F4.1): self-registration of the mock backend
 // into SyncBackendRegistry. The token's constructor runs at static-init time
 // and calls Registry::Register("mock", factory). BackendRegistration swallows
 // any exception so static-init can never crash the program.
+//
+// Task 6.2 (F4.4): factory signature now takes a credential provider, and the
+// lambda consumes any pending capability override so AuthRequired tests can
+// build a mock with that capability through the registry path.
 namespace {
 const BackendRegistration kMockRegistration{
-    "mock", [](const SyncConfig &cfg) -> std::unique_ptr<ISyncBackend> {
-      return std::make_unique<MockSyncBackend>();
+    "mock",
+    [](const SyncConfig & /*cfg*/, std::shared_ptr<ICredentialProvider> provider)
+        -> std::unique_ptr<ISyncBackend> {
+      auto backend = std::make_unique<MockSyncBackend>(std::move(provider));
+      if (MockSyncBackend::HasNextCapabilitiesOverride()) {
+        backend->SetCapabilities(MockSyncBackend::ConsumeNextCapabilitiesOverride());
+      }
+      return backend;
     }};
 }  // namespace
 
 MockSyncBackend::MockSyncBackend() = default;
+
+MockSyncBackend::MockSyncBackend(std::shared_ptr<ICredentialProvider> creds_provider)
+    : creds_provider_(std::move(creds_provider)) {}
 
 MockSyncBackend::~MockSyncBackend() {
   // Wave 4.5 (F1.3 of sync-backend-phase4) removed ISyncBackend::Shutdown.
@@ -123,6 +146,38 @@ VxCoreError MockSyncBackend::GetReturnCode(const std::string &method_name) {
 
 void MockSyncBackend::RecordCall(const std::string &method_name) {
   call_records_.push_back(method_name);
+}
+
+std::shared_ptr<ICredentialProvider> MockSyncBackend::GetCredsProvider() const {
+  return creds_provider_;
+}
+
+void MockSyncBackend::SetNextCapabilitiesOverride(SyncCapabilities caps) {
+  g_next_caps_override.store(static_cast<uint32_t>(caps), std::memory_order_release);
+}
+
+void MockSyncBackend::ClearNextCapabilitiesOverride() {
+  g_next_caps_override.store(kNoCapabilityOverride, std::memory_order_release);
+}
+
+bool MockSyncBackend::HasNextCapabilitiesOverride() {
+  return g_next_caps_override.load(std::memory_order_acquire) != kNoCapabilityOverride;
+}
+
+SyncCapabilities MockSyncBackend::ConsumeNextCapabilitiesOverride() {
+  // exchange so a single registry call consumes the override; subsequent
+  // calls go back to the default capability set.
+  uint32_t prev = g_next_caps_override.exchange(kNoCapabilityOverride,
+                                                std::memory_order_acq_rel);
+  return static_cast<SyncCapabilities>(prev);
+}
+
+MockSyncBackend::ScopedCapabilityOverride::ScopedCapabilityOverride(SyncCapabilities caps) {
+  MockSyncBackend::SetNextCapabilitiesOverride(caps);
+}
+
+MockSyncBackend::ScopedCapabilityOverride::~ScopedCapabilityOverride() {
+  MockSyncBackend::ClearNextCapabilitiesOverride();
 }
 
 }  // namespace vxcore

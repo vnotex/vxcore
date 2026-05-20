@@ -1,10 +1,13 @@
 #ifndef VXCORE_TEST_INTERNALS_MOCK_SYNC_BACKEND_H
 #define VXCORE_TEST_INTERNALS_MOCK_SYNC_BACKEND_H
 
+#include <atomic>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
-#include <map>
 
+#include "sync/credential_provider.h"
 #include "sync/sync_backend.h"
 #include "sync/sync_types.h"
 #include "vxcore/vxcore_types.h"
@@ -27,6 +30,9 @@ namespace vxcore {
 class MockSyncBackend : public ISyncBackend {
  public:
   MockSyncBackend();
+  // Task 6.2 (F4.4) ctor matching the SyncBackendFactory shape. The provider
+  // is stored and returned via GetCredsProvider() for assertions.
+  explicit MockSyncBackend(std::shared_ptr<ICredentialProvider> creds_provider);
   ~MockSyncBackend() override;
 
   // ISyncBackend implementation
@@ -59,6 +65,30 @@ class MockSyncBackend : public ISyncBackend {
   const std::vector<std::string> &GetCallRecords() const;
   void ClearCallRecords();
 
+  // Task 6.2 (F4.4): expose the provider supplied via the factory ctor so
+  // tests can assert that the registry forwarded it correctly. Returns
+  // nullptr for instances constructed via the default ctor.
+  std::shared_ptr<ICredentialProvider> GetCredsProvider() const;
+
+  // Task 6.2 (F4.4) capability override for registry-built mocks. The
+  // registration lambda has no per-instance hook, so AuthRequired tests set
+  // this static atomic before triggering construction and reset it after.
+  // RAII helper ScopedCapabilityOverride below makes this safe.
+  static void SetNextCapabilitiesOverride(SyncCapabilities caps);
+  static void ClearNextCapabilitiesOverride();
+  static bool HasNextCapabilitiesOverride();
+  static SyncCapabilities ConsumeNextCapabilitiesOverride();
+
+  // RAII helper: sets the override on ctor, clears on dtor. Use it to scope
+  // an AuthRequired capability injection to a single test case.
+  class ScopedCapabilityOverride {
+   public:
+    explicit ScopedCapabilityOverride(SyncCapabilities caps);
+    ~ScopedCapabilityOverride();
+    ScopedCapabilityOverride(const ScopedCapabilityOverride &) = delete;
+    ScopedCapabilityOverride &operator=(const ScopedCapabilityOverride &) = delete;
+  };
+
  private:
   std::map<std::string, VxCoreError> return_codes_;
   std::vector<std::string> call_records_;
@@ -69,6 +99,7 @@ class MockSyncBackend : public ISyncBackend {
   std::string name_ = "mock";
   SyncCapabilities capabilities_ = static_cast<SyncCapabilities>(SyncCapability::None);
   bool initialized_override_ = true;
+  std::shared_ptr<ICredentialProvider> creds_provider_;
 
   VxCoreError GetReturnCode(const std::string &method_name);
   void RecordCall(const std::string &method_name);

@@ -47,7 +47,7 @@ int git_backend_registered_after_libgit2init() {
   // Also verify Create() returns a non-null instance for "git".
   vxcore::SyncConfig cfg;
   cfg.backend = "git";
-  auto inst = r.Create("git", cfg);
+  auto inst = r.Create("git", cfg, nullptr);
   ASSERT_NOT_NULL(inst.get());
   ASSERT_EQ(inst->GetName(), std::string("git"));
 

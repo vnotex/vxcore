@@ -1,5 +1,6 @@
 #include "mock_sync_backend.h"
 
+#include "sync/credential_provider.h"
 #include "sync/sync_backend_registry.h"
 
 namespace vxcore {
@@ -8,9 +9,15 @@ namespace vxcore {
 // into SyncBackendRegistry. The token's constructor runs at static-init time
 // and calls Registry::Register("mock", factory). BackendRegistration swallows
 // any exception so static-init can never crash the program.
+//
+// Task 6.2 (F4.4): factory signature updated to take ICredentialProvider.
+// This legacy mock ignores the provider — only the test_internals copy
+// records it for assertion.
 namespace {
 const BackendRegistration kMockRegistration{
-    "mock", [](const SyncConfig &cfg) -> std::unique_ptr<ISyncBackend> {
+    "mock",
+    [](const SyncConfig & /*cfg*/,
+       std::shared_ptr<ICredentialProvider> /*provider*/) -> std::unique_ptr<ISyncBackend> {
       return std::make_unique<MockSyncBackend>();
     }};
 }  // namespace

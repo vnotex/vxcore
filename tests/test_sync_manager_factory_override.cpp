@@ -16,6 +16,7 @@
 #include <string>
 
 #include "core/context.h"
+#include "sync/credential_provider.h"
 #include "sync/sync_backend.h"
 #include "sync/sync_backend_registry.h"
 #include "sync/sync_manager.h"
@@ -79,7 +80,9 @@ int mock_backend_used_when_factory_provided() {
   MockSyncBackend *constructed_mock_ptr = nullptr;
 
   SyncBackendFactory factory =
-      [&factory_call_count, &constructed_mock_ptr](const SyncConfig &) -> std::unique_ptr<ISyncBackend> {
+      [&factory_call_count, &constructed_mock_ptr](
+          const SyncConfig &,
+          std::shared_ptr<vxcore::ICredentialProvider>) -> std::unique_ptr<ISyncBackend> {
     factory_call_count.fetch_add(1);
     auto mock = std::make_unique<MockSyncBackend>();
     mock->SetName("__test_factory_override_sentinel");
@@ -132,7 +135,9 @@ int factory_bypasses_unknown_backend_guard() {
   std::cout << "  Running factory_bypasses_unknown_backend_guard..." << std::endl;
   NotebookFixture nb("test_factory_override_bypass");
 
-  SyncBackendFactory factory = [](const SyncConfig &) -> std::unique_ptr<ISyncBackend> {
+  SyncBackendFactory factory =
+      [](const SyncConfig &,
+         std::shared_ptr<vxcore::ICredentialProvider>) -> std::unique_ptr<ISyncBackend> {
     return std::make_unique<MockSyncBackend>();
   };
 
@@ -163,7 +168,9 @@ int factory_returning_null_rolls_back() {
   std::cout << "  Running factory_returning_null_rolls_back..." << std::endl;
   NotebookFixture nb("test_factory_override_null");
 
-  SyncBackendFactory null_factory = [](const SyncConfig &) -> std::unique_ptr<ISyncBackend> {
+  SyncBackendFactory null_factory =
+      [](const SyncConfig &,
+         std::shared_ptr<vxcore::ICredentialProvider>) -> std::unique_ptr<ISyncBackend> {
     return nullptr;
   };
 

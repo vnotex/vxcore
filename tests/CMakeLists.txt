@@ -62,6 +62,13 @@ add_vxcore_test(test_git_options)
 # vxcore_test_internals) so links via add_vxcore_test(... INTERNALS).
 add_vxcore_test(test_sync_manager_factory_override INTERNALS)
 
+# test_sync_backend_with_provider: Task 6.2 (F4.4) of sync-backend-phase4.
+# Tests SyncManager::EnableSync(notebook_id, config, provider) overload
+# (provider forwarding via the registry path) and AuthRequired capability
+# enforcement (missing-provider → VXCORE_ERR_MISSING_CREDENTIALS + rollback).
+# Uses MockSyncBackend (from vxcore_test_internals) so links via INTERNALS.
+add_vxcore_test(test_sync_backend_with_provider INTERNALS)
+
 # test_buffer_save_marks_dirty: T10 of auto-sync-on-save plan. Verifies that
 # vxcore_buffer_save fires file.saved events that propagate through
 # SyncManager's event subscription to mark notebooks dirty + enqueue sync
