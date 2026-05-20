@@ -10,6 +10,7 @@
 
 #include "sync_backend.h"
 #include "sync_types.h"
+#include "sync/git/libgit2_init.h"
 #include "vxcore/vxcore_types.h"
 
 namespace vxcore {
@@ -88,6 +89,12 @@ class SyncManager {
   // Called under dirty_mutex_.
   void MaybeEnqueueSync(const std::string &notebook_id);
 
+  // Declared first so libgit2 is initialized before any backend is
+  // constructed and shut down after all backends are destroyed (B4/F2.5
+  // — ensures LibGit2Init::ok() returns true by the time EnableSync
+  // runs, without requiring every caller/test to construct its own
+  // guard).
+  LibGit2Init libgit2_guard_;
   NotebookManager *notebook_manager_;
   EventManager *event_manager_ = nullptr;
   WorkQueueManager *work_queue_manager_ = nullptr;
