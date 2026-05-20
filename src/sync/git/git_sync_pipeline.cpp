@@ -3,10 +3,94 @@
 #include <cstring>
 #include <vector>
 
+#include "sync/git/git_defaults.h"
 #include "sync/git/git_error_translator.h"
 #include "utils/logger.h"
 
 namespace vxcore {
+
+namespace {
+
+// Drive a libgit2 rebase replay loop that has already been initialised
+// (`git_rebase_init` performed, `rebase` non-null) and whose signature is
+// owned by the caller. Steps repeatedly until either (a) `git_rebase_next`
+// returns `GIT_ITEROVER` — at which point the rebase is finished, freed,
+// and `*rebase_out` is reset to nullptr, or (b) the index ends up with
+// conflicts after a step — at which point the rebase is LEFT in progress
+// (caller's contract with ResolveConflict) and the supplied
+// `on_conflict_result` value is returned verbatim.
+//
+// `allow_eapplied` toggles whether `git_rebase_commit` returning
+// `GIT_EAPPLIED` (the resolution produced an empty commit, e.g. KeepRemote
+// on an exact match) is treated as success. Fresh `RebaseOntoOrigin`
+// replays never observe GIT_EAPPLIED so they pass `false`;
+// `ContinueRebaseAfterResolution` passes `true`.
+//
+// Behaviour quirks preserved verbatim from the two pre-refactor call sites:
+//   - On any non-iterover/non-conflict error, the rebase IS freed and
+//     `*rebase_out` set to nullptr before returning. Caller does NOT need
+//     to clean up.
+//   - On conflict-hit, the rebase is INTENTIONALLY left in place — both
+//     the in-memory handle and the on-disk `.git/rebase-merge/` state —
+//     so the conflict resolver can `git_rebase_commit` after resolution.
+//   - `git_error_clear()` is called on `GIT_ITEROVER` to match the
+//     pre-refactor blocks (libgit2 leaves a non-fatal error string set).
+VxCoreError DriveRebaseLoop(git_repository *repo, git_rebase **rebase_out,
+                            git_signature *sig, bool allow_eapplied,
+                            VxCoreError on_conflict_result) {
+  for (;;) {
+    git_rebase_operation *op = nullptr;
+    int rc = git_rebase_next(&op, *rebase_out);
+    if (rc == GIT_ITEROVER) {
+      git_error_clear();
+      rc = git_rebase_finish(*rebase_out, sig);
+      git_rebase_free(*rebase_out);
+      *rebase_out = nullptr;
+      if (rc != 0) {
+        return TranslateGitError(rc);
+      }
+      return VXCORE_OK;
+    }
+    if (rc != 0) {
+      VxCoreError err = TranslateGitError(rc);
+      git_rebase_free(*rebase_out);
+      *rebase_out = nullptr;
+      return err;
+    }
+
+    git_index *idx = nullptr;
+    int irc = git_repository_index(&idx, repo);
+    if (irc != 0) {
+      VxCoreError err = TranslateGitError(irc);
+      git_rebase_free(*rebase_out);
+      *rebase_out = nullptr;
+      return err;
+    }
+    bool has_conflicts = (git_index_has_conflicts(idx) != 0);
+    git_index_free(idx);
+
+    if (has_conflicts) {
+      // LEAVE *rebase_out set; caller's ResolveConflict will resume.
+      return on_conflict_result;
+    }
+
+    git_oid commit_oid;
+    rc = git_rebase_commit(&commit_oid, *rebase_out, /*author=*/sig,
+                           /*committer=*/sig, /*message_encoding=*/nullptr,
+                           /*message=*/nullptr);
+    if (rc != 0 && !(allow_eapplied && rc == GIT_EAPPLIED)) {
+      VxCoreError err = TranslateGitError(rc);
+      git_rebase_free(*rebase_out);
+      *rebase_out = nullptr;
+      return err;
+    }
+    if (allow_eapplied) {
+      git_error_clear();
+    }
+  }
+}
+
+}  // namespace
 
 GitSyncPipeline::GitSyncPipeline(git_repository *repo, const std::string &git_dir,
                                  const std::string &root_folder, const SyncConfig &config,
@@ -35,9 +119,9 @@ VxCoreError GitSyncPipeline::ApplyDefaultGitConfig() {
   }
 
   const char *user_name =
-      credentials_.author_name.empty() ? "VNote Sync" : credentials_.author_name.c_str();
+      credentials_.author_name.empty() ? kDefaultAuthorName : credentials_.author_name.c_str();
   const char *user_email =
-      credentials_.author_email.empty() ? "sync@vnote.local" : credentials_.author_email.c_str();
+      credentials_.author_email.empty() ? kDefaultAuthorEmail : credentials_.author_email.c_str();
 
   // core.autocrlf is set as a string ("false") to match git's textual config
   // representation; the others are booleans.
@@ -247,9 +331,9 @@ VxCoreError GitSyncPipeline::CommitIndex(const std::string &message) {
   }
 
   const char *user_name =
-      credentials_.author_name.empty() ? "VNote Sync" : credentials_.author_name.c_str();
+      credentials_.author_name.empty() ? kDefaultAuthorName : credentials_.author_name.c_str();
   const char *user_email =
-      credentials_.author_email.empty() ? "sync@vnote.local" : credentials_.author_email.c_str();
+      credentials_.author_email.empty() ? kDefaultAuthorEmail : credentials_.author_email.c_str();
 
   git_signature *sig = nullptr;
   rc = git_signature_now(&sig, user_name, user_email);
@@ -455,9 +539,9 @@ VxCoreError GitSyncPipeline::RebaseOntoOrigin() {
 
   // Default signature for new commits created during rebase replay.
   const char *user_name =
-      credentials_.author_name.empty() ? "VNote Sync" : credentials_.author_name.c_str();
+      credentials_.author_name.empty() ? kDefaultAuthorName : credentials_.author_name.c_str();
   const char *user_email =
-      credentials_.author_email.empty() ? "sync@vnote.local" : credentials_.author_email.c_str();
+      credentials_.author_email.empty() ? kDefaultAuthorEmail : credentials_.author_email.c_str();
   git_signature *sig = nullptr;
   rc = git_signature_now(&sig, user_name, user_email);
   if (rc != 0) {
@@ -470,59 +554,11 @@ VxCoreError GitSyncPipeline::RebaseOntoOrigin() {
   // Replay each rebase operation. On conflict, leave rebase_in_progress_
   // set so ResolveConflict can resume (the on-disk rebase state under
   // .git/rebase-merge is also preserved).
-  for (;;) {
-    git_rebase_operation *op = nullptr;
-    rc = git_rebase_next(&op, *rebase_in_progress_);
-    if (rc == GIT_ITEROVER) {
-      git_error_clear();
-      rc = git_rebase_finish(*rebase_in_progress_, sig);
-      git_rebase_free(*rebase_in_progress_);
-      *rebase_in_progress_ = nullptr;
-      git_signature_free(sig);
-      if (rc != 0) {
-        return TranslateGitError(rc);
-      }
-      return VXCORE_OK;
-    }
-    if (rc != 0) {
-      VxCoreError err = TranslateGitError(rc);
-      git_rebase_free(*rebase_in_progress_);
-      *rebase_in_progress_ = nullptr;
-      git_signature_free(sig);
-      return err;
-    }
-
-    // Detect conflicts after each step.
-    git_index *idx = nullptr;
-    int irc = git_repository_index(&idx, repo_);
-    if (irc != 0) {
-      VxCoreError err = TranslateGitError(irc);
-      git_rebase_free(*rebase_in_progress_);
-      *rebase_in_progress_ = nullptr;
-      git_signature_free(sig);
-      return err;
-    }
-    bool has_conflicts = (git_index_has_conflicts(idx) != 0);
-    git_index_free(idx);
-
-    if (has_conflicts) {
-      // LEAVE rebase_in_progress_ set; T29-T32 ResolveConflict will resume.
-      git_signature_free(sig);
-      return VXCORE_ERR_SYNC_CONFLICT;
-    }
-
-    git_oid commit_oid;
-    rc = git_rebase_commit(&commit_oid, *rebase_in_progress_, /*author=*/sig,
-                           /*committer=*/sig, /*message_encoding=*/nullptr,
-                           /*message=*/nullptr);
-    if (rc != 0) {
-      VxCoreError err = TranslateGitError(rc);
-      git_rebase_free(*rebase_in_progress_);
-      *rebase_in_progress_ = nullptr;
-      git_signature_free(sig);
-      return err;
-    }
-  }
+  VxCoreError loop_err = DriveRebaseLoop(repo_, rebase_in_progress_, sig,
+                                         /*allow_eapplied=*/false,
+                                         /*on_conflict_result=*/VXCORE_ERR_SYNC_CONFLICT);
+  git_signature_free(sig);
+  return loop_err;
 }
 
 // T25: push the current branch back to origin. Refspec is built explicitly
@@ -590,9 +626,9 @@ VxCoreError GitSyncPipeline::ContinueRebaseAfterResolution() {
   }
 
   const char *user_name =
-      credentials_.author_name.empty() ? "VNote Sync" : credentials_.author_name.c_str();
+      credentials_.author_name.empty() ? kDefaultAuthorName : credentials_.author_name.c_str();
   const char *user_email =
-      credentials_.author_email.empty() ? "sync@vnote.local" : credentials_.author_email.c_str();
+      credentials_.author_email.empty() ? kDefaultAuthorEmail : credentials_.author_email.c_str();
   git_signature *sig = nullptr;
   int rc = git_signature_now(&sig, user_name, user_email);
   if (rc != 0) {
@@ -613,58 +649,11 @@ VxCoreError GitSyncPipeline::ContinueRebaseAfterResolution() {
   }
   git_error_clear();
 
-  for (;;) {
-    git_rebase_operation *op = nullptr;
-    rc = git_rebase_next(&op, *rebase_in_progress_);
-    if (rc == GIT_ITEROVER) {
-      git_error_clear();
-      rc = git_rebase_finish(*rebase_in_progress_, sig);
-      git_rebase_free(*rebase_in_progress_);
-      *rebase_in_progress_ = nullptr;
-      git_signature_free(sig);
-      if (rc != 0) {
-        return TranslateGitError(rc);
-      }
-      return VXCORE_OK;
-    }
-    if (rc != 0) {
-      VxCoreError err = TranslateGitError(rc);
-      git_rebase_free(*rebase_in_progress_);
-      *rebase_in_progress_ = nullptr;
-      git_signature_free(sig);
-      return err;
-    }
-
-    git_index *idx = nullptr;
-    int irc = git_repository_index(&idx, repo_);
-    if (irc != 0) {
-      VxCoreError err = TranslateGitError(irc);
-      git_rebase_free(*rebase_in_progress_);
-      *rebase_in_progress_ = nullptr;
-      git_signature_free(sig);
-      return err;
-    }
-    bool has_conflicts = (git_index_has_conflicts(idx) != 0);
-    git_index_free(idx);
-
-    if (has_conflicts) {
-      // Leave rebase_in_progress_ set; caller resolves next conflict.
-      git_signature_free(sig);
-      return VXCORE_OK;
-    }
-
-    rc = git_rebase_commit(&commit_oid, *rebase_in_progress_, /*author=*/sig,
-                           /*committer=*/sig, /*message_encoding=*/nullptr,
-                           /*message=*/nullptr);
-    if (rc != 0 && rc != GIT_EAPPLIED) {
-      VxCoreError err = TranslateGitError(rc);
-      git_rebase_free(*rebase_in_progress_);
-      *rebase_in_progress_ = nullptr;
-      git_signature_free(sig);
-      return err;
-    }
-    git_error_clear();
-  }
+  VxCoreError loop_err = DriveRebaseLoop(repo_, rebase_in_progress_, sig,
+                                         /*allow_eapplied=*/true,
+                                         /*on_conflict_result=*/VXCORE_OK);
+  git_signature_free(sig);
+  return loop_err;
 }
 
 }  // namespace vxcore

@@ -15,6 +15,17 @@
 
 namespace vxcore {
 
+namespace {
+
+// Which side of a conflict triple to materialize when resolving with
+// kKeepLocal / kKeepRemote. The "rebase semantic flip" (libgit2 labels the
+// REMOTE side as `our` and the LOCAL side as `their` during rebase) is
+// resolved at the call site before invoking WriteResolvedSide — the helper
+// itself just sees an already-mapped index_entry pointer plus this tag.
+enum class Side : uint8_t { Local, Remote };
+
+}  // namespace
+
 GitConflictResolver::GitConflictResolver(git_repository *repo, const std::string &root_folder)
     : repo_(repo), root_folder_(root_folder) {}
 
@@ -179,6 +190,49 @@ VxCoreError GitConflictResolver::ResolveConflict(const std::string &path,
     return VXCORE_OK;
   };
 
+  // kKeepLocal and kKeepRemote share a 5-step sequence; only the source
+  // index_entry pointer differs. Steps: (1) materialize the chosen side's
+  // blob into the workdir (or delete the workdir file when the chosen side
+  // is null — i.e. "deleted on that side"); (2) stage the path, falling
+  // back to `git_index_remove_bypath` when add fails (path no longer
+  // exists in workdir); (3) clear the conflict from the index; (4) write
+  // the index. Returns VXCORE_OK on full success.
+  //
+  // Behaviour quirk preserved: an `add_bypath` failure silently clears the
+  // libgit2 error state and converts the staging op to a removal — this
+  // matches the pre-refactor branches verbatim, and is the path taken for
+  // "delete on the chosen side" resolutions.
+  auto write_resolved_side = [&](Side side) -> VxCoreError {
+    const git_index_entry *src = (side == Side::Local) ? local_side : remote_side;
+    if (src != nullptr) {
+      VxCoreError werr = write_blob_to_path(src, abs_original);
+      if (werr != VXCORE_OK) {
+        return werr;
+      }
+    } else {
+      std::error_code ec;
+      std::filesystem::remove(PathFromUtf8(abs_original), ec);
+    }
+
+    int rc2 = git_index_add_bypath(idx, path.c_str());
+    if (rc2 != 0) {
+      git_error_clear();
+      rc2 = git_index_remove_bypath(idx, path.c_str());
+      if (rc2 != 0) {
+        return TranslateGitError(rc2);
+      }
+    }
+    int rc3 = git_index_conflict_remove(idx, path.c_str());
+    if (rc3 != 0) {
+      return TranslateGitError(rc3);
+    }
+    rc3 = git_index_write(idx);
+    if (rc3 != 0) {
+      return TranslateGitError(rc3);
+    }
+    return VXCORE_OK;
+  };
+
   switch (resolution) {
     case SyncConflictResolution::kKeepBoth: {
       // Build conflict filename: <dir>/<stem>.sync-conflict-<ts><ext>.
@@ -249,78 +303,22 @@ VxCoreError GitConflictResolver::ResolveConflict(const std::string &path,
     case SyncConflictResolution::kKeepLocal: {
       // Materialize LOCAL blob (rebase "their") to workdir so the file
       // doesn't retain any conflict markers libgit2 may have written.
-      if (local_side != nullptr) {
-        VxCoreError werr = write_blob_to_path(local_side, abs_original);
-        if (werr != VXCORE_OK) {
-          git_index_free(idx);
-          return werr;
-        }
-      } else {
-        // No LOCAL side (deleted locally): drop the workdir file.
-        std::error_code ec;
-        std::filesystem::remove(PathFromUtf8(abs_original), ec);
-      }
-
-      int rc2 = git_index_add_bypath(idx, path.c_str());
-      if (rc2 != 0) {
-        git_error_clear();
-        rc2 = git_index_remove_bypath(idx, path.c_str());
-        if (rc2 != 0) {
-          VxCoreError err = TranslateGitError(rc2);
-          git_index_free(idx);
-          return err;
-        }
-      }
-      int rc3 = git_index_conflict_remove(idx, path.c_str());
-      if (rc3 != 0) {
-        VxCoreError err = TranslateGitError(rc3);
-        git_index_free(idx);
-        return err;
-      }
-      rc3 = git_index_write(idx);
+      VxCoreError err = write_resolved_side(Side::Local);
       git_index_free(idx);
       idx = nullptr;
-      if (rc3 != 0) {
-        return TranslateGitError(rc3);
+      if (err != VXCORE_OK) {
+        return err;
       }
       break;
     }
 
     case SyncConflictResolution::kKeepRemote: {
       // Overwrite workdir with REMOTE blob (rebase "our"), stage, clear.
-      if (remote_side != nullptr) {
-        VxCoreError werr = write_blob_to_path(remote_side, abs_original);
-        if (werr != VXCORE_OK) {
-          git_index_free(idx);
-          return werr;
-        }
-      } else {
-        // No REMOTE side (deleted on remote): drop the workdir file.
-        std::error_code ec;
-        std::filesystem::remove(PathFromUtf8(abs_original), ec);
-      }
-
-      int rc2 = git_index_add_bypath(idx, path.c_str());
-      if (rc2 != 0) {
-        git_error_clear();
-        rc2 = git_index_remove_bypath(idx, path.c_str());
-        if (rc2 != 0) {
-          VxCoreError err = TranslateGitError(rc2);
-          git_index_free(idx);
-          return err;
-        }
-      }
-      int rc3 = git_index_conflict_remove(idx, path.c_str());
-      if (rc3 != 0) {
-        VxCoreError err = TranslateGitError(rc3);
-        git_index_free(idx);
-        return err;
-      }
-      rc3 = git_index_write(idx);
+      VxCoreError err = write_resolved_side(Side::Remote);
       git_index_free(idx);
       idx = nullptr;
-      if (rc3 != 0) {
-        return TranslateGitError(rc3);
+      if (err != VXCORE_OK) {
+        return err;
       }
       break;
     }
