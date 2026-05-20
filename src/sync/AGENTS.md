@@ -17,7 +17,7 @@ SyncManager                         ← Orchestrator (per-notebook backend dispa
     ├── configs_   map<id, SyncConfig>                  ← Per-notebook sync config (runtime)
     └── dirty_notebooks_  set<id>                       ← Notebooks with unsynced changes (via EventManager)
 
-ISyncBackend                        ← Pure virtual interface (10 methods including virtual destructor; will drop to 7 in Wave 4.5 of sync-backend-phase4)
+ISyncBackend                        ← Pure virtual interface (7 methods including virtual destructor; reduced from 10 in Wave 4.5 of sync-backend-phase4 which removed Push/Pull/Shutdown)
     │
     ├── GitSyncBackend (libgit2-based)
     ├── WebDavSyncBackend (future)
@@ -67,7 +67,7 @@ Every SyncManager method that operates on a notebook follows this pattern:
 | File | Purpose |
 |------|---------|
 | `sync_types.h` | Enums (`SyncState`, `SyncFileStatus`, `SyncConflictResolution`), structs (`SyncConfig`, `SyncProgress`, `SyncFileInfo`, `SyncConflictInfo`, `SyncCredentials`), `SyncProgressCallback` typedef, `SyncConfig::FromJson()`/`ToJson()` |
-| `sync_backend.h` | `ISyncBackend` pure virtual class (10 methods including virtual destructor; `SetCredentials` has a default no-op body, the other 8 are pure-virtual). Will drop to 7 in Wave 4.5 of sync-backend-phase4. |
+| `sync_backend.h` | `ISyncBackend` pure virtual class (7 methods including virtual destructor; `SetCredentials` has a default no-op body, the other 5 are pure-virtual). Wave 4.5 of sync-backend-phase4 removed the dead Push/Pull/Shutdown virtuals. |
 | `sync_manager.h` | `SyncManager` class: per-notebook dispatch, dirty tracking via `EventManager` |
 | `sync_manager.cpp` | `SyncManager` implementation (validation, state management, event subscription, dirty tracking) |
 | `git/git_sync_backend.h` | `GitSyncBackend` class declaration (inherits `ISyncBackend`) — composition root |
@@ -156,12 +156,13 @@ class ISyncBackend {
 public:
   virtual ~ISyncBackend() = default;
 
+  virtual std::string GetName() const = 0;
+  virtual SyncCapabilities GetCapabilities() const = 0;
+  virtual bool IsInitialized() const = 0;
   virtual VxCoreError Initialize(const std::string &root_folder,
                                  const SyncConfig &config) = 0;
-  virtual VxCoreError Shutdown() = 0;
+  virtual VxCoreError SetCredentials(const SyncCredentials &creds);  // default no-op
   virtual VxCoreError Sync(SyncProgressCallback callback, void *userdata) = 0;
-  virtual VxCoreError Push(SyncProgressCallback callback, void *userdata) = 0;
-  virtual VxCoreError Pull(SyncProgressCallback callback, void *userdata) = 0;
   virtual VxCoreError GetStatus(std::vector<SyncFileInfo> &out_files) = 0;
   virtual VxCoreError GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) = 0;
   virtual VxCoreError ResolveConflict(const std::string &path,
@@ -172,13 +173,16 @@ public:
 | Method | When Called | Expected Behavior |
 |--------|-----------|-------------------|
 | `Initialize` | On `EnableSync` after backend is created | Set up working directory, connect to remote, validate config |
-| `Shutdown` | On `DisableSync` or context destruction | Close connections, flush state, release resources |
 | `Sync` | On `TriggerSync` (full round-trip) | Stage + fetch + merge + push. Report progress via callback |
-| `Push` | Manual push only | Upload local changes without pulling |
-| `Pull` | Manual pull only | Download remote changes without pushing |
 | `GetStatus` | On `GetSyncStatus` | Return per-file status list |
 | `GetConflicts` | On `GetConflicts` | Return list of unresolved conflicts |
 | `ResolveConflict` | On `ResolveConflict` | Apply resolution strategy to a specific file |
+
+> **Wave 4.5 note**: the standalone `Shutdown`, `Push`, and `Pull` virtuals were
+> removed in F1.3 of sync-backend-phase4 (rip-and-replace; no shims). Teardown
+> happens via the destructor; the composite `Sync()` round-trip is the only
+> remote-write entry point. New backends MUST NOT add Push/Pull methods —
+> compose their phases inside `Sync()`.
 
 ## C API Reference
 

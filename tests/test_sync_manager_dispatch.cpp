@@ -46,9 +46,9 @@ int test_mock_sync_backend_records() {
   ASSERT_EQ(mb.Sync(nullptr, nullptr), VXCORE_OK);
   ASSERT_EQ(mb.sync_call_count, 1);
 
-  ASSERT_EQ(mb.Push(nullptr, nullptr), VXCORE_OK);
-  ASSERT_EQ(mb.push_call_count, 1);
-
+  // Wave 4.5 (F1.3) removed Push/Pull/Shutdown from ISyncBackend; the mock
+  // no longer records them. SetCredentials remains as the secondary call we
+  // record here.
   SyncCredentials creds;
   creds.personal_access_token = "abc";
   ASSERT_EQ(mb.SetCredentials(creds), VXCORE_OK);

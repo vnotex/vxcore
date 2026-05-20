@@ -51,16 +51,16 @@ class ISyncBackend {
   virtual SyncCapabilities GetCapabilities() const = 0;
 
   // True iff the backend has completed a successful Initialize() and is
-  // ready to handle Sync/Push/Pull. Becomes false on Shutdown() or after
-  // a failed Initialize(). Used by callers (and by SyncManager-level
-  // diagnostics) to distinguish a registered-but-unconfigured backend from
-  // one that's actually ready to talk to a remote.
+  // ready to handle Sync. Becomes false on destruction or after a failed
+  // Initialize(). Used by callers (and by SyncManager-level diagnostics)
+  // to distinguish a registered-but-unconfigured backend from one that's
+  // actually ready to talk to a remote.
   virtual bool IsInitialized() const = 0;
 
   virtual VxCoreError Initialize(const std::string &root_folder,
                                  const SyncConfig &config) = 0;
 
-  // Called by SyncManager BEFORE Initialize/Sync/Push/Pull when credentials are
+  // Called by SyncManager BEFORE Initialize/Sync when credentials are
   // available. Backend caches them. Idempotent. Default no-op for backends that
   // don't need credentials (e.g., MockSyncBackend).
   virtual VxCoreError SetCredentials(const SyncCredentials &creds) {
@@ -68,13 +68,11 @@ class ISyncBackend {
     return VXCORE_OK;
   }
 
-  virtual VxCoreError Shutdown() = 0;
-
+  // Sync is the composite remote-roundtrip operation (stage/commit/fetch/
+  // rebase/push). Wave 4.5 (F1.3 of sync-backend-phase4) removed the legacy
+  // standalone Push/Pull/Shutdown pure virtuals — implementations now expose
+  // only this composite entry point. Teardown is handled by the destructor.
   virtual VxCoreError Sync(SyncProgressCallback callback, void *userdata) = 0;
-
-  virtual VxCoreError Push(SyncProgressCallback callback, void *userdata) = 0;
-
-  virtual VxCoreError Pull(SyncProgressCallback callback, void *userdata) = 0;
 
   virtual VxCoreError GetStatus(std::vector<SyncFileInfo> &out_files) = 0;
 

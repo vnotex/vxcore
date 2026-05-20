@@ -45,10 +45,7 @@ class GitSyncBackend : public ISyncBackend {
   VxCoreError SetCredentials(const SyncCredentials &creds) override;
   VxCoreError Initialize(const std::string &root_folder,
                          const SyncConfig &config) override;
-  VxCoreError Shutdown() override;
   VxCoreError Sync(SyncProgressCallback callback, void *userdata) override;
-  VxCoreError Push(SyncProgressCallback callback, void *userdata) override;
-  VxCoreError Pull(SyncProgressCallback callback, void *userdata) override;
   VxCoreError GetStatus(std::vector<SyncFileInfo> &out_files) override;
   VxCoreError GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) override;
   VxCoreError ResolveConflict(const std::string &path,

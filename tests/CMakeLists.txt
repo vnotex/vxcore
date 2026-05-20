@@ -435,58 +435,11 @@ target_link_libraries(test_resolve_result PRIVATE
     nlohmann_json)
 add_test(NAME test_resolve_result COMMAND test_resolve_result)
 
-# test_git_sync_pushpull: T33 (Push + Pull public methods, including the
-# Pull-auto-commits-local-first semantic). Same compile pattern as
-# test_git_sync_roundtrip.
-add_executable(test_git_sync_pushpull test_git_sync_pushpull.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
-target_include_directories(test_git_sync_pushpull PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/third_party)
-target_link_libraries(test_git_sync_pushpull PRIVATE
-    git_sync_test_helpers
-    libgit2package
-    nlohmann_json)
-add_test(NAME test_git_sync_pushpull COMMAND test_git_sync_pushpull)
-
-# test_sync_pull_auto_commit: B5 of sync-backend-phase4. Verifies that
-# SyncConfig::auto_commit_merges gates the Pull pre-rebase auto-commit.
-# When true (default), Pull stages + commits before rebase.
-# When false, Pull stages but skips commit, leaving staged changes for caller.
-add_executable(test_sync_pull_auto_commit test_sync_pull_auto_commit.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
-target_include_directories(test_sync_pull_auto_commit PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/third_party)
-target_link_libraries(test_sync_pull_auto_commit PRIVATE
-    git_sync_test_helpers
-    libgit2package
-    nlohmann_json)
-add_test(NAME test_sync_pull_auto_commit COMMAND test_sync_pull_auto_commit)
+# test_git_sync_pushpull + test_sync_pull_auto_commit: REMOVED in Wave 4.5
+# (F1.3 of sync-backend-phase4). These two test binaries exclusively exercised
+# ISyncBackend::Push and ISyncBackend::Pull, which were deleted from the
+# interface (rip-and-replace, no shims). Sync() — the composite roundtrip —
+# remains and is covered end-to-end by test_git_sync_roundtrip.
 
 # test_gitkeep_basic: gitkeep injection plan — verifies .gitkeep is added
 # to empty user folders during sync, respects the skip-list, and is

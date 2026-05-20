@@ -17,30 +17,11 @@ VxCoreError MockSyncBackend::SetCredentials(const SyncCredentials &creds) {
   return next_set_credentials_result;
 }
 
-VxCoreError MockSyncBackend::Shutdown() {
-  ++shutdown_call_count;
-  return VXCORE_OK;
-}
-
 VxCoreError MockSyncBackend::Sync(SyncProgressCallback callback, void *userdata) {
   (void)callback;
   (void)userdata;
   ++sync_call_count;
   return next_sync_result;
-}
-
-VxCoreError MockSyncBackend::Push(SyncProgressCallback callback, void *userdata) {
-  (void)callback;
-  (void)userdata;
-  ++push_call_count;
-  return next_push_result;
-}
-
-VxCoreError MockSyncBackend::Pull(SyncProgressCallback callback, void *userdata) {
-  (void)callback;
-  (void)userdata;
-  ++pull_call_count;
-  return next_pull_result;
 }
 
 VxCoreError MockSyncBackend::GetStatus(std::vector<SyncFileInfo> &out_files) {

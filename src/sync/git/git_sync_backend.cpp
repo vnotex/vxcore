@@ -47,8 +47,22 @@ GitSyncBackend::GitSyncBackend() = default;
 GitSyncBackend::GitSyncBackend(const SyncConfig & /*cfg*/) : GitSyncBackend() {}
 
 GitSyncBackend::~GitSyncBackend() {
-  // Best-effort shutdown to release libgit2 handles.
-  Shutdown();
+  // Best-effort teardown — inline the former Shutdown() body. Wave 4.5
+  // (F1.3 of sync-backend-phase4) removed the standalone Shutdown() virtual;
+  // teardown now happens only through destruction. Hold op_mutex_ to serialize
+  // against any concurrent in-flight call (defensive; in practice destruction
+  // races are the caller's responsibility).
+  std::lock_guard<std::mutex> lock(op_mutex_);
+  if (rebase_in_progress_ != nullptr) {
+    git_rebase_free(rebase_in_progress_);
+    rebase_in_progress_ = nullptr;
+  }
+  if (repo_ != nullptr) {
+    git_repository_free(repo_);
+    repo_ = nullptr;
+  }
+  credentials_ = {};
+  initialized_ = false;
 }
 
 // Task 4.1 (sync-backend-phase4 F1.2): backend identity methods.
@@ -202,21 +216,6 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
   return VXCORE_ERR_NOT_IMPLEMENTED;
 }
 
-VxCoreError GitSyncBackend::Shutdown() {
-  std::lock_guard<std::mutex> lock(op_mutex_);
-  if (rebase_in_progress_ != nullptr) {
-    git_rebase_free(rebase_in_progress_);
-    rebase_in_progress_ = nullptr;
-  }
-  if (repo_ != nullptr) {
-    git_repository_free(repo_);
-    repo_ = nullptr;
-  }
-  credentials_ = {};
-  initialized_ = false;
-  return VXCORE_OK;
-}
-
 VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) {
   std::unique_lock<std::mutex> lock(op_mutex_, std::try_to_lock);
   if (!lock.owns_lock()) {
@@ -312,89 +311,6 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
   }
 
   ReportProgress(callback, userdata, SyncState::kIdle, "Sync complete", 1.0f);
-  return VXCORE_OK;
-}
-
-VxCoreError GitSyncBackend::Push(SyncProgressCallback callback, void *userdata) {
-  std::unique_lock<std::mutex> lock(op_mutex_, std::try_to_lock);
-  if (!lock.owns_lock()) {
-    return VXCORE_ERR_SYNC_IN_PROGRESS;
-  }
-  if (!initialized_) {
-    return VXCORE_ERR_UNKNOWN;
-  }
-
-  GitSyncPipeline pipeline(repo_, git_dir_, root_folder_, config_, credentials_,
-                           &rebase_in_progress_);
-
-  ReportProgress(callback, userdata, SyncState::kStaging, "Staging", 0.20f);
-  EnsureGitkeepFiles(root_folder_, config_);
-  VxCoreError err = pipeline.StageAll();
-  if (err != VXCORE_OK) {
-    return err;
-  }
-
-  ReportProgress(callback, userdata, SyncState::kStaging, "Committing", 0.40f);
-  err = pipeline.CommitIndex("VNote sync push");
-  if (err != VXCORE_OK) {
-    return err;
-  }
-
-  ReportProgress(callback, userdata, SyncState::kPushing, "Pushing", 0.80f);
-  err = pipeline.PushOrigin();
-  if (err != VXCORE_OK) {
-    return err;
-  }
-
-  ReportProgress(callback, userdata, SyncState::kIdle, "Push complete", 1.0f);
-  return VXCORE_OK;
-}
-
-VxCoreError GitSyncBackend::Pull(SyncProgressCallback callback, void *userdata) {
-  std::unique_lock<std::mutex> lock(op_mutex_, std::try_to_lock);
-  if (!lock.owns_lock()) {
-    return VXCORE_ERR_SYNC_IN_PROGRESS;
-  }
-  if (!initialized_) {
-    return VXCORE_ERR_UNKNOWN;
-  }
-
-  GitSyncPipeline pipeline(repo_, git_dir_, root_folder_, config_, credentials_,
-                           &rebase_in_progress_);
-
-  // CRITICAL: auto-commit any uncommitted local changes BEFORE fetching so
-  // the upcoming rebase has a clean working tree to replay onto. Without
-  // this, a Pull on a notebook with edits in flight would either lose them
-  // or refuse to rebase.
-  ReportProgress(callback, userdata, SyncState::kStaging, "Staging", 0.10f);
-  VxCoreError err = pipeline.StageAll();
-  if (err != VXCORE_OK) {
-    return err;
-  }
-  ReportProgress(callback, userdata, SyncState::kStaging, "Committing", 0.20f);
-  if (config_.auto_commit_merges) {
-    err = pipeline.CommitIndex("VNote sync auto-commit before pull");
-    if (err != VXCORE_OK) {
-      return err;
-    }
-  }
-
-  ReportProgress(callback, userdata, SyncState::kFetching, "Fetching", 0.50f);
-  err = pipeline.FetchOrigin();
-  if (err != VXCORE_OK) {
-    return err;
-  }
-
-  ReportProgress(callback, userdata, SyncState::kMerging, "Rebasing", 0.80f);
-  err = pipeline.RebaseOntoOrigin();
-  if (err == VXCORE_ERR_SYNC_CONFLICT) {
-    return VXCORE_ERR_SYNC_CONFLICT;
-  }
-  if (err != VXCORE_OK) {
-    return err;
-  }
-
-  ReportProgress(callback, userdata, SyncState::kIdle, "Pull complete", 1.0f);
   return VXCORE_OK;
 }
 

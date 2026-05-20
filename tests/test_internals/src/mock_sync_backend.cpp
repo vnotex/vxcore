@@ -7,7 +7,9 @@ namespace vxcore {
 MockSyncBackend::MockSyncBackend() = default;
 
 MockSyncBackend::~MockSyncBackend() {
-  Shutdown();
+  // Wave 4.5 (F1.3 of sync-backend-phase4) removed ISyncBackend::Shutdown.
+  // Mock teardown is now just clearing the initialized_ flag inline.
+  initialized_ = false;
 }
 
 std::string MockSyncBackend::GetName() const { return name_; }
@@ -33,13 +35,6 @@ VxCoreError MockSyncBackend::SetCredentials(const SyncCredentials &creds) {
   return GetReturnCode("SetCredentials");
 }
 
-VxCoreError MockSyncBackend::Shutdown() {
-  if (!initialized_) return VXCORE_OK;
-  RecordCall("Shutdown");
-  initialized_ = false;
-  return GetReturnCode("Shutdown");
-}
-
 VxCoreError MockSyncBackend::Sync(SyncProgressCallback callback,
                                   void *userdata) {
   RecordCall("Sync");
@@ -51,22 +46,6 @@ VxCoreError MockSyncBackend::Sync(SyncProgressCallback callback,
   }
 
   return GetReturnCode("Sync");
-}
-
-VxCoreError MockSyncBackend::Push(SyncProgressCallback callback,
-                                  void *userdata) {
-  RecordCall("Push");
-  (void)callback;
-  (void)userdata;
-  return GetReturnCode("Push");
-}
-
-VxCoreError MockSyncBackend::Pull(SyncProgressCallback callback,
-                                  void *userdata) {
-  RecordCall("Pull");
-  (void)callback;
-  (void)userdata;
-  return GetReturnCode("Pull");
 }
 
 VxCoreError MockSyncBackend::GetStatus(std::vector<SyncFileInfo> &out_files) {

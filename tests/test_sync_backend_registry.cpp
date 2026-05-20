@@ -53,10 +53,7 @@ class StubBackend : public ISyncBackend {
   VxCoreError Initialize(const std::string &, const SyncConfig &) override {
     return VXCORE_OK;
   }
-  VxCoreError Shutdown() override { return VXCORE_OK; }
   VxCoreError Sync(SyncProgressCallback, void *) override { return VXCORE_OK; }
-  VxCoreError Push(SyncProgressCallback, void *) override { return VXCORE_OK; }
-  VxCoreError Pull(SyncProgressCallback, void *) override { return VXCORE_OK; }
   VxCoreError GetStatus(std::vector<SyncFileInfo> &) override {
     return VXCORE_OK;
   }

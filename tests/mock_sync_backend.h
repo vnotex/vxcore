@@ -17,8 +17,6 @@ class MockSyncBackend : public ISyncBackend {
   // Configurable canned return values (default VXCORE_OK).
   VxCoreError next_initialize_result = VXCORE_OK;
   VxCoreError next_sync_result = VXCORE_OK;
-  VxCoreError next_push_result = VXCORE_OK;
-  VxCoreError next_pull_result = VXCORE_OK;
   VxCoreError next_set_credentials_result = VXCORE_OK;
   VxCoreError next_resolve_conflict_result = VXCORE_OK;
   std::vector<SyncFileInfo> canned_status;
@@ -26,10 +24,7 @@ class MockSyncBackend : public ISyncBackend {
 
   // Call counters.
   int initialize_call_count = 0;
-  int shutdown_call_count = 0;
   int sync_call_count = 0;
-  int push_call_count = 0;
-  int pull_call_count = 0;
   int get_status_call_count = 0;
   int get_conflicts_call_count = 0;
   int resolve_conflict_call_count = 0;
@@ -45,10 +40,7 @@ class MockSyncBackend : public ISyncBackend {
 
   VxCoreError Initialize(const std::string &root_folder, const SyncConfig &config) override;
   VxCoreError SetCredentials(const SyncCredentials &creds) override;
-  VxCoreError Shutdown() override;
   VxCoreError Sync(SyncProgressCallback callback, void *userdata) override;
-  VxCoreError Push(SyncProgressCallback callback, void *userdata) override;
-  VxCoreError Pull(SyncProgressCallback callback, void *userdata) override;
   VxCoreError GetStatus(std::vector<SyncFileInfo> &out_files) override;
   VxCoreError GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) override;
   VxCoreError ResolveConflict(const std::string &path,

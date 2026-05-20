@@ -87,7 +87,7 @@ int git_name_is_git() {
 
   ASSERT_EQ(backend.GetName(), std::string("git"));
 
-  backend.Shutdown();
+  // Wave 4.5 removed Shutdown(); teardown is via destructor at scope exit.
   std::filesystem::remove_all(root);
   std::cout << "  [PASS] git_name_is_git" << std::endl;
   return 0;
@@ -124,17 +124,20 @@ int git_init_state_transitions() {
   const std::string url = vxcore_test::create_bare_repo("metadata_init");
   const std::string root = seed_notebook_with_fresh_repo("init", url);
 
-  vxcore::GitSyncBackend backend;
-  ASSERT_FALSE(backend.IsInitialized());
+  {
+    vxcore::GitSyncBackend backend;
+    ASSERT_FALSE(backend.IsInitialized());
 
-  vxcore::SyncConfig cfg;
-  cfg.backend = "git";
-  cfg.remote_url = url;
-  ASSERT_EQ(backend.Initialize(root, cfg), VXCORE_OK);
-  ASSERT_TRUE(backend.IsInitialized());
-
-  backend.Shutdown();
-  ASSERT_FALSE(backend.IsInitialized());
+    vxcore::SyncConfig cfg;
+    cfg.backend = "git";
+    cfg.remote_url = url;
+    ASSERT_EQ(backend.Initialize(root, cfg), VXCORE_OK);
+    ASSERT_TRUE(backend.IsInitialized());
+  }
+  // Wave 4.5 removed Shutdown(); the destructor at scope exit now resets
+  // initialized_ to false. We can't observe the post-teardown IsInitialized()
+  // value without the object existing, so the contract we verify is that the
+  // destructor runs without crashing on a fully-initialized backend.
 
   std::filesystem::remove_all(root);
   std::cout << "  [PASS] git_init_state_transitions" << std::endl;

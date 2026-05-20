@@ -619,43 +619,10 @@ int test_git_init_push_existing_notebook_to_empty_remote() {
   return 0;
 }
 
-// T19: Shutdown is idempotent — calling it twice on an initialized backend
-// returns OK both times and does not crash.
-int test_git_shutdown_idempotent() {
-  std::cout << "  Running test_git_shutdown_idempotent..." << std::endl;
-
-  const std::string bare_path = get_test_path("git_shutdown_bare");
-  const std::string notebook_root = get_test_path("git_shutdown_nb");
-  cleanup_test_dir(bare_path);
-  cleanup_test_dir(notebook_root);
-
-  try {
-    const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
-    vxcore_test::commit_file(bare_path, "note.md", "hello", "init");
-
-    seed_notebook_with_existing_repo(notebook_root, bare_url);
-
-    vxcore::SyncConfig config;
-    config.backend = "git";
-    config.remote_url = bare_url;
-    config.interval_seconds = 300;
-
-    vxcore::GitSyncBackend backend;
-    ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
-    ASSERT_EQ(backend.Shutdown(), VXCORE_OK);
-    ASSERT_EQ(backend.Shutdown(), VXCORE_OK);
-  } catch (const std::exception &e) {
-    std::cerr << "  exception: " << e.what() << std::endl;
-    cleanup_test_dir(bare_path);
-    cleanup_test_dir(notebook_root);
-    return 1;
-  }
-
-  cleanup_test_dir(bare_path);
-  cleanup_test_dir(notebook_root);
-  std::cout << "  test_git_shutdown_idempotent passed" << std::endl;
-  return 0;
-}
+// T19: removed in Wave 4.5 (F1.3 of sync-backend-phase4) — the standalone
+// Shutdown() virtual is gone; teardown happens implicitly via the destructor.
+// The destructor-only path is exercised by every other test that constructs a
+// GitSyncBackend, so no replacement test is needed here.
 
 // Default .gitignore + .gitattributes writer tests. Migrated from
 // test_sync_manager_dispatch.cpp during T14 because they now exercise
@@ -766,7 +733,6 @@ int main() {
   RUN_TEST(test_git_init_clone_with_pat_uses_3arg_overload);
   RUN_TEST(test_git_init_clone_uses_separate_gitdir);
   RUN_TEST(test_git_init_push_existing_notebook_to_empty_remote);
-  RUN_TEST(test_git_shutdown_idempotent);
   RUN_TEST(test_git_sync_writes_default_gitignore_attributes_when_missing);
   RUN_TEST(test_git_sync_preserves_existing_gitignore);
   std::cout << "All git_sync_init tests passed" << std::endl;

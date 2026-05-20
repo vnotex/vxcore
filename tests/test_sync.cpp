@@ -36,10 +36,7 @@ class MockSyncBackend : public vxcore::ISyncBackend {
   VxCoreError Initialize(const std::string &, const vxcore::SyncConfig &) override {
     return VXCORE_OK;
   }
-  VxCoreError Shutdown() override { return VXCORE_OK; }
   VxCoreError Sync(vxcore::SyncProgressCallback, void *) override { return VXCORE_OK; }
-  VxCoreError Push(vxcore::SyncProgressCallback, void *) override { return VXCORE_OK; }
-  VxCoreError Pull(vxcore::SyncProgressCallback, void *) override { return VXCORE_OK; }
   VxCoreError GetStatus(std::vector<vxcore::SyncFileInfo> &) override { return VXCORE_OK; }
   VxCoreError GetConflicts(std::vector<vxcore::SyncConflictInfo> &) override { return VXCORE_OK; }
   VxCoreError ResolveConflict(const std::string &,
