@@ -133,27 +133,40 @@ VxCoreError SyncManager::EnableSync(const std::string &notebook_id, const SyncCo
 
 VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
                                          const SyncCredentials *credentials) {
+  return EnableSyncImpl(notebook_id, config, credentials, nullptr);
+}
+
+VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
+                                         const SyncCredentials *credentials,
+                                         SyncBackendFactory factory_override) {
   VxCoreError err = ValidateNotebook(notebook_id);
   if (err != VXCORE_OK) {
     return err;
   }
 
-  // Fail-fast on unknown backend (F1.4/B3) — check BEFORE init to catch config errors early.
-  // "mock" used to be an allow-listed placeholder backend pre-W4.4; with the registry as
-  // source of truth, unknown names (including "mock" until Wave 5.3 registers a factory)
-  // fail-fast here. Tests that previously enabled "mock" must use
-  // EnableSyncWithBackendForTesting.
-  if (!config.backend.empty() && config.backend != "git") {
-    VXCORE_LOG_ERROR("SyncManager::EnableSyncImpl: unknown backend '%s' for notebook: %s",
-                     config.backend.c_str(), notebook_id.c_str());
-    return VXCORE_ERR_UNKNOWN_BACKEND;
-  }
+  // Production guards apply only to the registry path. When a factory_override
+  // is supplied (test path), the factory IS the source of truth — the
+  // unknown-backend allow-list and libgit2 init guards are bypassed so tests
+  // can exercise non-"git" backend names and run on hosts where libgit2 init
+  // failed (e.g., the mock-only test executable).
+  if (!factory_override) {
+    // Fail-fast on unknown backend (F1.4/B3) — check BEFORE init to catch config errors early.
+    // "mock" used to be an allow-listed placeholder backend pre-W4.4; with the registry as
+    // source of truth, unknown names (including "mock" until Wave 5.3 registers a factory)
+    // fail-fast here. Tests that previously enabled "mock" must use
+    // EnableSyncWithBackendForTesting.
+    if (!config.backend.empty() && config.backend != "git") {
+      VXCORE_LOG_ERROR("SyncManager::EnableSyncImpl: unknown backend '%s' for notebook: %s",
+                       config.backend.c_str(), notebook_id.c_str());
+      return VXCORE_ERR_UNKNOWN_BACKEND;
+    }
 
-  // Check if libgit2 initialization succeeded (F2.5/B4) — only for git backend.
-  if (config.backend == "git" && !LibGit2Init::ok()) {
-    VXCORE_LOG_ERROR("SyncManager::EnableSyncImpl: libgit2 init failed for notebook: %s",
-                     notebook_id.c_str());
-    return VXCORE_ERR_GIT_INIT_FAILED;
+    // Check if libgit2 initialization succeeded (F2.5/B4) — only for git backend.
+    if (config.backend == "git" && !LibGit2Init::ok()) {
+      VXCORE_LOG_ERROR("SyncManager::EnableSyncImpl: libgit2 init failed for notebook: %s",
+                       notebook_id.c_str());
+      return VXCORE_ERR_GIT_INIT_FAILED;
+    }
   }
 
   const bool had_config = configs_.count(notebook_id) > 0;
@@ -179,13 +192,19 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
     }
   };
 
-  // Factory: build a backend via the registry (F1.1 — decoupled from concrete types).
-  const std::string backend_name = config.backend.empty() ? "git" : config.backend;
-  std::unique_ptr<ISyncBackend> backend =
-      SyncBackendRegistry::Instance().Create(backend_name, config);
+  // Factory dispatch: factory_override takes precedence (test path); otherwise
+  // build via the registry (F1.1 — decoupled from concrete types).
+  std::unique_ptr<ISyncBackend> backend;
+  if (factory_override) {
+    backend = factory_override(config);
+  } else {
+    const std::string backend_name = config.backend.empty() ? "git" : config.backend;
+    backend = SyncBackendRegistry::Instance().Create(backend_name, config);
+  }
   if (!backend) {
-    VXCORE_LOG_WARN("SyncManager::EnableSyncImpl: no factory for backend '%s' (notebook: %s)",
-                    backend_name.c_str(), notebook_id.c_str());
+    VXCORE_LOG_WARN("SyncManager::EnableSyncImpl: factory returned null for backend '%s' "
+                    "(notebook: %s)",
+                    config.backend.c_str(), notebook_id.c_str());
     rollback();
     return VXCORE_ERR_UNKNOWN_BACKEND;
   }
@@ -442,6 +461,14 @@ VxCoreError SyncManager::EnableSyncWithBackendForTesting(
 
   backends_[notebook_id] = std::move(backend);
   return VXCORE_OK;
+}
+
+VxCoreError SyncManager::EnableSyncWithFactoryForTesting(
+    const std::string &notebook_id, const SyncConfig &config,
+    const SyncCredentials *credentials, SyncBackendFactory factory_override) {
+  VXCORE_LOG_DEBUG("SyncManager::EnableSyncWithFactoryForTesting: notebook_id=%s",
+                   notebook_id.c_str());
+  return EnableSyncImpl(notebook_id, config, credentials, std::move(factory_override));
 }
 
 }  // namespace vxcore

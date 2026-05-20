@@ -9,6 +9,7 @@
 #include <unordered_map>
 
 #include "sync_backend.h"
+#include "sync_backend_registry.h"
 #include "sync_types.h"
 #include "sync/git/libgit2_init.h"
 #include "vxcore/vxcore_types.h"
@@ -72,6 +73,22 @@ class SyncManager {
                                                          const SyncCredentials *credentials,
                                                          std::unique_ptr<ISyncBackend> backend);
 
+  // Task 5.1 (F4.2): test-only EnableSync that injects a backend FACTORY instead
+  // of a fully-constructed backend instance. This exercises the same factory
+  // dispatch the production path uses, just with the registry bypassed. When
+  // factory_override is non-null it is used to construct the backend; the
+  // unknown-backend allow-list and libgit2 ok() guards are skipped because the
+  // factory is the source of truth in this path. When factory_override is null,
+  // behavior is identical to the public EnableSync(id, cfg) overload.
+  //
+  // Intentionally NOT exposed on the C ABI (vxcore.h). Public-overload callers
+  // always reach the registry path via EnableSync(id, cfg) which delegates to
+  // EnableSyncImpl(id, cfg, nullptr, nullptr).
+  VXCORE_API VxCoreError EnableSyncWithFactoryForTesting(const std::string &notebook_id,
+                                                         const SyncConfig &config,
+                                                         const SyncCredentials *credentials,
+                                                         SyncBackendFactory factory_override);
+
   VXCORE_API std::vector<std::string> GetDirtyNotebooks() const;
 
   VXCORE_API void ClearDirty(const std::string &notebook_id);
@@ -82,8 +99,19 @@ class SyncManager {
   // Shared implementation for both EnableSync overloads. When credentials != nullptr,
   // calls backend->SetCredentials(*credentials) BEFORE backend->Initialize(...).
   // On any failure, rolls back configs_/states_/backends_ to their prior state.
+  // Delegates to the 4-arg overload with factory_override = nullptr (registry path).
   VxCoreError EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
                              const SyncCredentials *credentials);
+
+  // Task 5.1 (F4.2): private overload that allows injecting a backend factory
+  // directly. When factory_override is non-null, it is used to construct the
+  // backend (and the unknown-backend allow-list + libgit2 ok() guards are
+  // bypassed because the factory is the source of truth in this path). When
+  // null, falls back to SyncBackendRegistry::Instance().Create(...) and runs
+  // the full production guards. NEVER exposed on the C ABI.
+  VxCoreError EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
+                             const SyncCredentials *credentials,
+                             SyncBackendFactory factory_override);
 
   // Enqueue a sync job on the "sync" WorkQueue if the debounce interval has elapsed.
   // Called under dirty_mutex_.

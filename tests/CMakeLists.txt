@@ -46,6 +46,12 @@ add_vxcore_test(test_mock_sync_backend INTERNALS)
 # vxcore.dll's VXCORE_API-exported registry symbols.
 add_vxcore_test(test_sync_backend_registry)
 
+# test_sync_manager_factory_override: Task 5.1 (F4.2) of sync-backend-phase4.
+# Tests SyncManager::EnableSyncImpl factory-override overload via the
+# EnableSyncWithFactoryForTesting hook. Uses MockSyncBackend (from
+# vxcore_test_internals) so links via add_vxcore_test(... INTERNALS).
+add_vxcore_test(test_sync_manager_factory_override INTERNALS)
+
 # test_buffer_save_marks_dirty: T10 of auto-sync-on-save plan. Verifies that
 # vxcore_buffer_save fires file.saved events that propagate through
 # SyncManager's event subscription to mark notebooks dirty + enqueue sync
