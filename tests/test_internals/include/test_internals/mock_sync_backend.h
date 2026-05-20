@@ -30,6 +30,9 @@ class MockSyncBackend : public ISyncBackend {
   ~MockSyncBackend() override;
 
   // ISyncBackend implementation
+  std::string GetName() const override;
+  SyncCapabilities GetCapabilities() const override;
+  bool IsInitialized() const override;
   VxCoreError Initialize(const std::string &root_folder,
                          const SyncConfig &config) override;
   VxCoreError SetCredentials(const SyncCredentials &creds) override;
@@ -46,6 +49,14 @@ class MockSyncBackend : public ISyncBackend {
   void SetReturnCode(const std::string &method_name, VxCoreError code);
   void EnableFakeConflicts(bool enable);
 
+  // Task 4.1 (sync-backend-phase4 F1.2): allow tests to override identity
+  // methods. Defaults: name="mock", capabilities=None,
+  // IsInitialized()=true so legacy tests don't have to call Initialize()
+  // first to exercise other methods.
+  void SetName(std::string name);
+  void SetCapabilities(SyncCapabilities caps);
+  void SetInitialized(bool initialized);
+
   // Call recording accessors
   size_t GetCallCount() const;
   const std::vector<std::string> &GetCallRecords() const;
@@ -58,6 +69,9 @@ class MockSyncBackend : public ISyncBackend {
   std::string root_folder_;
   SyncConfig config_;
   bool initialized_ = false;
+  std::string name_ = "mock";
+  SyncCapabilities capabilities_ = static_cast<SyncCapabilities>(SyncCapability::None);
+  bool initialized_override_ = true;
 
   VxCoreError GetReturnCode(const std::string &method_name);
   void RecordCall(const std::string &method_name);

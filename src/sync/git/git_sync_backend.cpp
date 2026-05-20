@@ -43,6 +43,35 @@ GitSyncBackend::~GitSyncBackend() {
   Shutdown();
 }
 
+// Task 4.1 (sync-backend-phase4 F1.2): backend identity methods.
+//
+// GetName is the same lower-case ASCII key used in SyncConfig::backend / the
+// `vx_notebook` JSON `syncBackend` field, so the upcoming SyncBackendRegistry
+// (Task 4.2) can match instances to factory keys.
+std::string GitSyncBackend::GetName() const { return "git"; }
+
+// Capability bits for the git backend. Cancellation is deliberately OMITTED
+// — Wave 12 of sync-backend-phase4 wires the cooperative cancellation token
+// through libgit2 progress callbacks; until then, flipping the bit would
+// lie to callers that ask "can I cancel a running sync?".
+SyncCapabilities GitSyncBackend::GetCapabilities() const {
+  return static_cast<uint32_t>(SyncCapability::ConflictDetection) |
+         static_cast<uint32_t>(SyncCapability::ConflictResolution) |
+         static_cast<uint32_t>(SyncCapability::IncrementalSync) |
+         static_cast<uint32_t>(SyncCapability::AuthRequired) |
+         static_cast<uint32_t>(SyncCapability::ProgressReporting);
+}
+
+// IsInitialized must reflect BOTH halves of the readiness contract:
+//   1. libgit2 process-global init succeeded (LibGit2Init::ok()), AND
+//   2. this backend's Initialize() drove one of the bootstrap branches to
+//      VXCORE_OK (which sets initialized_ = true).
+// Either half failing means subsequent Sync/Push/Pull calls would early-out
+// with VXCORE_ERR_UNKNOWN; returning true would lie to callers.
+bool GitSyncBackend::IsInitialized() const {
+  return LibGit2Init::ok() && initialized_;
+}
+
 VxCoreError GitSyncBackend::SetCredentials(const SyncCredentials &creds) {
   std::lock_guard<std::mutex> lock(op_mutex_);
   credentials_ = creds;

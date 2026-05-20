@@ -53,6 +53,15 @@ class MockSyncBackend : public ISyncBackend {
   VxCoreError GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) override;
   VxCoreError ResolveConflict(const std::string &path,
                               SyncConflictResolution resolution) override;
+
+  // Task 4.1 (sync-backend-phase4 F1.2): backend identity. Hard-coded for
+  // this legacy in-tests-dir mock; the test_internals/mock_sync_backend.h
+  // copy is the configurable one used by the metadata test.
+  std::string GetName() const override { return "mock"; }
+  SyncCapabilities GetCapabilities() const override {
+    return static_cast<SyncCapabilities>(SyncCapability::None);
+  }
+  bool IsInitialized() const override { return initialize_call_count > 0; }
 };
 
 }  // namespace vxcore

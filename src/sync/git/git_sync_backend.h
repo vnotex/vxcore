@@ -34,6 +34,9 @@ class GitSyncBackend : public ISyncBackend {
   GitSyncBackend& operator=(GitSyncBackend&&) = delete;
 
   // ISyncBackend
+  std::string GetName() const override;
+  SyncCapabilities GetCapabilities() const override;
+  bool IsInitialized() const override;
   VxCoreError SetCredentials(const SyncCredentials &creds) override;
   VxCoreError Initialize(const std::string &root_folder,
                          const SyncConfig &config) override;

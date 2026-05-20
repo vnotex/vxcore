@@ -556,3 +556,32 @@ add_test(NAME test_gitkeep_roundtrip COMMAND test_gitkeep_roundtrip)
 # test, plus git_sync_test_helpers + nlohmann_json for the fixture and JSON.
 add_vxcore_test(test_sync_credentials_api)
 target_link_libraries(test_sync_credentials_api PRIVATE git_sync_test_helpers nlohmann_json)
+
+# test_sync_backend_metadata: Task 4.1 (F1.2) of sync-backend-phase4. Verifies
+# the new ISyncBackend identity methods (GetName / GetCapabilities /
+# IsInitialized) on GitSyncBackend (direct-compiled) and the configurable
+# MockSyncBackend from vxcore_test_internals. Same direct-compile pattern as
+# test_git_sync_init — owns its own GitSyncBackend + libgit2 ref-count
+# statics, bypassing the Windows DLL static-storage duplication problem.
+add_executable(test_sync_backend_metadata test_sync_backend_metadata.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
+target_include_directories(test_sync_backend_metadata PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_sync_backend_metadata PRIVATE
+    git_sync_test_helpers
+    vxcore_test_internals
+    libgit2package
+    nlohmann_json)
+add_test(NAME test_sync_backend_metadata COMMAND test_sync_backend_metadata)

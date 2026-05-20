@@ -10,6 +10,14 @@ MockSyncBackend::~MockSyncBackend() {
   Shutdown();
 }
 
+std::string MockSyncBackend::GetName() const { return name_; }
+
+SyncCapabilities MockSyncBackend::GetCapabilities() const {
+  return capabilities_;
+}
+
+bool MockSyncBackend::IsInitialized() const { return initialized_override_; }
+
 VxCoreError MockSyncBackend::Initialize(const std::string &root_folder,
                                         const SyncConfig &config) {
   RecordCall("Initialize");
@@ -89,6 +97,16 @@ void MockSyncBackend::SetReturnCode(const std::string &method_name,
 
 void MockSyncBackend::EnableFakeConflicts(bool enable) {
   fake_conflicts_enabled_ = enable;
+}
+
+void MockSyncBackend::SetName(std::string name) { name_ = std::move(name); }
+
+void MockSyncBackend::SetCapabilities(SyncCapabilities caps) {
+  capabilities_ = caps;
+}
+
+void MockSyncBackend::SetInitialized(bool initialized) {
+  initialized_override_ = initialized;
 }
 
 size_t MockSyncBackend::GetCallCount() const {
