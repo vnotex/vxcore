@@ -2,7 +2,20 @@
 
 #include <sstream>
 
+#include "sync/sync_backend_registry.h"
+
 namespace vxcore {
+
+// Task 5.2 (sync-backend-phase4 F4.1): self-registration of the mock backend
+// into SyncBackendRegistry. The token's constructor runs at static-init time
+// and calls Registry::Register("mock", factory). BackendRegistration swallows
+// any exception so static-init can never crash the program.
+namespace {
+const BackendRegistration kMockRegistration{
+    "mock", [](const SyncConfig &cfg) -> std::unique_ptr<ISyncBackend> {
+      return std::make_unique<MockSyncBackend>();
+    }};
+}  // namespace
 
 MockSyncBackend::MockSyncBackend() = default;
 

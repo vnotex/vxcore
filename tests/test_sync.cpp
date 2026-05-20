@@ -8,8 +8,20 @@
 #include "sync/sync_backend.h"
 #include "sync/sync_manager.h"
 #include "sync/sync_types.h"
+#include "test_internals/mock_sync_backend.h"
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
+
+// Force-link the test_internals TU so its anonymous-namespace
+// BackendRegistration token runs at static-init time. Without this reference,
+// MSVC's linker would drop the entire mock_sync_backend.cpp TU from the static
+// library and the "mock" backend would never be registered in
+// SyncBackendRegistry::Instance(), causing vxcore_sync_enable(...,"mock",...)
+// to fail with VXCORE_ERR_UNKNOWN_BACKEND.
+namespace {
+[[maybe_unused]] vxcore::MockSyncBackend *g_force_link_test_internals_mock =
+    new vxcore::MockSyncBackend();
+}  // namespace
 
 namespace {
 
@@ -81,22 +93,14 @@ int test_sync_enable_disable() {
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
 
-  err = vxcore_sync_enable(
-      ctx, notebook_id,
-      "{\"backend\":\"mock\",\"remoteUrl\":\"test://repo\",\"intervalSeconds\":60}");
-  ASSERT_EQ(err, VXCORE_ERR_UNKNOWN_BACKEND);
-
-  // Migrate placeholder-enable to EnableSyncWithBackendForTesting (Wave 4.4 / F1.1).
-  // Wave 5.3 will register a "mock" factory in the registry; until then, tests inject
-  // their backend directly.
-  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  vxcore::SyncConfig cfg;
-  cfg.backend = "mock";
-  cfg.remote_url = "test://repo";
-  cfg.interval_seconds = 60;
-  err = vctx->sync_manager->EnableSyncWithBackendForTesting(
-      notebook_id, cfg, nullptr, std::make_unique<MockSyncBackend>());
-  ASSERT_EQ(err, VXCORE_OK);
+   // Task 5.2 (F4.1): "mock" is self-registered via BackendRegistration in
+   // test_internals. The force-link reference at the top of this file ensures
+   // the registration TU is pulled into the test binary, so the public C API
+   // can enable the mock backend directly.
+   err = vxcore_sync_enable(
+       ctx, notebook_id,
+       "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}");
+   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_sync_disable(ctx, notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
@@ -344,8 +348,9 @@ int test_sync_enable_with_backend_options_via_c_api() {
   // Enable sync with backendOptions. Wave 4.4 / F1.1: unknown backends fail-fast with
   // UNKNOWN_BACKEND. The C API still parses the JSON (no parse error returned) — only
   // the registry lookup fails. This preserves coverage of the JSON parsing path.
+  // (Note: "mock" is self-registered, so we use a name guaranteed not in the registry.)
   const char *config_json =
-      R"({"backend":"mock","remoteUrl":"https://dav.example.com","backendOptions":{"depth":2}})";
+      R"({"backend":"nonexistent_backend_xyz","remoteUrl":"https://dav.example.com","backendOptions":{"depth":2}})";
   err = vxcore_sync_enable(ctx, notebook_id, config_json);
   ASSERT_EQ(err, VXCORE_ERR_UNKNOWN_BACKEND);
 
@@ -387,27 +392,22 @@ int test_last_sync_utc_persistence() {
   ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, &before_utc), VXCORE_OK);
   ASSERT_EQ(before_utc, 0);
 
-  // Inject the mock backend via the test-only API, then trigger sync via the
-  // public C API so we exercise the same code path as production callers.
-  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  vxcore::SyncConfig cfg;
-  cfg.enabled = true;
-  cfg.backend = "mock";
-  cfg.remote_url = "test://repo";
-  ASSERT_EQ(vctx->sync_manager->EnableSyncWithBackendForTesting(
-                std::string(notebook_id), cfg, nullptr,
-                std::make_unique<MockSyncBackend>()),
-            VXCORE_OK);
+   // Task 5.2 (F4.1): "mock" is self-registered via BackendRegistration in
+   // test_internals. The force-link reference at the top of this file ensures
+   // the registration TU is pulled into the test binary.
+   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
+                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
+             VXCORE_OK);
 
-  const int64_t before_trigger = TestNowMillis();
-  ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_OK);
-  const int64_t after_trigger = TestNowMillis();
+   const int64_t before_trigger = TestNowMillis();
+   ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_OK);
+   const int64_t after_trigger = TestNowMillis();
 
-  // After successful trigger: should be a recent timestamp within the window.
-  int64_t after_utc = 0;
-  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, &after_utc), VXCORE_OK);
-  ASSERT_TRUE(after_utc >= before_trigger);
-  ASSERT_TRUE(after_utc <= after_trigger);
+   // After successful trigger: should be a recent timestamp within the window.
+   int64_t after_utc = 0;
+   ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, &after_utc), VXCORE_OK);
+   ASSERT_TRUE(after_utc >= before_trigger);
+   ASSERT_TRUE(after_utc <= after_trigger);
 
   // Null-pointer guards.
   int64_t dummy = 0;

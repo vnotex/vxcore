@@ -2,9 +2,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <string>
-
 #include <memory>
+#include <string>
 
 #include "core/context.h"
 #include "mock_sync_backend.h"
@@ -17,6 +16,71 @@
 #include "utils/file_utils.h"
 #include "vxcore/vxcore.h"
 #include "vxcore/vxcore_types.h"
+
+using namespace vxcore;
+
+namespace {
+
+// Proxy bridges shared ownership across the unique_ptr factory boundary.
+// SyncManager owns the proxy (via unique_ptr); the test owns the underlying
+// MockSyncBackend via shared_ptr; the proxy also holds a shared_ptr so the
+// mock stays alive until BOTH go out of scope. Avoids the previous
+// double-delete bug where the same MockSyncBackend* was held by both a
+// shared_ptr in the test AND a unique_ptr in SyncManager.
+class MockBackendProxy : public vxcore::ISyncBackend {
+ public:
+  explicit MockBackendProxy(std::shared_ptr<vxcore::MockSyncBackend> target)
+      : target_(std::move(target)) {}
+
+  std::string GetName() const override { return target_->GetName(); }
+  vxcore::SyncCapabilities GetCapabilities() const override {
+    return target_->GetCapabilities();
+  }
+  bool IsInitialized() const override { return target_->IsInitialized(); }
+  VxCoreError Initialize(const std::string &root_folder,
+                                 const vxcore::SyncConfig &config) override {
+    return target_->Initialize(root_folder, config);
+  }
+  VxCoreError SetCredentials(const vxcore::SyncCredentials &creds) override {
+    return target_->SetCredentials(creds);
+  }
+  VxCoreError Sync(vxcore::SyncProgressCallback cb, void *ud) override {
+    return target_->Sync(cb, ud);
+  }
+  VxCoreError GetStatus(std::vector<vxcore::SyncFileInfo> &out) override {
+    return target_->GetStatus(out);
+  }
+  VxCoreError GetConflicts(
+      std::vector<vxcore::SyncConflictInfo> &out) override {
+    return target_->GetConflicts(out);
+  }
+  VxCoreError ResolveConflict(
+      const std::string &path, vxcore::SyncConflictResolution r) override {
+    return target_->ResolveConflict(path, r);
+  }
+
+ private:
+  std::shared_ptr<vxcore::MockSyncBackend> target_;
+};
+
+}  // namespace
+
+// Helper class to wrap a shared_ptr<MockSyncBackend> in a copy-constructible factory.
+// Returns a fresh MockBackendProxy on each call; the proxy owns its own shared_ptr
+// to the underlying mock so the mock outlives both the test's shared_ptr and the
+// SyncManager-owned unique_ptr.
+class MockBackendFactory {
+ public:
+  explicit MockBackendFactory(std::shared_ptr<MockSyncBackend> mock)
+      : mock_(std::move(mock)) {}
+
+  std::unique_ptr<ISyncBackend> operator()(const SyncConfig &) const {
+    return std::make_unique<MockBackendProxy>(mock_);
+  }
+
+ private:
+  std::shared_ptr<MockSyncBackend> mock_;
+};
 
 using namespace vxcore;
 
@@ -96,18 +160,23 @@ int test_sync_trigger_dispatches_to_backend() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  // Wave 4.4 / F1.1: "mock" is no longer an allow-listed placeholder backend; inject
-  // via EnableSyncWithBackendForTesting instead of the deprecated placeholder-then-
-  // RegisterBackendForTesting pattern. Wave 5.3 will register a "mock" factory in the
-  // registry; until then, tests bypass the factory with the test-only API.
-  auto mock = std::make_unique<MockSyncBackend>();
-  MockSyncBackend *mock_ptr = mock.get();
+  // Task 5.2 (F4.1): "mock" is now self-registered via BackendRegistration in
+  // test_internals, so the registry path works. Use EnableSyncWithFactoryForTesting to inject a custom
+  // mock instance for call tracking.
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
   SyncConfig cfg;
   cfg.backend = "mock";
   cfg.remote_url = "file:///tmp/x";
-  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
-                notebook_id, cfg, nullptr, std::move(mock)),
+  
+  // Create a mock and capture a pointer for call tracking.
+  auto mock = std::make_shared<MockSyncBackend>();
+  MockSyncBackend *mock_ptr = mock.get();
+  
+  // Factory that returns the captured mock instance.
+  MockBackendFactory factory(mock);
+  
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithFactoryForTesting(
+                notebook_id, cfg, nullptr, factory),
             VXCORE_OK);
 
   ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_OK);
@@ -137,10 +206,12 @@ int test_sync_trigger_no_backend_returns_not_implemented() {
   // semantic is no longer reachable (registry rejects unknown backends at enable time).
   // The "state-without-backend" branch in TriggerSync (VXCORE_ERR_NOT_IMPLEMENTED) is now
   // dead code from the public API surface and only reachable via direct private-state
-  // manipulation. This test instead asserts the new contract: enabling with an unknown
+  // manipulation. This test asserts the new contract: enabling with a truly unknown
   // backend fails with UNKNOWN_BACKEND, and trigger reports SYNC_NOT_ENABLED.
+  // (Note: "mock" is self-registered by tests/mock_sync_backend.cpp, so we use a
+  // name that is guaranteed not to be in the registry.)
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
+                               "{\"backend\":\"nonexistent_backend_xyz\",\"remoteUrl\":\"file:///tmp/x\"}"),
             VXCORE_ERR_UNKNOWN_BACKEND);
   ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_ERR_SYNC_NOT_ENABLED);
 
@@ -165,14 +236,21 @@ int test_sync_trigger_state_transitions() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  auto mock = std::make_unique<MockSyncBackend>();
-  mock->next_sync_result = VXCORE_ERR_SYNC_CONFLICT;
+  // Task 5.2 (F4.1): "mock" is now self-registered. Use EnableSyncWithFactoryForTesting
+  // to inject a custom mock instance for call tracking.
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
   SyncConfig cfg;
   cfg.backend = "mock";
   cfg.remote_url = "file:///tmp/x";
-  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
-                notebook_id, cfg, nullptr, std::move(mock)),
+  
+  auto mock = std::make_shared<MockSyncBackend>();
+  mock->next_sync_result = VXCORE_ERR_SYNC_CONFLICT;
+  MockSyncBackend *mock_ptr = mock.get();
+  
+  MockBackendFactory factory(mock);
+  
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithFactoryForTesting(
+                notebook_id, cfg, nullptr, factory),
             VXCORE_OK);
 
   ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_ERR_SYNC_CONFLICT);
@@ -203,15 +281,21 @@ int test_sync_status_returns_files_from_backend() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  auto mock = std::make_unique<MockSyncBackend>();
-  mock->canned_status.push_back({"a.md", SyncFileStatus::kModifiedLocal});
-  mock->canned_status.push_back({"b.md", SyncFileStatus::kAddedLocal});
+  // Task 5.2 (F4.1): "mock" is now self-registered. Use EnableSyncWithFactoryForTesting
+  // to inject a custom mock instance with canned status.
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
   SyncConfig cfg;
   cfg.backend = "mock";
   cfg.remote_url = "file:///tmp/x";
-  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
-                notebook_id, cfg, nullptr, std::move(mock)),
+  
+  auto mock = std::make_shared<MockSyncBackend>();
+  mock->canned_status.push_back({"a.md", SyncFileStatus::kModifiedLocal});
+  mock->canned_status.push_back({"b.md", SyncFileStatus::kAddedLocal});
+  
+  MockBackendFactory factory(mock);
+  
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithFactoryForTesting(
+                notebook_id, cfg, nullptr, factory),
             VXCORE_OK);
 
   char *status_json = nullptr;
@@ -241,19 +325,25 @@ int test_sync_conflicts_returns_backend_list() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  auto mock = std::make_unique<MockSyncBackend>();
+  // Task 5.2 (F4.1): "mock" is now self-registered. Use EnableSyncWithFactoryForTesting
+  // to inject a custom mock instance with canned conflicts.
+  auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  SyncConfig cfg;
+  cfg.backend = "mock";
+  cfg.remote_url = "file:///tmp/x";
+  
+  auto mock = std::make_shared<MockSyncBackend>();
   SyncConflictInfo c;
   c.path = "a.md";
   c.local_modified_utc = 1000;
   c.remote_modified_utc = 2000;
   c.is_binary = false;
   mock->canned_conflicts.push_back(c);
-  auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  SyncConfig cfg;
-  cfg.backend = "mock";
-  cfg.remote_url = "file:///tmp/x";
-  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
-                notebook_id, cfg, nullptr, std::move(mock)),
+  
+  MockBackendFactory factory(mock);
+  
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithFactoryForTesting(
+                notebook_id, cfg, nullptr, factory),
             VXCORE_OK);
 
   char *conflicts_json = nullptr;
@@ -282,14 +372,20 @@ int test_sync_resolve_dispatches_to_backend() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  auto mock = std::make_unique<MockSyncBackend>();
-  MockSyncBackend *mock_ptr = mock.get();
+  // Task 5.2 (F4.1): "mock" is now self-registered. Use EnableSyncWithFactoryForTesting
+  // to inject a custom mock instance for call tracking.
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
   SyncConfig cfg;
   cfg.backend = "mock";
   cfg.remote_url = "file:///tmp/x";
-  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
-                notebook_id, cfg, nullptr, std::move(mock)),
+  
+  auto mock = std::make_shared<MockSyncBackend>();
+  MockSyncBackend *mock_ptr = mock.get();
+  
+  MockBackendFactory factory(mock);
+  
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithFactoryForTesting(
+                notebook_id, cfg, nullptr, factory),
             VXCORE_OK);
 
   ASSERT_EQ(vxcore_sync_resolve_conflict(ctx, notebook_id, "x.md", "keep_local"), VXCORE_OK);
@@ -318,15 +414,21 @@ int test_sync_resolve_clears_conflicted_state_when_no_more_conflicts() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  auto mock = std::make_unique<MockSyncBackend>();
-  mock->next_sync_result = VXCORE_ERR_SYNC_CONFLICT;
-  MockSyncBackend *mock_ptr = mock.get();
+  // Task 5.2 (F4.1): "mock" is now self-registered. Use EnableSyncWithFactoryForTesting
+  // to inject a custom mock instance for call tracking.
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
   SyncConfig cfg;
   cfg.backend = "mock";
   cfg.remote_url = "file:///tmp/x";
-  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
-                notebook_id, cfg, nullptr, std::move(mock)),
+  
+  auto mock = std::make_shared<MockSyncBackend>();
+  mock->next_sync_result = VXCORE_ERR_SYNC_CONFLICT;
+  MockSyncBackend *mock_ptr = mock.get();
+  
+  MockBackendFactory factory(mock);
+  
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithFactoryForTesting(
+                notebook_id, cfg, nullptr, factory),
             VXCORE_OK);
 
   // Trigger -> state becomes conflicted
@@ -366,14 +468,20 @@ int test_sync_manager_set_credentials_dispatches() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  auto mock = std::make_unique<MockSyncBackend>();
-  MockSyncBackend *mock_ptr = mock.get();
+  // Task 5.2 (F4.1): "mock" is now self-registered. Use EnableSyncWithFactoryForTesting
+  // to inject a custom mock instance for call tracking.
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
   SyncConfig cfg;
   cfg.backend = "mock";
   cfg.remote_url = "file:///tmp/x";
-  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
-                notebook_id, cfg, nullptr, std::move(mock)),
+  
+  auto mock = std::make_shared<MockSyncBackend>();
+  MockSyncBackend *mock_ptr = mock.get();
+  
+  MockBackendFactory factory(mock);
+  
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithFactoryForTesting(
+                notebook_id, cfg, nullptr, factory),
             VXCORE_OK);
 
   SyncCredentials creds;
@@ -408,8 +516,9 @@ int test_sync_manager_set_credentials_no_backend_returns_not_implemented() {
   // rejects unknown backends at enable time. This test now asserts the new contract:
   // enabling with an unknown backend fails with UNKNOWN_BACKEND, and SetCredentials
   // reports SYNC_NOT_ENABLED.
+  // (Note: "mock" is self-registered, so we use a name guaranteed not in the registry.)
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
+                               "{\"backend\":\"nonexistent_backend_xyz\",\"remoteUrl\":\"file:///tmp/x\"}"),
             VXCORE_ERR_UNKNOWN_BACKEND);
 
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
@@ -540,7 +649,11 @@ int test_sync_enable_with_credentials_calls_setcred_first() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  auto mock = std::make_unique<MockSyncBackend>();
+  // Task 5.2 (F4.1): "mock" is now self-registered. Use EnableSyncWithFactoryForTesting
+  // to inject a custom mock instance for call tracking.
+  auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  
+  auto mock = std::make_shared<MockSyncBackend>();
   mock->next_initialize_result = VXCORE_OK;
   MockSyncBackend *mock_ptr = mock.get();
 
@@ -551,9 +664,10 @@ int test_sync_enable_with_credentials_calls_setcred_first() {
   SyncCredentials creds;
   creds.personal_access_token = "abc";
 
-  auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithBackendForTesting(
-                notebook_id, config, &creds, std::move(mock)),
+  MockBackendFactory factory(mock);
+  
+  ASSERT_EQ(ctx_impl->sync_manager->EnableSyncWithFactoryForTesting(
+                notebook_id, config, &creds, factory),
             VXCORE_OK);
 
   ASSERT_EQ(mock_ptr->set_credentials_call_count, 1);

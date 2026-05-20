@@ -146,21 +146,9 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
 
   // Production guards apply only to the registry path. When a factory_override
   // is supplied (test path), the factory IS the source of truth — the
-  // unknown-backend allow-list and libgit2 init guards are bypassed so tests
-  // can exercise non-"git" backend names and run on hosts where libgit2 init
+  // libgit2 init guard is bypassed so tests can run on hosts where libgit2 init
   // failed (e.g., the mock-only test executable).
   if (!factory_override) {
-    // Fail-fast on unknown backend (F1.4/B3) — check BEFORE init to catch config errors early.
-    // "mock" used to be an allow-listed placeholder backend pre-W4.4; with the registry as
-    // source of truth, unknown names (including "mock" until Wave 5.3 registers a factory)
-    // fail-fast here. Tests that previously enabled "mock" must use
-    // EnableSyncWithBackendForTesting.
-    if (!config.backend.empty() && config.backend != "git") {
-      VXCORE_LOG_ERROR("SyncManager::EnableSyncImpl: unknown backend '%s' for notebook: %s",
-                       config.backend.c_str(), notebook_id.c_str());
-      return VXCORE_ERR_UNKNOWN_BACKEND;
-    }
-
     // Check if libgit2 initialization succeeded (F2.5/B4) — only for git backend.
     if (config.backend == "git" && !LibGit2Init::ok()) {
       VXCORE_LOG_ERROR("SyncManager::EnableSyncImpl: libgit2 init failed for notebook: %s",
@@ -400,67 +388,6 @@ VxCoreError SyncManager::SetCredentials(const std::string &notebook_id,
   }
 
   return backend_it->second->SetCredentials(credentials);
-}
-
-void SyncManager::RegisterBackendForTesting(const std::string &notebook_id,
-                                            std::unique_ptr<ISyncBackend> backend) {
-  states_[notebook_id] = SyncState::kIdle;
-  backends_[notebook_id] = std::move(backend);
-}
-
-VxCoreError SyncManager::EnableSyncWithBackendForTesting(
-    const std::string &notebook_id, const SyncConfig &config,
-    const SyncCredentials *credentials, std::unique_ptr<ISyncBackend> backend) {
-  VxCoreError err = ValidateNotebook(notebook_id);
-  if (err != VXCORE_OK) {
-    return err;
-  }
-
-  const bool had_config = configs_.count(notebook_id) > 0;
-  const bool had_state = states_.count(notebook_id) > 0;
-  SyncConfig prev_config;
-  SyncState prev_state = SyncState::kIdle;
-  if (had_config) prev_config = configs_[notebook_id];
-  if (had_state) prev_state = states_[notebook_id];
-
-  configs_[notebook_id] = config;
-  states_[notebook_id] = SyncState::kIdle;
-
-  if (credentials != nullptr) {
-    err = backend->SetCredentials(*credentials);
-    if (err != VXCORE_OK) {
-      if (had_config) {
-        configs_[notebook_id] = prev_config;
-      } else {
-        configs_.erase(notebook_id);
-      }
-      if (had_state) {
-        states_[notebook_id] = prev_state;
-      } else {
-        states_.erase(notebook_id);
-      }
-      return err;
-    }
-  }
-
-  auto *notebook = notebook_manager_->GetNotebook(notebook_id);
-  err = backend->Initialize(notebook->GetRootFolder(), config);
-  if (err != VXCORE_OK) {
-    if (had_config) {
-      configs_[notebook_id] = prev_config;
-    } else {
-      configs_.erase(notebook_id);
-    }
-    if (had_state) {
-      states_[notebook_id] = prev_state;
-    } else {
-      states_.erase(notebook_id);
-    }
-    return err;
-  }
-
-  backends_[notebook_id] = std::move(backend);
-  return VXCORE_OK;
 }
 
 VxCoreError SyncManager::EnableSyncWithFactoryForTesting(

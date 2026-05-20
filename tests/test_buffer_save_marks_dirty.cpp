@@ -61,15 +61,13 @@ int test_save_emits_for_sync_enabled_notebook() {
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
 
-  // Enable sync (backend "mock" is unknown to the factory → no real backend
-  // is registered, which is fine: we override below via RegisterBackendForTesting).
+  // Task 5.2 (F4.1): "mock" is now self-registered via BackendRegistration in
+  // test_internals, so the registry path works. Use the public C API.
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
             VXCORE_OK);
 
-  auto mock = std::make_unique<MockSyncBackend>();
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  ctx_impl->sync_manager->RegisterBackendForTesting(notebook_id, std::move(mock));
 
   // Pre-condition: no dirty notebooks, no "sync" queue yet.
   ASSERT_TRUE(ctx_impl->sync_manager->GetDirtyNotebooks().empty());
@@ -176,9 +174,7 @@ int test_failed_save_does_not_emit() {
                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
             VXCORE_OK);
 
-  auto mock = std::make_unique<MockSyncBackend>();
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  ctx_impl->sync_manager->RegisterBackendForTesting(notebook_id, std::move(mock));
 
   char *file_id = nullptr;
   ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "willfail.md", &file_id), VXCORE_OK);
@@ -248,9 +244,7 @@ int test_virtual_buffer_save_does_not_emit() {
                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}"),
             VXCORE_OK);
 
-  auto mock = std::make_unique<MockSyncBackend>();
   auto *ctx_impl = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  ctx_impl->sync_manager->RegisterBackendForTesting(notebook_id, std::move(mock));
 
   // Open a virtual buffer (no filesystem backing) and save it.
   char *buffer_id = nullptr;
