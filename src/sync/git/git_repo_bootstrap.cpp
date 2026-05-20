@@ -205,8 +205,8 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
   }
 
   git_fetch_options fopts = GIT_FETCH_OPTIONS_INIT;
-  GitCredentialPayload pl{credentials.personal_access_token};
-  fopts.callbacks = MakeRemoteCallbacks(&pl);
+  auto bundle = MakeRemoteCallbacks(credentials);
+  fopts.callbacks = bundle.callbacks;
 
   rc = git_remote_fetch(remote, /*refspecs=*/nullptr, &fopts,
                         "vnote initial fetch");

@@ -159,8 +159,8 @@ bool GitSyncPipeline::RemoteHasRefs() {
   }
 
   git_remote_callbacks cb = GIT_REMOTE_CALLBACKS_INIT;
-  GitCredentialPayload pl{credentials_.personal_access_token};
-  cb = MakeRemoteCallbacks(&pl);
+  auto bundle = MakeRemoteCallbacks(credentials_);
+  cb = bundle.callbacks;
 
   rc = git_remote_connect(remote, GIT_DIRECTION_FETCH, &cb,
                           /*proxy_opts=*/nullptr, /*custom_headers=*/nullptr);
@@ -386,8 +386,8 @@ VxCoreError GitSyncPipeline::FetchOrigin() {
   }
 
   git_fetch_options fopts = GIT_FETCH_OPTIONS_INIT;
-  GitCredentialPayload pl{credentials_.personal_access_token};
-  fopts.callbacks = MakeRemoteCallbacks(&pl);
+  auto bundle = MakeRemoteCallbacks(credentials_);
+  fopts.callbacks = bundle.callbacks;
 
   rc = git_remote_fetch(remote, /*refspecs=*/nullptr, &fopts, "vnote sync fetch");
   git_remote_free(remote);
@@ -576,8 +576,8 @@ VxCoreError GitSyncPipeline::PushOrigin() {
   }
 
   git_push_options popts = GIT_PUSH_OPTIONS_INIT;
-  GitCredentialPayload pl{credentials_.personal_access_token};
-  popts.callbacks = MakeRemoteCallbacks(&pl);
+  auto bundle = MakeRemoteCallbacks(credentials_);
+  popts.callbacks = bundle.callbacks;
 
   git_reference *head_ref = nullptr;
   rc = git_repository_head(&head_ref, repo_);

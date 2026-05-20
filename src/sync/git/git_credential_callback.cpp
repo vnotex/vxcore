@@ -1,4 +1,5 @@
 #include "sync/git/git_credential_callback.h"
+#include "sync/sync_types.h"
 
 namespace vxcore {
 
@@ -19,11 +20,13 @@ int GitSyncBackendCredentialCb(git_credential **out, const char *url,
   return GIT_PASSTHROUGH;
 }
 
-git_remote_callbacks MakeRemoteCallbacks(GitCredentialPayload *payload) {
-  git_remote_callbacks cb = GIT_REMOTE_CALLBACKS_INIT;
-  cb.payload = payload;
-  cb.credentials = &GitSyncBackendCredentialCb;
-  return cb;
+RemoteCallbacksBundle MakeRemoteCallbacks(const SyncCredentials &credentials) {
+  RemoteCallbacksBundle bundle;
+  bundle.payload.personal_access_token = credentials.personal_access_token;
+  bundle.callbacks = GIT_REMOTE_CALLBACKS_INIT;
+  bundle.callbacks.payload = &bundle.payload;
+  bundle.callbacks.credentials = &GitSyncBackendCredentialCb;
+  return bundle;
 }
 
 }  // namespace vxcore

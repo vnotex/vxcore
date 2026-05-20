@@ -7,6 +7,9 @@
 
 namespace vxcore {
 
+// Forward declaration
+struct SyncCredentials;
+
 // Payload carried into libgit2 credential callbacks. Holds only the data
 // the callback actually reads (PAT). Per-call snapshot — lifetime must
 // span the entire libgit2 operation (fetch/push/ls-remote).
@@ -29,10 +32,17 @@ int GitSyncBackendCredentialCb(git_credential **out, const char *url,
                                 const char *username_from_url,
                                 unsigned int allowed_types, void *payload);
 
-// Helper that returns a git_remote_callbacks struct initialized to defaults
-// and wired with our credential callback + the given payload. Use at every
-// libgit2 fetch/push/ls-remote site to keep the wiring consistent.
-git_remote_callbacks MakeRemoteCallbacks(GitCredentialPayload *payload);
+// Helper that constructs a per-call GitCredentialPayload snapshot from
+// credentials and returns a bundle of {git_remote_callbacks, payload}.
+// Caller must keep the returned bundle alive for the duration of the libgit2
+// operation (fetch/push/ls-remote). This preserves F2.6 stack-local snapshot
+// semantics: each call gets a fresh copy, not a shared reference.
+struct RemoteCallbacksBundle {
+  git_remote_callbacks callbacks;
+  GitCredentialPayload payload;
+};
+
+RemoteCallbacksBundle MakeRemoteCallbacks(const SyncCredentials &credentials);
 
 }  // namespace vxcore
 
