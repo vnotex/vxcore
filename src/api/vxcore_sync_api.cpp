@@ -78,7 +78,6 @@ VXCORE_API VxCoreError vxcore_sync_enable(VxCoreContextHandle context, const cha
     auto j = nlohmann::json::parse(config_json);
 
     vxcore::SyncConfig config = vxcore::SyncConfig::FromJson(j);
-    config.enabled = true;
 
     // Build the credential provider. NEVER log the PAT value itself.
     // Wave 7.1 (sync-backend-phase4): credentials_json == nullptr installs a

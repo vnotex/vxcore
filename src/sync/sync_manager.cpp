@@ -266,7 +266,6 @@ VxCoreError SyncManager::GetSyncConfig(const std::string &notebook_id, SyncConfi
 
   auto *notebook = notebook_manager_->GetNotebook(notebook_id);
   const auto &nc = notebook->GetConfig();
-  out_config.enabled = nc.sync_enabled;
   out_config.backend = nc.sync_backend;
   out_config.remote_url = nc.sync_remote_url;
   out_config.interval_seconds = nc.sync_interval_seconds;

@@ -12,8 +12,9 @@ SyncConfig SyncConfig::FromJson(const nlohmann::json &json) {
     config.remote_url = json["remoteUrl"].get<std::string>();
   if (json.contains("intervalSeconds") && json["intervalSeconds"].is_number_integer())
     config.interval_seconds = json["intervalSeconds"].get<int>();
-  if (json.contains("enabled") && json["enabled"].is_boolean())
-    config.enabled = json["enabled"].get<bool>();
+  // NOTE (F3.3): the legacy `"enabled"` key is silently ignored for backward
+  // compat with on-disk JSON written before the field was dropped. Whether
+  // sync is "on" for a notebook is encoded by SyncManager registration.
   if (json.contains("excludePaths") && json["excludePaths"].is_array()) {
     config.exclude_paths.clear();
     for (const auto &p : json["excludePaths"]) {
@@ -32,7 +33,6 @@ nlohmann::json SyncConfig::ToJson() const {
   j["backend"] = backend;
   j["remoteUrl"] = remote_url;
   j["intervalSeconds"] = interval_seconds;
-  j["enabled"] = enabled;
   j["excludePaths"] = exclude_paths;
   j["autoCommitMerges"] = auto_commit_merges;
   if (!backend_options.is_null() && !backend_options.empty())

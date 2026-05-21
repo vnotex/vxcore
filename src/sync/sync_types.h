@@ -58,7 +58,10 @@ struct SyncConflictInfo {
 };
 
 struct SyncConfig {
-  bool enabled = false;
+  // NOTE (F3.3): the legacy `enabled` flag was removed. Registration in
+  // SyncManager already encodes "enabled" — query
+  // SyncManager::IsSyncRegistered(notebook_id) instead. Old JSON containing
+  // an `"enabled"` key is silently ignored by FromJson() for backward compat.
   std::string backend;
   std::string remote_url;
   int interval_seconds = 60;
