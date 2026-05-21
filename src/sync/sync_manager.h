@@ -94,6 +94,21 @@ class SyncManager {
 
   VXCORE_API void ClearDirty(const std::string &notebook_id);
 
+  // Task 7.4 (F3.6): authoritative "is sync ready" predicate. Mirrors the
+  // semantics formerly inlined in vxcore_sync_is_ready: returns true iff the
+  // notebook exists AND its persisted config has sync_enabled=true AND
+  // sync_backend non-empty AND sync_remote_url non-empty. The runtime
+  // states_/backends_ registration is NOT required — a notebook in S4 (disk
+  // complete, runtime absent) still reports ready so the Qt-side reconcile
+  // path can pick it up. Const + no callbacks fired.
+  VXCORE_API bool IsReady(const std::string &notebook_id) const;
+
+  // Task 7.4 (F3.6): authoritative "last successful sync timestamp" accessor
+  // (milliseconds since Unix epoch, UTC). Reads the per-device value from the
+  // notebook's metadata.db via Notebook::GetLastSyncUtc. Returns 0 when the
+  // notebook is unknown or never synced on this device. Const + no callbacks.
+  VXCORE_API int64_t LastSyncTime(const std::string &notebook_id) const;
+
  private:
   VxCoreError ValidateNotebook(const std::string &notebook_id);
 

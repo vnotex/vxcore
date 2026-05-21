@@ -336,21 +336,31 @@ VXCORE_API VxCoreError vxcore_sync_is_ready(VxCoreContextHandle context, const c
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
 
   try {
+    // Task 7.4 (F3.6): route through SyncManager — the single source of truth
+    // for "is sync configured & ready". The predicate (sync_enabled +
+    // non-empty backend + non-empty remote_url) lives inside
+    // SyncManager::IsReady and is mirrored here without modification. We
+    // still return NOT_FOUND for missing notebooks (preserves pre-7.4 C ABI
+    // semantics) rather than silently reporting not-ready.
+    if (!ctx->sync_manager) {
+      ctx->last_error = "Sync manager not initialized";
+      *out_ready = 0;
+      return VXCORE_ERR_UNKNOWN;
+    }
     auto *nb = ctx->notebook_manager->GetNotebook(notebook_id);
     if (!nb) {
       ctx->last_error = "Notebook not found";
       return VXCORE_ERR_NOT_FOUND;
     }
-
-    const auto &cfg = nb->GetConfig();
-    *out_ready =
-        (cfg.sync_enabled && !cfg.sync_backend.empty() && !cfg.sync_remote_url.empty()) ? 1 : 0;
+    *out_ready = ctx->sync_manager->IsReady(notebook_id) ? 1 : 0;
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = e.what();
+    *out_ready = 0;
     return VXCORE_ERR_UNKNOWN;
   } catch (...) {
     ctx->last_error = "Unknown error checking sync readiness";
+    *out_ready = 0;
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -365,13 +375,22 @@ VXCORE_API VxCoreError vxcore_sync_get_last_sync_utc(VxCoreContextHandle context
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
 
   try {
+    // Task 7.4 (F3.6): route through SyncManager. LastSyncTime delegates to
+    // Notebook::GetLastSyncUtc internally — same metadata.db read as before,
+    // same units (ms since Unix epoch, UTC). Missing notebook → 0 +
+    // NOT_FOUND, mirroring the previous behaviour exactly.
+    if (!ctx->sync_manager) {
+      ctx->last_error = "Sync manager not initialized";
+      *out_utc_millis = 0;
+      return VXCORE_ERR_UNKNOWN;
+    }
     auto *nb = ctx->notebook_manager->GetNotebook(notebook_id);
     if (!nb) {
       ctx->last_error = "Notebook not found";
       *out_utc_millis = 0;
       return VXCORE_ERR_NOT_FOUND;
     }
-    *out_utc_millis = nb->GetLastSyncUtc();
+    *out_utc_millis = ctx->sync_manager->LastSyncTime(notebook_id);
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = e.what();

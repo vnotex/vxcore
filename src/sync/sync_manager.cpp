@@ -110,6 +110,34 @@ void SyncManager::ClearDirty(const std::string &notebook_id) {
   dirty_notebooks_.erase(notebook_id);
 }
 
+bool SyncManager::IsReady(const std::string &notebook_id) const {
+  // Task 7.4 (F3.6): single source of truth for "sync configured & ready".
+  // Replicates the predicate previously inlined in vxcore_sync_is_ready —
+  // we deliberately do NOT also require states_.count(notebook_id) so that
+  // disk-complete-but-runtime-absent notebooks (S4) still report ready and
+  // the reconcile path can lift them into S5. No callbacks fired; no lock
+  // taken (notebook config is read-only here and current SyncManager methods
+  // are caller-synchronized — Wave 10 introduces state_mutex_).
+  auto *notebook = notebook_manager_->GetNotebook(notebook_id);
+  if (!notebook) {
+    return false;
+  }
+  const auto &cfg = notebook->GetConfig();
+  return cfg.sync_enabled && !cfg.sync_backend.empty() && !cfg.sync_remote_url.empty();
+}
+
+int64_t SyncManager::LastSyncTime(const std::string &notebook_id) const {
+  // Task 7.4 (F3.6): authoritative per-device last-successful-sync timestamp
+  // (ms since Unix epoch, UTC). Delegates to Notebook::GetLastSyncUtc which
+  // reads metadata.db — the same value SyncManager::TriggerSync writes via
+  // Notebook::SetLastSyncUtc(GetCurrentTimestampMillis()) on VXCORE_OK.
+  auto *notebook = notebook_manager_->GetNotebook(notebook_id);
+  if (!notebook) {
+    return 0;
+  }
+  return notebook->GetLastSyncUtc();
+}
+
 VxCoreError SyncManager::ValidateNotebook(const std::string &notebook_id) {
   auto *notebook = notebook_manager_->GetNotebook(notebook_id);
   if (notebook == nullptr) {
