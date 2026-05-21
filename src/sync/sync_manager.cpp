@@ -75,18 +75,24 @@ void SyncManager::SetWorkQueueManager(WorkQueueManager *work_queue_manager) {
 }
 
 void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
-  // Wave 9.2 (F2.4): no longer holds dirty_mutex_ — DirtyTracker is
-  // self-locking and the caller in SetEventManager no longer takes a lock.
-  // Wave 10.1 (F2.4 part 2): this function INTENTIONALLY does not take
-  // state_mutex_ at entry — it calls GetSyncConfig() which acquires the
-  // lock internally, and enqueues a job into the work queue (external
-  // dispatch) at the end. last_enqueue_time_ is not guarded by
-  // state_mutex_ (out of contract; debounce is best-effort).
-  VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: entry notebook_id=%s has_wqm=%d has_em=%d",
-                   notebook_id.c_str(), work_queue_manager_ != nullptr,
-                   event_manager_ != nullptr);
-  if (!work_queue_manager_ || !event_manager_) {
-    VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: skipped (missing wqm or em)");
+  // T9 (sync-queue-convergence): this function no longer enqueues a sync job
+  // into WorkQueue("sync"). When the debounce gate passes it emits a single
+  // sync.should_run event with payload {"notebookId": "<id>"}. A downstream
+  // consumer (Qt SyncService auto-route, future T31) decides how to actually
+  // drive TriggerSync (worker thread, throttling policy, etc.). The vxcore
+  // WorkQueue infrastructure is intentionally preserved for tests and for
+  // embedders that still want a queue-based consumer; SetWorkQueueManager
+  // and work_queue_manager_ are NOT removed.
+  //
+  // Locking: state_mutex_ is NOT taken here. GetSyncConfig acquires the lock
+  // internally; the EventManager::Emit fan-out at the end is external and
+  // MUST run outside any SyncManager lock (Wave 0.5 contract).
+  // last_enqueue_time_ keeps its name for backward compat; it now records the
+  // timestamp of the last sync.should_run EMISSION, not a queue enqueue.
+  VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: entry notebook_id=%s has_em=%d",
+                   notebook_id.c_str(), event_manager_ != nullptr);
+  if (!event_manager_) {
+    VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: skipped (missing event_manager)");
     return;
   }
 
@@ -115,19 +121,11 @@ void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
 
   last = now;
 
-  auto *queue = work_queue_manager_->GetOrCreate("sync");
-  std::string nb_id = notebook_id;
-  // T7 (sync-queue-convergence): sync.started and sync.finished are now
-  // emitted by TriggerSync itself (single source). The lambda just dispatches
-  // and propagates the conflict event (T8 will enrich conflict payload with
-  // file paths and likewise move that emission into TriggerSync).
-  queue->Enqueue([this, nb_id]() {
-    VxCoreError err = TriggerSync(nb_id);
-    if (err == VXCORE_ERR_SYNC_CONFLICT) {
-      event_manager_->Emit(events::kSyncConflict, {{"notebookId", nb_id}});
-    }
-  });
-  VXCORE_LOG_DEBUG("SyncManager: enqueued auto-sync for notebook: %s", notebook_id.c_str());
+  // T9: emit sync.should_run OUTSIDE any SyncManager lock. EventManager
+  // listeners may re-enter SyncManager (e.g., the future Qt auto-route
+  // consumer that will call TriggerSync).
+  event_manager_->Emit(events::kSyncShouldRun, {{"notebookId", notebook_id}});
+  VXCORE_LOG_DEBUG("SyncManager: emitted sync.should_run for notebook: %s", notebook_id.c_str());
 }
 
 std::vector<std::string> SyncManager::GetDirtyNotebooks() const {
@@ -481,6 +479,21 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
     if (notebook) {
       notebook->SetLastSyncUtc(GetCurrentTimestampMillis());
     }
+  }
+
+  // T8 (sync-queue-convergence): emit sync.conflict BEFORE sync.finished,
+  // enriched with the conflict file list. GetConflicts is external and MUST
+  // run outside state_mutex_ — the lock above was already released. Backend
+  // pointer stability mirrors the Sync() call above.
+  if (sync_err == VXCORE_ERR_SYNC_CONFLICT && event_manager_) {
+    std::vector<SyncConflictInfo> conflicts;
+    backend_ptr->GetConflicts(conflicts);
+    nlohmann::json files = nlohmann::json::array();
+    for (const auto &c : conflicts) {
+      files.push_back(c.path);
+    }
+    event_manager_->Emit(events::kSyncConflict,
+                         {{"notebookId", notebook_id}, {"files", files}});
   }
 
   // T7 (sync-queue-convergence): emit sync.finished OUTSIDE state_mutex_.

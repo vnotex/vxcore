@@ -58,6 +58,11 @@ class MockSyncBackend : public ISyncBackend {
   void SetReturnCode(const std::string &method_name, VxCoreError code);
   void EnableFakeConflicts(bool enable);
 
+  // T8 (sync-queue-convergence): populate the conflict set that GetConflicts
+  // returns AND make Sync() return VXCORE_ERR_SYNC_CONFLICT. Allows tests to
+  // assert that TriggerSync emits sync.conflict with the expected files list.
+  void SetConflicts(std::vector<SyncConflictInfo> conflicts);
+
   // Task 4.1 (sync-backend-phase4 F1.2): allow tests to override identity
   // methods. Defaults: name="mock", capabilities=None,
   // IsInitialized()=true so legacy tests don't have to call Initialize()
@@ -106,6 +111,7 @@ class MockSyncBackend : public ISyncBackend {
   std::map<std::string, VxCoreError> return_codes_;
   std::vector<std::string> call_records_;
   bool fake_conflicts_enabled_ = false;
+  std::vector<SyncConflictInfo> fake_conflicts_;
   std::string root_folder_;
   SyncConfig config_;
   bool initialized_ = false;

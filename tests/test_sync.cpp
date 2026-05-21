@@ -583,27 +583,193 @@ int test_auto_sync_does_not_double_emit() {
             VXCORE_OK);
 
   // Trigger the auto path: create a file -> file.created -> mark_dirty ->
-  // MaybeEnqueueSync -> work_queue("sync").Enqueue(lambda).
+  // MaybeEnqueueSync -> emit sync.should_run. T9 (sync-queue-convergence)
+  // removed the WorkQueue enqueue; the auto-route consumer (future T31)
+  // subscribes to sync.should_run and drives TriggerSync. We install a
+  // local subscriber here to mimic that future consumer.
+  struct AutoRoute {
+    VxCoreContextHandle ctx;
+  } auto_route{ctx};
+  auto auto_route_cb = [](const char *, const char *json_data, void *userdata) {
+    auto *ar = static_cast<AutoRoute *>(userdata);
+    auto j = nlohmann::json::parse(json_data);
+    if (j.contains("notebookId") && j["notebookId"].is_string()) {
+      vxcore_sync_trigger(ar->ctx, j["notebookId"].get<std::string>().c_str());
+    }
+  };
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.should_run", auto_route_cb, &auto_route), VXCORE_OK);
+
   char *file_id = nullptr;
   ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "auto_dup.md", &file_id), VXCORE_OK);
   vxcore_string_free(file_id);
 
-  // Drain the work queue (lambda calls TriggerSync, which emits both events).
-  int processed = vxcore_work_queue_process_next(ctx, "sync", 2000);
-  ASSERT_TRUE(processed >= 1);
-
-  // After T7 the auto path emits exactly one started + one finished
-  // (the lambda's duplicate emissions were removed; TriggerSync is the
-  // sole source).
+  // After T9 the auto path emits exactly one sync.should_run; the local
+  // subscriber drives a single TriggerSync, which (post-T7) emits exactly
+  // one sync.started + one sync.finished.
   ASSERT_EQ(counters.started.load(), 1);
   ASSERT_EQ(counters.finished.load(), 1);
 
+  vxcore_off_event(ctx, "sync.should_run", auto_route_cb);
   vxcore_off_event(ctx, "sync.started", started_cb);
   vxcore_off_event(ctx, "sync.finished", finished_cb);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_auto_no_dup"));
   std::cout << "  \xE2\x9C\x93 test_auto_sync_does_not_double_emit passed" << std::endl;
+  return 0;
+}
+
+// ----------------------------------------------------------------------------
+// T8 (sync-queue-convergence): sync.conflict event now carries the conflict
+// file list. TriggerSync is the sole emitter (both manual + auto paths).
+// ----------------------------------------------------------------------------
+
+namespace {
+
+struct ConflictEventCapture {
+  std::atomic<int> count{0};
+  std::string last_notebook;
+  std::vector<std::string> last_files;
+  std::mutex mu;
+};
+
+void conflict_cb(const char *event_name, const char *json_data, void *userdata) {
+  (void)event_name;
+  auto *c = static_cast<ConflictEventCapture *>(userdata);
+  auto j = nlohmann::json::parse(json_data);
+  std::lock_guard<std::mutex> lk(c->mu);
+  c->last_notebook = j.value("notebookId", "");
+  c->last_files.clear();
+  if (j.contains("files") && j["files"].is_array()) {
+    for (const auto &f : j["files"]) {
+      c->last_files.push_back(f.get<std::string>());
+    }
+  }
+  c->count.fetch_add(1);
+}
+
+}  // namespace
+
+int test_trigger_sync_emits_conflict_with_files() {
+  std::cout << "  Running test_trigger_sync_emits_conflict_with_files..." << std::endl;
+  cleanup_test_dir(get_test_path("test_conflict_files"));
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_conflict_files").c_str(),
+                                   "{\"name\":\"ConflictFiles\"}", VXCORE_NOTEBOOK_BUNDLED,
+                                   &notebook_id),
+            VXCORE_OK);
+
+  SyncEventCounters counters;
+  ConflictEventCapture conflict;
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.started", started_cb, &counters), VXCORE_OK);
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.finished", finished_cb, &counters), VXCORE_OK);
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.conflict", conflict_cb, &conflict), VXCORE_OK);
+
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}",
+                               nullptr),
+            VXCORE_OK);
+
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  auto &backends = vctx->sync_manager->BackendsForTesting();
+  auto it = backends.find(notebook_id);
+  ASSERT_TRUE(it != backends.end());
+  auto *mock = dynamic_cast<vxcore::MockSyncBackend *>(it->second.get());
+  ASSERT_NOT_NULL(mock);
+
+  std::vector<vxcore::SyncConflictInfo> fake;
+  vxcore::SyncConflictInfo c1; c1.path = "notes/a.md"; fake.push_back(c1);
+  vxcore::SyncConflictInfo c2; c2.path = "b.md"; fake.push_back(c2);
+  mock->SetConflicts(fake);
+
+  VxCoreError err = vxcore_sync_trigger(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_ERR_SYNC_CONFLICT);
+
+  ASSERT_EQ(conflict.count.load(), 1);
+  ASSERT_EQ(conflict.last_notebook, std::string(notebook_id));
+  ASSERT_EQ(conflict.last_files.size(), static_cast<size_t>(2));
+  ASSERT_EQ(conflict.last_files[0], std::string("notes/a.md"));
+  ASSERT_EQ(conflict.last_files[1], std::string("b.md"));
+  ASSERT_EQ(counters.finished.load(), 1);
+  ASSERT_EQ(counters.last_finished_result, static_cast<int>(VXCORE_ERR_SYNC_CONFLICT));
+
+  vxcore_off_event(ctx, "sync.started", started_cb);
+  vxcore_off_event(ctx, "sync.finished", finished_cb);
+  vxcore_off_event(ctx, "sync.conflict", conflict_cb);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_conflict_files"));
+  std::cout << "  \xE2\x9C\x93 test_trigger_sync_emits_conflict_with_files passed" << std::endl;
+  return 0;
+}
+
+int test_auto_sync_conflict_carries_files() {
+  std::cout << "  Running test_auto_sync_conflict_carries_files..." << std::endl;
+  cleanup_test_dir(get_test_path("test_auto_conflict"));
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_auto_conflict").c_str(),
+                                   "{\"name\":\"AutoConflict\"}", VXCORE_NOTEBOOK_BUNDLED,
+                                   &notebook_id),
+            VXCORE_OK);
+
+  ConflictEventCapture conflict;
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.conflict", conflict_cb, &conflict), VXCORE_OK);
+
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\","
+                               "\"intervalSeconds\":1}",
+                               nullptr),
+            VXCORE_OK);
+
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  auto &backends = vctx->sync_manager->BackendsForTesting();
+  auto *mock = dynamic_cast<vxcore::MockSyncBackend *>(
+      backends.find(notebook_id)->second.get());
+  ASSERT_NOT_NULL(mock);
+
+  std::vector<vxcore::SyncConflictInfo> fake;
+  vxcore::SyncConflictInfo c1; c1.path = "x/y.md"; fake.push_back(c1);
+  mock->SetConflicts(fake);
+
+  // T9 (sync-queue-convergence): the auto path emits sync.should_run instead
+  // of enqueueing into WorkQueue("sync"). Subscribe and drive TriggerSync
+  // ourselves to mimic the future Qt auto-route consumer.
+  struct AutoRoute {
+    VxCoreContextHandle ctx;
+  } auto_route{ctx};
+  auto auto_route_cb = [](const char *, const char *json_data, void *userdata) {
+    auto *ar = static_cast<AutoRoute *>(userdata);
+    auto j = nlohmann::json::parse(json_data);
+    if (j.contains("notebookId") && j["notebookId"].is_string()) {
+      vxcore_sync_trigger(ar->ctx, j["notebookId"].get<std::string>().c_str());
+    }
+  };
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.should_run", auto_route_cb, &auto_route), VXCORE_OK);
+
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "auto_conflict.md", &file_id),
+            VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  ASSERT_EQ(conflict.count.load(), 1);
+  ASSERT_EQ(conflict.last_notebook, std::string(notebook_id));
+  ASSERT_EQ(conflict.last_files.size(), static_cast<size_t>(1));
+  ASSERT_EQ(conflict.last_files[0], std::string("x/y.md"));
+
+  vxcore_off_event(ctx, "sync.should_run", auto_route_cb);
+  vxcore_off_event(ctx, "sync.conflict", conflict_cb);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_auto_conflict"));
+  std::cout << "  \xE2\x9C\x93 test_auto_sync_conflict_carries_files passed" << std::endl;
   return 0;
 }
 
@@ -631,6 +797,8 @@ int main() {
   RUN_TEST(test_trigger_sync_emits_started_and_finished);
   RUN_TEST(test_trigger_sync_emits_finished_with_error_code);
   RUN_TEST(test_auto_sync_does_not_double_emit);
+  RUN_TEST(test_trigger_sync_emits_conflict_with_files);
+  RUN_TEST(test_auto_sync_conflict_carries_files);
 
   std::cout << "\xE2\x9C\x93 All sync tests passed" << std::endl;
   return 0;

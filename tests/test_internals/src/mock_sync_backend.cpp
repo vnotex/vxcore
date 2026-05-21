@@ -99,7 +99,7 @@ VxCoreError MockSyncBackend::GetStatus(std::vector<SyncFileInfo> &out_files) {
 VxCoreError MockSyncBackend::GetConflicts(
     std::vector<SyncConflictInfo> &out_conflicts) {
   RecordCall("GetConflicts");
-  out_conflicts.clear();
+  out_conflicts = fake_conflicts_;
   return GetReturnCode("GetConflicts");
 }
 
@@ -118,6 +118,11 @@ void MockSyncBackend::SetReturnCode(const std::string &method_name,
 
 void MockSyncBackend::EnableFakeConflicts(bool enable) {
   fake_conflicts_enabled_ = enable;
+}
+
+void MockSyncBackend::SetConflicts(std::vector<SyncConflictInfo> conflicts) {
+  fake_conflicts_ = std::move(conflicts);
+  fake_conflicts_enabled_ = true;
 }
 
 void MockSyncBackend::SetName(std::string name) { name_ = std::move(name); }
