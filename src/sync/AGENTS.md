@@ -673,6 +673,25 @@ ctest --test-dir build -C Debug -R test_event_manager   # includes dirty-trackin
 | `test_sync_dirty_not_marked_for_non_sync_notebook` | File ops on non-sync notebook do NOT mark dirty |
 | `test_sync_dirty_multiple_ops_single_entry` | Multiple file/folder ops produce only one dirty entry |
 
+## Sync Event Catalog
+
+`SyncManager` emits four lifecycle events through `EventManager`. Constants
+live in `src/core/event_names.h` (`vxcore::events::kSync*`). All payloads are
+JSON objects. Events are emitted OUTSIDE `state_mutex_` per the locking
+discipline (rule 3).
+
+| Event | Payload | Fire site | Trigger |
+|---|---|---|---|
+| `sync.started` | `{"notebookId":"<id>"}` | `SyncManager::TriggerSync` (`sync_manager.cpp`), immediately before `backend->Sync()` after the state-snapshot block releases `state_mutex_`. | Every `TriggerSync` call that passes validation and reaches the backend dispatch. Fires exactly once per call. |
+| `sync.finished` | `{"notebookId":"<id>","result":<int>}` | `SyncManager::TriggerSync`, after `backend->Sync()` returns (success OR error). `result` is the raw `VxCoreError` enum value. | Always paired 1:1 with `sync.started`. Fires for both success (`VXCORE_OK`) and failure paths, including `VXCORE_ERR_SYNC_CONFLICT`. |
+| `sync.conflict` | `{"notebookId":"<id>","files":["<rel-path>", ...]}` | `SyncManager::TriggerSync`, after `backend->Sync()` returns `VXCORE_ERR_SYNC_CONFLICT` and BEFORE `sync.finished`. File list comes from `backend->GetConflicts()` (called outside the lock). | Only when sync returns the conflict error code. Paths are notebook-relative; never absolute. Caller uses these to drive a resolution UI without re-querying `GetConflicts`. |
+| `sync.should_run` | `{"notebookId":"<id>"}` | `SyncManager::MaybeEnqueueSync` (`sync_manager.cpp`), after the per-notebook debounce window (`last_enqueue_time_`) elapses. | Auto-sync path: a watched file/folder mutation flagged the notebook dirty and the debounce gate cleared. Qt's `EventBridge` consumes this and dispatches via `SyncWorkQueueManager`. Non-Qt embedders may subscribe directly or fall back to polling `GetDirtyNotebooks()`. |
+
+Replacement note: `MaybeEnqueueSync` previously enqueued a task into
+`work_queue_manager_->GetOrCreate("sync")`. That path is gone; the auto-sync
+flow now ends at `sync.should_run` and the consumer owns dispatch. The
+`WorkQueue` infrastructure itself remains (tests + future non-Qt embedders).
+
 ## Event-Driven Dirty Tracking
 
 `SyncManager::SetEventManager()` subscribes to `file.created`, `file.saved`,
@@ -681,15 +700,23 @@ When an event fires for a notebook that has sync enabled (`configs_` map),
 the notebook ID is added to `dirty_notebooks_` (a `std::set`, so duplicates
 are ignored).
 
-**Caller responsibility:** The caller polls `GetDirtyNotebooks()` periodically
-(e.g., on a timer) and calls `TriggerSync()` for each dirty notebook.
-`TriggerSync()` automatically calls `ClearDirty()` on success. This keeps
-debounce/interval policy in the caller, not in vxcore.
+**Caller responsibility (preferred path):** subscribe to `sync.should_run`
+and call `TriggerSync()` for the notebook in the payload. `SyncManager`
+already applies the per-notebook debounce inside `MaybeEnqueueSync`, so
+each event corresponds to an actionable sync request. `TriggerSync()`
+calls `ClearDirty()` on success.
+
+**Polling path (still supported):** `GetDirtyNotebooks()` remains available
+for embedders that cannot subscribe to events (e.g., callers driving sync
+from a periodic timer with no event loop). It returns the same set of
+notebook IDs that drive `sync.should_run` emissions. New Qt code should
+prefer the event flow.
 
 ```
 file.created event → SyncManager marks notebook dirty
-                   → caller's timer fires
-                   → GetDirtyNotebooks() returns ["nb-123"]
+                   → debounce window elapses
+                   → sync.should_run emitted          (preferred: EventBridge consumes)
+                   → GetDirtyNotebooks() also returns ["nb-123"]   (polling fallback)
                    → vxcore_sync_trigger(ctx, "nb-123")
                    → on success, dirty state cleared
 ```
