@@ -34,7 +34,13 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
   auto mark_dirty = [this](const std::string &event_name, const nlohmann::json &data) {
     if (data.contains("notebookId") && data["notebookId"].is_string()) {
       std::string nb_id = data["notebookId"].get<std::string>();
-      const bool sync_enabled = (configs_.count(nb_id) > 0);
+      // Task 7.5 (F3.2): cache-presence is the correct predicate here — it
+      // means "EnableSync has populated runtime state for this notebook in
+      // this process". S4 notebooks (disk complete, runtime absent) are
+      // intentionally NOT dirty-tracked until reconcile-on-open lifts them
+      // into S5 via EnableSync, which repopulates the cache. The cache is
+      // a runtime-presence marker, not a config-disagreement source.
+      const bool sync_enabled = (configs_cache_.count(nb_id) > 0);
       VXCORE_LOG_DEBUG("SyncManager::mark_dirty: event=%s notebookId=%s sync_enabled=%d",
                        event_name.c_str(), nb_id.c_str(), sync_enabled ? 1 : 0);
       if (sync_enabled) {
@@ -68,19 +74,26 @@ void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
     return;
   }
 
-  auto cfg_it = configs_.find(notebook_id);
-  if (cfg_it == configs_.end() || cfg_it->second.interval_seconds <= 0) {
-    VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: skipped (no config or interval<=0) notebook_id=%s",
+  // Task 7.5 (F3.2): pull interval through the cache-aware accessor so any
+  // legitimate consumer (cache hit OR JSON-backed S5 notebook whose cache
+  // was previously populated) gets a consistent value. mark_dirty already
+  // gated entry on cache presence, so the GetSyncConfig fast path is the
+  // norm here.
+  SyncConfig effective_cfg;
+  if (GetSyncConfig(notebook_id, effective_cfg) != VXCORE_OK ||
+      effective_cfg.interval_seconds <= 0) {
+    VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: skipped (no config or interval<=0) "
+                     "notebook_id=%s",
                      notebook_id.c_str());
     return;
   }
 
   auto now = std::chrono::steady_clock::now();
-  auto interval = std::chrono::seconds(cfg_it->second.interval_seconds);
+  auto interval = std::chrono::seconds(effective_cfg.interval_seconds);
   auto &last = last_enqueue_time_[notebook_id];
   if (last != std::chrono::steady_clock::time_point{} && (now - last) < interval) {
     VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: debounced notebook_id=%s interval_s=%d",
-                     notebook_id.c_str(), cfg_it->second.interval_seconds);
+                     notebook_id.c_str(), effective_cfg.interval_seconds);
     return;
   }
 
@@ -190,21 +203,21 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
     }
   }
 
-  const bool had_config = configs_.count(notebook_id) > 0;
+  const bool had_config = configs_cache_.count(notebook_id) > 0;
   const bool had_state = states_.count(notebook_id) > 0;
   SyncConfig prev_config;
   SyncState prev_state = SyncState::kIdle;
-  if (had_config) prev_config = configs_[notebook_id];
+  if (had_config) prev_config = configs_cache_[notebook_id];
   if (had_state) prev_state = states_[notebook_id];
 
-  configs_[notebook_id] = config;
+  configs_cache_[notebook_id] = config;
   states_[notebook_id] = SyncState::kIdle;
 
   auto rollback = [&]() {
     if (had_config) {
-      configs_[notebook_id] = prev_config;
+      configs_cache_[notebook_id] = prev_config;
     } else {
-      configs_.erase(notebook_id);
+      configs_cache_.erase(notebook_id);
     }
     if (had_state) {
       states_[notebook_id] = prev_state;
@@ -272,7 +285,7 @@ VxCoreError SyncManager::DisableSync(const std::string &notebook_id) {
 
   backends_.erase(notebook_id);
   states_.erase(notebook_id);
-  configs_.erase(notebook_id);
+  configs_cache_.erase(notebook_id);
 
   VXCORE_LOG_INFO("Sync disabled for notebook: %s", notebook_id.c_str());
   return VXCORE_OK;
@@ -286,8 +299,13 @@ VxCoreError SyncManager::GetSyncConfig(const std::string &notebook_id, SyncConfi
     return err;
   }
 
-  auto it = configs_.find(notebook_id);
-  if (it != configs_.end()) {
+  // Task 7.5 (F3.2): configs_cache_ is a read-through cache; the authoritative
+  // store is the per-notebook NotebookConfig JSON. Fast path: cache hit
+  // returns immediately. Slow path: re-hydrate from notebook JSON and
+  // populate the cache for next time. InvalidateConfigCache(id) (called by
+  // external mutators) forces the slow path on the next request.
+  auto it = configs_cache_.find(notebook_id);
+  if (it != configs_cache_.end()) {
     out_config = it->second;
     return VXCORE_OK;
   }
@@ -297,7 +315,13 @@ VxCoreError SyncManager::GetSyncConfig(const std::string &notebook_id, SyncConfi
   out_config.backend = nc.sync_backend;
   out_config.remote_url = nc.sync_remote_url;
   out_config.interval_seconds = nc.sync_interval_seconds;
+  configs_cache_[notebook_id] = out_config;
   return VXCORE_OK;
+}
+
+void SyncManager::InvalidateConfigCache(const std::string &notebook_id) {
+  VXCORE_LOG_DEBUG("SyncManager::InvalidateConfigCache: notebook_id=%s", notebook_id.c_str());
+  configs_cache_.erase(notebook_id);
 }
 
 VxCoreError SyncManager::TriggerSync(const std::string &notebook_id) {

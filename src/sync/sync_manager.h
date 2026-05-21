@@ -43,7 +43,7 @@ class SyncManager {
   // Backends declaring SyncCapability::AuthRequired MUST receive either a
   // non-null provider here OR credentials via the (id, cfg, creds) overload
   // — passing neither returns VXCORE_ERR_MISSING_CREDENTIALS WITHOUT
-  // mutating any internal map (configs_/states_/backends_) so the caller can
+  // mutating any internal map (configs_cache_/states_/backends_) so the caller can
   // retry safely. Intentionally NOT exposed via the C ABI in v1.
   VXCORE_API VxCoreError EnableSync(const std::string &notebook_id, const SyncConfig &config,
                                     std::shared_ptr<ICredentialProvider> creds_provider);
@@ -62,6 +62,15 @@ class SyncManager {
                               SyncConflictResolution resolution);
 
   VXCORE_API VxCoreError GetSyncConfig(const std::string &notebook_id, SyncConfig &out_config);
+
+  // Task 7.5 (F3.2): invalidate the in-memory SyncConfig cache entry for one
+  // notebook. Callers MUST invoke this whenever the persisted NotebookConfig
+  // sync_* fields may have changed under us (e.g., notebook close/reload,
+  // direct vxcore_notebook_update_config from outside SyncManager). The next
+  // GetSyncConfig call will then re-read from notebook JSON and repopulate.
+  // No callbacks fired; no state_/backends_ touched. Safe to call for
+  // notebooks that have never been cached (no-op). NOT exposed via C ABI.
+  VXCORE_API void InvalidateConfigCache(const std::string &notebook_id);
 
   // C++-only: rotate credentials on an already-enabled notebook by swapping
   // the backend's ICredentialProvider. Wave 6.3 (F4.4) replaces the legacy
@@ -124,7 +133,7 @@ class SyncManager {
   // SyncBackendRegistry::Instance().Create(...) runs with the full production
   // guards (libgit2 init check for "git", unknown-backend rejection).
   //
-  // On any failure rolls back configs_/states_/backends_ to their prior
+  // On any failure rolls back configs_cache_/states_/backends_ to their prior
   // state. NEVER exposed on the C ABI.
   VxCoreError EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
                              std::shared_ptr<ICredentialProvider> provider,
@@ -145,7 +154,15 @@ class SyncManager {
   WorkQueueManager *work_queue_manager_ = nullptr;
   std::unordered_map<std::string, std::unique_ptr<ISyncBackend>> backends_;
   std::unordered_map<std::string, SyncState> states_;
-  std::unordered_map<std::string, SyncConfig> configs_;
+  // Task 7.5 (F3.2): SyncConfig cache. Authoritative store is the per-notebook
+  // NotebookConfig sync_* fields on disk (written by the Qt SyncService
+  // layer); this map is a read-through cache populated lazily by
+  // GetSyncConfig and eagerly by EnableSyncImpl. Mutable so const accessors
+  // (and future const overloads) can refresh it without const_cast. Always
+  // mutated under the same caller-supplied serialization that wraps every
+  // other SyncManager method — Wave 10 introduces state_mutex_ to make this
+  // explicit.
+  mutable std::unordered_map<std::string, SyncConfig> configs_cache_;
   mutable std::mutex dirty_mutex_;
   std::set<std::string> dirty_notebooks_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_enqueue_time_;
