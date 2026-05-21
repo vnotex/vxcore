@@ -117,14 +117,15 @@ void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
 
   auto *queue = work_queue_manager_->GetOrCreate("sync");
   std::string nb_id = notebook_id;
+  // T7 (sync-queue-convergence): sync.started and sync.finished are now
+  // emitted by TriggerSync itself (single source). The lambda just dispatches
+  // and propagates the conflict event (T8 will enrich conflict payload with
+  // file paths and likewise move that emission into TriggerSync).
   queue->Enqueue([this, nb_id]() {
-    event_manager_->Emit(events::kSyncStarted, {{"notebookId", nb_id}});
     VxCoreError err = TriggerSync(nb_id);
     if (err == VXCORE_ERR_SYNC_CONFLICT) {
       event_manager_->Emit(events::kSyncConflict, {{"notebookId", nb_id}});
     }
-    event_manager_->Emit(events::kSyncFinished,
-                         {{"notebookId", nb_id}, {"result", static_cast<int>(err)}});
   });
   VXCORE_LOG_DEBUG("SyncManager: enqueued auto-sync for notebook: %s", notebook_id.c_str());
 }
@@ -433,6 +434,14 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
     states_[notebook_id] = SyncState::kStaging;
   }
 
+  // T7 (sync-queue-convergence): emit sync.started OUTSIDE state_mutex_
+  // (the lock above was already released by the closing brace). EventManager
+  // fan-out is "external" per AGENTS.md § SyncManager Locking Discipline
+  // rule 3 — listeners may call back into SyncManager.
+  if (event_manager_) {
+    event_manager_->Emit(events::kSyncStarted, {{"notebookId", notebook_id}});
+  }
+
   // EXTERNAL CALLS — outside state_mutex_. SetCancellation runs first so
   // an early Cancel() between install and Sync() entry is still observed
   // by the in-flight Sync().
@@ -472,6 +481,15 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
     if (notebook) {
       notebook->SetLastSyncUtc(GetCurrentTimestampMillis());
     }
+  }
+
+  // T7 (sync-queue-convergence): emit sync.finished OUTSIDE state_mutex_.
+  // Payload carries the result code so subscribers can distinguish
+  // OK / CONFLICT / NETWORK / AUTH_FAILED / ... without a separate event.
+  if (event_manager_) {
+    event_manager_->Emit(events::kSyncFinished,
+                         {{"notebookId", notebook_id},
+                          {"result", static_cast<int>(sync_err)}});
   }
   return sync_err;
 }

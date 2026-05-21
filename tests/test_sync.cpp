@@ -1,6 +1,8 @@
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -427,6 +429,184 @@ int test_last_sync_utc_persistence() {
   return 0;
 }
 
+// ----------------------------------------------------------------------------
+// T7 (sync-queue-convergence): TriggerSync now emits sync.started and
+// sync.finished events directly (single source). The lambda inside
+// MaybeEnqueueSync used to emit them; that duplicate emission was removed.
+// ----------------------------------------------------------------------------
+
+namespace {
+
+struct SyncEventCounters {
+  std::atomic<int> started{0};
+  std::atomic<int> finished{0};
+  std::string last_finished_notebook;
+  int last_finished_result = -999;
+  std::string last_started_notebook;
+  std::mutex mu;
+};
+
+void started_cb(const char *event_name, const char *json_data, void *userdata) {
+  (void)event_name;
+  auto *c = static_cast<SyncEventCounters *>(userdata);
+  auto j = nlohmann::json::parse(json_data);
+  {
+    std::lock_guard<std::mutex> lk(c->mu);
+    c->last_started_notebook = j.value("notebookId", "");
+  }
+  c->started.fetch_add(1);
+}
+
+void finished_cb(const char *event_name, const char *json_data, void *userdata) {
+  (void)event_name;
+  auto *c = static_cast<SyncEventCounters *>(userdata);
+  auto j = nlohmann::json::parse(json_data);
+  {
+    std::lock_guard<std::mutex> lk(c->mu);
+    c->last_finished_notebook = j.value("notebookId", "");
+    c->last_finished_result = j.value("result", -999);
+  }
+  c->finished.fetch_add(1);
+}
+
+}  // namespace
+
+int test_trigger_sync_emits_started_and_finished() {
+  std::cout << "  Running test_trigger_sync_emits_started_and_finished..." << std::endl;
+  cleanup_test_dir(get_test_path("test_trigger_events"));
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_trigger_events").c_str(),
+                                   "{\"name\":\"TriggerEvents\"}", VXCORE_NOTEBOOK_BUNDLED,
+                                   &notebook_id),
+            VXCORE_OK);
+
+  SyncEventCounters counters;
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.started", started_cb, &counters), VXCORE_OK);
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.finished", finished_cb, &counters), VXCORE_OK);
+
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}",
+                               nullptr),
+            VXCORE_OK);
+
+  ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_OK);
+
+  ASSERT_EQ(counters.started.load(), 1);
+  ASSERT_EQ(counters.finished.load(), 1);
+  ASSERT_EQ(counters.last_started_notebook, std::string(notebook_id));
+  ASSERT_EQ(counters.last_finished_notebook, std::string(notebook_id));
+  ASSERT_EQ(counters.last_finished_result, static_cast<int>(VXCORE_OK));
+
+  vxcore_off_event(ctx, "sync.started", started_cb);
+  vxcore_off_event(ctx, "sync.finished", finished_cb);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_trigger_events"));
+  std::cout << "  \xE2\x9C\x93 test_trigger_sync_emits_started_and_finished passed" << std::endl;
+  return 0;
+}
+
+int test_trigger_sync_emits_finished_with_error_code() {
+  std::cout << "  Running test_trigger_sync_emits_finished_with_error_code..." << std::endl;
+  cleanup_test_dir(get_test_path("test_trigger_err"));
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_trigger_err").c_str(),
+                                   "{\"name\":\"TriggerErr\"}", VXCORE_NOTEBOOK_BUNDLED,
+                                   &notebook_id),
+            VXCORE_OK);
+
+  SyncEventCounters counters;
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.started", started_cb, &counters), VXCORE_OK);
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.finished", finished_cb, &counters), VXCORE_OK);
+
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}",
+                               nullptr),
+            VXCORE_OK);
+
+  // Reach into the registered backend and force Sync() to return NETWORK.
+  // BackendsForTesting is a thin accessor exposed on SyncManager for tests.
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  auto &backends = vctx->sync_manager->BackendsForTesting();
+  auto it = backends.find(notebook_id);
+  ASSERT_TRUE(it != backends.end());
+  auto *mock = dynamic_cast<vxcore::MockSyncBackend *>(it->second.get());
+  ASSERT_NOT_NULL(mock);
+  mock->SetReturnCode("Sync", VXCORE_ERR_SYNC_NETWORK);
+
+  VxCoreError err = vxcore_sync_trigger(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_ERR_SYNC_NETWORK);
+
+  ASSERT_EQ(counters.started.load(), 1);
+  ASSERT_EQ(counters.finished.load(), 1);
+  ASSERT_EQ(counters.last_finished_result, static_cast<int>(VXCORE_ERR_SYNC_NETWORK));
+
+  vxcore_off_event(ctx, "sync.started", started_cb);
+  vxcore_off_event(ctx, "sync.finished", finished_cb);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_trigger_err"));
+  std::cout << "  \xE2\x9C\x93 test_trigger_sync_emits_finished_with_error_code passed"
+            << std::endl;
+  return 0;
+}
+
+int test_auto_sync_does_not_double_emit() {
+  std::cout << "  Running test_auto_sync_does_not_double_emit..." << std::endl;
+  cleanup_test_dir(get_test_path("test_auto_no_dup"));
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_auto_no_dup").c_str(),
+                                   "{\"name\":\"AutoNoDup\"}", VXCORE_NOTEBOOK_BUNDLED,
+                                   &notebook_id),
+            VXCORE_OK);
+
+  SyncEventCounters counters;
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.started", started_cb, &counters), VXCORE_OK);
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.finished", finished_cb, &counters), VXCORE_OK);
+
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\","
+                               "\"intervalSeconds\":1}",
+                               nullptr),
+            VXCORE_OK);
+
+  // Trigger the auto path: create a file -> file.created -> mark_dirty ->
+  // MaybeEnqueueSync -> work_queue("sync").Enqueue(lambda).
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "auto_dup.md", &file_id), VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Drain the work queue (lambda calls TriggerSync, which emits both events).
+  int processed = vxcore_work_queue_process_next(ctx, "sync", 2000);
+  ASSERT_TRUE(processed >= 1);
+
+  // After T7 the auto path emits exactly one started + one finished
+  // (the lambda's duplicate emissions were removed; TriggerSync is the
+  // sole source).
+  ASSERT_EQ(counters.started.load(), 1);
+  ASSERT_EQ(counters.finished.load(), 1);
+
+  vxcore_off_event(ctx, "sync.started", started_cb);
+  vxcore_off_event(ctx, "sync.finished", finished_cb);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_auto_no_dup"));
+  std::cout << "  \xE2\x9C\x93 test_auto_sync_does_not_double_emit passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running sync tests..." << std::endl;
 
@@ -448,6 +628,9 @@ int main() {
   RUN_TEST(test_sync_enable_with_backend_options_via_c_api);
   RUN_TEST(test_sync_config_to_json_omits_empty_backend_options);
   RUN_TEST(test_last_sync_utc_persistence);
+  RUN_TEST(test_trigger_sync_emits_started_and_finished);
+  RUN_TEST(test_trigger_sync_emits_finished_with_error_code);
+  RUN_TEST(test_auto_sync_does_not_double_emit);
 
   std::cout << "\xE2\x9C\x93 All sync tests passed" << std::endl;
   return 0;

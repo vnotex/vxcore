@@ -147,6 +147,14 @@ class SyncManager {
   // No-op if id is 0 or unknown.
   VXCORE_API void UnregisterProgressObserver(SyncProgressDispatcher::ObserverId id);
 
+  // T7 (sync-queue-convergence): read-only accessor for tests that need to
+  // reach a registered backend (e.g., to flip a MockSyncBackend return code).
+  // NOT thread-safe; caller must serialize against EnableSync/DisableSync.
+  // NEVER exposed on the C ABI.
+  std::unordered_map<std::string, std::unique_ptr<ISyncBackend>> &BackendsForTesting() {
+    return backends_;
+  }
+
  private:
   VxCoreError ValidateNotebook(const std::string &notebook_id);
 
