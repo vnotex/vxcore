@@ -42,6 +42,21 @@ add_vxcore_test(test_work_queue)
 add_vxcore_test(test_event_manager INTERNALS)
 add_vxcore_test(test_mock_sync_backend INTERNALS)
 
+# test_dirty_tracker: Task 9.1 (F2.4) of sync-backend-phase4. Standalone
+# DirtyTracker class extracted from SyncManager. Its symbols are NOT
+# VXCORE_API-exported, so we direct-compile dirty_tracker.cpp into the test
+# rather than linking via vxcore.dll. No libgit2, no Qt deps, no INTERNALS
+# helper needed (uses only the public sync header).
+add_executable(test_dirty_tracker
+    test_dirty_tracker.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/dirty_tracker.cpp
+)
+target_include_directories(test_dirty_tracker PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+add_test(NAME test_dirty_tracker COMMAND test_dirty_tracker)
+
 # test_credential_provider: Task 6.1 (F4.4) of sync-backend-phase4. Tests the
 # ICredentialProvider interface, InMemoryCredentialProvider (in vxcore.dll),
 # and the migrated MockCredentialProvider (in vxcore_test_internals).
