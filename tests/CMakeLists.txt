@@ -72,6 +72,26 @@ target_include_directories(test_retry_policy PRIVATE
 )
 add_test(NAME test_retry_policy COMMAND test_retry_policy)
 
+# test_git_error_translator: W11.2 / Task 11.2 (B3) of sync-backend-phase4.
+# Tests ClassifyGitOp + GitOpErrorMessage. ClassifyGitOp is the ONLY function
+# allowed to inspect English libgit2 error-message text -- callers across
+# vxcore must switch on GitOpError. Direct-compile pattern: the symbols are
+# not VXCORE_API-exported. Pulls in libgit2 (for git_error_last during klass
+# inspection) and logger/file_utils (used by VXCORE_LOG_ERROR inside
+# TranslateGitError, also compiled here for completeness). Mirrors the
+# test_libgit2_init scaffolding (no vxcore.dll dependency).
+add_executable(test_git_error_translator
+    test_git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
+target_include_directories(test_git_error_translator PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_git_error_translator PRIVATE libgit2package)
+add_test(NAME test_git_error_translator COMMAND test_git_error_translator)
+
 # test_credential_provider: Task 6.1 (F4.4) of sync-backend-phase4. Tests the
 # ICredentialProvider interface, InMemoryCredentialProvider (in vxcore.dll),
 # and the migrated MockCredentialProvider (in vxcore_test_internals).

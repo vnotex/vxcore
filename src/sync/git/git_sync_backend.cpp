@@ -292,19 +292,15 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
       break;
     }
 
-    // Classify failure: non-fast-forward (transient race; retry) OR
-    // generic network/timeout per the libgit2 whitelist (retry).
+    // W11.2 (B3): Classify failure via structured GitOpError instead of
+    // ad-hoc strstr() against libgit2's English message. The translator is
+    // the single owner of message-text inspection. Capture the message
+    // BEFORE any subsequent libgit2 call wipes git_error_last().
     const git_error *gerr = git_error_last();
-    bool non_ff = false;
-    if (gerr && gerr->message) {
-      const char *m = gerr->message;
-      if (std::strstr(m, "non-fast-forward") != nullptr ||
-          std::strstr(m, "non fast forward") != nullptr ||
-          std::strstr(m, "fast-forward") != nullptr ||
-          std::strstr(m, "rejected") != nullptr) {
-        non_ff = true;
-      }
-    }
+    const std::string gerr_msg =
+        (gerr && gerr->message) ? std::string(gerr->message) : std::string();
+    const GitOpError op_err = ClassifyGitOp(-1, gerr_msg);
+    const bool non_ff = (op_err == GitOpError::NonFastForward);
     const bool retryable =
         non_ff || (err == VXCORE_ERR_SYNC_NETWORK);
     if (!retryable || attempt >= retry_policy_.max_attempts) {
