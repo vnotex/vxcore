@@ -90,6 +90,15 @@ add_vxcore_test(test_sync_manager_factory_override INTERNALS)
 # no libgit2 / network is touched.
 add_vxcore_test(test_sync_manager_reentrancy INTERNALS)
 
+# test_sync_thread_safety: Task 10.2 (F2.4 part 3) of sync-backend-phase4.
+# Stress test: 8 threads x 5 notebooks x 200 iterations hammering
+# EnableSync / TriggerSync / DisableSync / ClearDirty / GetSyncConfig /
+# GetDirtyNotebooks / IsReady. Watchdog thread (30s budget) aborts on
+# deadlock so failures surface with a useful core dump rather than a silent
+# ctest timeout. Uses MockSyncBackend (from vxcore_test_internals) via the
+# registry's "mock" auto-registration — no libgit2, no network, no Qt.
+add_vxcore_test(test_sync_thread_safety INTERNALS)
+
 # test_sync_backend_with_provider: Task 6.2 (F4.4) of sync-backend-phase4.
 # Tests SyncManager::EnableSync(notebook_id, config, provider) overload
 # (provider forwarding via the registry path) and AuthRequired capability
