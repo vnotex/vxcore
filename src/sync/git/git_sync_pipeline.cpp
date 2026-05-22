@@ -165,6 +165,10 @@ GitSyncPipeline::GitSyncPipeline(git_repository *repo, const std::string &git_di
   SnapshotAuthor(creds_provider_.get(), config_.remote_url, &author_name_, &author_email_);
 }
 
+void GitSyncPipeline::SetCancellation(SyncCancellationPtr token) {
+  cancellation_ = std::move(token);
+}
+
 // T18: open the repo-level config and force the four invariants. Caller holds
 // op_mutex_ and has repo_ open. Returns the first failing translation, or
 // VXCORE_OK on full success. RAII frees the cfg handle.
@@ -221,7 +225,7 @@ bool GitSyncPipeline::RemoteHasRefs() {
     return false;
   }
 
-  auto bundle = MakeRemoteCallbacks(creds_provider_.get(), config_.remote_url);
+  auto bundle = MakeRemoteCallbacks(creds_provider_.get(), config_.remote_url, cancellation_.get());
   git_remote_callbacks cb = bundle.callbacks;
 
   rc = git_remote_connect(remote.get(), GIT_DIRECTION_FETCH, &cb,
@@ -435,7 +439,7 @@ VxCoreError GitSyncPipeline::FetchOrigin() {
   }
 
   git_fetch_options fopts = GIT_FETCH_OPTIONS_INIT;
-  auto bundle = MakeRemoteCallbacks(creds_provider_.get(), config_.remote_url);
+  auto bundle = MakeRemoteCallbacks(creds_provider_.get(), config_.remote_url, cancellation_.get());
   fopts.callbacks = bundle.callbacks;
 
   rc = git_remote_fetch(remote.get(), /*refspecs=*/nullptr, &fopts, "vnote sync fetch");
@@ -601,7 +605,7 @@ VxCoreError GitSyncPipeline::PushOrigin() {
   }
 
   git_push_options popts = GIT_PUSH_OPTIONS_INIT;
-  auto bundle = MakeRemoteCallbacks(creds_provider_.get(), config_.remote_url);
+  auto bundle = MakeRemoteCallbacks(creds_provider_.get(), config_.remote_url, cancellation_.get());
   popts.callbacks = bundle.callbacks;
 
   git_reference *raw_head_ref = nullptr;

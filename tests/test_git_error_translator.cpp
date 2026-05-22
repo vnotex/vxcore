@@ -34,6 +34,7 @@ using vxcore::GitOpErrorMessage;
 static constexpr int kGitOk = 0;
 static constexpr int kGitError = -1;
 static constexpr int kGitENotFound = -3;
+static constexpr int kGitEUser = -7;
 static constexpr int kGitEUnmerged = -10;
 static constexpr int kGitENonFastForward = -11;
 static constexpr int kGitEAuth = -16;
@@ -96,6 +97,18 @@ static int test_non_fast_forward_message() {
   return 0;
 }
 
+static int test_cancelled_on_giteuser() {
+  // W12.1: GIT_EUSER (-7) is libgit2's signal for "a user callback returned
+  // nonzero" -- in vxcore that means a SyncCancellation token was tripped
+  // from the progress callback. Must classify to GitOpError::Cancelled
+  // independently of message text.
+  ASSERT_TRUE(ClassifyGitOp(kGitEUser, "") == GitOpError::Cancelled);
+  ASSERT_TRUE(ClassifyGitOp(kGitEUser, "user cancelled the operation") ==
+              GitOpError::Cancelled);
+  std::cout << "  PASS test_cancelled_on_giteuser" << std::endl;
+  return 0;
+}
+
 static int test_unknown_default() {
   // No matching rc, no matching klass, no matching message keyword.
   // GIT_ENOTFOUND (-3) deliberately maps to Unknown in this classifier --
@@ -113,7 +126,8 @@ static int test_error_message_strings() {
   for (auto e : {GitOpError::None, GitOpError::NetworkUnavailable,
                  GitOpError::AuthFailure, GitOpError::MergeConflict,
                  GitOpError::NonFastForward, GitOpError::RepoCorrupt,
-                 GitOpError::RemoteDiverged, GitOpError::Unknown}) {
+                 GitOpError::RemoteDiverged, GitOpError::Cancelled,
+                 GitOpError::Unknown}) {
     const char *msg = GitOpErrorMessage(e);
     ASSERT_NOT_NULL(msg);
     ASSERT_TRUE(std::string(msg).size() > 0);
@@ -139,6 +153,7 @@ int main() {
   RUN_TEST(test_merge_conflict_rc);
   RUN_TEST(test_repo_corrupt_rc);
   RUN_TEST(test_non_fast_forward_message);
+  RUN_TEST(test_cancelled_on_giteuser);
   RUN_TEST(test_unknown_default);
   RUN_TEST(test_error_message_strings);
 

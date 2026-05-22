@@ -5,6 +5,8 @@
 
 #include <string>
 
+#include "sync/sync_cancellation.h"
+
 namespace vxcore {
 
 // Forward declarations
@@ -20,12 +22,23 @@ class ICredentialProvider;
 // callback-build time. The libgit2 thread reads the snapshot without ever
 // touching the provider or any vxcore mutex.
 //
+// W12.1: the same payload now also carries a non-owning pointer to an
+// optional SyncCancellation token (null when the pipeline has no
+// cancellation wired). The transfer_progress and push_transfer_progress
+// callbacks read this field on every progress tick to honour user-driven
+// cancel requests. libgit2 routes a single `payload` pointer to ALL
+// callbacks in a `git_remote_callbacks` struct, so credentials +
+// cancellation share the same payload instance.
+//
 // Lifetime contract: callers MUST declare a GitCredentialPayload (typically
 // via the RemoteCallbacksBundle returned by MakeRemoteCallbacks) in the
 // enclosing scope before the libgit2 call and ensure it lives until that
 // call returns. Passing a pointer to a temporary is UB.
 struct GitCredentialPayload {
   std::string personal_access_token;
+  // Non-owning. Set to nullptr (default) when no cancellation token is
+  // wired -- the progress callbacks then treat it as "never cancelled".
+  SyncCancellation *cancellation = nullptr;
 };
 
 // libgit2 credential callback (function-pointer signature). Reads PAT from
@@ -61,7 +74,8 @@ struct RemoteCallbacksBundle {
 };
 
 RemoteCallbacksBundle MakeRemoteCallbacks(ICredentialProvider *provider,
-                                          const std::string &remote_url);
+                                          const std::string &remote_url,
+                                          SyncCancellation *cancellation = nullptr);
 
 }  // namespace vxcore
 

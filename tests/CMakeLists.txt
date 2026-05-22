@@ -92,6 +92,23 @@ target_include_directories(test_git_error_translator PRIVATE
 target_link_libraries(test_git_error_translator PRIVATE libgit2package)
 add_test(NAME test_git_error_translator COMMAND test_git_error_translator)
 
+# test_sync_cancellation: F5.9 / Task 12.1 of sync-backend-phase4. Tests the
+# SyncCancellation atomic token + libgit2 progress shims. Direct-compile
+# (sync_cancellation.cpp's symbols are not VXCORE_API-exported). No libgit2,
+# no Qt deps -- the shims only dereference the token payload.
+add_executable(test_sync_cancellation
+    test_sync_cancellation.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp)
+target_include_directories(test_sync_cancellation PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+if(NOT WIN32)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_sync_cancellation PRIVATE Threads::Threads)
+endif()
+add_test(NAME test_sync_cancellation COMMAND test_sync_cancellation)
+
 # test_credential_provider: Task 6.1 (F4.4) of sync-backend-phase4. Tests the
 # ICredentialProvider interface, InMemoryCredentialProvider (in vxcore.dll),
 # and the migrated MockCredentialProvider (in vxcore_test_internals).
@@ -391,6 +408,7 @@ add_executable(test_git_sync_init test_git_sync_init.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
@@ -417,6 +435,7 @@ add_executable(test_git_sync_credentials test_git_sync_credentials.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
@@ -442,6 +461,7 @@ add_executable(test_git_sync_status test_git_sync_status.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
@@ -471,6 +491,7 @@ add_executable(test_git_sync_roundtrip test_git_sync_roundtrip.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
@@ -500,6 +521,7 @@ add_executable(test_git_sync_conflicts test_git_sync_conflicts.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
@@ -528,6 +550,7 @@ add_executable(test_resolve_result test_resolve_result.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
@@ -557,6 +580,7 @@ add_executable(test_gitkeep_basic test_gitkeep_basic.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
@@ -585,6 +609,7 @@ add_executable(test_gitkeep_cleanup test_gitkeep_cleanup.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
@@ -612,6 +637,7 @@ add_executable(test_gitkeep_roundtrip test_gitkeep_roundtrip.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
@@ -652,6 +678,7 @@ add_executable(test_sync_backend_metadata test_sync_backend_metadata.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
@@ -687,6 +714,7 @@ add_executable(test_git_backend_autoreg test_git_backend_autoreg.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp

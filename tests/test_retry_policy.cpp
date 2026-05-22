@@ -29,6 +29,7 @@ using vxcore::is_retryable_network_error;
 static constexpr int kGitOk = 0;
 static constexpr int kGitError = -1;
 static constexpr int kGitENotFound = -3;
+static constexpr int kGitEUser = -7;
 static constexpr int kGitEUnmerged = -10;
 static constexpr int kGitETimeout = -12;
 static constexpr int kGitEInvalidSpec = -15;
@@ -146,6 +147,10 @@ static int test_no_retry_on_auth_error() {
 
   // Whitelist member: timeout.
   ASSERT_TRUE(is_retryable_network_error(kGitETimeout));
+
+  // W12.1: GIT_EUSER (-7) -- user-cancelled via SyncCancellation token --
+  // MUST NEVER be retried. Cancellation is an explicit user intent.
+  ASSERT_FALSE(is_retryable_network_error(kGitEUser));
 
   std::cout << "  ✓ test_no_retry_on_auth_error" << std::endl;
   return 0;

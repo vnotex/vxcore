@@ -29,6 +29,7 @@ enum class GitOpError {
   NonFastForward,      // push rejected because the ref would not advance fast-forward
   RepoCorrupt,         // GIT_EUNCOMMITTED / GIT_ENOTAREPO / broken index or HEAD
   RemoteDiverged,      // fetch reveals divergence before a push attempt (distinct from NonFastForward)
+  Cancelled,           // GIT_EUSER (-7): user-cancelled via SyncCancellation token (W12.1)
   Unknown              // anything not matched above -- the safe default
 };
 

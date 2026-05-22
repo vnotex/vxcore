@@ -7,6 +7,7 @@
 #include <string>
 
 #include "sync/git/git_credential_callback.h"
+#include "sync/sync_cancellation.h"
 #include "sync/sync_types.h"
 
 namespace vxcore {
@@ -47,6 +48,16 @@ class GitSyncPipeline {
   VxCoreError PushOrigin();
   VxCoreError ContinueRebaseAfterResolution();
 
+  // W12.1: install (or clear) the cancellation token that libgit2 progress
+  // callbacks will consult during network phases. Pass `nullptr` to disable
+  // cancellation -- this is the no-op default and preserves pre-W12 behavior.
+  // Safe to call between phases on the orchestrator thread; NOT safe to call
+  // concurrently with an in-flight phase on this pipeline (the token's
+  // atomic semantics let the libgit2 thread observe Cancel() set on any
+  // other thread, but swapping the pointer mid-flight races with the
+  // bundle that already captured the previous pointer).
+  void SetCancellation(SyncCancellationPtr token);
+
  private:
   git_repository *repo_;
   const std::string &git_dir_;
@@ -61,6 +72,12 @@ class GitSyncPipeline {
   std::string author_name_;
   std::string author_email_;
   git_rebase **rebase_in_progress_;  // borrowed pointer to backend's field
+  // W12.1: optional cancellation token. Null by default; SetCancellation()
+  // installs a token before the orchestrator runs a phase. Held as a
+  // shared_ptr so concurrent ownership with the calling SyncManager is
+  // explicit -- the libgit2 thread receives only a raw pointer through
+  // GitCredentialPayload.cancellation.
+  SyncCancellationPtr cancellation_;
 };
 
 }  // namespace vxcore

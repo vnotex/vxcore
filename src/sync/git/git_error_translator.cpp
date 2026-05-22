@@ -86,6 +86,11 @@ GitOpError ClassifyGitOp(int libgit2_rc, const std::string &last_error_message) 
 
   // RC-driven classification first (locale-independent, ABI-stable).
   switch (libgit2_rc) {
+    case GIT_EUSER:
+      // W12.1: libgit2 surfaces a user-aborted op (nonzero from a progress /
+      // credential callback) as GIT_EUSER (-7). This is NEVER a retryable
+      // failure -- the user explicitly asked to stop.
+      return GitOpError::Cancelled;
     case GIT_EAUTH:
       return GitOpError::AuthFailure;
     case GIT_ECERTIFICATE:
@@ -150,6 +155,7 @@ const char *GitOpErrorMessage(GitOpError err) {
     case GitOpError::NonFastForward:     return "Push rejected: branch is not fast-forward";
     case GitOpError::RepoCorrupt:        return "Local repository is corrupt or unusable";
     case GitOpError::RemoteDiverged:     return "Remote branch has diverged from local";
+    case GitOpError::Cancelled:          return "Operation cancelled";
     case GitOpError::Unknown:            return "Unknown libgit2 error";
   }
   return "Unknown libgit2 error";

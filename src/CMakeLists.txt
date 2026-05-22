@@ -63,6 +63,7 @@ set(VXCORE_SOURCES
     sync/credential_provider.cpp
     sync/dirty_tracker.cpp
     sync/retry_policy.cpp
+    sync/sync_cancellation.cpp
     ${VXCORE_GIT_SYNC_SOURCES_RELATIVE}
     utils/utils.cpp
     utils/string_utils.cpp
