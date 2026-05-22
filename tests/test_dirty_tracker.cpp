@@ -95,6 +95,34 @@ static int test_clear_all() {
   return 0;
 }
 
+static int test_list_dirty_notebooks() {
+  DirtyTracker dt;
+  ASSERT_TRUE(dt.ListDirtyNotebooks().empty());
+
+  dt.MarkDirty("A", "p1");
+  dt.MarkDirty("B", "p2");
+  dt.MarkDirty("A", "p3");  // dup notebook key — still one entry
+
+  auto ids = dt.ListDirtyNotebooks();
+  ASSERT_EQ(ids.size(), static_cast<size_t>(2));
+  std::sort(ids.begin(), ids.end());
+  ASSERT_EQ(ids[0], std::string("A"));
+  ASSERT_EQ(ids[1], std::string("B"));
+
+  // After TakeDirty the notebook should not appear.
+  (void)dt.TakeDirty("A");
+  auto after = dt.ListDirtyNotebooks();
+  ASSERT_EQ(after.size(), static_cast<size_t>(1));
+  ASSERT_EQ(after[0], std::string("B"));
+
+  // After Clear of the last one, list is empty.
+  dt.Clear("B");
+  ASSERT_TRUE(dt.ListDirtyNotebooks().empty());
+
+  std::cout << "  ✓ test_list_dirty_notebooks" << std::endl;
+  return 0;
+}
+
 static int test_concurrent_mark_take_1000_iter() {
   DirtyTracker dt;
   constexpr int kNotebooks = 10;
@@ -161,6 +189,7 @@ int main() {
   RUN_TEST(test_take_returns_and_clears);
   RUN_TEST(test_clear);
   RUN_TEST(test_clear_all);
+  RUN_TEST(test_list_dirty_notebooks);
   RUN_TEST(test_concurrent_mark_take_1000_iter);
 
   std::cout << "All DirtyTracker tests passed." << std::endl;

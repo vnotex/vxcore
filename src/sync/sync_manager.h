@@ -3,12 +3,11 @@
 
 #include <chrono>
 #include <memory>
-#include <mutex>
-#include <set>
 #include <string>
 #include <unordered_map>
 
 #include "credential_provider.h"
+#include "dirty_tracker.h"
 #include "sync_backend.h"
 #include "sync_backend_registry.h"
 #include "sync_types.h"
@@ -140,7 +139,8 @@ class SyncManager {
                              SyncBackendFactory factory_override);
 
   // Enqueue a sync job on the "sync" WorkQueue if the debounce interval has elapsed.
-  // Called under dirty_mutex_.
+  // Wave 9.2 (F2.4): no longer holds dirty_mutex_ (DirtyTracker is self-locking
+  // and was already released by the caller before invocation).
   void MaybeEnqueueSync(const std::string &notebook_id);
 
   // Declared first so libgit2 is initialized before any backend is
@@ -163,8 +163,11 @@ class SyncManager {
   // other SyncManager method — Wave 10 introduces state_mutex_ to make this
   // explicit.
   mutable std::unordered_map<std::string, SyncConfig> configs_cache_;
-  mutable std::mutex dirty_mutex_;
-  std::set<std::string> dirty_notebooks_;
+  // Wave 9.2 (F2.4): dirty queue delegated to DirtyTracker (self-locking).
+  // Bridging: SyncManager's current public API is per-notebook only — we pass
+  // empty path "" to MarkDirty so HasDirty/Clear semantics are preserved.
+  // Per-path enrichment is future work.
+  DirtyTracker dirty_tracker_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_enqueue_time_;
   std::vector<uint64_t> event_listener_ids_;
 };

@@ -40,4 +40,16 @@ void DirtyTracker::ClearAll() {
   dirty_.clear();
 }
 
+std::vector<std::string> DirtyTracker::ListDirtyNotebooks() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  std::vector<std::string> out;
+  out.reserve(dirty_.size());
+  for (const auto &kv : dirty_) {
+    if (!kv.second.empty()) {
+      out.push_back(kv.first);
+    }
+  }
+  return out;
+}
+
 }  // namespace vxcore

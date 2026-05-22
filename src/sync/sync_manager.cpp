@@ -44,8 +44,10 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
       VXCORE_LOG_DEBUG("SyncManager::mark_dirty: event=%s notebookId=%s sync_enabled=%d",
                        event_name.c_str(), nb_id.c_str(), sync_enabled ? 1 : 0);
       if (sync_enabled) {
-        std::lock_guard<std::mutex> lock(dirty_mutex_);
-        dirty_notebooks_.insert(nb_id);
+        // Wave 9.2 (F2.4): delegate to DirtyTracker (self-locking). Empty
+        // path placeholder preserves the current per-notebook-only semantics;
+        // per-path enrichment is future work.
+        dirty_tracker_.MarkDirty(nb_id, "");
         VXCORE_LOG_DEBUG("SyncManager: marked notebook dirty: %s", nb_id.c_str());
         MaybeEnqueueSync(nb_id);
       }
@@ -65,7 +67,8 @@ void SyncManager::SetWorkQueueManager(WorkQueueManager *work_queue_manager) {
 }
 
 void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
-  // Called under dirty_mutex_.
+  // Wave 9.2 (F2.4): no longer holds dirty_mutex_ — DirtyTracker is
+  // self-locking and the caller in SetEventManager no longer takes a lock.
   VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: entry notebook_id=%s has_wqm=%d has_em=%d",
                    notebook_id.c_str(), work_queue_manager_ != nullptr,
                    event_manager_ != nullptr);
@@ -114,13 +117,13 @@ void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
 }
 
 std::vector<std::string> SyncManager::GetDirtyNotebooks() const {
-  std::lock_guard<std::mutex> lock(dirty_mutex_);
-  return {dirty_notebooks_.begin(), dirty_notebooks_.end()};
+  // Wave 9.2 (F2.4): delegate to DirtyTracker (self-locking).
+  return dirty_tracker_.ListDirtyNotebooks();
 }
 
 void SyncManager::ClearDirty(const std::string &notebook_id) {
-  std::lock_guard<std::mutex> lock(dirty_mutex_);
-  dirty_notebooks_.erase(notebook_id);
+  // Wave 9.2 (F2.4): delegate to DirtyTracker (self-locking).
+  dirty_tracker_.Clear(notebook_id);
 }
 
 bool SyncManager::IsReady(const std::string &notebook_id) const {

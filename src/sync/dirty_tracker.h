@@ -40,6 +40,12 @@ class DirtyTracker {
   // Drop all dirty paths for every notebook.
   void ClearAll();
 
+  // Return a snapshot of all notebook IDs that currently have at least one
+  // dirty path tracked. Order is unspecified (unordered_map iteration).
+  // Used by SyncManager::GetDirtyNotebooks to enumerate the dirty set
+  // without exposing DirtyTracker on the public API.
+  std::vector<std::string> ListDirtyNotebooks() const;
+
  private:
   mutable std::mutex mu_;
   std::unordered_map<std::string, std::unordered_set<std::string>> dirty_;
