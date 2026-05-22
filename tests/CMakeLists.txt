@@ -80,6 +80,16 @@ add_vxcore_test(test_git_options)
 # vxcore_test_internals) so links via add_vxcore_test(... INTERNALS).
 add_vxcore_test(test_sync_manager_factory_override INTERNALS)
 
+# test_sync_manager_reentrancy: Task 10.1 (F2.4 part 2) of sync-backend-phase4.
+# Verifies that SyncManager::state_mutex_ is RELEASED before backend method
+# invocations (Sync, Initialize), so a backend (or hook) may call back into
+# SyncManager::GetSyncConfig from inside those methods without deadlocking on
+# std::mutex re-entry. Uses MockSyncBackend (force-link anchor) for the
+# vxcore_test_internals linkage and a local ReentrantBackend in-test for the
+# actual re-entry exercise. Routed through EnableSyncWithFactoryForTesting so
+# no libgit2 / network is touched.
+add_vxcore_test(test_sync_manager_reentrancy INTERNALS)
+
 # test_sync_backend_with_provider: Task 6.2 (F4.4) of sync-backend-phase4.
 # Tests SyncManager::EnableSync(notebook_id, config, provider) overload
 # (provider forwarding via the registry path) and AuthRequired capability

@@ -1,5 +1,7 @@
 #include "sync_manager.h"
 
+#include <mutex>
+
 #include "core/event_manager.h"
 #include "core/event_names.h"
 #include "core/notebook.h"
@@ -36,11 +38,17 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
       std::string nb_id = data["notebookId"].get<std::string>();
       // Task 7.5 (F3.2): cache-presence is the correct predicate here — it
       // means "EnableSync has populated runtime state for this notebook in
-      // this process". S4 notebooks (disk complete, runtime absent) are
-      // intentionally NOT dirty-tracked until reconcile-on-open lifts them
-      // into S5 via EnableSync, which repopulates the cache. The cache is
-      // a runtime-presence marker, not a config-disagreement source.
-      const bool sync_enabled = (configs_cache_.count(nb_id) > 0);
+      // this process". Wave 10.1 (F2.4 part 2): the read MUST take
+      // state_mutex_ because the event can fire from any thread while
+      // EnableSync/DisableSync mutate configs_cache_ on another thread.
+      // Lock is released BEFORE invoking DirtyTracker / MaybeEnqueueSync —
+      // both of which fan out to external code (work queue + GetSyncConfig
+      // which itself re-takes state_mutex_).
+      bool sync_enabled;
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        sync_enabled = (configs_cache_.count(nb_id) > 0);
+      }
       VXCORE_LOG_DEBUG("SyncManager::mark_dirty: event=%s notebookId=%s sync_enabled=%d",
                        event_name.c_str(), nb_id.c_str(), sync_enabled ? 1 : 0);
       if (sync_enabled) {
@@ -69,6 +77,11 @@ void SyncManager::SetWorkQueueManager(WorkQueueManager *work_queue_manager) {
 void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
   // Wave 9.2 (F2.4): no longer holds dirty_mutex_ — DirtyTracker is
   // self-locking and the caller in SetEventManager no longer takes a lock.
+  // Wave 10.1 (F2.4 part 2): this function INTENTIONALLY does not take
+  // state_mutex_ at entry — it calls GetSyncConfig() which acquires the
+  // lock internally, and enqueues a job into the work queue (external
+  // dispatch) at the end. last_enqueue_time_ is not guarded by
+  // state_mutex_ (out of contract; debounce is best-effort).
   VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: entry notebook_id=%s has_wqm=%d has_em=%d",
                    notebook_id.c_str(), work_queue_manager_ != nullptr,
                    event_manager_ != nullptr);
@@ -131,9 +144,9 @@ bool SyncManager::IsReady(const std::string &notebook_id) const {
   // Replicates the predicate previously inlined in vxcore_sync_is_ready —
   // we deliberately do NOT also require states_.count(notebook_id) so that
   // disk-complete-but-runtime-absent notebooks (S4) still report ready and
-  // the reconcile path can lift them into S5. No callbacks fired; no lock
-  // taken (notebook config is read-only here and current SyncManager methods
-  // are caller-synchronized — Wave 10 introduces state_mutex_).
+  // the reconcile path can lift them into S5. No callbacks fired; no
+  // state_mutex_ taken (this reads notebook config only — not the runtime
+  // maps).
   auto *notebook = notebook_manager_->GetNotebook(notebook_id);
   if (!notebook) {
     return false;
@@ -206,17 +219,27 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
     }
   }
 
-  const bool had_config = configs_cache_.count(notebook_id) > 0;
-  const bool had_state = states_.count(notebook_id) > 0;
+  // Wave 10.1 (F2.4 part 2): seed configs_cache_/states_ under lock. Snapshot
+  // prior values so the rollback lambda can restore them on failure. The
+  // backend->Initialize() call below is EXTERNAL and MUST run outside the
+  // lock (it can call back into SyncManager — see test_sync_manager_reentrancy).
+  bool had_config;
+  bool had_state;
   SyncConfig prev_config;
   SyncState prev_state = SyncState::kIdle;
-  if (had_config) prev_config = configs_cache_[notebook_id];
-  if (had_state) prev_state = states_[notebook_id];
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    had_config = configs_cache_.count(notebook_id) > 0;
+    had_state = states_.count(notebook_id) > 0;
+    if (had_config) prev_config = configs_cache_[notebook_id];
+    if (had_state) prev_state = states_[notebook_id];
 
-  configs_cache_[notebook_id] = config;
-  states_[notebook_id] = SyncState::kIdle;
+    configs_cache_[notebook_id] = config;
+    states_[notebook_id] = SyncState::kIdle;
+  }
 
   auto rollback = [&]() {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     if (had_config) {
       configs_cache_[notebook_id] = prev_config;
     } else {
@@ -230,6 +253,8 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
   };
 
   // Factory dispatch (Task 6.2 F4.4). Provider is forwarded to both paths.
+  // External: registry / supplied factory may construct a backend whose ctor
+  // touches libgit2 — keep it outside state_mutex_.
   std::unique_ptr<ISyncBackend> backend;
   if (factory_override) {
     backend = factory_override(config, provider);
@@ -266,18 +291,27 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
   // that ignore the ctor arg (e.g., the legacy MockBackendProxy used in
   // tests) still receive the provider. The base-class default is a no-op,
   // so backends that don't need credentials pay no cost.
+  // EXTERNAL CALL — runs outside state_mutex_.
   if (provider) {
     backend->ReplaceCredsProvider(provider);
   }
 
   auto *notebook = notebook_manager_->GetNotebook(notebook_id);
+  // EXTERNAL CALL — backend->Initialize may block on network I/O (libgit2
+  // clone), fire progress callbacks, or call back into SyncManager.
+  // MUST run outside state_mutex_.
   err = backend->Initialize(notebook->GetRootFolder(), config);
   if (err != VXCORE_OK) {
     rollback();
     return err;
   }
 
-  backends_[notebook_id] = std::move(backend);
+  // Wave 10.1: publish the constructed backend under lock so concurrent
+  // TriggerSync/GetSyncStatus/etc. see it atomically.
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    backends_[notebook_id] = std::move(backend);
+  }
   VXCORE_LOG_INFO("Sync enabled for notebook: %s, backend: %s", notebook_id.c_str(),
                   config.backend.c_str());
   return VXCORE_OK;
@@ -286,9 +320,22 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
 VxCoreError SyncManager::DisableSync(const std::string &notebook_id) {
   VXCORE_LOG_DEBUG("SyncManager::DisableSync: notebook_id=%s", notebook_id.c_str());
 
-  backends_.erase(notebook_id);
-  states_.erase(notebook_id);
-  configs_cache_.erase(notebook_id);
+  // Wave 10.1 (F2.4 part 2): move the owned backend out of the map under
+  // lock, then destroy it OUTSIDE the lock. The backend dtor is external
+  // (libgit2 shutdown, fd close) and could in principle re-enter SyncManager
+  // — keep it out of the critical section.
+  std::unique_ptr<ISyncBackend> doomed_backend;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = backends_.find(notebook_id);
+    if (it != backends_.end()) {
+      doomed_backend = std::move(it->second);
+      backends_.erase(it);
+    }
+    states_.erase(notebook_id);
+    configs_cache_.erase(notebook_id);
+  }
+  // doomed_backend destructs here (lock released).
 
   VXCORE_LOG_INFO("Sync disabled for notebook: %s", notebook_id.c_str());
   return VXCORE_OK;
@@ -307,51 +354,92 @@ VxCoreError SyncManager::GetSyncConfig(const std::string &notebook_id, SyncConfi
   // returns immediately. Slow path: re-hydrate from notebook JSON and
   // populate the cache for next time. InvalidateConfigCache(id) (called by
   // external mutators) forces the slow path on the next request.
-  auto it = configs_cache_.find(notebook_id);
-  if (it != configs_cache_.end()) {
-    out_config = it->second;
-    return VXCORE_OK;
+  // Wave 10.1 (F2.4 part 2): fast-path cache hit served entirely under lock.
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = configs_cache_.find(notebook_id);
+    if (it != configs_cache_.end()) {
+      out_config = it->second;
+      return VXCORE_OK;
+    }
   }
 
+  // Slow path: read notebook JSON outside the lock (notebook ptr is stable
+  // for the lifetime of the open notebook, and GetConfig is a const accessor
+  // on the notebook itself).
   auto *notebook = notebook_manager_->GetNotebook(notebook_id);
   const auto &nc = notebook->GetConfig();
   out_config.backend = nc.sync_backend;
   out_config.remote_url = nc.sync_remote_url;
   out_config.interval_seconds = nc.sync_interval_seconds;
-  configs_cache_[notebook_id] = out_config;
+
+  // Re-acquire lock to populate cache.
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    configs_cache_[notebook_id] = out_config;
+  }
   return VXCORE_OK;
 }
 
 void SyncManager::InvalidateConfigCache(const std::string &notebook_id) {
   VXCORE_LOG_DEBUG("SyncManager::InvalidateConfigCache: notebook_id=%s", notebook_id.c_str());
+  std::lock_guard<std::mutex> lock(state_mutex_);
   configs_cache_.erase(notebook_id);
 }
 
 VxCoreError SyncManager::TriggerSync(const std::string &notebook_id) {
   VXCORE_LOG_DEBUG("SyncManager::TriggerSync: notebook_id=%s", notebook_id.c_str());
-  const size_t states_count = states_.count(notebook_id);
-  VXCORE_LOG_DEBUG("SyncManager::TriggerSync: states_ size=%zu count(notebook_id)=%zu "
-                   "(0 means reconcile-on-open did not populate runtime state)",
-                   states_.size(), states_count);
 
   VxCoreError err = ValidateNotebook(notebook_id);
   if (err != VXCORE_OK) {
     return err;
   }
 
-  if (states_.find(notebook_id) == states_.end()) {
-    return VXCORE_ERR_SYNC_NOT_ENABLED;
+  // Wave 10.1 (F2.4 part 2): take a snapshot of the backend raw pointer and
+  // perform the SYNC_NOT_ENABLED + NOT_IMPLEMENTED checks under lock, then
+  // release before calling backend->Sync() (external — libgit2 network I/O,
+  // progress callbacks, re-entry into SyncManager are all permitted).
+  // The backend pointer is stable: DisableSync moves the unique_ptr out
+  // under the same lock and destroys it after release, so a concurrent
+  // DisableSync racing with TriggerSync sees one of two valid orderings.
+  // In-flight Sync() is NOT guarded against concurrent DisableSync — that
+  // is a known limitation tracked separately (Wave 12 cancellation).
+  ISyncBackend *backend_ptr = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    const size_t states_count = states_.count(notebook_id);
+    VXCORE_LOG_DEBUG("SyncManager::TriggerSync: states_ size=%zu count(notebook_id)=%zu "
+                     "(0 means reconcile-on-open did not populate runtime state)",
+                     states_.size(), states_count);
+
+    if (states_.find(notebook_id) == states_.end()) {
+      return VXCORE_ERR_SYNC_NOT_ENABLED;
+    }
+
+    auto backend_it = backends_.find(notebook_id);
+    if (backend_it == backends_.end()) {
+      return VXCORE_ERR_NOT_IMPLEMENTED;
+    }
+    backend_ptr = backend_it->second.get();
+    states_[notebook_id] = SyncState::kStaging;
   }
 
-  auto backend_it = backends_.find(notebook_id);
-  if (backend_it == backends_.end()) {
-    return VXCORE_ERR_NOT_IMPLEMENTED;
+  // EXTERNAL CALL — outside state_mutex_.
+  VxCoreError sync_err = backend_ptr->Sync(nullptr, nullptr);
+
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (sync_err == VXCORE_OK) {
+      states_[notebook_id] = SyncState::kIdle;
+    } else if (sync_err == VXCORE_ERR_SYNC_CONFLICT) {
+      states_[notebook_id] = SyncState::kConflicted;
+    } else {
+      states_[notebook_id] = SyncState::kError;
+    }
   }
 
-  states_[notebook_id] = SyncState::kStaging;
-  VxCoreError sync_err = backend_it->second->Sync(nullptr, nullptr);
   if (sync_err == VXCORE_OK) {
-    states_[notebook_id] = SyncState::kIdle;
+    // DirtyTracker is self-locking and external to state_mutex_.
     ClearDirty(notebook_id);
     // Persist per-device "last successful sync" timestamp. Best-effort:
     // failure to write is logged inside SetLastSyncUtc but does NOT fail
@@ -360,10 +448,6 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id) {
     if (notebook) {
       notebook->SetLastSyncUtc(GetCurrentTimestampMillis());
     }
-  } else if (sync_err == VXCORE_ERR_SYNC_CONFLICT) {
-    states_[notebook_id] = SyncState::kConflicted;
-  } else {
-    states_[notebook_id] = SyncState::kError;
   }
   return sync_err;
 }
@@ -377,19 +461,25 @@ VxCoreError SyncManager::GetSyncStatus(const std::string &notebook_id, SyncState
     return err;
   }
 
-  if (states_.find(notebook_id) == states_.end()) {
-    return VXCORE_ERR_SYNC_NOT_ENABLED;
+  // Wave 10.1 (F2.4 part 2): snapshot state + backend pointer under lock,
+  // release before calling backend->GetStatus() (external).
+  ISyncBackend *backend_ptr = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (states_.find(notebook_id) == states_.end()) {
+      return VXCORE_ERR_SYNC_NOT_ENABLED;
+    }
+    out_state = states_[notebook_id];
+
+    auto backend_it = backends_.find(notebook_id);
+    if (backend_it == backends_.end()) {
+      out_files.clear();
+      return VXCORE_OK;
+    }
+    backend_ptr = backend_it->second.get();
   }
 
-  out_state = states_[notebook_id];
-
-  auto backend_it = backends_.find(notebook_id);
-  if (backend_it == backends_.end()) {
-    out_files.clear();
-    return VXCORE_OK;
-  }
-
-  return backend_it->second->GetStatus(out_files);
+  return backend_ptr->GetStatus(out_files);
 }
 
 VxCoreError SyncManager::GetConflicts(const std::string &notebook_id,
@@ -401,17 +491,23 @@ VxCoreError SyncManager::GetConflicts(const std::string &notebook_id,
     return err;
   }
 
-  if (states_.find(notebook_id) == states_.end()) {
-    return VXCORE_ERR_SYNC_NOT_ENABLED;
+  // Wave 10.1 (F2.4 part 2): see GetSyncStatus.
+  ISyncBackend *backend_ptr = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (states_.find(notebook_id) == states_.end()) {
+      return VXCORE_ERR_SYNC_NOT_ENABLED;
+    }
+
+    auto backend_it = backends_.find(notebook_id);
+    if (backend_it == backends_.end()) {
+      out_conflicts.clear();
+      return VXCORE_OK;
+    }
+    backend_ptr = backend_it->second.get();
   }
 
-  auto backend_it = backends_.find(notebook_id);
-  if (backend_it == backends_.end()) {
-    out_conflicts.clear();
-    return VXCORE_OK;
-  }
-
-  return backend_it->second->GetConflicts(out_conflicts);
+  return backend_ptr->GetConflicts(out_conflicts);
 }
 
 VxCoreError SyncManager::ResolveConflict(const std::string &notebook_id, const std::string &path,
@@ -424,20 +520,28 @@ VxCoreError SyncManager::ResolveConflict(const std::string &notebook_id, const s
     return err;
   }
 
-  if (states_.find(notebook_id) == states_.end()) {
-    return VXCORE_ERR_SYNC_NOT_ENABLED;
+  // Wave 10.1 (F2.4 part 2): snapshot backend under lock, release before
+  // calling external ResolveConflict + GetConflicts. Re-acquire lock to
+  // flip states_ entry if the conflict set is now empty.
+  ISyncBackend *backend_ptr = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (states_.find(notebook_id) == states_.end()) {
+      return VXCORE_ERR_SYNC_NOT_ENABLED;
+    }
+    auto backend_it = backends_.find(notebook_id);
+    if (backend_it == backends_.end()) {
+      return VXCORE_ERR_NOT_IMPLEMENTED;
+    }
+    backend_ptr = backend_it->second.get();
   }
 
-  auto backend_it = backends_.find(notebook_id);
-  if (backend_it == backends_.end()) {
-    return VXCORE_ERR_NOT_IMPLEMENTED;
-  }
-
-  VxCoreError resolve_err = backend_it->second->ResolveConflict(path, resolution);
+  VxCoreError resolve_err = backend_ptr->ResolveConflict(path, resolution);
   if (resolve_err == VXCORE_OK) {
     std::vector<SyncConflictInfo> remaining;
-    backend_it->second->GetConflicts(remaining);
+    backend_ptr->GetConflicts(remaining);
     if (remaining.empty()) {
+      std::lock_guard<std::mutex> lock(state_mutex_);
       states_[notebook_id] = SyncState::kIdle;
     }
   }
@@ -453,20 +557,27 @@ VxCoreError SyncManager::UpdateCredentials(const std::string &notebook_id,
     return err;
   }
 
-  if (states_.find(notebook_id) == states_.end()) {
-    return VXCORE_ERR_SYNC_NOT_ENABLED;
-  }
-
-  auto backend_it = backends_.find(notebook_id);
-  if (backend_it == backends_.end()) {
-    return VXCORE_ERR_NOT_IMPLEMENTED;
+  // Wave 10.1 (F2.4 part 2): snapshot backend pointer under lock, release
+  // before calling backend->ReplaceCredsProvider (external — backend has
+  // its own creds_provider_mu_).
+  ISyncBackend *backend_ptr = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (states_.find(notebook_id) == states_.end()) {
+      return VXCORE_ERR_SYNC_NOT_ENABLED;
+    }
+    auto backend_it = backends_.find(notebook_id);
+    if (backend_it == backends_.end()) {
+      return VXCORE_ERR_NOT_IMPLEMENTED;
+    }
+    backend_ptr = backend_it->second.get();
   }
 
   // Wave 6.3 F4.4: atomic provider swap on the backend. The backend's
   // own creds_provider_mu_ serializes the shared_ptr replacement; any
   // in-flight Sync() uses the snapshot it captured at its own entry point
   // and is unaffected by this rotation.
-  backend_it->second->ReplaceCredsProvider(std::move(provider));
+  backend_ptr->ReplaceCredsProvider(std::move(provider));
   return VXCORE_OK;
 }
 

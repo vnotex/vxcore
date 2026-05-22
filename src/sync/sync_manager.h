@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -170,6 +171,19 @@ class SyncManager {
   DirtyTracker dirty_tracker_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_enqueue_time_;
   std::vector<uint64_t> event_listener_ids_;
+
+  // Wave 10.1 (F2.4 part 2): coarse mutex guarding the three runtime maps —
+  // configs_cache_, states_, backends_. Single mutex (no per-member locks,
+  // no recursive_mutex). Wave 0.5 contract: NEVER hold this lock across any
+  // external invocation (hook, signal, libgit2 progress callback, credential
+  // provider call, work-queue dispatch, backend method call). Standard
+  // pattern: copy needed state into stack locals under the lock, release
+  // (via scoped block), then invoke the external code. See
+  // "SyncManager Locking Discipline" in libs/vxcore/src/sync/AGENTS.md.
+  // mutable: const accessors (IsReady, GetDirtyNotebooks — though GetDirty
+  // currently uses DirtyTracker only) and the read-through cache path in
+  // GetSyncConfig need to take it.
+  mutable std::mutex state_mutex_;
 };
 
 }  // namespace vxcore

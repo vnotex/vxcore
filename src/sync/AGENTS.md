@@ -706,6 +706,68 @@ These rules govern every code path that crosses a thread boundary, fires a callb
 
 The Qt-side mirror of these rules lives in `src/core/services/AGENTS.md` § Threading rules for SyncService.
 
+## SyncManager Locking Discipline
+
+Wave 10.1 (F2.4 part 2) made `state_mutex_` real. It is the single coarse mutex that guards the three runtime maps shared between the orchestrator thread, the event-driven dirty-mark thread, and any caller of the public API.
+
+### What it guards
+
+| Member | Why |
+|---|---|
+| `configs_cache_` | Read-through cache populated by `EnableSyncImpl` and `GetSyncConfig` slow path; read by `mark_dirty` event lambda from any thread. |
+| `states_` | Per-notebook `SyncState`; mutated by `EnableSync`/`DisableSync`/`TriggerSync`/`ResolveConflict`. |
+| `backends_` | Per-notebook `unique_ptr<ISyncBackend>`; mutated by `EnableSync`/`DisableSync`; read by every dispatching method. |
+
+### What it does NOT guard
+
+- `DirtyTracker` (`dirty_tracker_`) is self-locking — never lock `state_mutex_` and then call into `DirtyTracker`, the orderings are independent.
+- `last_enqueue_time_` — debounce timestamps; out of contract for `state_mutex_`. Best-effort.
+- `event_manager_`, `work_queue_manager_`, `notebook_manager_` — set once at startup, not mutated afterwards.
+- Notebook config on disk — read via stable `Notebook*` pointer; `GetConfig()` is const.
+
+### Locking rules (NON-NEGOTIABLE)
+
+1. **Single coarse mutex.** Never introduce `configs_mutex_`, `backends_mutex_`, etc. — one `state_mutex_` is sufficient and avoids lock-ordering bugs.
+2. **`std::mutex`, NOT `std::recursive_mutex`.** Recursive locking would mask the re-entry bugs that this discipline exists to prevent.
+3. **NEVER invoke external code while holding `state_mutex_`.** "External" means any of:
+   - Hook invocation
+   - Qt signal emission
+   - Backend method (`ISyncBackend::Sync`, `Initialize`, `GetStatus`, `GetConflicts`, `ResolveConflict`, `ReplaceCredsProvider`, dtor)
+   - libgit2 progress / credential callback
+   - `ICredentialProvider::GetCredentials`
+   - Work queue `Enqueue` (dispatcher fan-out)
+   - `DirtyTracker::MarkDirty` / `Clear` / `ListDirtyNotebooks`
+   - Recursive call back into another `SyncManager` public method (e.g. `GetSyncConfig` from inside `MaybeEnqueueSync`)
+4. **Standard pattern: copy then release then invoke.**
+
+   ```cpp
+   ISyncBackend *backend_ptr = nullptr;
+   {
+     std::lock_guard<std::mutex> lock(state_mutex_);
+     if (states_.find(id) == states_.end()) return VXCORE_ERR_SYNC_NOT_ENABLED;
+     auto it = backends_.find(id);
+     if (it == backends_.end()) return VXCORE_ERR_NOT_IMPLEMENTED;
+     backend_ptr = it->second.get();   // raw pointer copied out under lock
+     states_[id] = SyncState::kStaging;
+   }
+   // Lock released. Safe to call external code.
+   VxCoreError err = backend_ptr->Sync(nullptr, nullptr);
+   {
+     std::lock_guard<std::mutex> lock(state_mutex_);
+     states_[id] = (err == VXCORE_OK) ? SyncState::kIdle : SyncState::kError;
+   }
+   ```
+
+5. **Use scoped blocks `{ std::lock_guard<std::mutex> lock(state_mutex_); ... }`** to make the release point explicit and reviewable. Do not rely on function scope to release the lock when external calls follow.
+6. **`DisableSync` MUST destroy the backend outside the lock.** Move the `unique_ptr` out of the map under lock, then let it destruct after release — backend dtors are external (libgit2 shutdown, fd close).
+7. **Backend pointer stability.** The raw `ISyncBackend*` copied out under lock remains valid until `DisableSync` finishes destroying its `unique_ptr`. Concurrent `TriggerSync` racing with `DisableSync` may legitimately call into a backend that is about to be torn down — cooperative cancellation is Wave 12 work, not solved by `state_mutex_`.
+
+### Reentrancy is a hard requirement
+
+The event-driven `mark_dirty` path reads `configs_cache_` under `state_mutex_`, releases the lock, then calls `MaybeEnqueueSync`, which calls `GetSyncConfig`, which re-acquires `state_mutex_`. This is INTENTIONAL — it is why we use `std::mutex` (not recursive) and release before every public-method re-entry.
+
+Hook callers (Qt's `SyncService`, future plugins) MAY call back into `SyncManager` from inside a sync operation. The `test_sync_manager_reentrancy` test guarantees this works without deadlock by injecting a backend whose `Sync()` calls `SyncManager::GetSyncConfig`.
+
 ## Thread Safety
 
 `SyncManager` methods (`EnableSync`, `TriggerSync`, etc.) are NOT thread-safe.
