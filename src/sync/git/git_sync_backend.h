@@ -2,6 +2,7 @@
 #define VXCORE_SYNC_GIT_GIT_SYNC_BACKEND_H
 
 #include "sync/credential_provider.h"
+#include "sync/retry_policy.h"
 #include "sync/sync_backend.h"
 #include "sync/git/git_options.h"
 #include "sync/git/libgit2_init.h"
@@ -9,6 +10,7 @@
 
 #include <memory>
 #include <mutex>
+#include <random>
 #include <string>
 
 // Forward declarations to keep libgit2 types out of the public header.
@@ -90,6 +92,14 @@ class GitSyncBackend : public ISyncBackend {
   git_repository *repo_ = nullptr;
   git_rebase *rebase_in_progress_ = nullptr;
   bool initialized_ = false;
+
+  // F5.10 / Task 11.1 of sync-backend-phase4: retry policy + RNG for the
+  // Sync() push-retry loop. RNG seeded once at construction from
+  // std::random_device — keeps jitter unpredictable across instances while
+  // remaining cheap (no per-call random_device hit). Tests substitute a
+  // seeded RNG by calling compute_delay() directly, bypassing this member.
+  RetryPolicy retry_policy_{};
+  mutable std::mt19937 retry_rng_{std::random_device{}()};
 };
 
 // Anchor function used to defeat dead-stripping of git_sync_backend.cpp by

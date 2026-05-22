@@ -62,6 +62,7 @@ set(VXCORE_SOURCES
     sync/sync_backend_registry.cpp
     sync/credential_provider.cpp
     sync/dirty_tracker.cpp
+    sync/retry_policy.cpp
     ${VXCORE_GIT_SYNC_SOURCES_RELATIVE}
     utils/utils.cpp
     utils/string_utils.cpp

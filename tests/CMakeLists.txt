@@ -57,6 +57,21 @@ target_include_directories(test_dirty_tracker PRIVATE
 )
 add_test(NAME test_dirty_tracker COMMAND test_dirty_tracker)
 
+# test_retry_policy: F5.10 / Task 11.1 of sync-backend-phase4. Tests the
+# RetryPolicy struct + compute_delay + is_retryable_network_error.
+# retry_policy.cpp lives in vxcore.dll's source list but its free functions
+# carry no VXCORE_API decorations, so we direct-compile (mirrors
+# test_dirty_tracker). No libgit2 / Qt deps.
+add_executable(test_retry_policy
+    test_retry_policy.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/retry_policy.cpp
+)
+target_include_directories(test_retry_policy PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+add_test(NAME test_retry_policy COMMAND test_retry_policy)
+
 # test_credential_provider: Task 6.1 (F4.4) of sync-backend-phase4. Tests the
 # ICredentialProvider interface, InMemoryCredentialProvider (in vxcore.dll),
 # and the migrated MockCredentialProvider (in vxcore_test_internals).
@@ -352,6 +367,7 @@ target_link_libraries(test_sync_manager_dispatch PRIVATE git_sync_test_helpers)
 add_executable(test_git_sync_init test_git_sync_init.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/retry_policy.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -377,6 +393,7 @@ add_test(NAME test_git_sync_init COMMAND test_git_sync_init)
 add_executable(test_git_sync_credentials test_git_sync_credentials.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/retry_policy.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -401,6 +418,7 @@ add_test(NAME test_git_sync_credentials COMMAND test_git_sync_credentials)
 add_executable(test_git_sync_status test_git_sync_status.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/retry_policy.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -429,6 +447,7 @@ add_test(NAME test_git_sync_status COMMAND test_git_sync_status)
 add_executable(test_git_sync_roundtrip test_git_sync_roundtrip.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/retry_policy.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -457,6 +476,7 @@ add_test(NAME test_git_sync_roundtrip COMMAND test_git_sync_roundtrip)
 add_executable(test_git_sync_conflicts test_git_sync_conflicts.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/retry_policy.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -513,6 +533,7 @@ add_test(NAME test_resolve_result COMMAND test_resolve_result)
 add_executable(test_gitkeep_basic test_gitkeep_basic.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/retry_policy.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -540,6 +561,7 @@ add_test(NAME test_gitkeep_basic COMMAND test_gitkeep_basic)
 add_executable(test_gitkeep_cleanup test_gitkeep_cleanup.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/retry_policy.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -566,6 +588,7 @@ add_test(NAME test_gitkeep_cleanup COMMAND test_gitkeep_cleanup)
 add_executable(test_gitkeep_roundtrip test_gitkeep_roundtrip.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/retry_policy.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -605,6 +628,7 @@ target_link_libraries(test_sync_credentials_api PRIVATE git_sync_test_helpers nl
 add_executable(test_sync_backend_metadata test_sync_backend_metadata.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/retry_policy.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -639,6 +663,7 @@ add_executable(test_git_backend_autoreg test_git_backend_autoreg.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/retry_policy.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp

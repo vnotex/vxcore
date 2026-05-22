@@ -247,10 +247,20 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
     return err;
   }
 
-  // T25 retry loop.
-  static const int kBackoffMs[3] = {100, 500, 2000};
+  // F5.10 / Task 11.1 of sync-backend-phase4: retry loop driven by
+  // RetryPolicy + compute_delay. Network errors (per is_retryable_network_error)
+  // AND non-fast-forward push rejections (libgit2 surfaces these as generic
+  // GIT_ERROR with klass GIT_ERROR_REFERENCE — NOT in the network whitelist,
+  // so detected separately by message inspection here) trigger a backoff +
+  // retry. Every other failure returns immediately to the caller.
   bool pushed = false;
-  for (int attempt = 0; attempt < 3; ++attempt) {
+  for (int attempt = 1; attempt <= retry_policy_.max_attempts; ++attempt) {
+    if (attempt > 1) {
+      auto delay = compute_delay(attempt, retry_policy_, retry_rng_);
+      VXCORE_LOG_DEBUG("GitSyncBackend::Sync: backoff before attempt=%d delay_ms=%lld",
+                       attempt, static_cast<long long>(delay.count()));
+      std::this_thread::sleep_for(delay);
+    }
     VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=push attempt=%d", attempt);
     ReportProgress(callback, userdata, SyncState::kFetching, "Fetching", 0.40f);
     VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=fetch starting");
@@ -282,6 +292,8 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
       break;
     }
 
+    // Classify failure: non-fast-forward (transient race; retry) OR
+    // generic network/timeout per the libgit2 whitelist (retry).
     const git_error *gerr = git_error_last();
     bool non_ff = false;
     if (gerr && gerr->message) {
@@ -293,10 +305,12 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
         non_ff = true;
       }
     }
-    if (!non_ff || attempt >= 2) {
+    const bool retryable =
+        non_ff || (err == VXCORE_ERR_SYNC_NETWORK);
+    if (!retryable || attempt >= retry_policy_.max_attempts) {
       return err;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(kBackoffMs[attempt]));
+    // Loop continues; next iteration's compute_delay() sleep applies.
   }
 
   if (!pushed) {
