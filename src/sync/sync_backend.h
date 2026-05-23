@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "sync_cancellation.h"
 #include "sync_types.h"
 #include "vxcore/vxcore_types.h"
 
@@ -100,6 +101,21 @@ class ISyncBackend {
 
   virtual VxCoreError ResolveConflict(const std::string &path,
                                       SyncConflictResolution resolution) = 0;
+
+  // Wave 12.2 / F5.9 of sync-backend-phase4: install (or clear) the
+  // cancellation token that the backend will pass through to libgit2
+  // progress callbacks for any Sync() that follows. Pass `nullptr` to
+  // clear. Default implementation is a no-op for backends that do not
+  // support cooperative cancellation (e.g., MockSyncBackend or future
+  // backends whose transport has no progress hook).
+  //
+  // Threading: callers MUST NOT hold the SyncManager state_mutex_ when
+  // invoking this. The backend is free to take an internal short-lived
+  // mutex to swap its stored shared_ptr atomically — see
+  // GitSyncBackend::SetCancellation for the canonical reference.
+  virtual void SetCancellation(SyncCancellationPtr token) {
+    (void)token;
+  }
 };
 
 }  // namespace vxcore

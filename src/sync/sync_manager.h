@@ -11,6 +11,7 @@
 #include "dirty_tracker.h"
 #include "sync_backend.h"
 #include "sync_backend_registry.h"
+#include "sync_cancellation.h"
 #include "sync_types.h"
 #include "sync/git/libgit2_init.h"
 #include "vxcore/vxcore_types.h"
@@ -51,6 +52,16 @@ class SyncManager {
   VXCORE_API VxCoreError DisableSync(const std::string &notebook_id);
 
   VXCORE_API VxCoreError TriggerSync(const std::string &notebook_id);
+
+  // Wave 12.2 / F5.9: cancellable overload. Threads @token through to the
+  // backend via ISyncBackend::SetCancellation BEFORE the Sync() call and
+  // clears it (SetCancellation(nullptr)) afterwards regardless of result.
+  // A null token means "no cancellation wired" — semantically identical to
+  // the legacy TriggerSync(id) overload (which now forwards here with
+  // nullptr). Backends that ignore SetCancellation (default no-op) see no
+  // behavioural change.
+  VXCORE_API VxCoreError TriggerSync(const std::string &notebook_id,
+                                     SyncCancellationPtr cancellation);
 
   VXCORE_API VxCoreError GetSyncStatus(const std::string &notebook_id, SyncState &out_state,
                             std::vector<SyncFileInfo> &out_files);

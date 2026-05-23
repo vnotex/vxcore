@@ -229,6 +229,17 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
   GitSyncPipeline pipeline(repo_, git_dir_, root_folder_, config_, provider_snapshot,
                            &rebase_in_progress_);
 
+  // Wave 12.2 / F5.9: snapshot the cancellation token under the short-lived
+  // mutex (atomic with respect to a concurrent SetCancellation between
+  // Sync() calls) and forward it to the pipeline. Null is fine — the
+  // pipeline treats it as "no cancellation wired" (pre-W12 behavior).
+  SyncCancellationPtr cancellation_snapshot;
+  {
+    std::lock_guard<std::mutex> c_lock(cancellation_mu_);
+    cancellation_snapshot = cancellation_;
+  }
+  pipeline.SetCancellation(cancellation_snapshot);
+
   ReportProgress(callback, userdata, SyncState::kStaging, "Staging", 0.10f);
   EnsureGitkeepFiles(root_folder_, config_);
   VxCoreError err = pipeline.StageAll();
@@ -420,6 +431,17 @@ VxCoreError GitSyncBackend::ResolveConflict(const std::string &path,
                            &rebase_in_progress_);
   GitConflictResolver resolver(repo_, root_folder_);
   return resolver.ResolveConflict(path, resolution, pipeline);
+}
+
+// Wave 12.2 / F5.9: install/clear cancellation token. Short-lived mutex
+// keeps the shared_ptr swap atomic with respect to a concurrent Sync()
+// entry snapshot. Does NOT touch op_mutex_ — SetCancellation must be safe
+// to call from any thread (UI thread or worker), including while Sync()
+// is in flight (the in-flight pipeline already snapshotted its own copy
+// before the swap, so this swap affects only the next Sync()).
+void GitSyncBackend::SetCancellation(SyncCancellationPtr token) {
+  std::lock_guard<std::mutex> lock(cancellation_mu_);
+  cancellation_ = std::move(token);
 }
 
 // Task 4.3 (sync-backend-phase4 F1.1): self-registration of the git backend.

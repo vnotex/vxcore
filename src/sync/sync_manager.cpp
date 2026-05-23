@@ -388,7 +388,15 @@ void SyncManager::InvalidateConfigCache(const std::string &notebook_id) {
 }
 
 VxCoreError SyncManager::TriggerSync(const std::string &notebook_id) {
-  VXCORE_LOG_DEBUG("SyncManager::TriggerSync: notebook_id=%s", notebook_id.c_str());
+  // Wave 12.2 / F5.9: legacy no-token wrapper. Forwards to the cancellable
+  // overload with null — preserves pre-W12 behavior bit-for-bit.
+  return TriggerSync(notebook_id, nullptr);
+}
+
+VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
+                                     SyncCancellationPtr cancellation) {
+  VXCORE_LOG_DEBUG("SyncManager::TriggerSync: notebook_id=%s cancellable=%d",
+                   notebook_id.c_str(), cancellation ? 1 : 0);
 
   VxCoreError err = ValidateNotebook(notebook_id);
   if (err != VXCORE_OK) {
@@ -402,8 +410,9 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id) {
   // The backend pointer is stable: DisableSync moves the unique_ptr out
   // under the same lock and destroys it after release, so a concurrent
   // DisableSync racing with TriggerSync sees one of two valid orderings.
-  // In-flight Sync() is NOT guarded against concurrent DisableSync — that
-  // is a known limitation tracked separately (Wave 12 cancellation).
+  // Wave 12.2 (F5.9): in-flight cancellation now works — the caller passes
+  // a token, we call backend->SetCancellation(token) BEFORE Sync(), and
+  // unconditionally clear it afterwards.
   ISyncBackend *backend_ptr = nullptr;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
@@ -424,8 +433,15 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id) {
     states_[notebook_id] = SyncState::kStaging;
   }
 
-  // EXTERNAL CALL — outside state_mutex_.
+  // EXTERNAL CALLS — outside state_mutex_. SetCancellation runs first so
+  // an early Cancel() between install and Sync() entry is still observed
+  // by the in-flight Sync().
+  backend_ptr->SetCancellation(cancellation);
   VxCoreError sync_err = backend_ptr->Sync(nullptr, nullptr);
+  // ALWAYS clear the token to avoid stale state on the next Sync() that
+  // arrives without one. Safe even when SetCancellation is a no-op (Mock /
+  // future non-cancellable backends).
+  backend_ptr->SetCancellation(nullptr);
 
   {
     std::lock_guard<std::mutex> lock(state_mutex_);

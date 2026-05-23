@@ -5,10 +5,18 @@
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
 #include "sync/credential_provider.h"
+#include "sync/sync_cancellation.h"
 #include "sync/sync_manager.h"
 #include "sync/sync_types.h"
 #include "utils/logger.h"
 #include "vxcore/vxcore.h"
+
+// Wave 12.2 / F5.9: opaque C handle wrapping a shared_ptr<SyncCancellation>.
+// Defined here (not in a public header) so the layout stays an implementation
+// detail. The C API exposes only a forward-declared typedef.
+struct VxCoreSyncCancellation_ {
+  vxcore::SyncCancellationPtr ptr;
+};
 
 static const char *SyncStateToString(vxcore::SyncState state) {
   switch (state) {
@@ -149,6 +157,62 @@ VXCORE_API VxCoreError vxcore_sync_trigger(VxCoreContextHandle context, const ch
     return VXCORE_ERR_UNKNOWN;
   } catch (...) {
     ctx->last_error = "Unknown error triggering sync";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+// Wave 12.2 / F5.9: cancellation token lifecycle. All three handle
+// management fns are null-safe.
+VXCORE_API VxCoreSyncCancellation *vxcore_sync_create_cancellation(void) {
+  try {
+    auto *handle = new VxCoreSyncCancellation_;
+    handle->ptr = std::make_shared<vxcore::SyncCancellation>();
+    return handle;
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+VXCORE_API void vxcore_sync_cancel(VxCoreSyncCancellation *token) {
+  if (!token || !token->ptr) {
+    return;
+  }
+  token->ptr->Cancel();
+}
+
+VXCORE_API void vxcore_sync_free_cancellation(VxCoreSyncCancellation *token) {
+  // Releasing the handle drops the outer shared_ptr ref; the underlying
+  // SyncCancellation object stays alive as long as any in-flight pipeline
+  // still holds a snapshot of it. No leak — pipelines drop their snapshot
+  // when Sync() returns and SyncManager calls backend->SetCancellation(nullptr).
+  delete token;
+}
+
+VXCORE_API VxCoreError vxcore_sync_trigger_cancellable(VxCoreContextHandle context,
+                                                       const char *notebook_id,
+                                                       VxCoreSyncCancellation *token) {
+  if (!context || !notebook_id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    if (!ctx->sync_manager) {
+      ctx->last_error = "Sync manager not initialized";
+      return VXCORE_ERR_UNKNOWN;
+    }
+
+    // Null token degrades to the legacy non-cancellable path. Non-null:
+    // forward the shared_ptr (copy, so the C handle stays free to outlive
+    // this call — pipelines snapshot internally).
+    vxcore::SyncCancellationPtr ptr = (token != nullptr) ? token->ptr : nullptr;
+    return ctx->sync_manager->TriggerSync(notebook_id, std::move(ptr));
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error triggering cancellable sync";
     return VXCORE_ERR_UNKNOWN;
   }
 }

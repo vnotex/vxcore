@@ -4,6 +4,7 @@
 #include "sync/credential_provider.h"
 #include "sync/retry_policy.h"
 #include "sync/sync_backend.h"
+#include "sync/sync_cancellation.h"
 #include "sync/git/git_options.h"
 #include "sync/git/libgit2_init.h"
 #include "vxcore/vxcore_types.h"
@@ -65,6 +66,13 @@ class GitSyncBackend : public ISyncBackend {
   VxCoreError GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) override;
   VxCoreError ResolveConflict(const std::string &path,
                               SyncConflictResolution resolution) override;
+  // Wave 12.2 / F5.9: install (or clear) the cooperative cancellation
+  // token. Stored under cancellation_mu_; consumed by Sync() at entry
+  // (snapshot under lock, released, then forwarded to the local
+  // pipeline via GitSyncPipeline::SetCancellation). A null token clears
+  // any previously installed one. See sync_backend.h for the threading
+  // contract.
+  void SetCancellation(SyncCancellationPtr token) override;
 
   // Construct a GitSyncPipeline wired to this backend's internal repo and
   // config. The returned pipeline borrows the repo/git_dir/config references
@@ -89,6 +97,14 @@ class GitSyncBackend : public ISyncBackend {
   // enters the picture).
   mutable std::mutex creds_provider_mu_;
   std::shared_ptr<ICredentialProvider> creds_provider_;
+  // Wave 12.2 / F5.9: cooperative cancellation token. Protected by its own
+  // short-lived mutex so SetCancellation() (called from the orchestrator
+  // thread between Sync() invocations) doesn't race with the Sync()
+  // entry snapshot. Held as shared_ptr so the libgit2 progress callbacks
+  // can keep a raw pointer alive through the pipeline's own shared_ptr
+  // copy (taken under GitSyncPipeline::SetCancellation).
+  mutable std::mutex cancellation_mu_;
+  SyncCancellationPtr cancellation_;
   git_repository *repo_ = nullptr;
   git_rebase *rebase_in_progress_ = nullptr;
   bool initialized_ = false;

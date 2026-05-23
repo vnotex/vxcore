@@ -665,6 +665,15 @@ add_test(NAME test_gitkeep_roundtrip COMMAND test_gitkeep_roundtrip)
 add_vxcore_test(test_sync_credentials_api)
 target_link_libraries(test_sync_credentials_api PRIVATE git_sync_test_helpers nlohmann_json)
 
+# test_vxcore_sync_cancellable_api: Wave 12.2 / F5.9 of sync-backend-phase4.
+# C ABI tests for vxcore_sync_create_cancellation /
+# vxcore_sync_cancel / vxcore_sync_free_cancellation /
+# vxcore_sync_trigger_cancellable lifecycle and null-safety. No libgit2
+# fixture needed — exercises the C ABI plumbing on a non-enabled notebook
+# (the SYNC_NOT_ENABLED path proves the dispatch reaches SyncManager
+# without going through any backend).
+add_vxcore_test(test_vxcore_sync_cancellable_api)
+
 # test_sync_backend_metadata: Task 4.1 (F1.2) of sync-backend-phase4. Verifies
 # the new ISyncBackend identity methods (GetName / GetCapabilities /
 # IsInitialized) on GitSyncBackend (direct-compiled) and the configurable

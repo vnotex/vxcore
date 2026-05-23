@@ -863,6 +863,45 @@ VXCORE_API VxCoreError vxcore_sync_disable(VxCoreContextHandle context, const ch
 // Returns VXCORE_ERR_NOT_IMPLEMENTED if no backend is registered.
 VXCORE_API VxCoreError vxcore_sync_trigger(VxCoreContextHandle context, const char *notebook_id);
 
+// Wave 12.2 / F5.9 of sync-backend-phase4: cancellation token C ABI.
+//
+// Opaque handle wrapping a shared_ptr<SyncCancellation>. Lifetime is
+// independent of any vxcore context — callers create a token, optionally
+// pass it into vxcore_sync_trigger_cancellable, may call vxcore_sync_cancel
+// from any thread at any time, and MUST eventually call
+// vxcore_sync_free_cancellation to release the underlying shared_ptr.
+//
+// Null-safety: every function in this group is null-safe (no-ops on a
+// NULL token).
+typedef struct VxCoreSyncCancellation_ VxCoreSyncCancellation;
+
+// Allocate a fresh cancellation token. Returns NULL only on allocation
+// failure. The returned token is uncancelled.
+VXCORE_API VxCoreSyncCancellation *vxcore_sync_create_cancellation(void);
+
+// Request cancellation. Lock-free; safe to call from any thread, including
+// concurrently with vxcore_sync_trigger_cancellable on a worker thread.
+// No-op on NULL.
+VXCORE_API void vxcore_sync_cancel(VxCoreSyncCancellation *token);
+
+// Release the cancellation token. No-op on NULL. The underlying
+// shared_ptr<SyncCancellation> drops one ref count — the SyncCancellation
+// object itself stays alive as long as any pipeline still holds a snapshot.
+VXCORE_API void vxcore_sync_free_cancellation(VxCoreSyncCancellation *token);
+
+// Trigger an immediate sync cycle, optionally cancellable.
+// When @token is NULL, behaviour is identical to vxcore_sync_trigger
+// (legacy callers and back-compat). When @token is non-NULL, the token is
+// installed on the backend before Sync() runs and cleared afterwards;
+// concurrent vxcore_sync_cancel(@token) requests an early abort via the
+// libgit2 progress callbacks.
+//
+// Returns VXCORE_ERR_SYNC_NOT_ENABLED if sync is not enabled.
+// Returns VXCORE_ERR_NOT_IMPLEMENTED if no backend is registered.
+VXCORE_API VxCoreError vxcore_sync_trigger_cancellable(VxCoreContextHandle context,
+                                                       const char *notebook_id,
+                                                       VxCoreSyncCancellation *token);
+
 // Get sync status for a notebook.
 // out_status_json: JSON output: {"state":"idle","files":[{"path":"...","status":"modified_local"}]}
 // Caller must free with vxcore_string_free().
