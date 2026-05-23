@@ -8,6 +8,7 @@
 #include "db/sqlite_metadata_store.h"
 #include "folder_manager.h"
 #include "metadata_store.h"
+#include "sync/sync_json_keys.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -79,17 +80,18 @@ NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
       }
     }
   }
-  if (json.contains("syncEnabled") && json["syncEnabled"].is_boolean()) {
-    config.sync_enabled = json["syncEnabled"].get<bool>();
+  if (json.contains(kJsonKeySyncEnabled) && json[kJsonKeySyncEnabled].is_boolean()) {
+    config.sync_enabled = json[kJsonKeySyncEnabled].get<bool>();
   }
-  if (json.contains("syncBackend") && json["syncBackend"].is_string()) {
-    config.sync_backend = json["syncBackend"].get<std::string>();
+  if (json.contains(kJsonKeySyncBackend) && json[kJsonKeySyncBackend].is_string()) {
+    config.sync_backend = json[kJsonKeySyncBackend].get<std::string>();
   }
-  if (json.contains("syncRemoteUrl") && json["syncRemoteUrl"].is_string()) {
-    config.sync_remote_url = json["syncRemoteUrl"].get<std::string>();
+  if (json.contains(kJsonKeySyncRemoteUrl) && json[kJsonKeySyncRemoteUrl].is_string()) {
+    config.sync_remote_url = json[kJsonKeySyncRemoteUrl].get<std::string>();
   }
-  if (json.contains("syncIntervalSeconds") && json["syncIntervalSeconds"].is_number_integer()) {
-    config.sync_interval_seconds = json["syncIntervalSeconds"].get<int>();
+  if (json.contains(kJsonKeySyncIntervalSeconds) &&
+      json[kJsonKeySyncIntervalSeconds].is_number_integer()) {
+    config.sync_interval_seconds = json[kJsonKeySyncIntervalSeconds].get<int>();
   }
   return config;
 }
@@ -113,10 +115,10 @@ nlohmann::json NotebookConfig::ToJson() const {
     ignored_array.push_back(pattern);
   }
   json["ignored"] = std::move(ignored_array);
-  json["syncEnabled"] = sync_enabled;
-  json["syncBackend"] = sync_backend;
-  json["syncRemoteUrl"] = sync_remote_url;
-  json["syncIntervalSeconds"] = sync_interval_seconds;
+  json[kJsonKeySyncEnabled] = sync_enabled;
+  json[kJsonKeySyncBackend] = sync_backend;
+  json[kJsonKeySyncRemoteUrl] = sync_remote_url;
+  json[kJsonKeySyncIntervalSeconds] = sync_interval_seconds;
   return json;
 }
 

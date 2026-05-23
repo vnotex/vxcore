@@ -1,5 +1,6 @@
 #include "sync/git/git_options.h"
 
+#include "sync/sync_json_keys.h"
 #include "utils/logger.h"
 
 namespace vxcore {
@@ -32,9 +33,9 @@ GitOptions GitOptions::FromJson(const nlohmann::json &json) {
   if (json.is_null() || !json.is_object() || json.empty()) {
     return opts;
   }
-  ReadField(json, "sslVerify", opts.ssl_verify);
-  ReadField(json, "connectTimeoutMs", opts.connect_timeout_ms);
-  ReadField(json, "proxyUrl", opts.proxy_url);
+  ReadField(json, kJsonKeySslVerify, opts.ssl_verify);
+  ReadField(json, kJsonKeyConnectTimeoutMs, opts.connect_timeout_ms);
+  ReadField(json, kJsonKeyProxyUrl, opts.proxy_url);
   return opts;
 }
 

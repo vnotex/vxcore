@@ -2,41 +2,43 @@
 
 #include <nlohmann/json.hpp>
 
+#include "sync/sync_json_keys.h"
+
 namespace vxcore {
 
 SyncConfig SyncConfig::FromJson(const nlohmann::json &json) {
   SyncConfig config;
-  if (json.contains("backend") && json["backend"].is_string())
-    config.backend = json["backend"].get<std::string>();
-  if (json.contains("remoteUrl") && json["remoteUrl"].is_string())
-    config.remote_url = json["remoteUrl"].get<std::string>();
-  if (json.contains("intervalSeconds") && json["intervalSeconds"].is_number_integer())
-    config.interval_seconds = json["intervalSeconds"].get<int>();
+  if (json.contains(kJsonKeyBackend) && json[kJsonKeyBackend].is_string())
+    config.backend = json[kJsonKeyBackend].get<std::string>();
+  if (json.contains(kJsonKeyRemoteUrl) && json[kJsonKeyRemoteUrl].is_string())
+    config.remote_url = json[kJsonKeyRemoteUrl].get<std::string>();
+  if (json.contains(kJsonKeyIntervalSeconds) && json[kJsonKeyIntervalSeconds].is_number_integer())
+    config.interval_seconds = json[kJsonKeyIntervalSeconds].get<int>();
   // NOTE (F3.3): the legacy `"enabled"` key is silently ignored for backward
   // compat with on-disk JSON written before the field was dropped. Whether
   // sync is "on" for a notebook is encoded by SyncManager registration.
-  if (json.contains("excludePaths") && json["excludePaths"].is_array()) {
+  if (json.contains(kJsonKeyExcludePaths) && json[kJsonKeyExcludePaths].is_array()) {
     config.exclude_paths.clear();
-    for (const auto &p : json["excludePaths"]) {
+    for (const auto &p : json[kJsonKeyExcludePaths]) {
       if (p.is_string()) config.exclude_paths.push_back(p.get<std::string>());
     }
   }
-  if (json.contains("backendOptions") && json["backendOptions"].is_object())
-    config.backend_options = json["backendOptions"];
-  if (json.contains("autoCommitMerges") && json["autoCommitMerges"].is_boolean())
-    config.auto_commit_merges = json["autoCommitMerges"].get<bool>();
+  if (json.contains(kJsonKeyBackendOptions) && json[kJsonKeyBackendOptions].is_object())
+    config.backend_options = json[kJsonKeyBackendOptions];
+  if (json.contains(kJsonKeyAutoCommitMerges) && json[kJsonKeyAutoCommitMerges].is_boolean())
+    config.auto_commit_merges = json[kJsonKeyAutoCommitMerges].get<bool>();
   return config;
 }
 
 nlohmann::json SyncConfig::ToJson() const {
   nlohmann::json j;
-  j["backend"] = backend;
-  j["remoteUrl"] = remote_url;
-  j["intervalSeconds"] = interval_seconds;
-  j["excludePaths"] = exclude_paths;
-  j["autoCommitMerges"] = auto_commit_merges;
+  j[kJsonKeyBackend] = backend;
+  j[kJsonKeyRemoteUrl] = remote_url;
+  j[kJsonKeyIntervalSeconds] = interval_seconds;
+  j[kJsonKeyExcludePaths] = exclude_paths;
+  j[kJsonKeyAutoCommitMerges] = auto_commit_merges;
   if (!backend_options.is_null() && !backend_options.empty())
-    j["backendOptions"] = backend_options;
+    j[kJsonKeyBackendOptions] = backend_options;
   return j;
 }
 

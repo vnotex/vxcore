@@ -58,6 +58,7 @@ set(VXCORE_SOURCES
     search/rg_search_backend.cpp
     search/simple_search_backend.cpp
     sync/sync_types.cpp
+    sync/sync_json_keys.cpp
     sync/sync_manager.cpp
     sync/sync_backend_registry.cpp
     sync/credential_provider.cpp

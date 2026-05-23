@@ -6,6 +6,7 @@
 #include "core/notebook_manager.h"
 #include "sync/credential_provider.h"
 #include "sync/sync_cancellation.h"
+#include "sync/sync_json_keys.h"
 #include "sync/sync_manager.h"
 #include "sync/sync_types.h"
 #include "utils/logger.h"
@@ -52,17 +53,17 @@ static const char *SyncFileStatusToString(vxcore::SyncFileStatus status) {
 static vxcore::SyncCredentials ParseCredentials(const char *credentials_json) {
   vxcore::SyncCredentials creds;
   auto j = nlohmann::json::parse(credentials_json);
-  if (j.contains("pat") && j["pat"].is_string()) {
-    creds.personal_access_token = j["pat"].get<std::string>();
+  if (j.contains(vxcore::kJsonKeyPat) && j[vxcore::kJsonKeyPat].is_string()) {
+    creds.personal_access_token = j[vxcore::kJsonKeyPat].get<std::string>();
   }
-  if (j.contains("authorName") && j["authorName"].is_string()) {
-    creds.author_name = j["authorName"].get<std::string>();
+  if (j.contains(vxcore::kJsonKeyAuthorName) && j[vxcore::kJsonKeyAuthorName].is_string()) {
+    creds.author_name = j[vxcore::kJsonKeyAuthorName].get<std::string>();
   }
-  if (j.contains("authorEmail") && j["authorEmail"].is_string()) {
-    creds.author_email = j["authorEmail"].get<std::string>();
+  if (j.contains(vxcore::kJsonKeyAuthorEmail) && j[vxcore::kJsonKeyAuthorEmail].is_string()) {
+    creds.author_email = j[vxcore::kJsonKeyAuthorEmail].get<std::string>();
   }
-  if (j.contains("extra") && j["extra"].is_object()) {
-    creds.extra = j["extra"];
+  if (j.contains(vxcore::kJsonKeyExtra) && j[vxcore::kJsonKeyExtra].is_object()) {
+    creds.extra = j[vxcore::kJsonKeyExtra];
   }
   return creds;
 }
@@ -243,7 +244,7 @@ VXCORE_API VxCoreError vxcore_sync_get_status(VxCoreContextHandle context, const
     j["files"] = nlohmann::json::array();
     for (const auto &f : files) {
       nlohmann::json fj;
-      fj["path"] = f.path;
+      fj[vxcore::kJsonKeyPath] = f.path;
       fj["status"] = SyncFileStatusToString(f.status);
       j["files"].push_back(fj);
     }
@@ -292,10 +293,10 @@ VXCORE_API VxCoreError vxcore_sync_get_conflicts(VxCoreContextHandle context,
     j["conflicts"] = nlohmann::json::array();
     for (const auto &c : conflicts) {
       nlohmann::json cj;
-      cj["path"] = c.path;
-      cj["localModifiedUtc"] = c.local_modified_utc;
-      cj["remoteModifiedUtc"] = c.remote_modified_utc;
-      cj["isBinary"] = c.is_binary;
+      cj[vxcore::kJsonKeyPath] = c.path;
+      cj[vxcore::kJsonKeyLocalModifiedUtc] = c.local_modified_utc;
+      cj[vxcore::kJsonKeyRemoteModifiedUtc] = c.remote_modified_utc;
+      cj[vxcore::kJsonKeyIsBinary] = c.is_binary;
       j["conflicts"].push_back(cj);
     }
 
