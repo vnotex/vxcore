@@ -109,6 +109,23 @@ if(NOT WIN32)
 endif()
 add_test(NAME test_sync_cancellation COMMAND test_sync_cancellation)
 
+# test_progress_dispatcher: Task 13.1 (F5.7 part 2) of sync-backend-phase4.
+# Tests the SyncProgressDispatcher thread-safe progress fan-out. Direct-compile
+# (sync_progress_dispatcher.cpp's symbols are not VXCORE_API-exported). No
+# libgit2, no Qt deps -- pure std::function/std::mutex coverage.
+add_executable(test_progress_dispatcher
+    test_progress_dispatcher.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_progress_dispatcher.cpp)
+target_include_directories(test_progress_dispatcher PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+if(NOT WIN32)
+    find_package(Threads REQUIRED)
+    target_link_libraries(test_progress_dispatcher PRIVATE Threads::Threads)
+endif()
+add_test(NAME test_progress_dispatcher COMMAND test_progress_dispatcher)
+
 # test_credential_provider: Task 6.1 (F4.4) of sync-backend-phase4. Tests the
 # ICredentialProvider interface, InMemoryCredentialProvider (in vxcore.dll),
 # and the migrated MockCredentialProvider (in vxcore_test_internals).

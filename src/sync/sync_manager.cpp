@@ -437,7 +437,15 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
   // an early Cancel() between install and Sync() entry is still observed
   // by the in-flight Sync().
   backend_ptr->SetCancellation(cancellation);
-  VxCoreError sync_err = backend_ptr->Sync(nullptr, nullptr);
+  // Wave 13.1 (F5.7 part 2): wire progress callback through the dispatcher.
+  // The lambda captures only progress_dispatcher_ by reference — NO
+  // state_mutex_ touch on the callback hot path. The dispatcher self-locks
+  // and copies-before-invoke per Wave 0.5 contract.
+  SyncProgressCallback progress_cb =
+      [this](const SyncProgress &progress, void * /*userdata*/) {
+        progress_dispatcher_.Dispatch(progress);
+      };
+  VxCoreError sync_err = backend_ptr->Sync(progress_cb, nullptr);
   // ALWAYS clear the token to avoid stale state on the next Sync() that
   // arrives without one. Safe even when SetCancellation is a no-op (Mock /
   // future non-cancellable backends).
@@ -603,6 +611,16 @@ VxCoreError SyncManager::EnableSyncWithFactoryForTesting(
   VXCORE_LOG_DEBUG("SyncManager::EnableSyncWithFactoryForTesting: notebook_id=%s",
                    notebook_id.c_str());
   return EnableSyncImpl(notebook_id, config, std::move(provider), std::move(factory_override));
+}
+
+// Wave 13.1 (F5.7 part 2): progress dispatcher forwarders.
+SyncProgressDispatcher::ObserverId SyncManager::RegisterProgressObserver(
+    std::function<void(const SyncProgress &)> observer) {
+  return progress_dispatcher_.Register(std::move(observer));
+}
+
+void SyncManager::UnregisterProgressObserver(SyncProgressDispatcher::ObserverId id) {
+  progress_dispatcher_.Unregister(id);
 }
 
 }  // namespace vxcore

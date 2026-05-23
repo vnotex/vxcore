@@ -12,6 +12,7 @@
 #include "sync_backend.h"
 #include "sync_backend_registry.h"
 #include "sync_cancellation.h"
+#include "sync_progress_dispatcher.h"
 #include "sync_types.h"
 #include "sync/git/libgit2_init.h"
 #include "vxcore/vxcore_types.h"
@@ -129,6 +130,23 @@ class SyncManager {
   // notebook is unknown or never synced on this device. Const + no callbacks.
   VXCORE_API int64_t LastSyncTime(const std::string &notebook_id) const;
 
+  // Wave 13.1 (F5.7 part 2): register a progress observer that will be invoked
+  // OUTSIDE state_mutex_ for every progress event produced by an in-flight
+  // backend Sync(). The observer is invoked on whatever thread the backend
+  // produces the callback on (today: the thread that called TriggerSync —
+  // usually a sync worker thread). Cross-thread consumers (Qt SyncService)
+  // MUST bounce to their target thread via Qt::QueuedConnection inside the
+  // observer lambda.
+  //
+  // Returns a non-zero ObserverId on success; pass it to
+  // UnregisterProgressObserver to remove. Returns 0 if observer is empty.
+  VXCORE_API SyncProgressDispatcher::ObserverId
+  RegisterProgressObserver(std::function<void(const SyncProgress &)> observer);
+
+  // Wave 13.1 (F5.7 part 2): remove a previously-registered progress observer.
+  // No-op if id is 0 or unknown.
+  VXCORE_API void UnregisterProgressObserver(SyncProgressDispatcher::ObserverId id);
+
  private:
   VxCoreError ValidateNotebook(const std::string &notebook_id);
 
@@ -195,6 +213,12 @@ class SyncManager {
   // currently uses DirtyTracker only) and the read-through cache path in
   // GetSyncConfig need to take it.
   mutable std::mutex state_mutex_;
+
+  // Wave 13.1 (F5.7 part 2): progress fan-out. Self-locking; NEVER held with
+  // state_mutex_. The lambda passed to backend->Sync() forwards into
+  // progress_dispatcher_.Dispatch() directly — no SyncManager locks taken
+  // on the callback hot path.
+  SyncProgressDispatcher progress_dispatcher_;
 };
 
 }  // namespace vxcore

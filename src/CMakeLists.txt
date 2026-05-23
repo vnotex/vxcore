@@ -64,6 +64,7 @@ set(VXCORE_SOURCES
     sync/dirty_tracker.cpp
     sync/retry_policy.cpp
     sync/sync_cancellation.cpp
+sync/sync_progress_dispatcher.cpp
     ${VXCORE_GIT_SYNC_SOURCES_RELATIVE}
     utils/utils.cpp
     utils/string_utils.cpp
