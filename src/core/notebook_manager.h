@@ -19,7 +19,7 @@ class NotebookManager {
   NotebookManager(ConfigManager *config_manager);
   ~NotebookManager();
 
-  void SetEventManager(EventManager *event_manager) { event_manager_ = event_manager; }
+  void SetEventManager(EventManager *event_manager);
 
   VxCoreError CreateNotebook(const std::string &root_folder, NotebookType type,
                              const std::string &config_json, std::string &out_notebook_id);

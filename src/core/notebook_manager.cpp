@@ -418,4 +418,14 @@ VxCoreError NotebookManager::ResolveNodeById(const std::string &node_id,
   return VXCORE_ERR_NOT_FOUND;
 }
 
+void NotebookManager::SetEventManager(EventManager *event_manager) {
+  event_manager_ = event_manager;
+  // Propagate to existing notebooks' folder managers
+  for (auto &pair : notebooks_) {
+    if (auto *fm = pair.second->GetFolderManager()) {
+      fm->SetEventManager(event_manager_);
+    }
+  }
+}
+
 }  // namespace vxcore

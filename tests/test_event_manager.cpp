@@ -587,6 +587,50 @@ int test_sync_dirty_multiple_ops_single_entry() {
   return 0;
 }
 
+// Regression test for folder events on session-loaded notebooks.
+// Verifies that SetEventManager propagates to already-loaded notebooks' folder managers.
+// Issue: NotebookManager loaded notebooks before SetEventManager was called, leaving
+// folder managers without event notification capability. This test ensures the fix works.
+int test_folder_events_on_session_loaded_notebook() {
+  std::cout << "  Running test_folder_events_on_session_loaded_notebook..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  // Create context and notebook, enable sync
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string nb_path = get_test_path("session_load_nb");
+  cleanup_test_dir(nb_path);
+  err = vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"SessionLoadTest\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}", nullptr);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create a folder via C API (this marks dirty if event wiring works)
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "testfolder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Verify the folder operation marked the notebook as dirty
+  // (proves SetEventManager propagated to the session-loaded notebook)
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  auto dirty = vctx->sync_manager->GetDirtyNotebooks();
+  ASSERT_EQ(dirty.size(), 1u);
+  ASSERT_EQ(dirty[0], notebook_id);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_folder_events_on_session_loaded_notebook passed" << std::endl;
+  return 0;
+}
+
 int main() {
   // Unit tests
   RUN_TEST(test_subscribe_and_emit);
@@ -613,6 +657,9 @@ int main() {
   RUN_TEST(test_sync_dirty_cleared_after_trigger);
   RUN_TEST(test_sync_dirty_not_marked_for_non_sync_notebook);
   RUN_TEST(test_sync_dirty_multiple_ops_single_entry);
+
+  // Regression test for session-loaded notebook event propagation
+  RUN_TEST(test_folder_events_on_session_loaded_notebook);
 
   std::cout << "All event manager tests passed!" << std::endl;
   return 0;
