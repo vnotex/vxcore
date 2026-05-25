@@ -695,31 +695,27 @@ flow now ends at `sync.should_run` and the consumer owns dispatch. The
 
 ## Event-Driven Dirty Tracking
 
-`SyncManager::SetEventManager()` subscribes to `file.created`, `file.saved`,
-`file.deleted`, `file.moved`, `folder.created`, and `folder.deleted` events.
-When an event fires for a notebook that has sync enabled (`configs_` map),
-the notebook ID is added to `dirty_notebooks_` (a `std::set`, so duplicates
-are ignored).
+`SyncManager::SetEventManager()` subscribes to `file.created`, `file.saved`, `file.deleted`, `file.moved`, `folder.created`, and `folder.deleted`. For each event whose notebook has sync enabled, the ID is marked in `DirtyTracker`.
 
-**Caller responsibility (preferred path):** subscribe to `sync.should_run`
-and call `TriggerSync()` for the notebook in the payload. `SyncManager`
-already applies the per-notebook debounce inside `MaybeEnqueueSync`, so
-each event corresponds to an actionable sync request. `TriggerSync()`
-calls `ClearDirty()` on success.
+`MaybeEnqueueSync` then UNCONDITIONALLY emits `sync.should_run` — once per dirty mark, no debounce gate, no throttle, no coalescing. vxcore is the fact-emitter. The previous in-library debounce was removed in commit `cba4e21` because it dropped legitimate triggers when multiple saves landed within the same window.
 
-**Polling path (still supported):** `GetDirtyNotebooks()` remains available
-for embedders that cannot subscribe to events (e.g., callers driving sync
-from a periodic timer with no event loop). It returns the same set of
-notebook IDs that drive `sync.should_run` emissions. New Qt code should
-prefer the event flow.
+### Consumer responsibility
+
+Consumers OWN every scheduling decision: debounce, throttle, coalesce, backpressure, retry, periodic safety net. VNote does this in `SyncService::onSyncShouldRun` → `SyncWorkQueueManager::enqueue`, where the `coalesceKey="trigger"` mechanism collapses concurrent triggers per notebook into a single in-flight sync. See `src/core/services/AGENTS.md` § SyncService.
+
+`SyncConfig::interval_seconds` is a HINT. vxcore neither enforces nor honours it. Consumers may consult it to seed their own debounce window; nothing in the library does.
+
+### Non-Qt embedders (legacy polling path)
+
+`GetDirtyNotebooks()` still returns the dirty set for embedders that cannot subscribe to events (e.g., a periodic timer loop with no event dispatcher). New code should prefer subscribing to `sync.should_run`. The polling API is retained for ABI stability and non-Qt consumers only.
 
 ```
-file.created event → SyncManager marks notebook dirty
-                   → debounce window elapses
-                   → sync.should_run emitted          (preferred: EventBridge consumes)
-                   → GetDirtyNotebooks() also returns ["nb-123"]   (polling fallback)
-                   → vxcore_sync_trigger(ctx, "nb-123")
-                   → on success, dirty state cleared
+file.saved event → SyncManager marks notebook dirty
+                 → MaybeEnqueueSync emits sync.should_run unconditionally
+                 → Qt EventBridge → SyncService::onSyncShouldRun
+                 → SyncWorkQueueManager::enqueue (coalesces, caps, schedules)
+                 → TriggerSync runs on worker
+                 → on success, dirty state cleared
 ```
 
 ## Threading & Callback Contract

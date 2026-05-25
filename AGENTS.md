@@ -6,6 +6,33 @@ vxcore is a cross-platform C/C++ library providing notebook management functiona
 
 **Key Features**: Notebook management, folder/file operations, tag system, full-text search, JSON-based configuration.
 
+## Library Integration Contract
+
+vxcore is an **embedded library**, not an application. It publishes a stable C ABI; consumers (VNote is one) integrate by following the published contract. The library owns *facts*; consumers own *policy*.
+
+### The 4-layer model
+
+| Layer | Owner | Job | Forbidden |
+|---|---|---|---|
+| 1. Event emission | vxcore (FolderManager, BufferManager, NotebookManager) | Fire faithful, lossless state-change events on every mutation. | Deciding when consumers act. Throttling, debouncing, or filtering events. |
+| 2. Dirtiness tracking | vxcore (DirtyTracker, per-notebook flag) | Track outstanding work; cleared on TriggerSync success. | Scheduling sync. Applying timing policy. |
+| 3. Scheduling policy | CONSUMER (e.g., VNote SyncWorkQueueManager + SyncScheduler) | Decide WHEN sync runs: debounce, throttle, coalesce, backpressure, retry, periodic safety net. | Touching git, libgit2, or backend internals. |
+| 4. Sync execution | vxcore (SyncManager::TriggerSync + GitSyncBackend) | Synchronously execute the round-trip; return a result; fire lifecycle events. | Knowing about scheduling. Embedding timers. |
+
+### Anti-patterns (FORBIDDEN)
+
+Three recent regressions all violated the contract. Do not repeat them.
+
+1. **Static-initializer self-registration of backends.** Use the explicit `RegisterBuiltinBackends(registry)` call from `vxcore_context_create`. Anchor functions, dead-strip workarounds, and cross-TU pointer tricks are forbidden. The MSVC `/OPT:REF` linker silently dropped the old self-registering translation unit out of `vnote.exe`. Fixed in commit `fff4a5f`.
+2. **Vxcore-side scheduling decisions** (debounce gates, throttle, deferred timers inside `MaybeEnqueueSync`). Vxcore emits facts; consumers schedule. The previous in-library debounce swallowed legitimate `sync.should_run` events when several saves arrived in the same window. Fixed in commit `cba4e21`.
+3. **Implicit propagation in setters.** When a setter alters state that is already wired into sub-objects, it MUST iterate and propagate explicitly. `NotebookManager::SetEventManager` previously stored the pointer but did not push it into already-loaded notebooks, so folder events from those notebooks went nowhere. Fixed in commit `144ca4e`.
+
+### Migration notes for future backends
+
+- New backends register via `RegisterBuiltinBackends`. Never add static initializers, `__attribute__((constructor))`, or file-scope objects with side-effecting constructors.
+- Never emit scheduling-policy events from vxcore. If a backend wants to "ask" for a sync, mark dirty and emit `sync.should_run`; let the consumer decide.
+- Backends must not own timers, threads, or schedulers. Phase methods are synchronous; the consumer owns the worker.
+
 ## Build Commands
 
 ```bash
