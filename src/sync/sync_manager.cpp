@@ -75,20 +75,22 @@ void SyncManager::SetWorkQueueManager(WorkQueueManager *work_queue_manager) {
 }
 
 void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
-  // T9 (sync-queue-convergence): this function no longer enqueues a sync job
-  // into WorkQueue("sync"). When the debounce gate passes it emits a single
-  // sync.should_run event with payload {"notebookId": "<id>"}. A downstream
-  // consumer (Qt SyncService auto-route, future T31) decides how to actually
-  // drive TriggerSync (worker thread, throttling policy, etc.). The vxcore
-  // WorkQueue infrastructure is intentionally preserved for tests and for
-  // embedders that still want a queue-based consumer; SetWorkQueueManager
-  // and work_queue_manager_ are NOT removed.
+  // (Debounce removal fix): vxcore no longer applies debounce inside MaybeEnqueueSync.
+  // Each call emits sync.should_run exactly once, regardless of interval. The debounce
+  // gate that checked "interval_seconds <= 0" and "now - last_enqueue_time_ < interval"
+  // has been removed. The Qt-side SyncWorkQueueManager coalesces concurrent triggers via
+  // coalesceKey="trigger", which is the correct and only dedup mechanism. Without this
+  // fix, the second folder-created event within 60s was silently dropped, leaving the
+  // notebook dirty with no timer to wake it up (user-visible bug: second folder never
+  // synced).
+  //
+  // last_enqueue_time_ is preserved (or can be removed entirely if no caller reads it).
+  // It now records the timestamp of each sync.should_run emission for potential
+  // diagnostic/observability purposes. It is NOT consulted as a gate anywhere.
   //
   // Locking: state_mutex_ is NOT taken here. GetSyncConfig acquires the lock
   // internally; the EventManager::Emit fan-out at the end is external and
   // MUST run outside any SyncManager lock (Wave 0.5 contract).
-  // last_enqueue_time_ keeps its name for backward compat; it now records the
-  // timestamp of the last sync.should_run EMISSION, not a queue enqueue.
   VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: entry notebook_id=%s has_em=%d",
                    notebook_id.c_str(), event_manager_ != nullptr);
   if (!event_manager_) {
@@ -96,11 +98,9 @@ void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
     return;
   }
 
-  // Task 7.5 (F3.2): pull interval through the cache-aware accessor so any
-  // legitimate consumer (cache hit OR JSON-backed S5 notebook whose cache
-  // was previously populated) gets a consistent value. mark_dirty already
-  // gated entry on cache presence, so the GetSyncConfig fast path is the
-  // norm here.
+  // Verify notebook has sync config (even though we no longer debounce,
+  // we still need a valid SyncConfig to proceed). If config is missing or
+  // interval_seconds <= 0, skip emission.
   SyncConfig effective_cfg;
   if (GetSyncConfig(notebook_id, effective_cfg) != VXCORE_OK ||
       effective_cfg.interval_seconds <= 0) {
@@ -110,22 +110,13 @@ void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
     return;
   }
 
-  auto now = std::chrono::steady_clock::now();
-  auto interval = std::chrono::seconds(effective_cfg.interval_seconds);
-  auto &last = last_enqueue_time_[notebook_id];
-  if (last != std::chrono::steady_clock::time_point{} && (now - last) < interval) {
-    VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: debounced notebook_id=%s interval_s=%d",
-                     notebook_id.c_str(), effective_cfg.interval_seconds);
-    return;
-  }
+  // Record the timestamp for observability (no longer used as a debounce gate).
+  last_enqueue_time_[notebook_id] = std::chrono::steady_clock::now();
 
-  last = now;
-
-  // T9: emit sync.should_run OUTSIDE any SyncManager lock. EventManager
-  // listeners may re-enter SyncManager (e.g., the future Qt auto-route
-  // consumer that will call TriggerSync).
+  // Emit sync.should_run OUTSIDE any SyncManager lock. EventManager listeners
+  // may re-enter SyncManager (e.g., the Qt auto-route consumer that calls TriggerSync).
   event_manager_->Emit(events::kSyncShouldRun, {{"notebookId", notebook_id}});
-  VXCORE_LOG_DEBUG("SyncManager: emitted sync.should_run for notebook: %s", notebook_id.c_str());
+  VXCORE_LOG_INFO("SyncManager: emitted sync.should_run for notebook: %s", notebook_id.c_str());
 }
 
 std::vector<std::string> SyncManager::GetDirtyNotebooks() const {
