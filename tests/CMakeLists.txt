@@ -723,38 +723,3 @@ target_link_libraries(test_sync_backend_metadata PRIVATE
     libgit2package
     nlohmann_json)
 add_test(NAME test_sync_backend_metadata COMMAND test_sync_backend_metadata)
-
-# test_git_backend_autoreg: Task 4.3 (F1.1) of sync-backend-phase4. Verifies
-# GitSyncBackend's anonymous-namespace BackendRegistration token actually
-# registers "git" into SyncBackendRegistry::Instance(), and that the
-# EnsureGitBackendLinked anchor wired through LibGit2Init keeps it alive.
-# Direct-compile pattern (mirrors test_sync_backend_metadata) — owns its own
-# GitSyncBackend + libgit2 ref-count statics + registry static. Also
-# direct-compiles sync_backend_registry.cpp because vxcore.dll is NOT linked
-# here.
-add_executable(test_git_backend_autoreg test_git_backend_autoreg.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/retry_policy.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
-    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
-target_include_directories(test_git_backend_autoreg PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/third_party)
-target_link_libraries(test_git_backend_autoreg PRIVATE
-    git_sync_test_helpers
-    libgit2package
-    nlohmann_json)
-add_test(NAME test_git_backend_autoreg COMMAND test_git_backend_autoreg)

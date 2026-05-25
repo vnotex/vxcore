@@ -118,10 +118,6 @@ class GitSyncBackend : public ISyncBackend {
   mutable std::mt19937 retry_rng_{std::random_device{}()};
 };
 
-// Anchor function used to defeat dead-stripping of git_sync_backend.cpp by
-// MSVC's /OPT:REF.
-VXCORE_API void EnsureGitBackendLinked();
-
 }  // namespace vxcore
 
 #endif  // VXCORE_SYNC_GIT_GIT_SYNC_BACKEND_H

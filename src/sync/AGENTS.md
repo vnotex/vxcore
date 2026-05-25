@@ -83,6 +83,7 @@ Every SyncManager method that operates on a notebook follows this pattern:
 | `git/git_conflict_resolver.{h,cpp}` | `GitConflictResolver` class: GetConflicts + ResolveConflict |
 | `git/libgit2_init.h` | `LibGit2Init` RAII helper that calls `git_libgit2_init`/`shutdown` |
 | `git/libgit2_init.cpp` | Reference-counted `git_libgit2_init` wrapper (thread-safe) |
+| `sync_builtin_backends.cpp` | `RegisterBuiltinBackends(SyncBackendRegistry&)` — explicit one-shot registration of built-in backends ("git"). Called from `vxcore_context_create()` exactly once at startup; idempotent (first-wins). Replaces the old static-init `BackendRegistration` token + `EnsureGitBackendLinked` anchor that MSVC `/OPT:REF` dead-stripped from `vnote.exe`. |
 
 ### Related Files Outside src/sync
 

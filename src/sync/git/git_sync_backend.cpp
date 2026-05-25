@@ -1,7 +1,5 @@
 #include "sync/git/git_sync_backend.h"
 
-#include "sync/sync_backend_registry.h"
-
 #include <git2.h>
 
 #include <atomic>
@@ -443,29 +441,5 @@ void GitSyncBackend::SetCancellation(SyncCancellationPtr token) {
   std::lock_guard<std::mutex> lock(cancellation_mu_);
   cancellation_ = std::move(token);
 }
-
-// Task 4.3 (sync-backend-phase4 F1.1): self-registration of the git backend.
-namespace {
-const BackendRegistration kGitRegistration{
-    "git",
-    [](const SyncConfig &cfg,
-       std::shared_ptr<ICredentialProvider> provider) -> std::unique_ptr<ISyncBackend> {
-      return std::make_unique<GitSyncBackend>(cfg, std::move(provider));
-    }};
-}  // namespace
-
-void EnsureGitBackendLinked() {
-  static_cast<void>(&kGitRegistration);
-}
-
-extern std::atomic<void (*)()> g_git_backend_link_anchor;
-namespace {
-struct GitBackendAnchorInstaller {
-  GitBackendAnchorInstaller() noexcept {
-    g_git_backend_link_anchor.store(&EnsureGitBackendLinked);
-  }
-};
-const GitBackendAnchorInstaller kGitBackendAnchorInstaller;
-}  // namespace
 
 }  // namespace vxcore

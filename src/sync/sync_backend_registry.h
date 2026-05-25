@@ -90,6 +90,15 @@ struct BackendRegistration {
                                  SyncBackendFactory factory);
 };
 
+// Explicit one-shot registration of all built-in backends. Called from
+// vxcore_context_create() exactly once per process; idempotent because
+// SyncBackendRegistry::Register uses first-wins semantics. Replaces the old
+// static-initializer "BackendRegistration kGitRegistration" + anchor dance
+// that was unreliable under MSVC /OPT:REF when linking vnote.exe (the .obj
+// for git_sync_backend.cpp got dead-stripped from the DLL, so the token
+// never ran and "git" was missing from the registry at runtime).
+VXCORE_API void RegisterBuiltinBackends(SyncBackendRegistry &registry);
+
 }  // namespace vxcore
 
 #endif  // VXCORE_SYNC_BACKEND_REGISTRY_H

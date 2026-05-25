@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <iostream>
@@ -8,6 +9,7 @@
 
 #include "core/context.h"
 #include "sync/sync_backend.h"
+#include "sync/sync_backend_registry.h"
 #include "sync/sync_manager.h"
 #include "sync/sync_types.h"
 #include "test_internals/mock_sync_backend.h"
@@ -135,6 +137,26 @@ int test_sync_status_not_enabled() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_sync_status"));
   std::cout << "  \xE2\x9C\x93 test_sync_status_not_enabled passed" << std::endl;
+  return 0;
+}
+
+// Verifies that vxcore_context_create() registers built-in backends via
+// RegisterBuiltinBackends(). Replaces the deleted test_git_backend_autoreg —
+// the explicit registration path replaces the old static-init dance.
+int test_sync_builtin_git_registered() {
+  std::cout << "  Running test_sync_builtin_git_registered..." << std::endl;
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto names = vxcore::SyncBackendRegistry::Instance().Names();
+  bool has_git = std::find(names.begin(), names.end(), std::string("git")) !=
+                 names.end();
+  ASSERT_TRUE(has_git);
+
+  vxcore_context_destroy(ctx);
+  std::cout << "  \xE2\x9C\x93 test_sync_builtin_git_registered passed" << std::endl;
   return 0;
 }
 
@@ -782,6 +804,7 @@ int main() {
   RUN_TEST(test_sync_error_codes);
   RUN_TEST(test_sync_enable_disable);
   RUN_TEST(test_sync_status_not_enabled);
+  RUN_TEST(test_sync_builtin_git_registered);
   RUN_TEST(test_sync_trigger_not_implemented);
   RUN_TEST(test_sync_raw_notebook_rejected);
   RUN_TEST(test_sync_nonexistent_notebook);

@@ -9,6 +9,7 @@
 #include "core/snippet_manager.h"
 #include "core/template_manager.h"
 #include "core/work_queue.h"
+#include "sync/sync_backend_registry.h"
 #include "sync/sync_manager.h"
 #include "core/workspace_manager.h"
 #include "platform/path_provider.h"
@@ -128,6 +129,12 @@ VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
   }
 
   try {
+    // One-shot explicit registration of built-in sync backends. Idempotent
+    // (first-wins inside SyncBackendRegistry::Register) so safe to call on
+    // every context_create. Replaces the previous static-init token in
+    // git_sync_backend.cpp which MSVC /OPT:REF dead-stripped from vnote.exe.
+    vxcore::RegisterBuiltinBackends(vxcore::SyncBackendRegistry::Instance());
+
     auto *ctx = new vxcore::VxCoreContext();
     ctx->config_manager = std::make_unique<vxcore::ConfigManager>();
 

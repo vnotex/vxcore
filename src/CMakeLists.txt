@@ -61,6 +61,7 @@ set(VXCORE_SOURCES
     sync/sync_json_keys.cpp
     sync/sync_manager.cpp
     sync/sync_backend_registry.cpp
+    sync/sync_builtin_backends.cpp
     sync/credential_provider.cpp
     sync/dirty_tracker.cpp
     sync/retry_policy.cpp
