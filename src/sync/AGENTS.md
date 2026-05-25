@@ -686,7 +686,7 @@ discipline (rule 3).
 | `sync.started` | `{"notebookId":"<id>"}` | `SyncManager::TriggerSync` (`sync_manager.cpp`), immediately before `backend->Sync()` after the state-snapshot block releases `state_mutex_`. | Every `TriggerSync` call that passes validation and reaches the backend dispatch. Fires exactly once per call. |
 | `sync.finished` | `{"notebookId":"<id>","result":<int>}` | `SyncManager::TriggerSync`, after `backend->Sync()` returns (success OR error). `result` is the raw `VxCoreError` enum value. | Always paired 1:1 with `sync.started`. Fires for both success (`VXCORE_OK`) and failure paths, including `VXCORE_ERR_SYNC_CONFLICT`. |
 | `sync.conflict` | `{"notebookId":"<id>","files":["<rel-path>", ...]}` | `SyncManager::TriggerSync`, after `backend->Sync()` returns `VXCORE_ERR_SYNC_CONFLICT` and BEFORE `sync.finished`. File list comes from `backend->GetConflicts()` (called outside the lock). | Only when sync returns the conflict error code. Paths are notebook-relative; never absolute. Caller uses these to drive a resolution UI without re-querying `GetConflicts`. |
-| `sync.should_run` | `{"notebookId":"<id>"}` | `SyncManager::MaybeEnqueueSync` (`sync_manager.cpp`), after the per-notebook debounce window (`last_enqueue_time_`) elapses. | Auto-sync path: a watched file/folder mutation flagged the notebook dirty and the debounce gate cleared. Qt's `EventBridge` consumes this and dispatches via `SyncWorkQueueManager`. Non-Qt embedders may subscribe directly or fall back to polling `GetDirtyNotebooks()`. |
+| `sync.should_run` | `{"notebookId":"<id>"}` | `SyncManager::MaybeEnqueueSync` (`sync_manager.cpp`), every time `mark_dirty` flags a sync-enabled notebook (no debounce gate; `last_enqueue_time_` is recorded for observability only). | Auto-sync path: a watched file/folder mutation flagged the notebook dirty. Qt's `EventBridge` consumes this and dispatches via `SyncWorkQueueManager` (`coalesceKey="trigger"` collapses concurrent triggers). Non-Qt embedders may subscribe directly or fall back to polling `GetDirtyNotebooks()`. |
 
 Replacement note: `MaybeEnqueueSync` previously enqueued a task into
 `work_queue_manager_->GetOrCreate("sync")`. That path is gone; the auto-sync
@@ -697,13 +697,13 @@ flow now ends at `sync.should_run` and the consumer owns dispatch. The
 
 `SyncManager::SetEventManager()` subscribes to `file.created`, `file.saved`, `file.deleted`, `file.moved`, `folder.created`, and `folder.deleted`. For each event whose notebook has sync enabled, the ID is marked in `DirtyTracker`.
 
-`MaybeEnqueueSync` then UNCONDITIONALLY emits `sync.should_run` — once per dirty mark, no debounce gate, no throttle, no coalescing. vxcore is the fact-emitter. The previous in-library debounce was removed in commit `cba4e21` because it dropped legitimate triggers when multiple saves landed within the same window.
+`MaybeEnqueueSync` emits `sync.should_run` once per dirty mark with no debounce, throttle, or coalescing. It still short-circuits when `event_manager_` is null or when `GetSyncConfig` fails / returns `interval_seconds <= 0` (these are correctness gates — missing destination or auto-sync disabled for the notebook — not scheduling policy). vxcore is the fact-emitter. The previous in-library debounce was removed in commit `cba4e21` because it dropped legitimate triggers when multiple saves landed within the same window.
 
 ### Consumer responsibility
 
 Consumers OWN every scheduling decision: debounce, throttle, coalesce, backpressure, retry, periodic safety net. VNote does this in `SyncService::onSyncShouldRun` → `SyncWorkQueueManager::enqueue`, where the `coalesceKey="trigger"` mechanism collapses concurrent triggers per notebook into a single in-flight sync. See `src/core/services/AGENTS.md` § SyncService.
 
-`SyncConfig::interval_seconds` is a HINT. vxcore neither enforces nor honours it. Consumers may consult it to seed their own debounce window; nothing in the library does.
+`SyncConfig::interval_seconds` is a HINT for scheduling cadence. vxcore does NOT use it to debounce or throttle. The only place the library consults it is a correctness guard in `MaybeEnqueueSync` that suppresses emission when `interval_seconds <= 0` (treated as "auto-sync disabled for this notebook"). Consumers own all scheduling policy and may also consult `interval_seconds` to seed their own debounce window.
 
 ### Non-Qt embedders (legacy polling path)
 
@@ -711,7 +711,7 @@ Consumers OWN every scheduling decision: debounce, throttle, coalesce, backpress
 
 ```
 file.saved event → SyncManager marks notebook dirty
-                 → MaybeEnqueueSync emits sync.should_run unconditionally
+                 → MaybeEnqueueSync emits sync.should_run (no in-library debounce)
                  → Qt EventBridge → SyncService::onSyncShouldRun
                  → SyncWorkQueueManager::enqueue (coalesces, caps, schedules)
                  → TriggerSync runs on worker
@@ -745,7 +745,7 @@ Wave 10.1 (F2.4 part 2) made `state_mutex_` real. It is the single coarse mutex 
 ### What it does NOT guard
 
 - `DirtyTracker` (`dirty_tracker_`) is self-locking — never lock `state_mutex_` and then call into `DirtyTracker`, the orderings are independent.
-- `last_enqueue_time_` — debounce timestamps; out of contract for `state_mutex_`. Best-effort.
+- `last_enqueue_time_` — last-emission timestamps (observability only, no longer a debounce gate); intentionally out of contract for `state_mutex_`, best-effort.
 - `event_manager_`, `work_queue_manager_`, `notebook_manager_` — set once at startup, not mutated afterwards.
 - Notebook config on disk — read via stable `Notebook*` pointer; `GetConfig()` is const.
 
