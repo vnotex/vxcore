@@ -4,12 +4,18 @@
 
 #include "core/event_manager.h"
 #include "utils/file_utils.h"
+#include "utils/logger.h"
 
 namespace vxcore {
 
 void FolderManager::EmitEvent(const char *event_name, const nlohmann::json &data) {
   if (event_manager_) {
     event_manager_->Emit(event_name, data);
+  } else {
+    VXCORE_LOG_WARN(
+        "FolderManager::EmitEvent: event_manager_ is NULL, dropping event=%s "
+        "(notebook_id will not be marked dirty for auto-sync)",
+        event_name);
   }
 }
 
