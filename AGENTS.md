@@ -26,12 +26,27 @@ Three recent regressions all violated the contract. Do not repeat them.
 1. **Static-initializer self-registration of backends.** Use the explicit `RegisterBuiltinBackends(registry)` call from `vxcore_context_create`. Anchor functions, dead-strip workarounds, and cross-TU pointer tricks are forbidden. The MSVC `/OPT:REF` linker silently dropped the old self-registering translation unit out of `vnote.exe`. Fixed in commit `fff4a5f`.
 2. **Vxcore-side scheduling decisions** (debounce gates, throttle, deferred timers inside `MaybeEnqueueSync`). Vxcore emits facts; consumers schedule. The previous in-library debounce swallowed legitimate `sync.should_run` events when several saves arrived in the same window. Fixed in commit `cba4e21`.
 3. **Implicit propagation in setters.** When a setter alters state that is already wired into sub-objects, it MUST iterate and propagate explicitly. `NotebookManager::SetEventManager` previously stored the pointer but did not push it into already-loaded notebooks, so folder events from those notebooks went nowhere. Fixed in commit `144ca4e`.
+4. **Re-introducing filter logic inside emission paths.** No "skip if recent", no "emit every Nth call", no per-listener throttling inside `EmitEvent` / `EventManager::Emit` / `EventManager::EmitAsync`. Consumers own all such policy. The May 2026 audit (A9) verified emission paths are lossless; do not regress this.
 
 ### Migration notes for future backends
 
 - New backends register via `RegisterBuiltinBackends`. Never add static initializers, `__attribute__((constructor))`, or file-scope objects with side-effecting constructors.
 - Never emit scheduling-policy events from vxcore. If a backend wants to "ask" for a sync, mark dirty and emit `sync.should_run`; let the consumer decide.
 - Backends must not own timers, threads, or schedulers. Phase methods are synchronous; the consumer owns the worker.
+
+### Known event-protocol gaps (sync-architecture-audit, May 2026)
+
+The May 2026 sync-architecture-audit (`.sisyphus/plans/sync-architecture-audit.md`, A9) confirmed the emission paths themselves are lossless — no debounce/throttle/counter filtering remains inside `EmitEvent` or `EventManager::Emit`. It also surfaced two pre-existing protocol gaps that future work must close before relying on event-driven sync in those code paths:
+
+1. **`RawFolderManager` emits no events at all.** Every mutation method (`CreateFolder`, `DeleteFolder`, `RenameFolder`, `MoveFolder`, `CopyFolder`, `CreateFile`, `DeleteFile`, `RenameFile`, `MoveFile`, `CopyFile`, `ImportFile`, `ImportFolder`, `UpdateFileMetadata`, `UpdateFileTags`, `TagFile`, `UntagFile`) silently mutates without calling `EmitEvent`. Auto-sync for raw notebooks therefore cannot rely on `sync.should_run` today; the polling fallback `GetDirtyNotebooks()` is the only reliable signal.
+2. **Bundled mutations lacking event constants.** The following `BundledFolderManager` mutations either do not emit, or have no matching constant in `src/core/event_names.h`: `RenameFolder`, `MoveFolder`, `CopyFolder`, `CopyFile`, `ImportFile`, `ImportFolder`, `UpdateFolderMetadata`, `UpdateFileMetadata`, `UpdateFileTags`/`TagFile`/`UntagFile`, `UpdateFileAttachments`/`AddFileAttachment`/`DeleteFileAttachment`, `NotebookManager::UpdateNotebookConfig`. Adding emissions requires adding the constants first; consumers (notably `SyncManager`'s dirty-mark subscriber) must be updated in the same change.
+
+### ABI versioning (no tags yet)
+
+The vxcore submodule currently has **no git tags**, so there is no formal release baseline. Until that changes:
+- Treat the `!` convention in commit subjects (e.g., `refactor(vxcore)!: ...`) as the source of truth for breaking C-ABI changes.
+- Enum additions MUST be appended before the `VXCORE_ERR_UNKNOWN = 999` sentinel with an explicit value; never reorder existing enumerators.
+- Cut `v0.1.0` at the next stable point and adopt SemVer thereafter (MAJOR for `!` commits, MINOR for pure additions, PATCH for internal fixes).
 
 ## Build Commands
 
