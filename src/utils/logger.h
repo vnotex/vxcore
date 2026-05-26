@@ -7,6 +7,8 @@
 #include <mutex>
 #include <string>
 
+#include <vxcore/vxcore_log.h>
+
 namespace vxcore {
 
 enum class LogLevel {
@@ -29,6 +31,8 @@ class Logger {
   void SetLogFile(const std::string &path);
   void EnableConsole(bool enable);
 
+  void SetHandler(VxCoreLogCallback callback, void *userdata);
+
   void Log(LogLevel level, const char *file, int line, const char *fmt, ...);
 
   Logger(const Logger &) = delete;
@@ -47,6 +51,8 @@ class Logger {
   std::string log_file_path_;
   FILE *log_file_;
   mutable std::mutex mutex_;
+  VxCoreLogCallback m_handler = nullptr;
+  void *m_handlerUserdata = nullptr;
 };
 
 #if defined(__GNUC__) || defined(__clang__)

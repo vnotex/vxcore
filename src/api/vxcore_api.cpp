@@ -513,3 +513,9 @@ VXCORE_API VxCoreError vxcore_log_enable_console(int enable) {
   vxcore::Logger::GetInstance().EnableConsole(enable != 0);
   return VXCORE_OK;
 }
+
+VXCORE_API VxCoreError vxcore_log_set_handler(VxCoreLogCallback callback,
+                                               void *userdata) {
+  vxcore::Logger::GetInstance().SetHandler(callback, userdata);
+  return VXCORE_OK;
+}

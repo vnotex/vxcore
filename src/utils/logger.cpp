@@ -85,6 +85,12 @@ void Logger::EnableConsole(bool enable) {
   console_enabled_ = enable;
 }
 
+void Logger::SetHandler(VxCoreLogCallback callback, void *userdata) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  m_handler = callback;
+  m_handlerUserdata = userdata;
+}
+
 void Logger::Log(LogLevel level, const char *file, int line, const char *fmt, ...) {
   va_list args;
   va_start(args, fmt);
@@ -114,6 +120,11 @@ void Logger::LogImpl(LogLevel level, const char *file, int line, const char *fmt
   char log_line[4096];
   snprintf(log_line, sizeof(log_line), "[%s] [%s] [%s:%d] %s\n", timestamp.c_str(), level_str,
            filename, line, message);
+
+  if (m_handler) {
+    m_handler(static_cast<VxCoreLogLevel>(level), file, line, message, m_handlerUserdata);
+    return;
+  }
 
   if (console_enabled_) {
     fprintf(stderr, "%s", log_line);
