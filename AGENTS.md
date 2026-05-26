@@ -48,6 +48,54 @@ The vxcore submodule currently has **no git tags**, so there is no formal releas
 - Enum additions MUST be appended before the `VXCORE_ERR_UNKNOWN = 999` sentinel with an explicit value; never reorder existing enumerators.
 - Cut `v0.1.0` at the next stable point and adopt SemVer thereafter (MAJOR for `!` commits, MINOR for pure additions, PATCH for internal fixes).
 
+## Logging API
+
+vxcore writes log lines through an internal `Logger` (see `src/utils/logger.h`). By default the logger fans messages out to stderr and, if configured, to a rotating file. Embedders that want to capture those messages and route them through their own logging system (e.g., Qt's `qInstallMessageHandler` pipeline in VNote) can install a custom handler via the C ABI declared in `include/vxcore/vxcore_log.h`.
+
+### Public entry point
+
+```c
+typedef void (*VxCoreLogCallback)(VxCoreLogLevel level,
+                                  const char *file,
+                                  int line,
+                                  const char *message,
+                                  void *userdata);
+
+VXCORE_API VxCoreError vxcore_log_set_handler(VxCoreLogCallback callback,
+                                               void *userdata);
+```
+
+Callback parameters:
+
+| Parameter | Meaning |
+|---|---|
+| `level` | One of `VXCORE_LOG_LEVEL_TRACE`..`VXCORE_LOG_LEVEL_FATAL` (never `OFF`). |
+| `file` | Source file of the originating `VXCORE_LOG_*` call (`__FILE__`). Valid only for the call's duration. |
+| `line` | Source line number (`__LINE__`) of the originating call. |
+| `message` | Null-terminated, already-formatted message text. Valid only for the call's duration. |
+| `userdata` | The opaque pointer supplied at `vxcore_log_set_handler` time. |
+
+### Contract
+
+- **Replaces, not adds.** Installing a handler bypasses the default stderr/file sinks for the duration of the install. The library will not also write to its built-in sinks while a custom handler is active.
+- **Uninstall with NULL.** Passing `nullptr` as the callback restores the default sinks. `userdata` is ignored in that case.
+- **Held under the logger mutex.** The callback runs while vxcore's internal logger mutex is held. It MUST be thread-safe AND MUST NOT call back into any vxcore API synchronously, doing so deadlocks the logger. Queue work onto another thread if you need to invoke vxcore again.
+- **Pointer lifetime.** `file` and `message` are stack/temporary buffers from vxcore's perspective. Copy them before storing them past the callback return.
+
+### Example
+
+```c
+static void my_log(VxCoreLogLevel level, const char *file, int line,
+                   const char *message, void *userdata) {
+  (void)userdata;
+  fprintf(stderr, "[vxcore %d] %s:%d %s\n", (int)level, file, line, message);
+}
+
+vxcore_log_set_handler(my_log, NULL);
+/* ... run app ... */
+vxcore_log_set_handler(NULL, NULL);  /* restore default sinks */
+```
+
 ## Build Commands
 
 ```bash
