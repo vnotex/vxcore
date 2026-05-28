@@ -29,7 +29,17 @@ set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(BUILD_CLI OFF CACHE BOOL "" FORCE)
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(USE_SSH OFF CACHE BOOL "" FORCE)
-set(USE_BUNDLED_ZLIB ON CACHE BOOL "" FORCE)
+# Use the system zlib on Apple. The bundled deps/zlib/zutil.h defines
+# `fdopen(fd,mode) NULL` when fdopen is not already a macro, which collides
+# with the Xcode 16.4 SDK's function-like-macro declaration of fdopen in
+# <_stdio.h> and breaks the build. macOS always ships /usr/lib/libz.dylib,
+# so falling back to the system zlib is the same path every other macOS
+# project (Homebrew libgit2, Git for macOS, ripgrep, ...) takes.
+if(APPLE)
+  set(USE_BUNDLED_ZLIB OFF CACHE BOOL "" FORCE)
+else()
+  set(USE_BUNDLED_ZLIB ON CACHE BOOL "" FORCE)
+endif()
 set(REGEX_BACKEND "builtin" CACHE STRING "" FORCE)
 if(WIN32)
   set(USE_HTTPS "WinHTTP" CACHE STRING "" FORCE)
