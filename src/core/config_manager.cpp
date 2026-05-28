@@ -39,7 +39,7 @@ std::string ConfigManager::GetDataPathInTestMode() {
 }
 
 VxCoreError ConfigManager::LoadConfigs() {
-  VXCORE_LOG_INFO("Loading configs");
+  VXCORE_LOG_DEBUG("Loading configs");
 
   VxCoreError err = EnsureDataFolders();
   if (err != VXCORE_OK) {
@@ -75,7 +75,7 @@ VxCoreError ConfigManager::LoadConfigs() {
   config_ = VxCoreConfig::FromJson(default_json);
   session_config_ = VxCoreSessionConfig::FromJson(session_json);
 
-  VXCORE_LOG_INFO("Configs loaded successfully");
+  VXCORE_LOG_DEBUG("Configs loaded successfully");
   return VXCORE_OK;
 }
 

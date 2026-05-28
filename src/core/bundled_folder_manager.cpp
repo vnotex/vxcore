@@ -1825,7 +1825,7 @@ void BundledFolderManager::SyncFolderToStore(const std::string &folder_path,
   auto db_folder = store->GetFolder(config.id);
   if (db_folder.has_value() && config.modified_utc <= db_folder->modified_utc) {
     // Folder is up-to-date, no sync needed
-    VXCORE_LOG_DEBUG("SyncFolderToStore: Folder up-to-date: id=%s, path=%s", config.id.c_str(),
+    VXCORE_LOG_TRACE("SyncFolderToStore: Folder up-to-date: id=%s, path=%s", config.id.c_str(),
                      folder_path.c_str());
     return;
   }

@@ -70,7 +70,7 @@ void BufferManager::LoadBuffers() {
   }
 
   for (const auto &record : session_config.buffers) {
-    VXCORE_LOG_INFO("LoadBuffers: processing record id=%s, notebook_id=%s, file_path=%s",
+    VXCORE_LOG_DEBUG("LoadBuffers: processing record id=%s, notebook_id=%s, file_path=%s",
                     record.id.c_str(), record.notebook_id.c_str(), record.file_path.c_str());
 
     // Resolve notebook pointer if notebook_id is not empty
@@ -93,7 +93,7 @@ void BufferManager::LoadBuffers() {
     }
 
     bool exists = PathExists(full_path);
-    VXCORE_LOG_INFO("LoadBuffers: id=%s, full_path=%s, exists=%d", record.id.c_str(),
+    VXCORE_LOG_DEBUG("LoadBuffers: id=%s, full_path=%s, exists=%d", record.id.c_str(),
                     full_path.c_str(), exists ? 1 : 0);
 
     if (!exists) {

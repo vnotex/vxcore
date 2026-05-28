@@ -44,7 +44,7 @@ void WorkspaceManager::LoadWorkspaces() {
     if (buffer_manager_) {
       for (const auto &buf_id : record.buffer_ids) {
         bool found = (buffer_manager_->GetBuffer(buf_id) != nullptr);
-        VXCORE_LOG_INFO("LoadWorkspaces: ws='%s' checking buffer '%s': found=%d",
+        VXCORE_LOG_DEBUG("LoadWorkspaces: ws='%s' checking buffer '%s': found=%d",
                         record.name.c_str(), buf_id.c_str(), found ? 1 : 0);
         if (found) {
           workspace->buffer_ids.push_back(buf_id);
@@ -273,7 +273,7 @@ bool WorkspaceManager::SetCurrentBufferInWorkspace(const std::string &ws_id,
   // We also don't check if buf_id is in buffer_ids - it might be added later
 
   it->second->current_buffer_id = buf_id;
-  VXCORE_LOG_INFO("Set current buffer in workspace: ws_id=%s, buf_id=%s", ws_id.c_str(),
+  VXCORE_LOG_DEBUG("Set current buffer in workspace: ws_id=%s, buf_id=%s", ws_id.c_str(),
                   buf_id.c_str());
   return true;
 }
