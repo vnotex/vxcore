@@ -17,7 +17,7 @@ namespace vxcore {
 
 SyncManager::SyncManager(NotebookManager *notebook_manager)
     : notebook_manager_(notebook_manager) {
-  VXCORE_LOG_INFO("SyncManager initialized");
+  VXCORE_LOG_DEBUG("SyncManager initialized");
 }
 
 SyncManager::~SyncManager() {
