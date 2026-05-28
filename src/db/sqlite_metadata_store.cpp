@@ -814,7 +814,7 @@ bool SqliteMetadataStore::RebuildAll() {
     return false;
   }
 
-  VXCORE_LOG_INFO("MetadataStore rebuilt (all data cleared)");
+  VXCORE_LOG_DEBUG("MetadataStore rebuilt (all data cleared)");
   return true;
 }
 
