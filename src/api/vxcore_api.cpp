@@ -203,7 +203,7 @@ VXCORE_API VxCoreError vxcore_prepare_shutdown(VxCoreContextHandle context) {
     }
 
     ctx->shutdown_called = true;
-    VXCORE_LOG_INFO("Shutdown complete: session state saved");
+    VXCORE_LOG_DEBUG("Shutdown complete: session state saved");
     return VXCORE_OK;
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Shutdown failed: %s", e.what());
@@ -234,7 +234,7 @@ VXCORE_API VxCoreError vxcore_cancel_shutdown(VxCoreContextHandle context) {
     ctx->workspace_manager->SetShutdownCalled(false);
   }
 
-  VXCORE_LOG_INFO("Shutdown cancelled: normal operation resumed");
+  VXCORE_LOG_DEBUG("Shutdown cancelled: normal operation resumed");
   return VXCORE_OK;
 }
 

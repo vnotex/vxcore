@@ -15,7 +15,7 @@ SearchManager::SearchManager(Notebook *notebook, const std::string &search_backe
     : notebook_(notebook), search_backend_(nullptr) {
   if (search_backend == "rg") {
     if (RgSearchBackend::IsAvailable()) {
-      VXCORE_LOG_INFO("Using ripgrep (rg) as the search backend");
+      VXCORE_LOG_DEBUG("Using ripgrep (rg) as the search backend");
       search_backend_.reset(new RgSearchBackend());
     } else {
       VXCORE_LOG_WARN(
@@ -23,7 +23,7 @@ SearchManager::SearchManager(Notebook *notebook, const std::string &search_backe
       search_backend_.reset(new SimpleSearchBackend());
     }
   } else if (search_backend == "simple") {
-    VXCORE_LOG_INFO("Using SimpleSearchBackend");
+    VXCORE_LOG_DEBUG("Using SimpleSearchBackend");
     search_backend_.reset(new SimpleSearchBackend());
   } else {
     VXCORE_LOG_WARN("Unknown search backend '%s', using SimpleSearchBackend",
