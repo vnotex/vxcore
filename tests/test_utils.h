@@ -1,6 +1,7 @@
 #ifndef VXCORE_TEST_UTILS_H_
 #define VXCORE_TEST_UTILS_H_
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
