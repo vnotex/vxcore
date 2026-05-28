@@ -1,5 +1,6 @@
 #include "logger.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -7,6 +8,7 @@
 #include <sstream>
 
 #include "file_utils.h"
+#include "string_utils.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -23,22 +25,15 @@ Logger &Logger::GetInstance() {
 
 Logger::Logger() : level_(LogLevel::kInfo), console_enabled_(true), log_file_(nullptr) {
   const char *env_level = std::getenv("VXCORE_LOG_LEVEL");
-  if (env_level) {
-    std::string level_str = env_level;
-    if (level_str == "TRACE") {
-      level_ = LogLevel::kTrace;
-    } else if (level_str == "DEBUG") {
-      level_ = LogLevel::kDebug;
-    } else if (level_str == "INFO") {
-      level_ = LogLevel::kInfo;
-    } else if (level_str == "WARN") {
-      level_ = LogLevel::kWarn;
-    } else if (level_str == "ERROR") {
-      level_ = LogLevel::kError;
-    } else if (level_str == "FATAL") {
-      level_ = LogLevel::kFatal;
-    } else if (level_str == "OFF") {
-      level_ = LogLevel::kOff;
+  if (env_level && *env_level) {
+    SetLevelFromString(env_level);
+  }
+
+  const char *env_console = std::getenv("VXCORE_LOG_CONSOLE");
+  if (env_console && *env_console) {
+    std::string console_str = ToLowerString(env_console);
+    if (console_str == "0" || console_str == "false" || console_str == "off") {
+      console_enabled_ = false;
     }
   }
 
@@ -174,6 +169,31 @@ std::string Logger::GetTimestamp() const {
            tv.tv_usec / 1000);
   return buffer;
 #endif
+}
+
+LogLevel Logger::ParseLevel(const std::string &s, LogLevel fallback) {
+  std::string lower = ToLowerString(s);
+  if (lower == "trace") {
+    return LogLevel::kTrace;
+  } else if (lower == "debug") {
+    return LogLevel::kDebug;
+  } else if (lower == "info") {
+    return LogLevel::kInfo;
+  } else if (lower == "warn") {
+    return LogLevel::kWarn;
+  } else if (lower == "error") {
+    return LogLevel::kError;
+  } else if (lower == "fatal") {
+    return LogLevel::kFatal;
+  } else if (lower == "off") {
+    return LogLevel::kOff;
+  }
+  return fallback;
+}
+
+void Logger::SetLevelFromString(const std::string &s) {
+  LogLevel parsed = ParseLevel(s, LogLevel::kInfo);
+  SetLevel(parsed);
 }
 
 }  // namespace vxcore

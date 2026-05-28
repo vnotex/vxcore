@@ -35,6 +35,14 @@ class Logger {
 
   void Log(LogLevel level, const char *file, int line, const char *fmt, ...);
 
+  // Parse log level from string (case-insensitive)
+  // Valid strings: trace, debug, info, warn, error, fatal, off
+  // Returns fallback if string is unrecognized
+  static LogLevel ParseLevel(const std::string &s, LogLevel fallback);
+
+  // Set level from string using ParseLevel
+  void SetLevelFromString(const std::string &s);
+
   Logger(const Logger &) = delete;
   Logger &operator=(const Logger &) = delete;
 

@@ -96,6 +96,35 @@ vxcore_log_set_handler(my_log, NULL);
 vxcore_log_set_handler(NULL, NULL);  /* restore default sinks */
 ```
 
+### Environment variables
+
+The logger supports configuration through environment variables:
+
+| Variable | Values | Default | Behavior |
+|---|---|---|---|
+| `VXCORE_LOG_LEVEL` | `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `off` (case-insensitive) | `info` | Controls minimum log level. Invalid values silently fall back to default. |
+| `VXCORE_LOG_CONSOLE` | `0`, `false`, `off` (case-insensitive) for disable; anything else for enable | `1` (enabled) | Controls whether log messages are written to stderr. Release builds should set `=0` when installing a custom callback via `vxcore_log_set_handler`. |
+| `VXCORE_LOG_FILE` | File path | (none) | If set, log messages are also written to the specified file (appended). |
+
+**Examples:**
+```bash
+# Enable debug-level logging to console and stderr
+export VXCORE_LOG_LEVEL=debug
+export VXCORE_LOG_CONSOLE=1
+
+# Disable console output (useful when using vxcore_log_set_handler in production)
+export VXCORE_LOG_CONSOLE=0
+
+# Write logs to a file
+export VXCORE_LOG_FILE=/var/log/vxcore.log
+
+# Trace-level logging for troubleshooting (Unix)
+VXCORE_LOG_LEVEL=trace VXCORE_LOG_FILE=/tmp/vxcore_debug.log ./myapp
+
+# PowerShell (Windows)
+$env:VXCORE_LOG_LEVEL="trace"; $env:VXCORE_LOG_FILE="C:\Temp\vxcore.log"; .\myapp.exe
+```
+
 ## Build Commands
 
 ```bash

@@ -85,6 +85,7 @@ add_executable(test_git_error_translator
     test_git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_include_directories(test_git_error_translator PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -212,6 +213,7 @@ add_test(NAME spike_libgit2 COMMAND spike_libgit2)
 add_executable(test_libgit2_init test_libgit2_init.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/libgit2_init.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_include_directories(test_libgit2_init PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(test_libgit2_init PRIVATE libgit2package)
@@ -224,6 +226,7 @@ add_test(NAME test_libgit2_init COMMAND test_libgit2_init)
 add_executable(test_libgit2_init_propagation test_libgit2_init_propagation.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/libgit2_init.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_include_directories(test_libgit2_init_propagation PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(test_libgit2_init_propagation PRIVATE vxcore libgit2package)
@@ -235,6 +238,7 @@ add_test(NAME test_libgit2_init_propagation COMMAND test_libgit2_init_propagatio
 add_executable(test_sync_manager_unknown_backend test_sync_manager_unknown_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/libgit2_init.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_include_directories(test_sync_manager_unknown_backend PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(test_sync_manager_unknown_backend PRIVATE vxcore libgit2package)
@@ -254,6 +258,7 @@ add_test(NAME test_content_processor COMMAND test_content_processor)
 add_executable(test_asset_utils test_asset_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/core/content_processor/asset_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_link_libraries(test_asset_utils PRIVATE vxcore nlohmann_json)
 target_include_directories(test_asset_utils PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
@@ -309,6 +314,7 @@ add_executable(test_db test_db.cpp
     ${CMAKE_SOURCE_DIR}/src/db/tag_db.cpp
     ${CMAKE_SOURCE_DIR}/src/core/folder.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp)
 target_include_directories(test_db PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
@@ -322,6 +328,7 @@ add_executable(test_metadata_store test_metadata_store.cpp
     ${CMAKE_SOURCE_DIR}/src/db/notebook_db.cpp
     ${CMAKE_SOURCE_DIR}/src/db/sqlite_metadata_store.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_include_directories(test_metadata_store PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(test_metadata_store PRIVATE sqlite3 nlohmann_json)
@@ -393,6 +400,7 @@ add_library(git_sync_test_helpers STATIC
     test_git_sync_helpers.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/libgit2_init.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_include_directories(git_sync_test_helpers PUBLIC
     ${CMAKE_SOURCE_DIR}/src
