@@ -57,7 +57,7 @@ bool DbManager::Open(const std::string& db_path) {
     return false;
   }
 
-  VXCORE_LOG_INFO("Database opened successfully: %s", db_path.c_str());
+  VXCORE_LOG_DEBUG("Database opened successfully: %s", db_path.c_str());
   return true;
 }
 
@@ -116,7 +116,7 @@ bool DbManager::InitializeSchema() {
     return false;
   }
 
-  VXCORE_LOG_INFO("Database schema initialized (version %d)", schema::kCurrentSchemaVersion);
+  VXCORE_LOG_DEBUG("Database schema initialized (version %d)", schema::kCurrentSchemaVersion);
   return true;
 }
 
@@ -126,7 +126,7 @@ bool DbManager::RebuildDatabase() {
     return false;
   }
 
-  VXCORE_LOG_INFO("Rebuilding database: %s", db_path_.c_str());
+  VXCORE_LOG_DEBUG("Rebuilding database: %s", db_path_.c_str());
 
   // Drop all tables using centralized schema definition
   std::string drop_script = schema::GetDropAllTablesScript();
@@ -145,7 +145,7 @@ bool DbManager::RebuildDatabase() {
   // Recreate schema
   bool success = InitializeSchema();
   if (success) {
-    VXCORE_LOG_INFO("Database rebuilt successfully");
+    VXCORE_LOG_DEBUG("Database rebuilt successfully");
   }
   return success;
 }

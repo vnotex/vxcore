@@ -58,7 +58,7 @@ bool SqliteMetadataStore::Open(const std::string &db_path) {
   tag_db_ = std::make_unique<TagDb>(db_manager_->GetHandle());
   notebook_db_ = std::make_unique<NotebookDb>(db_manager_->GetHandle());
 
-  VXCORE_LOG_INFO("SqliteMetadataStore opened: %s", db_path.c_str());
+  VXCORE_LOG_DEBUG("SqliteMetadataStore opened: %s", db_path.c_str());
   return true;
 }
 
