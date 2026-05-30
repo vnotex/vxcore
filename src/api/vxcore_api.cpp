@@ -8,6 +8,7 @@
 #include "core/notebook_manager.h"
 #include "core/snippet_manager.h"
 #include "core/template_manager.h"
+#include "core/vxcore_config.h"
 #include "core/work_queue.h"
 #include "sync/sync_backend_registry.h"
 #include "sync/sync_manager.h"
@@ -346,13 +347,21 @@ VXCORE_API VxCoreError vxcore_context_update_config(VxCoreContextHandle context,
   }
 
   try {
-    auto json = nlohmann::json::parse(config_json);
-    auto &config = ctx->config_manager->GetConfig();
-
-    if (json.contains("recoverLastSession") && json["recoverLastSession"].is_boolean()) {
-      config.recover_last_session = json["recoverLastSession"].get<bool>();
+    auto incoming = nlohmann::json::parse(config_json);
+    if (!incoming.is_object()) {
+      ctx->last_error = "Config JSON must be an object";
+      return VXCORE_ERR_INVALID_PARAM;
     }
-    // Add other top-level config fields here as needed.
+
+    auto &config = ctx->config_manager->GetConfig();
+    // Merge incoming fields over the current serialized config, then
+    // re-deserialize. This updates any recognized top-level keys
+    // (version, search, fileTypes, recoverLastSession) the caller
+    // supplied while preserving fields the caller did not mention.
+    // Unknown keys are ignored by FromJson and therefore dropped.
+    nlohmann::json merged = config.ToJson();
+    merged.merge_patch(incoming);
+    config = vxcore::VxCoreConfig::FromJson(merged);
 
     return ctx->config_manager->SaveConfig();
   } catch (const nlohmann::json::parse_error &e) {

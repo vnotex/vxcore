@@ -52,9 +52,14 @@ VXCORE_API VxCoreError vxcore_context_get_session_config_path(VxCoreContextHandl
 VXCORE_API VxCoreError vxcore_context_get_config(VxCoreContextHandle context, char **out_json);
 
 // Update main configuration with the provided JSON object.
-// Merges the provided fields into the existing config and persists to disk.
-// Only recognized top-level keys are updated; unmentioned keys are preserved.
-// Currently supports: "recoverLastSession" (boolean).
+// Merges the provided top-level fields into the existing in-memory config
+// (via JSON merge_patch over the current serialized form), then persists the
+// full config to disk. Fields the caller does not include are preserved.
+// Recognized top-level keys: "version" (string), "search" (object),
+// "fileTypes" (object), "recoverLastSession" (boolean). Unknown keys are
+// silently ignored.
+// The argument must parse to a JSON object; returns VXCORE_ERR_INVALID_PARAM
+// otherwise.
 VXCORE_API VxCoreError vxcore_context_update_config(VxCoreContextHandle context,
                                                     const char *config_json);
 

@@ -140,6 +140,65 @@ int test_config_by_name_both_locations() {
   return 0;
 }
 
+// Regression test for vxcore_context_update_config: every recognized top-level
+// field (version, search, fileTypes, recoverLastSession) must be updatable,
+// partial updates must preserve untouched fields, and unknown keys must be
+// ignored without dropping known state. Prior to the merge_patch rewrite the
+// function only recognized recoverLastSession; all other fields were silently
+// dropped on every save.
+int test_update_config_merges_all_fields() {
+  std::cout << "  Running test_update_config_merges_all_fields..." << std::endl;
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  // 1. Bulk update: send all four recognized fields plus an unknown key.
+  const char *bulk =
+      "{"
+      "\"version\":\"9.9.9\","
+      "\"search\":{\"backends\":[\"only-rg\"]},"
+      "\"fileTypes\":{\"types\":[]},"
+      "\"recoverLastSession\":false,"
+      "\"someUnknownKey\":\"should-be-dropped\""
+      "}";
+  ASSERT_EQ(vxcore_context_update_config(ctx, bulk), VXCORE_OK);
+
+  char *json_str = nullptr;
+  ASSERT_EQ(vxcore_context_get_config(ctx, &json_str), VXCORE_OK);
+  auto j = nlohmann::json::parse(json_str);
+  vxcore_string_free(json_str);
+
+  ASSERT_EQ(j["version"].get<std::string>(), std::string("9.9.9"));
+  ASSERT_EQ(j["recoverLastSession"].get<bool>(), false);
+  ASSERT_TRUE(j["search"]["backends"].is_array());
+  ASSERT_EQ(j["search"]["backends"].size(), static_cast<size_t>(1));
+  ASSERT_EQ(j["search"]["backends"][0].get<std::string>(), std::string("only-rg"));
+  ASSERT_FALSE(j.contains("someUnknownKey"));
+
+  // 2. Partial update: change only recoverLastSession. Version and search must
+  //    survive untouched (the bug we just fixed used to wipe them on save).
+  const char *partial = "{\"recoverLastSession\":true}";
+  ASSERT_EQ(vxcore_context_update_config(ctx, partial), VXCORE_OK);
+
+  ASSERT_EQ(vxcore_context_get_config(ctx, &json_str), VXCORE_OK);
+  j = nlohmann::json::parse(json_str);
+  vxcore_string_free(json_str);
+
+  ASSERT_EQ(j["recoverLastSession"].get<bool>(), true);
+  ASSERT_EQ(j["version"].get<std::string>(), std::string("9.9.9"));
+  ASSERT_EQ(j["search"]["backends"][0].get<std::string>(), std::string("only-rg"));
+
+  // 3. Invalid input: non-object JSON must be rejected, leaving state intact.
+  ASSERT_EQ(vxcore_context_update_config(ctx, "[1,2,3]"), VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(vxcore_context_get_config(ctx, &json_str), VXCORE_OK);
+  j = nlohmann::json::parse(json_str);
+  vxcore_string_free(json_str);
+  ASSERT_EQ(j["version"].get<std::string>(), std::string("9.9.9"));
+
+  vxcore_context_destroy(ctx);
+  std::cout << "  ✓ test_update_config_merges_all_fields passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running core tests..." << std::endl;
 
@@ -153,6 +212,7 @@ int main() {
   RUN_TEST(test_update_and_get_config_by_name);
   RUN_TEST(test_update_config_raw_content);
   RUN_TEST(test_config_by_name_both_locations);
+  RUN_TEST(test_update_config_merges_all_fields);
 
   std::cout << "✓ All core tests passed" << std::endl;
   return 0;
