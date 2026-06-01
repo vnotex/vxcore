@@ -1,6 +1,7 @@
 #include "sync/git/git_sync_pipeline.h"
 
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "sync/credential_provider.h"
@@ -45,6 +46,35 @@
 namespace vxcore {
 
 namespace {
+
+// Workaround for libgit2 WinHTTP credential-callback failures against real
+// GitHub HTTPS. Embeds the PAT directly into the URL so WinHTTP picks up
+// Basic auth via URL userinfo parsing instead of relying on credential
+// callback negotiation. NEVER logs the result.
+//
+// Returns the input URL unchanged when:
+//   - PAT is empty
+//   - URL is not https://
+//   - URL already contains userinfo (won't double-embed)
+//
+// NOTE: assumes the GitHub PAT character set ([A-Za-z0-9_]); URL-encode
+// the PAT if generalizing this to providers whose secrets may contain
+// '@', ':', '/', '?', '#', or '%'.
+//
+// The returned URL stays in-process only — it is only used as the in-memory
+// remote instance URL for one libgit2 operation; never persisted to disk.
+static std::string MaybeEmbedPatInUrl(const std::string &url, const std::string &pat) {
+  if (pat.empty()) return url;
+  if (url.compare(0, 8, "https://") != 0) return url;
+  const size_t scheme_end = 8;  // length of "https://"
+  const size_t first_slash = url.find('/', scheme_end);
+  const size_t at_pos = url.find('@', scheme_end);
+  if (at_pos != std::string::npos &&
+      (first_slash == std::string::npos || at_pos < first_slash)) {
+    return url;  // already has userinfo
+  }
+  return std::string("https://x-access-token:") + pat + "@" + url.substr(scheme_end);
+}
 
 // Drive a libgit2 rebase replay loop that has already been initialised
 // (`git_rebase_init` performed, `rebase` non-null) and whose signature is
@@ -215,8 +245,19 @@ bool GitSyncPipeline::RemoteHasRefs() {
     return false;
   }
 
+  std::string remote_url_for_call = config_.remote_url;
+  {
+    SyncCredentials cred_snapshot;
+    if (creds_provider_ &&
+        creds_provider_->GetCredentials(config_.remote_url, "x-access-token",
+                                        &cred_snapshot) &&
+        !cred_snapshot.personal_access_token.empty()) {
+      remote_url_for_call =
+          MaybeEmbedPatInUrl(config_.remote_url, cred_snapshot.personal_access_token);
+    }
+  }
   git_remote *raw_remote = nullptr;
-  int rc = git_remote_create_detached(&raw_remote, config_.remote_url.c_str());
+  int rc = git_remote_create_detached(&raw_remote, remote_url_for_call.c_str());
   git_remotePtr remote(raw_remote);
   if (rc != 0) {
     const git_error *err = git_error_last();
@@ -439,6 +480,26 @@ VxCoreError GitSyncPipeline::FetchOrigin() {
   }
 
   git_fetch_options fopts = GIT_FETCH_OPTIONS_INIT;
+  // OPTION C WORKAROUND: override remote URL with PAT-embedded version for
+  // this libgit2 operation only. Bypasses credential-callback issues on
+  // Windows WinHTTP transport against real GitHub HTTPS. The on-disk
+  // remote.origin.url config is UNCHANGED.
+  {
+    SyncCredentials cred_snapshot;
+    if (creds_provider_ &&
+        creds_provider_->GetCredentials(config_.remote_url, "x-access-token",
+                                        &cred_snapshot) &&
+        !cred_snapshot.personal_access_token.empty()) {
+      const std::string embedded_url =
+          MaybeEmbedPatInUrl(config_.remote_url, cred_snapshot.personal_access_token);
+      if (embedded_url != config_.remote_url) {
+        const int set_rc = git_remote_set_instance_url(remote.get(), embedded_url.c_str());
+        if (set_rc != 0) {
+          VXCORE_LOG_WARN("FetchOrigin: git_remote_set_instance_url failed rc=%d, falling back to callback path", set_rc);
+        }
+      }
+    }
+  }
   auto bundle = MakeRemoteCallbacks(creds_provider_.get(), config_.remote_url, cancellation_.get());
   fopts.callbacks = bundle.callbacks;
 
@@ -605,6 +666,24 @@ VxCoreError GitSyncPipeline::PushOrigin() {
   }
 
   git_push_options popts = GIT_PUSH_OPTIONS_INIT;
+  // OPTION C WORKAROUND: override remote URL with PAT-embedded version for
+  // this libgit2 push only. Same rationale as FetchOrigin above.
+  {
+    SyncCredentials cred_snapshot;
+    if (creds_provider_ &&
+        creds_provider_->GetCredentials(config_.remote_url, "x-access-token",
+                                        &cred_snapshot) &&
+        !cred_snapshot.personal_access_token.empty()) {
+      const std::string embedded_url =
+          MaybeEmbedPatInUrl(config_.remote_url, cred_snapshot.personal_access_token);
+      if (embedded_url != config_.remote_url) {
+        const int set_rc = git_remote_set_instance_url(remote.get(), embedded_url.c_str());
+        if (set_rc != 0) {
+          VXCORE_LOG_WARN("PushOrigin: git_remote_set_instance_url failed rc=%d, falling back to callback path", set_rc);
+        }
+      }
+    }
+  }
   auto bundle = MakeRemoteCallbacks(creds_provider_.get(), config_.remote_url, cancellation_.get());
   popts.callbacks = bundle.callbacks;
 
