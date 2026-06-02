@@ -732,6 +732,15 @@ These rules govern every code path that crosses a thread boundary, fires a callb
 
 The Qt-side mirror of these rules lives in `src/core/services/AGENTS.md` § Threading rules for SyncService.
 
+### Two-phase sync API (consumer concurrency seam)
+
+`vxcore_sync_trigger_cancellable` is still the simplest entry point and bundles staging + network internally. Consumers that need to release a per-notebook lock (e.g. an editor save mutex) the moment the local commit lands, BEFORE blocking on remote I/O, should call the two-phase API instead:
+
+- `vxcore_sync_stage_only` performs ONLY the working-tree-touching phases (`StageAll` + `CommitIndex`). It does no network I/O and is safe to call while holding a consumer-side per-notebook lock that will be released before the network phase. The `out_did_commit` out-parameter reports whether a commit was actually produced.
+- `vxcore_sync_network_phase` performs ONLY the network phases (`FetchOrigin` + `RebaseOntoOrigin` + `PushOrigin`). The caller must have already run `vxcore_sync_stage_only` (or `vxcore_sync_trigger_cancellable`) for the same notebook in the same logical sync attempt. This call is safe to make without holding the consumer's per-notebook lock.
+
+Both halves honor the same `VxCoreSyncCancellation *` token and check it at every phase boundary, matching the existing `vxcore_sync_trigger_cancellable` cancellation semantics. The split is purely a lock-scope seam for embedders; consumers that do not need fine-grained locking should keep using the bundled trigger.
+
 ## SyncManager Locking Discipline
 
 Wave 10.1 (F2.4 part 2) made `state_mutex_` real. It is the single coarse mutex that guards the three runtime maps shared between the orchestrator thread, the event-driven dirty-mark thread, and any caller of the public API.
