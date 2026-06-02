@@ -1,5 +1,6 @@
 #include "sync_manager.h"
 
+#include <chrono>
 #include <mutex>
 
 #include "core/event_manager.h"
@@ -34,6 +35,8 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
   if (!event_manager_) return;
 
   auto mark_dirty = [this](const std::string &event_name, const nlohmann::json &data) {
+    auto mark_dirty_start = std::chrono::steady_clock::now();
+    
     if (data.contains("notebookId") && data["notebookId"].is_string()) {
       std::string nb_id = data["notebookId"].get<std::string>();
       // Task 7.5 (F3.2): cache-presence is the correct predicate here — it
@@ -60,6 +63,11 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
         MaybeEnqueueSync(nb_id);
       }
     }
+    
+    auto mark_dirty_end = std::chrono::steady_clock::now();
+    auto mark_dirty_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        mark_dirty_end - mark_dirty_start).count();
+    VXCORE_LOG_DEBUG("SyncManager: [perf.mark_dirty] elapsed_us=%ld", mark_dirty_us);
   };
 
   event_listener_ids_.push_back(event_manager_->Subscribe(events::kFileCreated, mark_dirty));
@@ -75,6 +83,8 @@ void SyncManager::SetWorkQueueManager(WorkQueueManager *work_queue_manager) {
 }
 
 void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
+  auto maybe_enqueue_start = std::chrono::steady_clock::now();
+  
   // (Debounce removal fix): vxcore no longer applies debounce inside MaybeEnqueueSync.
   // Each call emits sync.should_run exactly once, regardless of interval. The debounce
   // gate that checked "interval_seconds <= 0" and "now - last_enqueue_time_ < interval"
@@ -117,6 +127,11 @@ void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
   // may re-enter SyncManager (e.g., the Qt auto-route consumer that calls TriggerSync).
   event_manager_->Emit(events::kSyncShouldRun, {{"notebookId", notebook_id}});
   VXCORE_LOG_INFO("SyncManager: emitted sync.should_run for notebook: %s", notebook_id.c_str());
+  
+  auto maybe_enqueue_end = std::chrono::steady_clock::now();
+  auto maybe_enqueue_us = std::chrono::duration_cast<std::chrono::microseconds>(
+      maybe_enqueue_end - maybe_enqueue_start).count();
+  VXCORE_LOG_DEBUG("SyncManager: [perf.maybe_enqueue] elapsed_us=%ld", maybe_enqueue_us);
 }
 
 std::vector<std::string> SyncManager::GetDirtyNotebooks() const {
