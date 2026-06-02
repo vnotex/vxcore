@@ -728,6 +728,8 @@ These rules govern every code path that crosses a thread boundary, fires a callb
 4. libgit2 progress callbacks must check cancellation token (Wave 12).
 5. Qt cross-thread signals MUST use `Qt::QueuedConnection`.
 
+> **Consumer responsibility (e.g. VNote).** `vxcore_buffer_save` MUST NOT be invoked from a UI / render thread. Consumers are expected to route the call through a worker (in VNote: `BufferSaveQueue`, see `src/core/services/AGENTS.md` § Save / sync I/O serialization). The vxcore-side `mark_dirty` subscriber that runs inside `vxcore_buffer_save` remains synchronous on the caller thread by design; it is the consumer's responsibility to make sure the caller thread is a worker, not the UI thread.
+
 The Qt-side mirror of these rules lives in `src/core/services/AGENTS.md` § Threading rules for SyncService.
 
 ## SyncManager Locking Discipline
