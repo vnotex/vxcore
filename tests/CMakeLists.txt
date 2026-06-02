@@ -151,6 +151,11 @@ add_vxcore_test(test_git_options)
 # vxcore_test_internals) so links via add_vxcore_test(... INTERNALS).
 add_vxcore_test(test_sync_manager_factory_override INTERNALS)
 
+# test_sync_stage_only: vxcore-sync-stage-only V2. Exercises SyncManager
+# StageOnly / NetworkPhaseOnly via a fake backend (subclass of MockSyncBackend)
+# that overrides StageAndCommit / FetchRebasePush. No libgit2, no network.
+add_vxcore_test(test_sync_stage_only INTERNALS)
+
 # test_sync_manager_reentrancy: Task 10.1 (F2.4 part 2) of sync-backend-phase4.
 # Verifies that SyncManager::state_mutex_ is RELEASED before backend method
 # invocations (Sync, Initialize), so a backend (or hook) may call back into
