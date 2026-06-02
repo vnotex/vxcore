@@ -218,6 +218,68 @@ VXCORE_API VxCoreError vxcore_sync_trigger_cancellable(VxCoreContextHandle conte
   }
 }
 
+// vxcore-sync-stage-only V1: stage-only and network-phase C entries.
+// Mirror the exception-handling shape of vxcore_sync_trigger_cancellable;
+// out_did_commit is optional (may be NULL).
+VXCORE_API VxCoreError vxcore_sync_stage_only(VxCoreContextHandle context,
+                                              const char *notebook_id,
+                                              VxCoreSyncCancellation *token,
+                                              int *out_did_commit) {
+  if (!context || !notebook_id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    if (!ctx->sync_manager) {
+      ctx->last_error = "Sync manager not initialized";
+      return VXCORE_ERR_UNKNOWN;
+    }
+
+    vxcore::SyncCancellationPtr ptr = (token != nullptr) ? token->ptr : nullptr;
+    bool did_commit = false;
+    VxCoreError err =
+        ctx->sync_manager->StageOnly(notebook_id, std::move(ptr), &did_commit);
+    if (out_did_commit != nullptr) {
+      *out_did_commit = did_commit ? 1 : 0;
+    }
+    return err;
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error running stage-only sync";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_sync_network_phase(VxCoreContextHandle context,
+                                                 const char *notebook_id,
+                                                 VxCoreSyncCancellation *token) {
+  if (!context || !notebook_id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    if (!ctx->sync_manager) {
+      ctx->last_error = "Sync manager not initialized";
+      return VXCORE_ERR_UNKNOWN;
+    }
+
+    vxcore::SyncCancellationPtr ptr = (token != nullptr) ? token->ptr : nullptr;
+    return ctx->sync_manager->NetworkPhaseOnly(notebook_id, std::move(ptr));
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error running network-phase sync";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_sync_get_status(VxCoreContextHandle context, const char *notebook_id,
                                               char **out_status_json) {
   if (!context || !notebook_id || !out_status_json) {

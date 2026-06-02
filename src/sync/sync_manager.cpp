@@ -513,6 +513,76 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
   return sync_err;
 }
 
+VxCoreError SyncManager::StageOnly(const std::string &notebook_id,
+                                   SyncCancellationPtr cancellation,
+                                   bool *out_did_commit) {
+  VXCORE_LOG_DEBUG("SyncManager::StageOnly: notebook_id=%s cancellable=%d",
+                   notebook_id.c_str(), cancellation ? 1 : 0);
+
+  if (out_did_commit != nullptr) {
+    *out_did_commit = false;
+  }
+
+  VxCoreError err = ValidateNotebook(notebook_id);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  // Snapshot the backend pointer under state_mutex_, then release before
+  // any external call. Mirrors TriggerSync. We deliberately do NOT flip
+  // states_ nor emit kSyncStarted/Finished — those belong to the
+  // higher-level orchestrator (the consumer that pairs StageOnly with
+  // NetworkPhaseOnly). Keeps event semantics owned by exactly one layer.
+  ISyncBackend *backend_ptr = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (states_.find(notebook_id) == states_.end()) {
+      return VXCORE_ERR_SYNC_NOT_ENABLED;
+    }
+    auto backend_it = backends_.find(notebook_id);
+    if (backend_it == backends_.end()) {
+      return VXCORE_ERR_NOT_IMPLEMENTED;
+    }
+    backend_ptr = backend_it->second.get();
+  }
+
+  // EXTERNAL CALLS — outside state_mutex_. SetCancellation must run before
+  // the phase so an early Cancel() between install and entry is observed.
+  backend_ptr->SetCancellation(cancellation);
+  VxCoreError stage_err = backend_ptr->StageAndCommit(out_did_commit);
+  backend_ptr->SetCancellation(nullptr);
+  return stage_err;
+}
+
+VxCoreError SyncManager::NetworkPhaseOnly(const std::string &notebook_id,
+                                          SyncCancellationPtr cancellation) {
+  VXCORE_LOG_DEBUG("SyncManager::NetworkPhaseOnly: notebook_id=%s cancellable=%d",
+                   notebook_id.c_str(), cancellation ? 1 : 0);
+
+  VxCoreError err = ValidateNotebook(notebook_id);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  ISyncBackend *backend_ptr = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (states_.find(notebook_id) == states_.end()) {
+      return VXCORE_ERR_SYNC_NOT_ENABLED;
+    }
+    auto backend_it = backends_.find(notebook_id);
+    if (backend_it == backends_.end()) {
+      return VXCORE_ERR_NOT_IMPLEMENTED;
+    }
+    backend_ptr = backend_it->second.get();
+  }
+
+  backend_ptr->SetCancellation(cancellation);
+  VxCoreError net_err = backend_ptr->FetchRebasePush();
+  backend_ptr->SetCancellation(nullptr);
+  return net_err;
+}
+
 VxCoreError SyncManager::GetSyncStatus(const std::string &notebook_id, SyncState &out_state,
                                        std::vector<SyncFileInfo> &out_files) {
   VXCORE_LOG_DEBUG("SyncManager::GetSyncStatus: notebook_id=%s", notebook_id.c_str());

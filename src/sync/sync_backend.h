@@ -116,6 +116,36 @@ class ISyncBackend {
   virtual void SetCancellation(SyncCancellationPtr token) {
     (void)token;
   }
+
+  // Stage-only / network-phase split (vxcore-sync-stage-only V1).
+  //
+  // StageAndCommit performs the working-tree-touching portion of Sync()
+  // (stage index + create commit, if any). It must NOT contact the remote.
+  // Safe to call under a per-notebook lock owned by the consumer; the
+  // consumer is expected to release that lock before invoking
+  // FetchRebasePush so concurrent saves on the same notebook can proceed.
+  //
+  // @param out_did_commit (optional) set to true when a new commit object
+  //   was created, false when there was nothing to commit. May be nullptr.
+  //
+  // FetchRebasePush performs only the network phases (fetch + rebase +
+  // push, including the existing retry policy). Caller MUST have invoked
+  // StageAndCommit (or equivalently Sync()) prior so the local branch
+  // contains the commits to push. Safe to call without holding the
+  // consumer's per-notebook lock.
+  //
+  // Default implementations return VXCORE_ERR_NOT_IMPLEMENTED so existing
+  // backends (Mock, future plugins) keep compiling without modification.
+  // Sync() remains the legacy composite entry point and MUST continue to
+  // work for callers that have not migrated.
+  virtual VxCoreError StageAndCommit(bool *out_did_commit) {
+    (void)out_did_commit;
+    return VXCORE_ERR_NOT_IMPLEMENTED;
+  }
+
+  virtual VxCoreError FetchRebasePush() {
+    return VXCORE_ERR_NOT_IMPLEMENTED;
+  }
 };
 
 }  // namespace vxcore

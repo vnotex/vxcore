@@ -74,6 +74,14 @@ class GitSyncBackend : public ISyncBackend {
   // contract.
   void SetCancellation(SyncCancellationPtr token) override;
 
+  // vxcore-sync-stage-only V1: stage+commit and network phases as separate
+  // public entries. Each acquires op_mutex_ (try_to_lock — returns
+  // SYNC_IN_PROGRESS when another libgit2 call is already in flight) and
+  // snapshots creds + cancellation per call. Sync() continues to run both
+  // phases under a single op_mutex_ hold via internal helpers (back-compat).
+  VxCoreError StageAndCommit(bool *out_did_commit) override;
+  VxCoreError FetchRebasePush() override;
+
   // Construct a GitSyncPipeline wired to this backend's internal repo and
   // config. The returned pipeline borrows the repo/git_dir/config references
   // and holds its own shared_ptr to the current credential provider snapshot,
@@ -83,6 +91,14 @@ class GitSyncBackend : public ISyncBackend {
   VXCORE_API std::unique_ptr<GitSyncPipeline> MakePipeline();
 
  private:
+  // Internal helpers called by Sync() (which holds op_mutex_) and by the
+  // new StageAndCommit / FetchRebasePush public entries (which each take
+  // op_mutex_ themselves). The helpers assume op_mutex_ is held and the
+  // backend is initialized.
+  VxCoreError DoStageAndCommitLocked(SyncProgressCallback callback, void *userdata,
+                                     bool *out_did_commit);
+  VxCoreError DoFetchRebasePushLocked(SyncProgressCallback callback, void *userdata);
+
   LibGit2Init libgit2_;     // RAII; FIRST member so it's last destroyed
   std::mutex op_mutex_;     // serializes per-backend libgit2 calls
   std::string root_folder_; // notebook root (= libgit2 workdir)

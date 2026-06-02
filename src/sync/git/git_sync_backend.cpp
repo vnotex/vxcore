@@ -216,8 +216,40 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
     return VXCORE_ERR_UNKNOWN;
   }
 
-  // Wave 6.3 F4.4: snapshot provider at Sync() entry — atomic per-call.
-  // A concurrent ReplaceCredsProvider() takes effect on the NEXT Sync() only.
+  bool did_commit = false;
+  VxCoreError err = DoStageAndCommitLocked(callback, userdata, &did_commit);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+  return DoFetchRebasePushLocked(callback, userdata);
+}
+
+VxCoreError GitSyncBackend::StageAndCommit(bool *out_did_commit) {
+  std::unique_lock<std::mutex> lock(op_mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    return VXCORE_ERR_SYNC_IN_PROGRESS;
+  }
+  if (!initialized_) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+  return DoStageAndCommitLocked(nullptr, nullptr, out_did_commit);
+}
+
+VxCoreError GitSyncBackend::FetchRebasePush() {
+  std::unique_lock<std::mutex> lock(op_mutex_, std::try_to_lock);
+  if (!lock.owns_lock()) {
+    return VXCORE_ERR_SYNC_IN_PROGRESS;
+  }
+  if (!initialized_) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+  return DoFetchRebasePushLocked(nullptr, nullptr);
+}
+
+VxCoreError GitSyncBackend::DoStageAndCommitLocked(SyncProgressCallback callback,
+                                                   void *userdata,
+                                                   bool *out_did_commit) {
+  // Wave 6.3 F4.4: snapshot provider per call.
   std::shared_ptr<ICredentialProvider> provider_snapshot;
   {
     std::lock_guard<std::mutex> p_lock(creds_provider_mu_);
@@ -227,10 +259,7 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
   GitSyncPipeline pipeline(repo_, git_dir_, root_folder_, config_, provider_snapshot,
                            &rebase_in_progress_);
 
-  // Wave 12.2 / F5.9: snapshot the cancellation token under the short-lived
-  // mutex (atomic with respect to a concurrent SetCancellation between
-  // Sync() calls) and forward it to the pipeline. Null is fine — the
-  // pipeline treats it as "no cancellation wired" (pre-W12 behavior).
+  // Wave 12.2 / F5.9: snapshot cancellation token per call.
   SyncCancellationPtr cancellation_snapshot;
   {
     std::lock_guard<std::mutex> c_lock(cancellation_mu_);
@@ -249,32 +278,47 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
   const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::system_clock::now().time_since_epoch())
                           .count();
-  VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=commit starting");
-  err = pipeline.CommitIndex(std::string("VNote sync ") + std::to_string(now_ms));
-  VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=commit rc=%d", err);
-  if (err != VXCORE_OK) {
-    return err;
+  VXCORE_LOG_DEBUG("GitSyncBackend::DoStageAndCommitLocked: step=commit starting");
+  err = pipeline.CommitIndex(std::string("VNote sync ") + std::to_string(now_ms),
+                             out_did_commit);
+  VXCORE_LOG_DEBUG("GitSyncBackend::DoStageAndCommitLocked: step=commit rc=%d", err);
+  return err;
+}
+
+VxCoreError GitSyncBackend::DoFetchRebasePushLocked(SyncProgressCallback callback,
+                                                    void *userdata) {
+  std::shared_ptr<ICredentialProvider> provider_snapshot;
+  {
+    std::lock_guard<std::mutex> p_lock(creds_provider_mu_);
+    provider_snapshot = creds_provider_;
   }
 
-  // F5.10 / Task 11.1 of sync-backend-phase4: retry loop driven by
-  // RetryPolicy + compute_delay. Network errors (per is_retryable_network_error)
-  // AND non-fast-forward push rejections (libgit2 surfaces these as generic
-  // GIT_ERROR with klass GIT_ERROR_REFERENCE — NOT in the network whitelist,
-  // so detected separately by message inspection here) trigger a backoff +
-  // retry. Every other failure returns immediately to the caller.
+  GitSyncPipeline pipeline(repo_, git_dir_, root_folder_, config_, provider_snapshot,
+                           &rebase_in_progress_);
+
+  SyncCancellationPtr cancellation_snapshot;
+  {
+    std::lock_guard<std::mutex> c_lock(cancellation_mu_);
+    cancellation_snapshot = cancellation_;
+  }
+  pipeline.SetCancellation(cancellation_snapshot);
+
+  // F5.10 / Task 11.1: retry loop preserved bit-for-bit from the legacy Sync().
+  VxCoreError err = VXCORE_OK;
   bool pushed = false;
   for (int attempt = 1; attempt <= retry_policy_.max_attempts; ++attempt) {
     if (attempt > 1) {
       auto delay = compute_delay(attempt, retry_policy_, retry_rng_);
-      VXCORE_LOG_DEBUG("GitSyncBackend::Sync: backoff before attempt=%d delay_ms=%lld",
+      VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: backoff before attempt=%d "
+                       "delay_ms=%lld",
                        attempt, static_cast<long long>(delay.count()));
       std::this_thread::sleep_for(delay);
     }
-    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=push attempt=%d", attempt);
+    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=push attempt=%d", attempt);
     ReportProgress(callback, userdata, SyncState::kFetching, "Fetching", 0.40f);
-    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=fetch starting");
+    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=fetch starting");
     err = pipeline.FetchOrigin();
-    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=fetch rc=%d", err);
+    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=fetch rc=%d", err);
     if (err != VXCORE_OK) {
       return err;
     }
@@ -282,9 +326,9 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
     ReportProgress(callback, userdata, SyncState::kAnalyzing, "Analyzing", 0.50f);
 
     ReportProgress(callback, userdata, SyncState::kMerging, "Rebasing", 0.70f);
-    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=rebase starting");
+    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=rebase starting");
     err = pipeline.RebaseOntoOrigin();
-    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=rebase rc=%d", err);
+    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=rebase rc=%d", err);
     if (err == VXCORE_ERR_SYNC_CONFLICT) {
       return VXCORE_ERR_SYNC_CONFLICT;
     }
@@ -293,18 +337,14 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
     }
 
     ReportProgress(callback, userdata, SyncState::kPushing, "Pushing", 0.90f);
-    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=push starting");
+    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=push starting");
     err = pipeline.PushOrigin();
-    VXCORE_LOG_DEBUG("GitSyncBackend::Sync: step=push rc=%d", err);
+    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=push rc=%d", err);
     if (err == VXCORE_OK) {
       pushed = true;
       break;
     }
 
-    // W11.2 (B3): Classify failure via structured GitOpError instead of
-    // ad-hoc strstr() against libgit2's English message. The translator is
-    // the single owner of message-text inspection. Capture the message
-    // BEFORE any subsequent libgit2 call wipes git_error_last().
     const git_error *gerr = git_error_last();
     const std::string gerr_msg =
         (gerr && gerr->message) ? std::string(gerr->message) : std::string();
@@ -315,7 +355,6 @@ VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) 
     if (!retryable || attempt >= retry_policy_.max_attempts) {
       return err;
     }
-    // Loop continues; next iteration's compute_delay() sleep applies.
   }
 
   if (!pushed) {

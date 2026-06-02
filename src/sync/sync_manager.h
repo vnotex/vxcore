@@ -64,6 +64,35 @@ class SyncManager {
   VXCORE_API VxCoreError TriggerSync(const std::string &notebook_id,
                                      SyncCancellationPtr cancellation);
 
+  // vxcore-sync-stage-only V1: run only the working-tree-touching phase
+  // (StageAll + CommitIndex). Does NOT contact the remote. The consumer
+  // typically holds a per-notebook lock around this call and releases it
+  // before invoking NetworkPhaseOnly so concurrent saves on the same
+  // notebook resume immediately after the local commit lands.
+  //
+  // Cancellation: the token (if non-null) is installed on the backend
+  // before the phase runs and cleared afterwards regardless of result —
+  // mirrors TriggerSync(id, cancellation) semantics. Backends that ignore
+  // SetCancellation see no behavioural change.
+  //
+  // @param out_did_commit (optional) set to true if a commit was created,
+  //   false when the index matched HEAD (nothing to stage). May be nullptr.
+  // @return VXCORE_ERR_SYNC_NOT_ENABLED / VXCORE_ERR_NOT_IMPLEMENTED in
+  //   the same situations as TriggerSync; VXCORE_ERR_NOT_IMPLEMENTED also
+  //   when the registered backend does not override StageAndCommit
+  //   (e.g., legacy mocks).
+  VXCORE_API VxCoreError StageOnly(const std::string &notebook_id,
+                                   SyncCancellationPtr cancellation,
+                                   bool *out_did_commit);
+
+  // vxcore-sync-stage-only V1: run only the network phase (FetchOrigin +
+  // RebaseOntoOrigin + PushOrigin, including the existing retry policy).
+  // Caller MUST have invoked StageOnly (or equivalently TriggerSync) prior
+  // so local commits exist to push. Safe to call WITHOUT holding the
+  // consumer's per-notebook lock.
+  VXCORE_API VxCoreError NetworkPhaseOnly(const std::string &notebook_id,
+                                          SyncCancellationPtr cancellation);
+
   VXCORE_API VxCoreError GetSyncStatus(const std::string &notebook_id, SyncState &out_state,
                             std::vector<SyncFileInfo> &out_files);
 

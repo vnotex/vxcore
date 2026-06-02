@@ -907,6 +907,52 @@ VXCORE_API VxCoreError vxcore_sync_trigger_cancellable(VxCoreContextHandle conte
                                                        const char *notebook_id,
                                                        VxCoreSyncCancellation *token);
 
+// vxcore-sync-stage-only V1: stage-only and network-phase entries.
+//
+// vxcore_sync_stage_only runs ONLY the working-tree-touching phase of a
+// sync round-trip (stage index + create commit if needed). It does NOT
+// contact the network and is safe to call under a per-notebook lock the
+// consumer plans to release before invoking vxcore_sync_network_phase.
+//
+// The cancellation token, when non-NULL, is installed on the backend
+// before the phase runs and cleared afterwards regardless of result
+// (identical lifecycle to vxcore_sync_trigger_cancellable). Backends that
+// do not support cooperative cancellation see no behavioural change.
+//
+// @param out_did_commit  optional; when non-NULL, set to 1 if a commit
+//   object was created and 0 if there was nothing to stage. May be NULL.
+//
+// Returns:
+//   VXCORE_OK                    success (whether or not a commit was made)
+//   VXCORE_ERR_SYNC_NOT_ENABLED  sync not enabled for the notebook
+//   VXCORE_ERR_NOT_IMPLEMENTED   no backend registered, or the registered
+//                                backend does not override StageAndCommit
+//   VXCORE_ERR_*                 propagated from the backend
+VXCORE_API VxCoreError vxcore_sync_stage_only(VxCoreContextHandle context,
+                                              const char *notebook_id,
+                                              VxCoreSyncCancellation *token,
+                                              int *out_did_commit);
+
+// vxcore_sync_network_phase runs ONLY the network phases of a sync
+// round-trip: fetch + rebase + push, including the existing retry policy.
+// Callers MUST have invoked vxcore_sync_stage_only (or equivalently
+// vxcore_sync_trigger_cancellable) prior so the local branch contains
+// the commits to push. Safe to call WITHOUT holding the per-notebook
+// lock the consumer used around vxcore_sync_stage_only.
+//
+// Cancellation lifecycle is identical to vxcore_sync_stage_only.
+//
+// Returns:
+//   VXCORE_OK                    success
+//   VXCORE_ERR_SYNC_NOT_ENABLED  sync not enabled for the notebook
+//   VXCORE_ERR_NOT_IMPLEMENTED   no backend registered, or the registered
+//                                backend does not override FetchRebasePush
+//   VXCORE_ERR_SYNC_CONFLICT     rebase produced unresolved conflicts
+//   VXCORE_ERR_SYNC_NETWORK      retries exhausted
+VXCORE_API VxCoreError vxcore_sync_network_phase(VxCoreContextHandle context,
+                                                 const char *notebook_id,
+                                                 VxCoreSyncCancellation *token);
+
 // Get sync status for a notebook.
 // out_status_json: JSON output: {"state":"idle","files":[{"path":"...","status":"modified_local"}]}
 // Caller must free with vxcore_string_free().

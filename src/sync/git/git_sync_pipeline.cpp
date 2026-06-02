@@ -374,7 +374,10 @@ VxCoreError GitSyncPipeline::StageAll() {
 // exist yet (initial commit), the new commit becomes the root.
 // Returns VXCORE_OK both when a commit was made and when there was nothing
 // to commit (empty-commit suppression).
-VxCoreError GitSyncPipeline::CommitIndex(const std::string &message) {
+VxCoreError GitSyncPipeline::CommitIndex(const std::string &message, bool *out_did_commit) {
+  if (out_did_commit != nullptr) {
+    *out_did_commit = false;
+  }
   if (repo_ == nullptr) {
     return VXCORE_ERR_UNKNOWN;
   }
@@ -461,6 +464,9 @@ VxCoreError GitSyncPipeline::CommitIndex(const std::string &message) {
 
   if (rc != 0) {
     return TranslateGitError(rc);
+  }
+  if (out_did_commit != nullptr) {
+    *out_did_commit = true;
   }
   return VXCORE_OK;
 }

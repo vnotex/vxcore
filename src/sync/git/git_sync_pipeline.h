@@ -42,7 +42,11 @@ class GitSyncPipeline {
   VxCoreError ApplyDefaultGitConfig();
   bool RemoteHasRefs();
   VxCoreError StageAll();
-  VxCoreError CommitIndex(const std::string &message);
+  // out_did_commit (optional): set to true when an actual commit object was
+  // created, false when the index tree matched HEAD (no-op "nothing to
+  // commit" case). Existing callers may pass nullptr and ignore the flag —
+  // signature change is source-compatible.
+  VxCoreError CommitIndex(const std::string &message, bool *out_did_commit = nullptr);
   VxCoreError FetchOrigin();
   VxCoreError RebaseOntoOrigin();
   VxCoreError PushOrigin();
