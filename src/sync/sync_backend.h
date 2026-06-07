@@ -31,6 +31,7 @@ enum class SyncCapability : uint32_t {
   AuthRequired       = 1u << 3,
   Cancellation       = 1u << 4,
   ProgressReporting  = 1u << 5,
+  Cloneable          = 1u << 6,
 };
 
 // Bitwise-OR of SyncCapability values. Kept as a plain uint32_t alias rather
@@ -63,6 +64,35 @@ class ISyncBackend {
 
   virtual VxCoreError Initialize(const std::string &root_folder,
                                  const SyncConfig &config) = 0;
+
+  // Clone the remote repository (config.remote_url) into target_dir. Caller MUST
+  // pre-create target_dir AND ensure it is empty. Backend creates the .git layout
+  // (or backend-equivalent) inside target_dir/vx_notebook/ and checks out the
+  // working tree.
+  //
+  // Backend does NOT validate that the clone result is a VNote notebook
+  // (e.g., no vx_notebook/config.json check). SyncManager does that validation.
+  //
+  // Default impl returns VXCORE_ERR_NOT_IMPLEMENTED so backends without clone
+  // support can omit the override.
+  //
+  // Note: This is a long-running network operation. Implementations MUST NOT
+  // invoke callbacks or hooks while holding any lock (see Threading & Callback
+  // Contract in src/sync/AGENTS.md).
+  //
+  // Returns:
+  //   VXCORE_OK — clone succeeded; target_dir is populated with the remote content
+  //   VXCORE_ERR_SYNC_NETWORK — DNS/connect/TLS/HTTP transport failure
+  //   VXCORE_ERR_SYNC_AUTH_FAILED — credentials rejected by remote
+  //   VXCORE_ERR_INVALID_PARAM — config invalid (empty remote_url, etc.)
+  //   VXCORE_ERR_NOT_IMPLEMENTED — backend doesn't support clone
+  //   VXCORE_ERR_UNKNOWN — other libgit2/backend error
+  virtual VxCoreError Clone(const std::string &target_dir,
+                            const SyncConfig &config) {
+    (void)target_dir;
+    (void)config;
+    return VXCORE_ERR_NOT_IMPLEMENTED;
+  }
 
   // Task 6.3 (F4.4) of sync-backend-phase4: credential rotation contract.
   //
