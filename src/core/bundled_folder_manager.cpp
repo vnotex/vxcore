@@ -253,6 +253,8 @@ VxCoreError BundledFolderManager::SaveFolderConfig(const std::string &folder_pat
     nlohmann::json json = config.ToJson();
     file << json.dump(2);
     file.close();
+    EmitEvent(events::kFolderConfigChanged,
+              {{"notebookId", notebook_->GetId()}, {"path", folder_path}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;

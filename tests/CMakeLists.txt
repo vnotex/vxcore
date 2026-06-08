@@ -42,6 +42,7 @@ add_vxcore_test(test_sync_config_cache INTERNALS)
 add_vxcore_test(test_vxcore_sync_is_registered INTERNALS)
 add_vxcore_test(test_work_queue)
 add_vxcore_test(test_event_manager INTERNALS)
+add_vxcore_test(test_metadata_events)
 add_vxcore_test(test_mock_sync_backend INTERNALS)
 
 # test_dirty_tracker: Task 9.1 (F2.4) of sync-backend-phase4. Standalone
