@@ -553,10 +553,341 @@ int test_notebook_config_changed_no_emit_on_write_failure() {
   return 0;
 }
 
+// =========================================================================
+// T5 subtests — Semantic tag events.
+//
+// Owns coverage for kFileTagged / kFileUntagged / kFileTagsReplaced.
+// Each emit must fire EXACTLY ONCE on the success path AFTER both
+// SaveFolderConfig (disk write) AND MetadataStore write-through succeed.
+// Idempotent / failure paths MUST NOT emit.
+// =========================================================================
+
+namespace {
+
+// Shared setup helper: create a bundled notebook + one file at notebook root.
+// Returns the absolute notebook path so the caller can cleanup_test_dir(...)
+// after destroying the context. notebook_id and file_id are caller-owned;
+// caller must vxcore_string_free(...) both.
+//
+// On any failure, sets *out_err and returns empty string. The caller is
+// expected to ASSERT_EQ(err, VXCORE_OK) before proceeding.
+std::string make_notebook_with_file(VxCoreContextHandle ctx, const std::string &nb_basename,
+                                    const std::string &file_name, char **out_notebook_id,
+                                    char **out_file_id, VxCoreError *out_err) {
+  std::string nb_path = get_test_path(nb_basename);
+  cleanup_test_dir(nb_path);
+  std::string json_payload = "{\"name\":\"" + nb_basename + "\"}";
+  *out_err = vxcore_notebook_create(ctx, nb_path.c_str(), json_payload.c_str(),
+                                    VXCORE_NOTEBOOK_BUNDLED, out_notebook_id);
+  if (*out_err != VXCORE_OK || *out_notebook_id == nullptr) {
+    return std::string();
+  }
+  *out_err = vxcore_file_create(ctx, *out_notebook_id, ".", file_name.c_str(), out_file_id);
+  if (*out_err != VXCORE_OK || *out_file_id == nullptr) {
+    return std::string();
+  }
+  return nb_path;
+}
+
+}  // namespace
+
+// -------------------------------------------------------------------------
+// POSITIVE: vxcore_file_tag → TagFile success path fires file.tagged exactly
+// once with payload {notebookId, path, tag}.
+// -------------------------------------------------------------------------
+int test_file_tagged_emits_on_tag_file() {
+  std::cout << "  Running test_file_tagged_emits_on_tag_file..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  char *file_id = nullptr;
+  std::string nb_path = make_notebook_with_file(ctx, "md_evt_tag_ok_nb", "note.md", &notebook_id,
+                                                &file_id, &err);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+  ASSERT_NOT_NULL(file_id);
+
+  // Define the tag at notebook level so TagFile's notebook_->FindTag() passes.
+  err = vxcore_tag_create(ctx, notebook_id, "important");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Subscribe AFTER all setup writes (notebook create, file create, tag
+  // create) so we only see the one emit from vxcore_file_tag below.
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kFileTagged, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "note.md", "important");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // TagFile calls SaveFolderConfig ONCE (only the containing folder is
+  // modified), so the emit must fire EXACTLY once.
+  ASSERT_EQ(cap.call_count, 1);
+  ASSERT_EQ(cap.events[0], std::string(vxcore::events::kFileTagged));
+
+  auto j = nlohmann::json::parse(cap.payloads[0]);
+  ASSERT_TRUE(j.is_object());
+  ASSERT_EQ(j["notebookId"], std::string(notebook_id));
+  ASSERT_EQ(j["path"], std::string("note.md"));
+  ASSERT_EQ(j["tag"], std::string("important"));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_file_tagged_emits_on_tag_file passed" << std::endl;
+  return 0;
+}
+
+// -------------------------------------------------------------------------
+// POSITIVE: vxcore_file_untag → UntagFile success path fires file.untagged
+// exactly once with payload {notebookId, path, tag}.
+// -------------------------------------------------------------------------
+int test_file_untagged_emits_on_untag_file() {
+  std::cout << "  Running test_file_untagged_emits_on_untag_file..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  char *file_id = nullptr;
+  std::string nb_path = make_notebook_with_file(ctx, "md_evt_untag_ok_nb", "note.md",
+                                                &notebook_id, &file_id, &err);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_tag_create(ctx, notebook_id, "review");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Apply the tag BEFORE subscribing so the kFileTagged emit (issued by
+  // TagFile) does not pollute later counts. We are only measuring untag.
+  err = vxcore_file_tag(ctx, notebook_id, "note.md", "review");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kFileUntagged, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_untag(ctx, notebook_id, "note.md", "review");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  ASSERT_EQ(cap.call_count, 1);
+  ASSERT_EQ(cap.events[0], std::string(vxcore::events::kFileUntagged));
+
+  auto j = nlohmann::json::parse(cap.payloads[0]);
+  ASSERT_TRUE(j.is_object());
+  ASSERT_EQ(j["notebookId"], std::string(notebook_id));
+  ASSERT_EQ(j["path"], std::string("note.md"));
+  ASSERT_EQ(j["tag"], std::string("review"));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_file_untagged_emits_on_untag_file passed" << std::endl;
+  return 0;
+}
+
+// -------------------------------------------------------------------------
+// REGRESSION GUARD: vxcore_file_untag for a tag NOT in the file's tags list
+// returns VXCORE_ERR_NOT_FOUND and MUST NOT emit. This pins the rule that
+// the emit lives ONLY after the SaveFolderConfig + MetadataStore writes,
+// past the idempotent early-return in UntagFile.
+// -------------------------------------------------------------------------
+int test_file_untagged_no_emit_when_tag_not_present() {
+  std::cout << "  Running test_file_untagged_no_emit_when_tag_not_present..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  char *file_id = nullptr;
+  std::string nb_path = make_notebook_with_file(ctx, "md_evt_untag_miss_nb", "note.md",
+                                                &notebook_id, &file_id, &err);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Define the tag so the only failure path is "tag not in file's list".
+  err = vxcore_tag_create(ctx, notebook_id, "draft");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kFileUntagged, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // File has no tags → UntagFile finds tag missing → returns NOT_FOUND.
+  err = vxcore_file_untag(ctx, notebook_id, "note.md", "draft");
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  ASSERT_EQ(cap.call_count, 0);
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_file_untagged_no_emit_when_tag_not_present passed" << std::endl;
+  return 0;
+}
+
+// -------------------------------------------------------------------------
+// POSITIVE: vxcore_file_update_tags → UpdateFileTags success path fires
+// file.tags_replaced exactly once with payload {notebookId, path, tags}
+// where `tags` is the EXACT JSON array of new tag names.
+// -------------------------------------------------------------------------
+int test_file_tags_replaced_emits_on_update_tags() {
+  std::cout << "  Running test_file_tags_replaced_emits_on_update_tags..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  char *file_id = nullptr;
+  std::string nb_path = make_notebook_with_file(ctx, "md_evt_replace_ok_nb", "note.md",
+                                                &notebook_id, &file_id, &err);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Define both tags at notebook level so UpdateFileTags's per-tag FindTag
+  // loop passes for the whole input array.
+  err = vxcore_tag_create(ctx, notebook_id, "alpha");
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_tag_create(ctx, notebook_id, "beta");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kFileTagsReplaced, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *tags_payload = "[\"alpha\",\"beta\"]";
+  err = vxcore_file_update_tags(ctx, notebook_id, "note.md", tags_payload);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  ASSERT_EQ(cap.call_count, 1);
+  ASSERT_EQ(cap.events[0], std::string(vxcore::events::kFileTagsReplaced));
+
+  auto j = nlohmann::json::parse(cap.payloads[0]);
+  ASSERT_TRUE(j.is_object());
+  ASSERT_EQ(j["notebookId"], std::string(notebook_id));
+  ASSERT_EQ(j["path"], std::string("note.md"));
+  ASSERT_TRUE(j["tags"].is_array());
+  ASSERT_EQ(j["tags"].size(), static_cast<size_t>(2));
+  ASSERT_EQ(j["tags"][0], std::string("alpha"));
+  ASSERT_EQ(j["tags"][1], std::string("beta"));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_file_tags_replaced_emits_on_update_tags passed" << std::endl;
+  return 0;
+}
+
+// -------------------------------------------------------------------------
+// REGRESSION GUARD: vxcore_file_tag on a nonexistent file returns
+// VXCORE_ERR_NOT_FOUND BEFORE TagFile reaches SaveFolderConfig. The
+// kFileTagged subscriber must observe zero emits.
+// -------------------------------------------------------------------------
+int test_no_emit_when_file_not_found() {
+  std::cout << "  Running test_no_emit_when_file_not_found..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string nb_path = get_test_path("md_evt_tag_nofile_nb");
+  cleanup_test_dir(nb_path);
+  err = vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"TagNoFileTest\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  err = vxcore_tag_create(ctx, notebook_id, "stray");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kFileTagged, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "missing.md", "stray");
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  ASSERT_EQ(cap.call_count, 0);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_no_emit_when_file_not_found passed" << std::endl;
+  return 0;
+}
+
+// -------------------------------------------------------------------------
+// REGRESSION GUARD: vxcore_file_tag with a tag NOT defined on the notebook
+// returns VXCORE_ERR_INVALID_PARAM from notebook_->FindTag(tag_name) BEFORE
+// TagFile reaches SaveFolderConfig. The kFileTagged subscriber must observe
+// zero emits.
+// -------------------------------------------------------------------------
+int test_no_emit_when_tag_not_defined() {
+  std::cout << "  Running test_no_emit_when_tag_not_defined..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  char *file_id = nullptr;
+  std::string nb_path = make_notebook_with_file(ctx, "md_evt_tag_undef_nb", "note.md",
+                                                &notebook_id, &file_id, &err);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Intentionally DO NOT define the tag — FindTag will return nullptr and
+  // TagFile must early-return INVALID_PARAM.
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kFileTagged, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_tag(ctx, notebook_id, "note.md", "undefined_tag");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  ASSERT_EQ(cap.call_count, 0);
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_no_emit_when_tag_not_defined passed" << std::endl;
+  return 0;
+}
+
 int main() {
   // T4 subtests (folder.config_changed persistence event).
   RUN_TEST(test_folder_config_changed_emits_on_create_folder);
   RUN_TEST(test_folder_config_changed_no_emit_on_failure);
+
+  // T5 subtests (semantic tag events: file.tagged / file.untagged /
+  // file.tags_replaced). Three positive emits + three regression guards
+  // covering the idempotent / invalid-input / missing-file failure paths.
+  RUN_TEST(test_file_tagged_emits_on_tag_file);
+  RUN_TEST(test_file_untagged_emits_on_untag_file);
+  RUN_TEST(test_file_untagged_no_emit_when_tag_not_present);
+  RUN_TEST(test_file_tags_replaced_emits_on_update_tags);
+  RUN_TEST(test_no_emit_when_file_not_found);
+  RUN_TEST(test_no_emit_when_tag_not_defined);
 
   // T6 subtests (file.metadata_updated / folder.metadata_updated semantic events).
   RUN_TEST(test_file_metadata_updated_emits_on_update_file_metadata);
@@ -569,8 +900,8 @@ int main() {
   RUN_TEST(test_notebook_config_changed_no_emit_when_event_manager_absent);
   RUN_TEST(test_notebook_config_changed_no_emit_on_write_failure);
 
-  // T5/T7 will append additional RUN_TEST(...) calls here for the remaining
-  // semantic events (file.tagged, file.attached, etc.).
+  // T7 will append additional RUN_TEST(...) calls here for the remaining
+  // semantic events (file.attached, file.detached, file.attachments_replaced).
 
   std::cout << "All metadata event tests passed!" << std::endl;
   return 0;

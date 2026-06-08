@@ -1176,6 +1176,10 @@ VxCoreError BundledFolderManager::UpdateFileTags(const std::string &file_path,
       }
     }
 
+    EmitEvent(events::kFileTagsReplaced,
+              {{"notebookId", notebook_->GetId()},
+               {"path", clean_file_path},
+               {"tags", new_tags}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
@@ -1224,6 +1228,8 @@ VxCoreError BundledFolderManager::TagFile(const std::string &file_path,
     }
   }
 
+  EmitEvent(events::kFileTagged,
+            {{"notebookId", notebook_->GetId()}, {"path", clean_file_path}, {"tag", tag_name}});
   return VXCORE_OK;
 }
 
@@ -1265,6 +1271,8 @@ VxCoreError BundledFolderManager::UntagFile(const std::string &file_path,
     }
   }
 
+  EmitEvent(events::kFileUntagged,
+            {{"notebookId", notebook_->GetId()}, {"path", clean_file_path}, {"tag", tag_name}});
   return VXCORE_OK;
 }
 
