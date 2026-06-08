@@ -117,6 +117,8 @@ VXCORE_API const char *vxcore_error_message(VxCoreError error) {
       return "Sync network error";
     case VXCORE_ERR_SYNC_NOT_ENABLED:
       return "Sync not enabled for this notebook";
+    case VXCORE_ERR_READ_ONLY:
+      return "Notebook is read-only";
     default:
       return "Unknown error";
   }
