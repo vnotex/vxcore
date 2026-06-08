@@ -36,6 +36,24 @@ constexpr const char *kSyncFinished = "sync.finished";
 constexpr const char *kSyncConflict = "sync.conflict";
 constexpr const char *kSyncShouldRun = "sync.should_run";
 
+// Persistence-layer events: fire on every write to the corresponding
+// config file. SyncManager subscribes to these to drive auto-sync.
+// Payload: {"notebookId": "<id>", "path": "<rel>"}
+constexpr const char *kFolderConfigChanged = "folder.config_changed";
+constexpr const char *kNotebookConfigChanged = "notebook.config_changed";
+
+// Semantic-layer events: fire from public mutation methods with rich
+// payloads for UI / consumer-side dispatch. NOT subscribed by SyncManager.
+// Payload varies per event (see src/sync/AGENTS.md Sync Event Catalog).
+constexpr const char *kFileTagged = "file.tagged";
+constexpr const char *kFileUntagged = "file.untagged";
+constexpr const char *kFileTagsReplaced = "file.tags_replaced";
+constexpr const char *kFileMetadataUpdated = "file.metadata_updated";
+constexpr const char *kFolderMetadataUpdated = "folder.metadata_updated";
+constexpr const char *kFileAttached = "file.attached";
+constexpr const char *kFileDetached = "file.detached";
+constexpr const char *kFileAttachmentsReplaced = "file.attachments_replaced";
+
 }  // namespace events
 }  // namespace vxcore
 
