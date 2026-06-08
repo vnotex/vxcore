@@ -709,6 +709,97 @@ int test_folder_events_on_session_loaded_notebook() {
   return 0;
 }
 
+// Regression test: vxcore_buffer_save must emit ONLY file.saved, no new metadata events
+// Verifies buffer save path is unaffected by new semantic metadata events (kFileMetadataUpdated, etc.).
+// Buffer save is a LOW-LEVEL persistence op, not a SEMANTIC metadata update, so it must NOT
+// fire file.metadata_updated or folder.config_changed. It fires exactly 1 file.saved event.
+// 
+// Observable behavior (documented for future verification):
+// - file.saved: emitted exactly ONCE by BufferManager::SaveBuffer (line 408)
+// - folder.config_changed: NOT emitted (buffer save does not modify folder config)
+// - file.metadata_updated: NOT emitted (buffer save is NOT a metadata update operation)
+int test_buffer_save_emits_only_file_saved_no_new_events() {
+  std::cout << "  Running test_buffer_save_emits_only_file_saved_no_new_events..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  // Setup: create context + notebook
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string nb_path = get_test_path("buffer_save_test_nb");
+  cleanup_test_dir(nb_path);
+  err = vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"BufferSaveTest\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Create a file to buffer
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test_buffer.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(file_id);
+
+  // Open buffer
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "test_buffer.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(buffer_id);
+
+  // Set up counters for the three events of interest
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  int file_saved_count = 0;
+  int folder_config_changed_count = 0;
+  int file_metadata_updated_count = 0;
+
+  // Subscribe to file.saved
+  auto id_a = vctx->event_manager->Subscribe(
+      vxcore::events::kFileSaved,
+      [&](const std::string &, const nlohmann::json &) { file_saved_count++; });
+
+  // Subscribe to folder.config_changed
+  auto id_b = vctx->event_manager->Subscribe(
+      vxcore::events::kFolderConfigChanged,
+      [&](const std::string &, const nlohmann::json &) { folder_config_changed_count++; });
+
+  // Subscribe to file.metadata_updated
+  auto id_c = vctx->event_manager->Subscribe(
+      vxcore::events::kFileMetadataUpdated,
+      [&](const std::string &, const nlohmann::json &) { file_metadata_updated_count++; });
+
+  // Modify and save buffer
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, "new content here", 15);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_buffer_save(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify event counts
+  // A: file.saved must fire exactly 1
+  ASSERT_EQ(file_saved_count, 1);
+  
+  // B: folder.config_changed should be 0 (buffer save does not modify folder config)
+  ASSERT_EQ(folder_config_changed_count, 0);
+  
+  // C: file.metadata_updated must be 0 (buffer save is NOT a metadata update)
+  ASSERT_EQ(file_metadata_updated_count, 0);
+
+  // Cleanup
+  vctx->event_manager->Unsubscribe(id_a);
+  vctx->event_manager->Unsubscribe(id_b);
+  vctx->event_manager->Unsubscribe(id_c);
+  vxcore_buffer_close(ctx, buffer_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_buffer_save_emits_only_file_saved_no_new_events passed" << std::endl;
+  return 0;
+}
+
 int main() {
   // Unit tests
   RUN_TEST(test_subscribe_and_emit);
@@ -740,6 +831,9 @@ int main() {
 
   // Regression test for session-loaded notebook event propagation
   RUN_TEST(test_folder_events_on_session_loaded_notebook);
+
+  // Regression test for buffer save event surface
+  RUN_TEST(test_buffer_save_emits_only_file_saved_no_new_events);
 
   std::cout << "All event manager tests passed!" << std::endl;
   return 0;
