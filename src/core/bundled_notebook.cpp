@@ -6,6 +6,8 @@
 #include <fstream>
 
 #include "bundled_folder_manager.h"
+#include "event_manager.h"
+#include "event_names.h"
 #include "metadata_store.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
@@ -183,6 +185,15 @@ VxCoreError BundledNotebook::UpdateConfig(const NotebookConfig &config) {
 
     nlohmann::json json = config_.ToJson();
     file << json.dump(2);
+
+    // Nullptr guard: event_manager_ is inherited from Notebook (T2). It is
+    // nullptr during BundledNotebook::Create's InitOnCreation pass (before
+    // NotebookManager wires it via SetEventManager), so calling Emit
+    // unconditionally would crash on notebook creation.
+    if (event_manager_ != nullptr) {
+      event_manager_->Emit(events::kNotebookConfigChanged,
+                           {{"notebookId", config_.id}});
+    }
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &) {
     return VXCORE_ERR_JSON_SERIALIZE;

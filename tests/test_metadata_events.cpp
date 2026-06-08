@@ -375,6 +375,184 @@ int test_no_emit_on_nonexistent_file_metadata() {
   return 0;
 }
 
+// -------------------------------------------------------------------------
+// T8 POSITIVE: vxcore_notebook_update_config drives
+// BundledNotebook::UpdateConfig, which must fire kNotebookConfigChanged
+// EXACTLY ONCE on the success path with payload {notebookId: <id>} (and
+// nothing else — `path` is intentionally OMITTED because this IS the
+// notebook config; subscribers re-read on demand).
+//
+// Internal call shape: vxcore_notebook_update_config
+//   → NotebookManager::UpdateNotebookConfig (parses JSON → NotebookConfig)
+//   → notebook->UpdateConfig(config)  ← the BundledNotebook override emits
+//   → NotebookManager::UpdateNotebookRecord (writes session record, no emit)
+// -------------------------------------------------------------------------
+int test_notebook_config_changed_emits_on_update_config() {
+  std::cout << "  Running test_notebook_config_changed_emits_on_update_config..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string nb_path = get_test_path("md_evt_nb_cfg_update");
+  cleanup_test_dir(nb_path);
+  err = vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"NotebookCfgUpdateTest\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Subscribe AFTER notebook creation so we do not race with the initial
+  // UpdateConfig call inside InitOnCreation (which runs before
+  // NotebookManager wires the event_manager — see T2/T13 notes).
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kNotebookConfigChanged, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_notebook_update_config(
+      ctx, notebook_id, "{\"name\":\"Renamed Notebook\",\"description\":\"Updated\"}");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // EXACTLY one emit — UpdateNotebookRecord does not emit, only
+  // BundledNotebook::UpdateConfig does.
+  ASSERT_EQ(cap.call_count, 1);
+  ASSERT_EQ(cap.events.size(), static_cast<size_t>(1));
+  ASSERT_EQ(cap.payloads.size(), static_cast<size_t>(1));
+  ASSERT_EQ(cap.events[0], std::string(vxcore::events::kNotebookConfigChanged));
+
+  auto j = nlohmann::json::parse(cap.payloads[0]);
+  ASSERT_TRUE(j.is_object());
+  ASSERT_TRUE(j.contains("notebookId"));
+  ASSERT_EQ(j["notebookId"], std::string(notebook_id));
+  // Contract: NO `path` field — it's THE notebook config, not a sub-file.
+  ASSERT_FALSE(j.contains("path"));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_notebook_config_changed_emits_on_update_config passed" << std::endl;
+  return 0;
+}
+
+// -------------------------------------------------------------------------
+// T8 REGRESSION GUARD (nullptr-safe / wiring sanity):
+//
+// The strictest version of this test would directly construct a
+// BundledNotebook in C++, leave its inherited `event_manager_` field at
+// its default `nullptr`, call `UpdateConfig` and assert no crash AND
+// 0 emits to a previously-installed subscriber. That is NOT feasible from
+// this test target: `test_metadata_events` is registered with
+// `add_vxcore_test()` (NO `INTERNALS` flag in libs/vxcore/tests/CMakeLists.txt
+// line 45), so it links only against `vxcore.dll`'s VXCORE_API-exported
+// surface. `BundledNotebook` is not VXCORE_API-decorated AND its constructor
+// is `private`, accessible only via the static `Create`/`Open` factories
+// that are themselves managed by `NotebookManager`. By the time any
+// public C API can reach a BundledNotebook's UpdateConfig, the manager
+// has already wired event_manager_ via the propagation loop landed in T2
+// (`notebook_manager.cpp:124-125` / `:180-181`).
+//
+// We therefore degrade this test (per the task spec's explicit fallback)
+// into a wiring sanity-check: the emit MUST land when the public API
+// reaches UpdateConfig. The nullptr branch (`if (event_manager_ != nullptr)`
+// guard in bundled_notebook.cpp::UpdateConfig) is exercised in production
+// during BundledNotebook::InitOnCreation's pre-wire call, which is
+// covered separately by T13's regression test on creation-timing.
+// -------------------------------------------------------------------------
+int test_notebook_config_changed_no_emit_when_event_manager_absent() {
+  std::cout << "  Running test_notebook_config_changed_no_emit_when_event_manager_absent..."
+            << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string nb_path = get_test_path("md_evt_nb_cfg_wired");
+  cleanup_test_dir(nb_path);
+  err = vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"NotebookCfgWiredTest\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kNotebookConfigChanged, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // (a) Public API call succeeds (process did NOT crash even though the
+  // emit path runs through the nullptr-guard check internally on the
+  // first InitOnCreation write — proves the guard is in place).
+  err = vxcore_notebook_update_config(ctx, notebook_id, "{\"name\":\"PostWireUpdate\"}");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // (b) Subscriber received the emit when event_manager IS wired (the
+  // post-T2 normal path).
+  ASSERT_EQ(cap.call_count, 1);
+  ASSERT_EQ(cap.events[0], std::string(vxcore::events::kNotebookConfigChanged));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_notebook_config_changed_no_emit_when_event_manager_absent passed"
+            << std::endl;
+  return 0;
+}
+
+// -------------------------------------------------------------------------
+// T8 REGRESSION GUARD: when the disk write fails (e.g., parent metadata
+// folder was destroyed out from under the live notebook), UpdateConfig
+// must return a non-OK error AND must NOT emit kNotebookConfigChanged.
+// This pins the contract that the emit lives ONLY on the success branch,
+// AFTER `file.is_open()` and the JSON write succeed.
+//
+// Strategy: create the notebook, then delete the entire notebook root
+// folder out-of-band so the metadata directory (<root>/vx_notebook/)
+// no longer exists. The next vxcore_notebook_update_config call drives
+// `std::ofstream` open on a missing parent directory — on Windows and
+// POSIX alike, the stream stays closed and BundledNotebook::UpdateConfig
+// returns VXCORE_ERR_IO BEFORE reaching the emit site.
+// -------------------------------------------------------------------------
+int test_notebook_config_changed_no_emit_on_write_failure() {
+  std::cout << "  Running test_notebook_config_changed_no_emit_on_write_failure..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string nb_path = get_test_path("md_evt_nb_cfg_writefail");
+  cleanup_test_dir(nb_path);
+  err = vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"NotebookCfgWriteFailTest\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kNotebookConfigChanged, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Remove the entire notebook root (including <root>/vx_notebook/) so the
+  // subsequent UpdateConfig cannot open the config.json for write.
+  cleanup_test_dir(nb_path);
+
+  err = vxcore_notebook_update_config(ctx, notebook_id, "{\"name\":\"DoomedUpdate\"}");
+  ASSERT_NE(err, VXCORE_OK);
+
+  // No emit must have fired on the failure path.
+  ASSERT_EQ(cap.call_count, 0);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_notebook_config_changed_no_emit_on_write_failure passed" << std::endl;
+  return 0;
+}
+
 int main() {
   // T4 subtests (folder.config_changed persistence event).
   RUN_TEST(test_folder_config_changed_emits_on_create_folder);
@@ -386,9 +564,13 @@ int main() {
   RUN_TEST(test_no_emit_on_invalid_metadata_json);
   RUN_TEST(test_no_emit_on_nonexistent_file_metadata);
 
-  // T5/T7/T8 will append additional RUN_TEST(...) calls here for the semantic
-  // events (file.tagged, file.attached, etc.) and the notebook.config_changed
-  // persistence event.
+  // T8 subtests (notebook.config_changed persistence event).
+  RUN_TEST(test_notebook_config_changed_emits_on_update_config);
+  RUN_TEST(test_notebook_config_changed_no_emit_when_event_manager_absent);
+  RUN_TEST(test_notebook_config_changed_no_emit_on_write_failure);
+
+  // T5/T7 will append additional RUN_TEST(...) calls here for the remaining
+  // semantic events (file.tagged, file.attached, etc.).
 
   std::cout << "All metadata event tests passed!" << std::endl;
   return 0;
