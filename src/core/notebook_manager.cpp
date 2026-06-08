@@ -55,8 +55,17 @@ void NotebookManager::LoadOpenNotebooks() {
     }
 
     if (notebook) {
-      VXCORE_LOG_INFO("Loaded open notebook: id=%s, root_folder=%s", notebook->GetId().c_str(),
-                      notebook->GetRootFolder().c_str());
+      // T15: re-apply the persisted per-device read-only flag before the
+      // notebook is published to the manager's map, so a downstream
+      // GetNotebook(id)->IsReadOnly() sees the same state the session was
+      // shut down in. Both bundled and raw notebooks honor the flag --
+      // SetReadOnly is on the base class. Missing field is back-compat
+      // (NotebookRecord::read_only defaults to false), so old session.json
+      // files without the field continue to load notebooks as writable.
+      notebook->SetReadOnly(record.read_only);
+      VXCORE_LOG_INFO("Loaded open notebook: id=%s, root_folder=%s, read_only=%d",
+                      notebook->GetId().c_str(), notebook->GetRootFolder().c_str(),
+                      record.read_only ? 1 : 0);
       notebooks_[notebook->GetId()] = std::move(notebook);
     }
   }
