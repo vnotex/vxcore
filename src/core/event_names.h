@@ -36,15 +36,78 @@ constexpr const char *kSyncFinished = "sync.finished";
 constexpr const char *kSyncConflict = "sync.conflict";
 constexpr const char *kSyncShouldRun = "sync.should_run";
 
-// Persistence-layer events: fire on every write to the corresponding
-// config file. SyncManager subscribes to these to drive auto-sync.
-// Payload: {"notebookId": "<id>", "path": "<rel>"}
+// Persistence-layer events (Wave 2-3, T4 + T8): fire on every successful
+// write to the corresponding config file. SyncManager::mark_dirty subscribes
+// to BOTH so any persistence write triggers auto-sync wakeup, regardless of
+// which higher-level mutation produced it.
+//
+// folder.config_changed: emitted by BundledFolderManager::SaveFolderConfig
+//   (bundled_folder_manager.cpp:256) after a successful vx.json write. ANY
+//   caller of SaveFolderConfig fires this, including structural ops
+//   (rename/move/copy/import) that have no dedicated event of their own.
+//   Payload: {"notebookId": "<id>", "path": "<rel-folder-path>"}
+//
+// notebook.config_changed: emitted by BundledNotebook::UpdateConfig
+//   (bundled_notebook.cpp:193-196) after a successful vx_notebook/config.json
+//   write. Guarded by a nullptr check on event_manager_ (null during
+//   NotebookManager::CreateNotebook's initial UpdateConfig; see T2's plumbing
+//   in notebook_manager.cpp:125).
+//   Payload: {"notebookId": "<id>"}
+//
 constexpr const char *kFolderConfigChanged = "folder.config_changed";
 constexpr const char *kNotebookConfigChanged = "notebook.config_changed";
 
-// Semantic-layer events: fire from public mutation methods with rich
-// payloads for UI / consumer-side dispatch. NOT subscribed by SyncManager.
-// Payload varies per event (see src/sync/AGENTS.md Sync Event Catalog).
+// Semantic-layer events (Wave 2-3, T5-T8): fire from public mutation methods
+// with rich payloads for UI / consumer-side dispatch. NOT subscribed by
+// SyncManager::mark_dirty; these are intended for UI consumers and future
+// Qt EventBridge integration. The folder.config_changed event fired by the
+// same call drives the auto-sync wakeup half of the contract.
+//
+// file.tagged: emitted by BundledFolderManager::TagFile
+//   (bundled_folder_manager.cpp:1231) after a single tag is appended and
+//   SaveFolderConfig succeeds.
+//   Payload: {"notebookId": "<id>", "path": "<rel-file-path>", "tag": "<name>"}
+//
+// file.untagged: emitted by BundledFolderManager::UntagFile
+//   (bundled_folder_manager.cpp:1274) after a single tag is removed and
+//   SaveFolderConfig succeeds.
+//   Payload: {"notebookId": "<id>", "path": "<rel-file-path>", "tag": "<name>"}
+//
+// file.tags_replaced: emitted by BundledFolderManager::UpdateFileTags
+//   (bundled_folder_manager.cpp:1179) after a full tag-array replacement and
+//   SaveFolderConfig succeeds.
+//   Payload: {"notebookId": "<id>", "path": "<rel-file-path>",
+//             "tags": ["<tag1>", ...]}
+//
+// file.metadata_updated: emitted by BundledFolderManager::UpdateFileMetadata
+//   (bundled_folder_manager.cpp:1124) after a metadata-only file update.
+//   Payload: {"notebookId": "<id>", "path": "<rel-file-path>"}
+//
+// folder.metadata_updated: emitted by BundledFolderManager::UpdateFolderMetadata
+//   (bundled_folder_manager.cpp:483) after a metadata-only folder update.
+//   Payload: {"notebookId": "<id>", "path": "<rel-folder-path>"}
+//
+// file.attached: emitted by BundledFolderManager::AddFileAttachment
+//   (bundled_folder_manager.cpp:2777) after a single attachment is appended
+//   and SaveFolderConfig succeeds. Idempotent on duplicate: no emit if the
+//   attachment was already present.
+//   Payload: {"notebookId": "<id>", "path": "<rel-file-path>",
+//             "attachment": "<name>"}
+//
+// file.detached: emitted by BundledFolderManager::DeleteFileAttachment
+//   (bundled_folder_manager.cpp:2823) after a single attachment is removed
+//   and SaveFolderConfig succeeds. Idempotent on missing: no emit if the
+//   attachment was already absent.
+//   Payload: {"notebookId": "<id>", "path": "<rel-file-path>",
+//             "attachment": "<name>"}
+//
+// file.attachments_replaced: emitted by
+//   BundledFolderManager::UpdateFileAttachments
+//   (bundled_folder_manager.cpp:2728) after a full attachment-array
+//   replacement and SaveFolderConfig succeeds.
+//   Payload: {"notebookId": "<id>", "path": "<rel-file-path>",
+//             "attachments": ["<name1>", ...]}
+//
 constexpr const char *kFileTagged = "file.tagged";
 constexpr const char *kFileUntagged = "file.untagged";
 constexpr const char *kFileTagsReplaced = "file.tags_replaced";
