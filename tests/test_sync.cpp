@@ -807,6 +807,110 @@ int test_auto_sync_conflict_carries_files() {
   return 0;
 }
 
+// ----------------------------------------------------------------------------
+// vxcore-metadata-events T10 (acceptance test): proves the full persistence-
+// event sync chain end-to-end for a tag mutation. Tags are the canonical
+// "non-content" metadata operation that the plan added emissions for; this
+// test wires the chain together with a MockSyncBackend-enabled notebook so
+// we can observe the resulting sync.should_run + dirty-list facts.
+//
+// Chain under test (post T3 + T4 + T5):
+//   vxcore_file_tag
+//     -> BundledFolderManager::TagFile (success path)
+//          -> EmitEvent(events::kFileTagged)             [T5 semantic event;
+//             NOT subscribed by SyncManager::mark_dirty, so does NOT drive
+//             sync.should_run]
+//          -> SaveFolderConfig (containing folder only;
+//             TagFile does no parent walk)
+//               -> EmitEvent(events::kFolderConfigChanged)  [T4 persistence
+//                  event; IS subscribed by mark_dirty in T3]
+//                    -> mark_dirty
+//                         -> DirtyTracker::MarkDirty(notebookId)
+//                         -> MaybeEnqueueSync
+//                              -> EmitEvent(events::kSyncShouldRun)
+//                                 (EXACTLY 1 per vxcore_file_tag call)
+// ----------------------------------------------------------------------------
+int test_tag_file_triggers_sync_chain() {
+  std::cout << "  Running test_tag_file_triggers_sync_chain..." << std::endl;
+  cleanup_test_dir(get_test_path("test_tag_sync_chain"));
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_tag_sync_chain").c_str(),
+                                   "{\"name\":\"TagSyncChain\"}", VXCORE_NOTEBOOK_BUNDLED,
+                                   &notebook_id),
+            VXCORE_OK);
+
+  // Register this notebook with SyncManager so mark_dirty's predicate
+  // (configs_cache_.count(nb_id) > 0) passes when folder.config_changed
+  // arrives. Without enable, mark_dirty silently no-ops and the chain is
+  // unobservable.
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\","
+                               "\"intervalSeconds\":1}",
+                               nullptr),
+            VXCORE_OK);
+
+  // Set up the file tree: one folder containing one file. Each of these
+  // creates also drives folder.config_changed -> mark_dirty -> sync.should_run,
+  // but we intentionally do NOT subscribe yet so they do not pollute the
+  // counter we install below.
+  char *folder_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "notes", &folder_id), VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, "notes", "todo.md", &file_id), VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Define the tag at notebook level so TagFile's notebook_->FindTag() check
+  // passes (otherwise it returns VXCORE_ERR_INVALID_PARAM with no emit).
+  ASSERT_EQ(vxcore_tag_create(ctx, notebook_id, "important"), VXCORE_OK);
+
+  // Clear the dirty flag that the setup writes left behind so the dirty-list
+  // assertion below proves the TagFile call itself re-dirties the notebook
+  // (and not just that prior writes had already marked it).
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  vctx->sync_manager->ClearDirty(notebook_id);
+  ASSERT_TRUE(vctx->sync_manager->GetDirtyNotebooks().empty());
+
+  // Subscribe AFTER setup so the counter captures ONLY the emit produced by
+  // the upcoming vxcore_file_tag call. The capture-less lambda converts to a
+  // C function pointer, matching the typedef for VxCoreEventCallback.
+  std::atomic<int> should_run_count{0};
+  auto count_cb = [](const char *, const char *, void *userdata) {
+    static_cast<std::atomic<int> *>(userdata)->fetch_add(1);
+  };
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.should_run", count_cb, &should_run_count), VXCORE_OK);
+
+  // ACT: apply the tag — the full persistence-event chain is driven from here.
+  ASSERT_EQ(vxcore_file_tag(ctx, notebook_id, "notes/todo.md", "important"), VXCORE_OK);
+
+  // ASSERT 1: at least one sync.should_run reached the subscriber. In
+  // practice the count is EXACTLY 1 (only folder.config_changed is subscribed
+  // by mark_dirty for TagFile; file.tagged is the semantic event and is NOT
+  // subscribed), but the integration contract locked in here is the lower
+  // bound (>= 1) so future event-protocol additions stay backward-compatible.
+  ASSERT_TRUE(should_run_count.load() >= 1);
+
+  // ASSERT 2: the notebook is registered in SyncManager's dirty list. This
+  // is the polling-fallback half of the auto-sync contract (the API non-Qt
+  // embedders use to discover what needs syncing). mark_dirty added it; no
+  // call to vxcore_sync_trigger has cleared it.
+  auto dirty = vctx->sync_manager->GetDirtyNotebooks();
+  ASSERT_EQ(dirty.size(), 1u);
+  ASSERT_EQ(dirty[0], std::string(notebook_id));
+
+  vxcore_off_event(ctx, "sync.should_run", count_cb);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_tag_sync_chain"));
+  std::cout << "  \xE2\x9C\x93 test_tag_file_triggers_sync_chain passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running sync tests..." << std::endl;
 
@@ -834,6 +938,7 @@ int main() {
   RUN_TEST(test_auto_sync_does_not_double_emit);
   RUN_TEST(test_trigger_sync_emits_conflict_with_files);
   RUN_TEST(test_auto_sync_conflict_carries_files);
+  RUN_TEST(test_tag_file_triggers_sync_chain);
 
   std::cout << "\xE2\x9C\x93 All sync tests passed" << std::endl;
   return 0;
