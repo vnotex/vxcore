@@ -809,3 +809,15 @@ target_link_libraries(test_sync_backend_metadata PRIVATE
     libgit2package
     nlohmann_json)
 add_test(NAME test_sync_backend_metadata COMMAND test_sync_backend_metadata)
+
+# test_vxcore_sync_clone_capi: T19 of open-notebook-remote-readonly plan.
+# C-ABI tests for vxcore_sync_clone -- the C wrapper around
+# SyncManager::CloneNotebook (T18). Same shape as test_sync_clone_orchestrator
+# but exercises the public C entry point: null-arg hygiene, missing/unknown
+# backend, malformed JSON, empty + NULL credentials, and the file:// happy
+# path that round-trips through vxcore_notebook_list. Links via
+# add_vxcore_test() so vxcore.dll provides the SyncManager + backend
+# registration; adds git_sync_test_helpers for create_bare_repo/commit_file
+# and nlohmann_json for seeding vx_notebook/config.json content.
+add_vxcore_test(test_vxcore_sync_clone_capi)
+target_link_libraries(test_vxcore_sync_clone_capi PRIVATE git_sync_test_helpers nlohmann_json)

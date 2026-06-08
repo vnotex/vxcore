@@ -565,3 +565,115 @@ VXCORE_API VxCoreError vxcore_sync_get_last_sync_utc(VxCoreContextHandle context
     return VXCORE_ERR_UNKNOWN;
   }
 }
+
+// T19 of open-notebook-remote-readonly: C-ABI translation of
+// SyncManager::CloneNotebook. Mirrors the JSON-parsing shape of
+// vxcore_sync_enable (above) so callers can build config_json /
+// credentials_json with the same helper. See vxcore.h for the full contract.
+//
+// IMPLEMENTATION NOTE -- JSON parse uses the no-throw overload. The MSVC
+// build hits an exception-unwind quirk when a nlohmann::json exception is
+// thrown from inside vxcore.dll on the C-ABI boundary; the resulting hang
+// wedges the test harness instead of returning an error code. The cousin
+// test test_notebook_open_ex.cpp documents the same workaround. We accept
+// the slightly more verbose `is_discarded()` plumbing in exchange for a
+// predictable error path.
+VXCORE_API VxCoreError vxcore_sync_clone(VxCoreContextHandle context, const char *target_dir,
+                                          const char *config_json,
+                                          const char *credentials_json,
+                                          char **out_notebook_id) {
+  // credentials_json is intentionally nullable (NoOpCredentialProvider
+  // fallback for anonymous clones); all other args are required.
+  if (!context || !target_dir || !config_json || !out_notebook_id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  // Defensive: contract says "no notebook registered on failure"; the easiest
+  // way to honour that on the OUT pointer is to clear it up front so every
+  // early-return path is correct without additional bookkeeping.
+  *out_notebook_id = nullptr;
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    if (!ctx->sync_manager) {
+      ctx->last_error = "Sync manager not initialized";
+      return VXCORE_ERR_UNKNOWN;
+    }
+
+    // No-throw config parse (see implementation note above). Reject anything
+    // that isn't a JSON object up front so SyncConfig::FromJson never sees
+    // a non-object payload (it would otherwise return defaults silently for
+    // a top-level array, hiding the malformed config from the caller).
+    auto j = nlohmann::json::parse(config_json, /*cb=*/nullptr,
+                                   /*allow_exceptions=*/false);
+    if (j.is_discarded() || !j.is_object()) {
+      ctx->last_error = "vxcore_sync_clone: config_json failed to parse as a JSON object";
+      return VXCORE_ERR_JSON_PARSE;
+    }
+    vxcore::SyncConfig config = vxcore::SyncConfig::FromJson(j);
+
+    // Build the credential provider exactly the way vxcore_sync_enable does
+    // -- keeps the two entry points symmetric and lets callers reuse PAT
+    // formatting helpers. NEVER log the PAT itself.
+    std::shared_ptr<vxcore::ICredentialProvider> provider;
+    if (credentials_json != nullptr) {
+      // Same no-throw treatment for creds. ParseCredentials in this TU uses
+      // the throwing parser; reproduce the safe shape inline so the throwing
+      // parser never runs from this entry point.
+      auto cj = nlohmann::json::parse(credentials_json, /*cb=*/nullptr,
+                                      /*allow_exceptions=*/false);
+      if (cj.is_discarded() || !cj.is_object()) {
+        ctx->last_error =
+            "vxcore_sync_clone: credentials_json failed to parse as a JSON object";
+        return VXCORE_ERR_JSON_PARSE;
+      }
+      vxcore::SyncCredentials creds;
+      if (cj.contains(vxcore::kJsonKeyPat) && cj[vxcore::kJsonKeyPat].is_string()) {
+        creds.personal_access_token = cj[vxcore::kJsonKeyPat].get<std::string>();
+      }
+      if (cj.contains(vxcore::kJsonKeyAuthorName) &&
+          cj[vxcore::kJsonKeyAuthorName].is_string()) {
+        creds.author_name = cj[vxcore::kJsonKeyAuthorName].get<std::string>();
+      }
+      if (cj.contains(vxcore::kJsonKeyAuthorEmail) &&
+          cj[vxcore::kJsonKeyAuthorEmail].is_string()) {
+        creds.author_email = cj[vxcore::kJsonKeyAuthorEmail].get<std::string>();
+      }
+      if (cj.contains(vxcore::kJsonKeyExtra) && cj[vxcore::kJsonKeyExtra].is_object()) {
+        creds.extra = cj[vxcore::kJsonKeyExtra];
+      }
+      provider =
+          std::make_shared<vxcore::InMemoryCredentialProvider>(std::move(creds));
+    } else {
+      provider = std::make_shared<vxcore::NoOpCredentialProvider>();
+    }
+
+    std::string notebook_id;
+    VxCoreError err = ctx->sync_manager->CloneNotebook(target_dir, config,
+                                                       std::move(provider), notebook_id);
+    if (err != VXCORE_OK) {
+      // SyncManager::CloneNotebook leaves notebook_id empty on failure.
+      // Keep *out_notebook_id at the nullptr we set above and forward the
+      // error code unmodified.
+      return err;
+    }
+
+    char *id_copy = vxcore_strdup(notebook_id.c_str());
+    if (!id_copy) {
+      // Allocation failure after a successful clone is the awkward case:
+      // we successfully registered the notebook but cannot hand the caller
+      // its id. Surface the OOM rather than pretending success -- the caller
+      // can recover via vxcore_notebook_list to find the new entry.
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+    *out_notebook_id = id_copy;
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error cloning notebook";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}

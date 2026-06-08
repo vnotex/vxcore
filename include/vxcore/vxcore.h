@@ -1095,6 +1095,74 @@ VXCORE_API VxCoreError vxcore_sync_get_last_sync_utc(VxCoreContextHandle context
                                                      const char *notebook_id,
                                                      int64_t *out_utc_millis);
 
+// Clone a remote notebook into target_dir using the backend specified in
+// config_json. T19 of open-notebook-remote-readonly: C-ABI translation of
+// SyncManager::CloneNotebook (the backend-agnostic clone orchestrator).
+// Dispatches via SyncBackendRegistry -- NOT git-hardcoded. After clone the
+// .git layout lives at <target_dir>/vx_notebook/vx_sync/ (per
+// BootstrapFromEmptyRemote contract); the cloned notebook is registered
+// with NotebookManager so subsequent vxcore_notebook_list will include it.
+//
+// config_json schema (extends the existing vxcore_sync_enable schema so
+// callers can build it with the same helper):
+//   {
+//     "backend": "git",         // required, non-empty
+//     "remoteUrl": "...",        // required for git
+//     "intervalSeconds": 60,     // optional, default 60
+//     "backendOptions": { ... }  // optional, backend-specific
+//   }
+//
+// credentials_json schema (same as vxcore_sync_enable). When NULL the C ABI
+// installs a NoOpCredentialProvider; pass "{}" or {"pat":"<token>"} for
+// authenticated clones. The PAT (when supplied) is held only in process
+// memory for the duration of the clone -- vxcore never persists it.
+//
+// Preconditions:
+//   - target_dir exists, is empty, and is writable. Caller MUST create the
+//     directory before calling and MUST clean it up on failure (this C ABI
+//     does NOT touch target_dir on its own failure paths).
+//
+// Postconditions:
+//   - On VXCORE_OK: *out_notebook_id is set to the notebook's id (caller
+//     frees via vxcore_string_free). The notebook is registered with
+//     NotebookManager and the on-disk session.json records the root.
+//   - On any error: target_dir contents are UNDEFINED (libgit2 may have
+//     populated it partially before the failure). The caller is responsible
+//     for cleaning up; no notebook is registered.
+//   - Sync is NOT registered in SyncManager's states_/backends_ maps --
+//     this entry point is clone-only. Callers that want sync registration
+//     must invoke vxcore_sync_enable separately (which will hit the
+//     OpenExistingRepo branch since vx_sync/ now exists).
+//
+// Errors (propagates SyncManager::CloneNotebook + JSON parsing):
+//   VXCORE_ERR_NULL_POINTER       context, target_dir, config_json, or
+//                                  out_notebook_id is NULL
+//   VXCORE_ERR_JSON_PARSE         config_json or credentials_json malformed
+//                                  (or top-level non-object)
+//   VXCORE_ERR_INVALID_PARAM      config.backend empty
+//   VXCORE_ERR_UNKNOWN_BACKEND    config.backend not registered in
+//                                  SyncBackendRegistry
+//   VXCORE_ERR_NOT_IMPLEMENTED    registered backend has no Cloneable
+//                                  capability
+//   VXCORE_ERR_NOT_FOUND          clone succeeded but
+//                                  <target_dir>/vx_notebook/config.json
+//                                  is missing (not a VNote notebook)
+//   VXCORE_ERR_INVALID_STATE      vx_notebook/config.json present but its
+//                                  "id" field is empty
+//   VXCORE_ERR_SYNC_NETWORK       network transport failure during fetch
+//   VXCORE_ERR_SYNC_AUTH_FAILED   credentials rejected by remote
+//   VXCORE_ERR_UNKNOWN            other libgit2/backend error
+//
+// Threading: synchronous -- blocks the calling thread for the full clone
+// duration (libgit2 fetch + checkout). Callers SHOULD invoke this from a
+// worker thread, not the UI thread. SyncManager::CloneNotebook does NOT
+// hold state_mutex_ across the backend Clone() call.
+VXCORE_API VxCoreError vxcore_sync_clone(VxCoreContextHandle context,
+                                          const char *target_dir,
+                                          const char *config_json,
+                                          const char *credentials_json,
+                                          char **out_notebook_id);
+
 // ============ Event System ============
 
 // Subscribe to a named event. The callback fires when the event is emitted.
