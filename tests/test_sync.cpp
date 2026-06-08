@@ -911,6 +911,123 @@ int test_tag_file_triggers_sync_chain() {
   return 0;
 }
 
+// ----------------------------------------------------------------------------
+// T11: integration test proving structural ops (RenameFolder/MoveFolder/
+// CopyFolder/CopyFile/etc.) are already covered by the auto-sync contract
+// WITHOUT needing dedicated structural events (folder.moved, folder.copied,
+// ...). The mechanism: every structural op rewrites at least one vx.json via
+// SaveFolderConfig, which fires the T4 persistence event
+// (events::kFolderConfigChanged). SyncManager::mark_dirty is subscribed to
+// that persistence event (T3), so the full chain runs end-to-end:
+//
+//   vxcore_node_rename (folder path)
+//      -> BundledFolderManager::RenameFolder
+//           -> SaveFolderConfig(new_folder_path, ...)      [folder's own vx.json
+//                                                           at the new location]
+//                -> EmitEvent(events::kFolderConfigChanged) [+1]
+//                     -> mark_dirty
+//                          -> DirtyTracker::MarkDirty(notebookId)
+//                          -> MaybeEnqueueSync
+//                               -> EmitEvent(events::kSyncShouldRun) [+1]
+//           -> SaveFolderConfig(parent_path, ...)          [parent's vx.json
+//                                                           with renamed entry]
+//                -> EmitEvent(events::kFolderConfigChanged) [+1]
+//                     -> mark_dirty -> ... -> EmitEvent(kSyncShouldRun) [+1]
+//
+// Observed counts at the time of writing: 2 folder.config_changed +
+// 2 sync.should_run per vxcore_node_rename of a folder. The integration
+// contract locked in here is the LOWER BOUND (>= 1 each) so future refactors
+// of RenameFolder (e.g., collapsing the two SaveFolderConfig calls into one
+// batched write) stay backward-compatible. The point is that *structural*
+// auto-sync works today through the persistence chain alone; no dedicated
+// folder.moved/folder.copied event is required.
+// ----------------------------------------------------------------------------
+int test_rename_folder_triggers_sync_chain_via_persistence() {
+  std::cout << "  Running test_rename_folder_triggers_sync_chain_via_persistence..." << std::endl;
+  cleanup_test_dir(get_test_path("test_rename_folder_sync_chain"));
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_rename_folder_sync_chain").c_str(),
+                                   "{\"name\":\"RenameFolderSyncChain\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  // Register this notebook with SyncManager so mark_dirty's predicate
+  // (configs_cache_.count(nb_id) > 0) passes when folder.config_changed
+  // arrives. Without enable, mark_dirty silently no-ops and the chain is
+  // unobservable.
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\","
+                               "\"intervalSeconds\":1}",
+                               nullptr),
+            VXCORE_OK);
+
+  // Create a folder so there's something to rename. This SaveFolderConfig
+  // itself drives the persistence chain too, but we subscribe AFTER setup
+  // so it does NOT pollute the counters.
+  char *folder_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "old_name", &folder_id), VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // Clear the dirty flag that setup writes left behind so the dirty-list
+  // assertion below proves the RenameFolder call itself re-dirties the
+  // notebook (and not just that the prior create had already marked it).
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  vctx->sync_manager->ClearDirty(notebook_id);
+  ASSERT_TRUE(vctx->sync_manager->GetDirtyNotebooks().empty());
+
+  // Subscribe AFTER setup. Two separate counters: one proves the persistence
+  // event fires (kFolderConfigChanged); the other proves the auto-sync
+  // wakeup happens via the chain (kSyncShouldRun). Capture-less lambdas
+  // convert to C function pointers, matching VxCoreEventCallback's typedef.
+  std::atomic<int> folder_config_count{0};
+  std::atomic<int> should_run_count{0};
+  auto count_cb = [](const char *, const char *, void *userdata) {
+    static_cast<std::atomic<int> *>(userdata)->fetch_add(1);
+  };
+  ASSERT_EQ(vxcore_on_event(ctx, "folder.config_changed", count_cb, &folder_config_count),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.should_run", count_cb, &should_run_count), VXCORE_OK);
+
+  // ACT: rename the folder via the unified node API; the path "old_name"
+  // routes through DetectNodeType -> RenameFolder under the hood. Note that
+  // new_name is just the basename, not a full path.
+  ASSERT_EQ(vxcore_node_rename(ctx, notebook_id, "old_name", "new_name"), VXCORE_OK);
+
+  // ASSERT 1: the persistence event (folder.config_changed) fired at least
+  // once. RenameFolder currently calls SaveFolderConfig twice (folder's own
+  // vx.json at the new location + parent's vx.json with the renamed entry),
+  // so the practical count is 2. The contract assertion is the lower bound
+  // to keep this test stable across future implementation tweaks.
+  ASSERT_TRUE(folder_config_count.load() >= 1);
+
+  // ASSERT 2: at least one sync.should_run reached the subscriber. mark_dirty
+  // is subscribed to folder.config_changed (T3), so each persistence emit
+  // drives one sync.should_run. The integration contract is >= 1; observed
+  // count is 2.
+  ASSERT_TRUE(should_run_count.load() >= 1);
+
+  // ASSERT 3: the notebook is registered in SyncManager's dirty list — the
+  // polling-fallback half of the auto-sync contract. mark_dirty added it;
+  // no call to vxcore_sync_trigger has cleared it.
+  auto dirty = vctx->sync_manager->GetDirtyNotebooks();
+  ASSERT_EQ(dirty.size(), 1u);
+  ASSERT_EQ(dirty[0], std::string(notebook_id));
+
+  vxcore_off_event(ctx, "sync.should_run", count_cb);
+  vxcore_off_event(ctx, "folder.config_changed", count_cb);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_rename_folder_sync_chain"));
+  std::cout
+      << "  \xE2\x9C\x93 test_rename_folder_triggers_sync_chain_via_persistence passed"
+      << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running sync tests..." << std::endl;
 
@@ -939,6 +1056,7 @@ int main() {
   RUN_TEST(test_trigger_sync_emits_conflict_with_files);
   RUN_TEST(test_auto_sync_conflict_carries_files);
   RUN_TEST(test_tag_file_triggers_sync_chain);
+  RUN_TEST(test_rename_folder_triggers_sync_chain_via_persistence);
 
   std::cout << "\xE2\x9C\x93 All sync tests passed" << std::endl;
   return 0;
