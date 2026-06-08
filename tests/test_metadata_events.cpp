@@ -1195,6 +1195,16 @@ int main() {
   RUN_TEST(test_folder_config_changed_emits_on_create_folder);
   RUN_TEST(test_folder_config_changed_no_emit_on_failure);
 
+  // T5 subtests (file.tagged / file.untagged / file.tags_replaced semantic
+  // events). Six subtests: 3 positive emit cases + 1 idempotent UntagFile
+  // guard + 2 failure-path guards (file-not-found, tag-not-defined).
+  RUN_TEST(test_file_tagged_emits_on_tag_file);
+  RUN_TEST(test_file_untagged_emits_on_untag_file);
+  RUN_TEST(test_file_untagged_no_emit_when_tag_not_present);
+  RUN_TEST(test_file_tags_replaced_emits_on_update_tags);
+  RUN_TEST(test_no_emit_when_file_not_found);
+  RUN_TEST(test_no_emit_when_tag_not_defined);
+
   // T6 subtests (file.metadata_updated / folder.metadata_updated semantic events).
   RUN_TEST(test_file_metadata_updated_emits_on_update_file_metadata);
   RUN_TEST(test_folder_metadata_updated_emits_on_update_folder_metadata);
