@@ -2725,6 +2725,10 @@ VxCoreError BundledFolderManager::UpdateFileAttachments(const std::string &file_
       }
     }
 
+    EmitEvent(events::kFileAttachmentsReplaced,
+              {{"notebookId", notebook_->GetId()},
+               {"path", clean_file_path},
+               {"attachments", new_attachments}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
@@ -2770,6 +2774,10 @@ VxCoreError BundledFolderManager::AddFileAttachment(const std::string &file_path
     }
   }
 
+  EmitEvent(events::kFileAttached,
+            {{"notebookId", notebook_->GetId()},
+             {"path", clean_file_path},
+             {"attachment", attachment}});
   return VXCORE_OK;
 }
 
@@ -2812,6 +2820,10 @@ VxCoreError BundledFolderManager::DeleteFileAttachment(const std::string &file_p
     }
   }
 
+  EmitEvent(events::kFileDetached,
+            {{"notebookId", notebook_->GetId()},
+             {"path", clean_file_path},
+             {"attachment", attachment}});
   return VXCORE_OK;
 }
 }  // namespace vxcore

@@ -215,6 +215,24 @@ VXCORE_API VxCoreError vxcore_file_update_attachments(VxCoreContextHandle contex
                                                       const char *file_path,
                                                       const char *attachments_json);
 
+// Add a single attachment to a file node (bundled notebooks).
+// Idempotent: if attachment already exists in the file's list, returns
+// VXCORE_OK without modifying the file's metadata or emitting an event.
+// attachment: relative filename, e.g. "doc.pdf"
+VXCORE_API VxCoreError vxcore_file_add_attachment(VxCoreContextHandle context,
+                                                  const char *notebook_id,
+                                                  const char *file_path,
+                                                  const char *attachment);
+
+// Remove a single attachment from a file node (bundled notebooks).
+// Idempotent: if attachment is not present in the file's list, returns
+// VXCORE_OK without modifying the file's metadata or emitting an event.
+// attachment: relative filename to remove
+VXCORE_API VxCoreError vxcore_file_delete_attachment(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     const char *file_path,
+                                                     const char *attachment);
+
 VXCORE_API VxCoreError vxcore_file_tag(VxCoreContextHandle context, const char *notebook_id,
                                        const char *file_path, const char *tag_name);
 

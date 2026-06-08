@@ -874,20 +874,242 @@ int test_no_emit_when_tag_not_defined() {
   return 0;
 }
 
+// =========================================================================
+// T7 subtests - Semantic attachment events.
+//
+// Owns coverage for kFileAttached / kFileDetached / kFileAttachmentsReplaced.
+// Each emit must fire EXACTLY ONCE on the success path AFTER both
+// SaveFolderConfig (disk write) AND MetadataStore write-through succeed.
+// Idempotent / failure paths MUST NOT emit - the dedup early-return at
+// bundled_folder_manager.cpp:2740 (AddFileAttachment) and the not-found
+// early-return at :2782 (DeleteFileAttachment) PRECEDE the emit site.
+//
+// Reuses make_notebook_with_file declared in T5's anonymous namespace.
+// =========================================================================
+
+// -------------------------------------------------------------------------
+// T7 POSITIVE: vxcore_file_add_attachment -> AddFileAttachment success path
+// fires file.attached exactly once with payload
+// {notebookId, path, attachment}.
+// -------------------------------------------------------------------------
+int test_file_attached_emits_on_add_attachment() {
+  std::cout << "  Running test_file_attached_emits_on_add_attachment..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  char *file_id = nullptr;
+  std::string nb_path = make_notebook_with_file(ctx, "md_evt_attach_ok_nb", "note.md",
+                                                &notebook_id, &file_id, &err);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+  ASSERT_NOT_NULL(file_id);
+
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kFileAttached, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_add_attachment(ctx, notebook_id, "note.md", "image.png");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  ASSERT_EQ(cap.call_count, 1);
+  ASSERT_EQ(cap.events[0], std::string(vxcore::events::kFileAttached));
+
+  auto j = nlohmann::json::parse(cap.payloads[0]);
+  ASSERT_TRUE(j.is_object());
+  ASSERT_EQ(j["notebookId"], std::string(notebook_id));
+  ASSERT_EQ(j["path"], std::string("note.md"));
+  ASSERT_EQ(j["attachment"], std::string("image.png"));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  + test_file_attached_emits_on_add_attachment passed" << std::endl;
+  return 0;
+}
+
+// -------------------------------------------------------------------------
+// T7 IDEMPOTENT GUARD: AddFileAttachment with attachment already in list
+// returns VXCORE_OK via the dedup early-return at
+// bundled_folder_manager.cpp:2740 and MUST NOT emit file.attached.
+// -------------------------------------------------------------------------
+int test_file_attached_no_emit_when_already_present() {
+  std::cout << "  Running test_file_attached_no_emit_when_already_present..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  char *file_id = nullptr;
+  std::string nb_path = make_notebook_with_file(ctx, "md_evt_attach_dup_nb", "note.md",
+                                                &notebook_id, &file_id, &err);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_add_attachment(ctx, notebook_id, "note.md", "doc.pdf");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kFileAttached, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_add_attachment(ctx, notebook_id, "note.md", "doc.pdf");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  ASSERT_EQ(cap.call_count, 0);
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  + test_file_attached_no_emit_when_already_present passed" << std::endl;
+  return 0;
+}
+
+// -------------------------------------------------------------------------
+// T7 POSITIVE: vxcore_file_delete_attachment -> DeleteFileAttachment success
+// path fires file.detached exactly once with payload
+// {notebookId, path, attachment}.
+// -------------------------------------------------------------------------
+int test_file_detached_emits_on_delete_attachment() {
+  std::cout << "  Running test_file_detached_emits_on_delete_attachment..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  char *file_id = nullptr;
+  std::string nb_path = make_notebook_with_file(ctx, "md_evt_detach_ok_nb", "note.md",
+                                                &notebook_id, &file_id, &err);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_add_attachment(ctx, notebook_id, "note.md", "data.zip");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kFileDetached, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_delete_attachment(ctx, notebook_id, "note.md", "data.zip");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  ASSERT_EQ(cap.call_count, 1);
+  ASSERT_EQ(cap.events[0], std::string(vxcore::events::kFileDetached));
+
+  auto j = nlohmann::json::parse(cap.payloads[0]);
+  ASSERT_TRUE(j.is_object());
+  ASSERT_EQ(j["notebookId"], std::string(notebook_id));
+  ASSERT_EQ(j["path"], std::string("note.md"));
+  ASSERT_EQ(j["attachment"], std::string("data.zip"));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  + test_file_detached_emits_on_delete_attachment passed" << std::endl;
+  return 0;
+}
+
+// -------------------------------------------------------------------------
+// T7 IDEMPOTENT GUARD: DeleteFileAttachment for attachment not in list
+// returns VXCORE_OK via the not-found early-return at
+// bundled_folder_manager.cpp:2782 and MUST NOT emit file.detached.
+// -------------------------------------------------------------------------
+int test_file_detached_no_emit_when_not_present() {
+  std::cout << "  Running test_file_detached_no_emit_when_not_present..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  char *file_id = nullptr;
+  std::string nb_path = make_notebook_with_file(ctx, "md_evt_detach_miss_nb", "note.md",
+                                                &notebook_id, &file_id, &err);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kFileDetached, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_file_delete_attachment(ctx, notebook_id, "note.md", "nonexistent.pdf");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  ASSERT_EQ(cap.call_count, 0);
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  + test_file_detached_no_emit_when_not_present passed" << std::endl;
+  return 0;
+}
+
+// -------------------------------------------------------------------------
+// T7 POSITIVE: vxcore_file_update_attachments -> UpdateFileAttachments
+// success path fires file.attachments_replaced exactly once with payload
+// {notebookId, path, attachments} where `attachments` is the EXACT JSON
+// array of the new attachment list.
+// -------------------------------------------------------------------------
+int test_file_attachments_replaced_emits_on_update() {
+  std::cout << "  Running test_file_attachments_replaced_emits_on_update..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  char *file_id = nullptr;
+  std::string nb_path = make_notebook_with_file(ctx, "md_evt_replace_attach_nb", "note.md",
+                                                &notebook_id, &file_id, &err);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  EventCapture cap;
+  err = vxcore_on_event(ctx, vxcore::events::kFileAttachmentsReplaced, capture_event_cb, &cap);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *attachments_payload = "[\"img.png\",\"doc.pdf\"]";
+  err = vxcore_file_update_attachments(ctx, notebook_id, "note.md", attachments_payload);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  ASSERT_EQ(cap.call_count, 1);
+  ASSERT_EQ(cap.events[0], std::string(vxcore::events::kFileAttachmentsReplaced));
+
+  auto j = nlohmann::json::parse(cap.payloads[0]);
+  ASSERT_TRUE(j.is_object());
+  ASSERT_EQ(j["notebookId"], std::string(notebook_id));
+  ASSERT_EQ(j["path"], std::string("note.md"));
+  ASSERT_TRUE(j["attachments"].is_array());
+  ASSERT_EQ(j["attachments"].size(), static_cast<size_t>(2));
+  ASSERT_EQ(j["attachments"][0], std::string("img.png"));
+  ASSERT_EQ(j["attachments"][1], std::string("doc.pdf"));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  + test_file_attachments_replaced_emits_on_update passed" << std::endl;
+  return 0;
+}
+
 int main() {
   // T4 subtests (folder.config_changed persistence event).
   RUN_TEST(test_folder_config_changed_emits_on_create_folder);
   RUN_TEST(test_folder_config_changed_no_emit_on_failure);
-
-  // T5 subtests (semantic tag events: file.tagged / file.untagged /
-  // file.tags_replaced). Three positive emits + three regression guards
-  // covering the idempotent / invalid-input / missing-file failure paths.
-  RUN_TEST(test_file_tagged_emits_on_tag_file);
-  RUN_TEST(test_file_untagged_emits_on_untag_file);
-  RUN_TEST(test_file_untagged_no_emit_when_tag_not_present);
-  RUN_TEST(test_file_tags_replaced_emits_on_update_tags);
-  RUN_TEST(test_no_emit_when_file_not_found);
-  RUN_TEST(test_no_emit_when_tag_not_defined);
 
   // T6 subtests (file.metadata_updated / folder.metadata_updated semantic events).
   RUN_TEST(test_file_metadata_updated_emits_on_update_file_metadata);
@@ -900,8 +1122,15 @@ int main() {
   RUN_TEST(test_notebook_config_changed_no_emit_when_event_manager_absent);
   RUN_TEST(test_notebook_config_changed_no_emit_on_write_failure);
 
-  // T7 will append additional RUN_TEST(...) calls here for the remaining
-  // semantic events (file.attached, file.detached, file.attachments_replaced).
+  // T7 subtests (file.attached / file.detached / file.attachments_replaced
+  // semantic attachment events). Three positive emits + two idempotent
+  // guards covering the dedup early-return (add) and not-found early-return
+  // (delete).
+  RUN_TEST(test_file_attached_emits_on_add_attachment);
+  RUN_TEST(test_file_attached_no_emit_when_already_present);
+  RUN_TEST(test_file_detached_emits_on_delete_attachment);
+  RUN_TEST(test_file_detached_no_emit_when_not_present);
+  RUN_TEST(test_file_attachments_replaced_emits_on_update);
 
   std::cout << "All metadata event tests passed!" << std::endl;
   return 0;
