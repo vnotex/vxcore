@@ -122,6 +122,7 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
     out_notebook_id = notebook->GetId();
     if (event_manager_ && notebook->GetFolderManager()) {
       notebook->GetFolderManager()->SetEventManager(event_manager_);
+      notebook->SetEventManager(event_manager_);
     }
     notebooks_[out_notebook_id] = std::move(notebook);
 
@@ -177,6 +178,7 @@ VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
   out_notebook_id = notebook->GetId();
   if (event_manager_ && notebook->GetFolderManager()) {
     notebook->GetFolderManager()->SetEventManager(event_manager_);
+    notebook->SetEventManager(event_manager_);
   }
   notebooks_[out_notebook_id] = std::move(notebook);
 
@@ -420,8 +422,12 @@ VxCoreError NotebookManager::ResolveNodeById(const std::string &node_id,
 
 void NotebookManager::SetEventManager(EventManager *event_manager) {
   event_manager_ = event_manager;
-  // Propagate to existing notebooks' folder managers
+  // Propagate to existing notebooks and their folder managers
   for (auto &pair : notebooks_) {
+    if (!pair.second) {
+      continue;
+    }
+    pair.second->SetEventManager(event_manager_);
     if (auto *fm = pair.second->GetFolderManager()) {
       fm->SetEventManager(event_manager_);
     }

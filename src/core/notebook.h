@@ -82,6 +82,8 @@ class Notebook {
   FolderManager *GetFolderManager() { return folder_manager_.get(); }
   MetadataStore *GetMetadataStore() { return metadata_store_.get(); }
 
+  void SetEventManager(EventManager *event_manager) { event_manager_ = event_manager; }
+
   // Per-device "last successful git sync" timestamp, persisted in metadata DB
   // (NOT in NotebookConfig JSON -- that file is inside the synced tree, which
   // would cause a self-sync loop). Units: int64 milliseconds since Unix epoch.
@@ -139,6 +141,7 @@ class Notebook {
   NotebookConfig config_;
   std::unique_ptr<FolderManager> folder_manager_;
   std::unique_ptr<MetadataStore> metadata_store_;
+  EventManager *event_manager_ = nullptr;
 
   static const char *kConfigFileName;
 };
