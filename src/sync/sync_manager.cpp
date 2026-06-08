@@ -172,6 +172,18 @@ int64_t SyncManager::LastSyncTime(const std::string &notebook_id) const {
   return notebook->GetLastSyncUtc();
 }
 
+bool SyncManager::IsRegistered(const std::string &notebook_id) const {
+  // Wave 14: lightweight runtime-registration predicate. Only acquires
+  // state_mutex_ for the map lookup; NEVER calls into the backend. The
+  // previous "is registered?" implementation routed through GetSyncStatus
+  // -> GitSyncBackend::GetStatus which acquired the per-backend op_mutex_
+  // blockingly — a race against worker-thread StageAndCommit /
+  // FetchRebasePush that produced persistent VXCORE_ERR_SYNC_IN_PROGRESS
+  // on every UI-driven repaint. This new path is op_mutex_-safe.
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return states_.find(notebook_id) != states_.end();
+}
+
 VxCoreError SyncManager::ValidateNotebook(const std::string &notebook_id) {
   auto *notebook = notebook_manager_->GetNotebook(notebook_id);
   if (notebook == nullptr) {

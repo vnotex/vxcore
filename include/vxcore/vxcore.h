@@ -994,6 +994,27 @@ VXCORE_API VxCoreError vxcore_sync_set_credentials(VxCoreContextHandle context,
 VXCORE_API VxCoreError vxcore_sync_is_ready(VxCoreContextHandle context, const char *notebook_id,
                                             int *out_ready);
 
+// Check whether a notebook is REGISTERED at runtime (i.e., present in
+// SyncManager's states_ map — sync was enabled successfully and the backend
+// is alive). LIGHTWEIGHT metadata check: only acquires SyncManager's
+// state_mutex_, never touches the backend, never calls libgit2. Safe to
+// invoke from the UI thread at high frequency (sidebar repaint, sync button
+// state, classify(), etc.) without racing the worker-thread sync work that
+// holds the per-backend op_mutex_.
+//
+// Use this in preference to vxcore_sync_get_status when the caller only
+// needs the "registered?" predicate. vxcore_sync_get_status additionally
+// acquires the backend op_mutex_ (blocking) to enumerate per-file status,
+// which races against in-flight Sync/StageAndCommit/FetchRebasePush calls
+// and can starve them into VXCORE_ERR_SYNC_IN_PROGRESS.
+//
+// Returns VXCORE_OK on success and sets *out_registered to 1 if the
+// notebook is registered, 0 otherwise. Returns VXCORE_ERR_NULL_POINTER if
+// any required parameter is NULL.
+VXCORE_API VxCoreError vxcore_sync_is_registered(VxCoreContextHandle context,
+                                                 const char *notebook_id,
+                                                 int *out_registered);
+
 // Enable sync for a notebook with credentials supplied BEFORE backend Initialize().
 // REMOVED in Wave 7.1 (sync-backend-phase4): the unified vxcore_sync_enable
 // now accepts a nullable credentials_json parameter; call that instead.

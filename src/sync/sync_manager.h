@@ -153,6 +153,17 @@ class SyncManager {
   // path can pick it up. Const + no callbacks fired.
   VXCORE_API bool IsReady(const std::string &notebook_id) const;
 
+  // Lightweight runtime registration check. Returns true if the notebook is
+  // present in states_ (i.e., sync was enabled successfully and the backend
+  // is alive). Does NOT touch the backend — pure metadata query under
+  // state_mutex_ only. Safe to call from UI threads at high frequency
+  // without contending with worker-thread sync operations that hold the
+  // per-backend op_mutex_. Use in preference to GetSyncStatus when the
+  // caller only needs the "registered?" predicate (e.g. SyncStateClassifier).
+  // Wave 14: introduced to fix the GUI-vs-worker op_mutex_ race that produced
+  // persistent VXCORE_ERR_SYNC_IN_PROGRESS on every Sync Now click.
+  VXCORE_API bool IsRegistered(const std::string &notebook_id) const;
+
   // Task 7.4 (F3.6): authoritative "last successful sync timestamp" accessor
   // (milliseconds since Unix epoch, UTC). Reads the per-device value from the
   // notebook's metadata.db via Notebook::GetLastSyncUtc. Returns 0 when the

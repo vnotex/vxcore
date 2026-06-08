@@ -492,6 +492,42 @@ VXCORE_API VxCoreError vxcore_sync_is_ready(VxCoreContextHandle context, const c
   }
 }
 
+VXCORE_API VxCoreError vxcore_sync_is_registered(VxCoreContextHandle context,
+                                                 const char *notebook_id,
+                                                 int *out_registered) {
+  if (!context || !notebook_id || !out_registered) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    // Wave 14: lightweight runtime-registration predicate. Routes through
+    // SyncManager::IsRegistered (state_mutex_ only, never touches backend
+    // op_mutex_). The previous "is registered?" code path went through
+    // vxcore_sync_get_status -> SyncManager::GetSyncStatus ->
+    // GitSyncBackend::GetStatus which acquired the per-backend op_mutex_
+    // blockingly, racing with worker-thread StageAndCommit/FetchRebasePush
+    // and producing persistent VXCORE_ERR_SYNC_IN_PROGRESS on every UI-
+    // driven check. This new entry point is safe to spin from the GUI
+    // thread at arbitrary frequency.
+    if (!ctx->sync_manager) {
+      *out_registered = 0;
+      return VXCORE_OK;
+    }
+    *out_registered = ctx->sync_manager->IsRegistered(notebook_id) ? 1 : 0;
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    *out_registered = 0;
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error checking sync registration";
+    *out_registered = 0;
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_sync_get_last_sync_utc(VxCoreContextHandle context,
                                                      const char *notebook_id,
                                                      int64_t *out_utc_millis) {
