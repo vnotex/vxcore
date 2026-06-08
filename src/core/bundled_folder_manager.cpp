@@ -480,6 +480,8 @@ VxCoreError BundledFolderManager::UpdateFolderMetadata(const std::string &folder
       }
     }
 
+    EmitEvent(events::kFolderMetadataUpdated,
+              {{"notebookId", notebook_->GetId()}, {"path", clean_folder_path}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
@@ -1119,6 +1121,8 @@ VxCoreError BundledFolderManager::UpdateFileMetadata(const std::string &file_pat
       }
     }
 
+    EmitEvent(events::kFileMetadataUpdated,
+              {{"notebookId", notebook_->GetId()}, {"path", clean_file_path}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
