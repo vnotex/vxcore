@@ -76,6 +76,8 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
   event_listener_ids_.push_back(event_manager_->Subscribe(events::kFileMoved, mark_dirty));
   event_listener_ids_.push_back(event_manager_->Subscribe(events::kFolderCreated, mark_dirty));
   event_listener_ids_.push_back(event_manager_->Subscribe(events::kFolderDeleted, mark_dirty));
+  event_listener_ids_.push_back(event_manager_->Subscribe(events::kFolderConfigChanged, mark_dirty));
+  event_listener_ids_.push_back(event_manager_->Subscribe(events::kNotebookConfigChanged, mark_dirty));
 }
 
 void SyncManager::SetWorkQueueManager(WorkQueueManager *work_queue_manager) {

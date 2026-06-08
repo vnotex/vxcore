@@ -10,6 +10,7 @@
 
 namespace vxcore {
 
+class EventManager;
 class FolderManager;
 class MetadataStore;
 

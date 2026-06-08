@@ -543,48 +543,126 @@ int test_sync_dirty_not_marked_for_non_sync_notebook() {
 }
 
 int test_sync_dirty_multiple_ops_single_entry() {
-  std::cout << "  Running test_sync_dirty_multiple_ops_single_entry..." << std::endl;
-  vxcore_set_test_mode(1);
-  vxcore_clear_test_directory();
+   std::cout << "  Running test_sync_dirty_multiple_ops_single_entry..." << std::endl;
+   vxcore_set_test_mode(1);
+   vxcore_clear_test_directory();
 
-  VxCoreContextHandle ctx = nullptr;
-  VxCoreError err = vxcore_context_create(nullptr, &ctx);
-  ASSERT_EQ(err, VXCORE_OK);
+   VxCoreContextHandle ctx = nullptr;
+   VxCoreError err = vxcore_context_create(nullptr, &ctx);
+   ASSERT_EQ(err, VXCORE_OK);
 
-  char *notebook_id = nullptr;
-  std::string nb_path = get_test_path("dirty_multi_nb");
-  cleanup_test_dir(nb_path);
-  err = vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"MultiOpTest\"}",
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
-  ASSERT_EQ(err, VXCORE_OK);
+   char *notebook_id = nullptr;
+   std::string nb_path = get_test_path("dirty_multi_nb");
+   cleanup_test_dir(nb_path);
+   err = vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"MultiOpTest\"}",
+                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+   ASSERT_EQ(err, VXCORE_OK);
 
-  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}", nullptr);
-  ASSERT_EQ(err, VXCORE_OK);
+   err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}", nullptr);
+   ASSERT_EQ(err, VXCORE_OK);
 
-  char *file_id1 = nullptr;
-  err = vxcore_file_create(ctx, notebook_id, ".", "multi1.md", &file_id1);
-  ASSERT_EQ(err, VXCORE_OK);
-  vxcore_string_free(file_id1);
+   char *file_id1 = nullptr;
+   err = vxcore_file_create(ctx, notebook_id, ".", "multi1.md", &file_id1);
+   ASSERT_EQ(err, VXCORE_OK);
+   vxcore_string_free(file_id1);
 
-  char *file_id2 = nullptr;
-  err = vxcore_file_create(ctx, notebook_id, ".", "multi2.md", &file_id2);
-  ASSERT_EQ(err, VXCORE_OK);
-  vxcore_string_free(file_id2);
+   char *file_id2 = nullptr;
+   err = vxcore_file_create(ctx, notebook_id, ".", "multi2.md", &file_id2);
+   ASSERT_EQ(err, VXCORE_OK);
+   vxcore_string_free(file_id2);
 
-  char *folder_id = nullptr;
-  err = vxcore_folder_create(ctx, notebook_id, ".", "subfolder", &folder_id);
-  ASSERT_EQ(err, VXCORE_OK);
-  vxcore_string_free(folder_id);
+   char *folder_id = nullptr;
+   err = vxcore_folder_create(ctx, notebook_id, ".", "subfolder", &folder_id);
+   ASSERT_EQ(err, VXCORE_OK);
+   vxcore_string_free(folder_id);
 
-  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
-  auto dirty = vctx->sync_manager->GetDirtyNotebooks();
-  ASSERT_EQ(dirty.size(), 1u);
+   auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+   auto dirty = vctx->sync_manager->GetDirtyNotebooks();
+   ASSERT_EQ(dirty.size(), 1u);
 
-  vxcore_string_free(notebook_id);
-  vxcore_context_destroy(ctx);
-  cleanup_test_dir(nb_path);
-  std::cout << "  ✓ test_sync_dirty_multiple_ops_single_entry passed" << std::endl;
-  return 0;
+   vxcore_string_free(notebook_id);
+   vxcore_context_destroy(ctx);
+   cleanup_test_dir(nb_path);
+   std::cout << "  ✓ test_sync_dirty_multiple_ops_single_entry passed" << std::endl;
+   return 0;
+}
+
+int test_sync_dirty_on_folder_config_changed() {
+   std::cout << "  Running test_sync_dirty_on_folder_config_changed..." << std::endl;
+   vxcore_set_test_mode(1);
+   vxcore_clear_test_directory();
+
+   VxCoreContextHandle ctx = nullptr;
+   VxCoreError err = vxcore_context_create(nullptr, &ctx);
+   ASSERT_EQ(err, VXCORE_OK);
+
+   char *notebook_id = nullptr;
+   std::string nb_path = get_test_path("dirty_folder_cfg_nb");
+   cleanup_test_dir(nb_path);
+   err = vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"FolderConfigTest\"}",
+                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+   ASSERT_EQ(err, VXCORE_OK);
+
+   // Enable sync so SyncManager tracks this notebook
+   err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}", nullptr);
+   ASSERT_EQ(err, VXCORE_OK);
+
+   auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+   auto dirty = vctx->sync_manager->GetDirtyNotebooks();
+   ASSERT_TRUE(dirty.empty());
+
+   // Emit folder config change event directly
+   vctx->event_manager->Emit(vxcore::events::kFolderConfigChanged,
+                              {{"notebookId", std::string(notebook_id)}, {"path", "Foo"}});
+
+   dirty = vctx->sync_manager->GetDirtyNotebooks();
+   ASSERT_EQ(dirty.size(), 1u);
+   ASSERT_EQ(dirty[0], std::string(notebook_id));
+
+   vxcore_string_free(notebook_id);
+   vxcore_context_destroy(ctx);
+   cleanup_test_dir(nb_path);
+   std::cout << "  ✓ test_sync_dirty_on_folder_config_changed passed" << std::endl;
+   return 0;
+}
+
+int test_sync_dirty_on_notebook_config_changed() {
+   std::cout << "  Running test_sync_dirty_on_notebook_config_changed..." << std::endl;
+   vxcore_set_test_mode(1);
+   vxcore_clear_test_directory();
+
+   VxCoreContextHandle ctx = nullptr;
+   VxCoreError err = vxcore_context_create(nullptr, &ctx);
+   ASSERT_EQ(err, VXCORE_OK);
+
+   char *notebook_id = nullptr;
+   std::string nb_path = get_test_path("dirty_notebook_cfg_nb");
+   cleanup_test_dir(nb_path);
+   err = vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"NotebookConfigTest\"}",
+                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+   ASSERT_EQ(err, VXCORE_OK);
+
+   // Enable sync so SyncManager tracks this notebook
+   err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\"}", nullptr);
+   ASSERT_EQ(err, VXCORE_OK);
+
+   auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+   auto dirty = vctx->sync_manager->GetDirtyNotebooks();
+   ASSERT_TRUE(dirty.empty());
+
+   // Emit notebook config change event directly
+   vctx->event_manager->Emit(vxcore::events::kNotebookConfigChanged,
+                              {{"notebookId", std::string(notebook_id)}});
+
+   dirty = vctx->sync_manager->GetDirtyNotebooks();
+   ASSERT_EQ(dirty.size(), 1u);
+   ASSERT_EQ(dirty[0], std::string(notebook_id));
+
+   vxcore_string_free(notebook_id);
+   vxcore_context_destroy(ctx);
+   cleanup_test_dir(nb_path);
+   std::cout << "  ✓ test_sync_dirty_on_notebook_config_changed passed" << std::endl;
+   return 0;
 }
 
 // Regression test for folder events on session-loaded notebooks.
@@ -657,6 +735,8 @@ int main() {
   RUN_TEST(test_sync_dirty_cleared_after_trigger);
   RUN_TEST(test_sync_dirty_not_marked_for_non_sync_notebook);
   RUN_TEST(test_sync_dirty_multiple_ops_single_entry);
+  RUN_TEST(test_sync_dirty_on_folder_config_changed);
+  RUN_TEST(test_sync_dirty_on_notebook_config_changed);
 
   // Regression test for session-loaded notebook event propagation
   RUN_TEST(test_folder_events_on_session_loaded_notebook);
