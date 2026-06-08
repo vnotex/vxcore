@@ -625,11 +625,18 @@ int test_auto_sync_does_not_double_emit() {
   ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "auto_dup.md", &file_id), VXCORE_OK);
   vxcore_string_free(file_id);
 
-  // After T9 the auto path emits exactly one sync.should_run; the local
-  // subscriber drives a single TriggerSync, which (post-T7) emits exactly
-  // one sync.started + one sync.finished.
-  ASSERT_EQ(counters.started.load(), 1);
-  ASSERT_EQ(counters.finished.load(), 1);
+  // vxcore-metadata-events T4 (folder.config_changed) is also subscribed by
+  // SyncManager::mark_dirty, so vxcore_file_create now legitimately produces
+  // TWO sync.should_run emits per call: one for file.created and one for
+  // folder.config_changed (fired from BundledFolderManager::SaveFolderConfig
+  // when the parent folder's vx.json is rewritten). The local auto-route
+  // subscriber drives a TriggerSync per emit, so we see 2 sync.started + 2
+  // sync.finished. The name "does_not_double_emit" predates T4; the invariant
+  // it still locks in is "exactly one TriggerSync per sync.should_run emit"
+  // (i.e., no SPURIOUS extra round per event, just one round per legitimate
+  // persistence-level fact).
+  ASSERT_EQ(counters.started.load(), 2);
+  ASSERT_EQ(counters.finished.load(), 2);
 
   vxcore_off_event(ctx, "sync.should_run", auto_route_cb);
   vxcore_off_event(ctx, "sync.started", started_cb);
@@ -781,7 +788,12 @@ int test_auto_sync_conflict_carries_files() {
             VXCORE_OK);
   vxcore_string_free(file_id);
 
-  ASSERT_EQ(conflict.count.load(), 1);
+  // vxcore-metadata-events T4: vxcore_file_create produces TWO sync.should_run
+  // emits (file.created + folder.config_changed from SaveFolderConfig). The
+  // auto-route subscriber drives a TriggerSync per emit, and the mock backend
+  // is configured to keep returning the same SyncConflictInfo set, so we get
+  // two sync.conflict events (both carrying the same file list).
+  ASSERT_EQ(conflict.count.load(), 2);
   ASSERT_EQ(conflict.last_notebook, std::string(notebook_id));
   ASSERT_EQ(conflict.last_files.size(), static_cast<size_t>(1));
   ASSERT_EQ(conflict.last_files[0], std::string("x/y.md"));
