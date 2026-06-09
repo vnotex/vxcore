@@ -30,6 +30,17 @@ if(UNIX AND NOT APPLE)
     find_package(OpenSSL REQUIRED)
 endif()
 
+# MSVC: enable C++ exception unwinding (/EHsc). Without this, try/catch blocks
+# emit C4530 warnings AND don't actually unwind at runtime — uncaught exceptions
+# trigger std::terminate() → abort() → "VC++ Runtime Library" modal dialog,
+# breaking tests like test_git_options::malformed_json_falls_back_to_defaults
+# that legitimately expect nlohmann::json::parse to throw.
+# Using add_compile_options (NOT target_compile_options) propagates to vxcore
+# lib + CLI + every test target via subdirectory inheritance.
+if(MSVC)
+    add_compile_options(/EHsc)
+endif()
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
