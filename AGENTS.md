@@ -232,6 +232,48 @@ For tests that drive `GitSyncBackend` end-to-end via libgit2 (e.g., `test_git_sy
 > 3. When renaming a JSON key in vxcore, update **all** callers (Qt services, CLI, tests) in the same change.
 > 4. Update tests alongside any JSON contract change to catch mismatches at build time.
 
+> **SSOT for shared JSON keys (post-2026-06 lift-shared-json-keys plan)**
+>
+> All JSON keys that cross the vxcore↔consumer boundary now live in a SINGLE
+> public header: [`include/vxcore/notebook_json_keys.h`](include/vxcore/notebook_json_keys.h).
+> Both vxcore (writer) AND Qt-side / plugin (reader) code include this header
+> and reference the SAME `kJsonKey*` constants. Drift between writer and
+> reader is structurally impossible.
+>
+> Sync-related JSON keys live in their own header:
+> [`src/sync/sync_json_keys.h`](src/sync/sync_json_keys.h)
+> (currently internal — promote to public via the same pattern if a Qt-side
+> consumer ever needs them).
+>
+> **A grep-gate ctest enforces the pattern**: `tests/utils/test_json_key_drift.cpp`
+> in the parent VNote project scans `src/` for inline literals from the
+> gated set (`"rootFolder"`, `"assetsFolder"`, `"tagsModifiedUtc"`,
+> `"notebookId"`, `"isReadOnly"`, `"targetDir"`, `"readOnly"`) and FAILS
+> the build if any are found outside the allow-list of Qt-internal-schema
+> files (workspace state, sessionconfig, etc.).
+>
+> **Historical trigger**: commit
+> [`13680f8d`](https://github.com/vnotex/vnote) ("fix(controllers): use
+> canonical rootFolder JSON key") fixed a SILENT 4-site bug where Qt-side
+> controllers read `"root_path"` while vxcore wrote `"rootFolder"`. The
+> duplicate-open guards never matched: pure logic drift masked by safe
+> defaults. The SSOT lift eliminates the entire bug class.
+>
+> **Adding a new shared-schema JSON key**:
+>
+> 1. Add the constant to `include/vxcore/notebook_json_keys.h`
+>    (or `src/sync/sync_json_keys.h` for sync keys). Constants
+>    are additive only — NEVER rename or delete (public ABI contract).
+> 2. Use the constant in both the writer (vxcore C++) and reader (vxcore +
+>    Qt-side C++).
+> 3. NEVER inline the literal in production code.
+> 4. The grep-gate test will catch violations at build time.
+>
+> **Adding a Qt-internal schema that legitimately uses a gated literal**:
+> add the file to the `kAllowedFiles` list in `tests/utils/test_json_key_drift.cpp`
+> with a one-line reason. Do NOT use the per-line `// json-key-drift-allow`
+> escape hatch as a permanent solution.
+
 ### Error Handling
 
 - Return `VxCoreError` codes from C API functions
