@@ -1106,6 +1106,90 @@ int test_file_attachments_replaced_emits_on_update() {
   return 0;
 }
 
+// -------------------------------------------------------------------------
+// T13 REGRESSION GUARD: vxcore_notebook_create does NOT emit metadata events
+// for the initial root config writes (UpdateConfig called in
+// BundledNotebook::InitOnCreation, SaveFolderConfig for root folder setup).
+//
+// Root cause: event_manager is wired AFTER BundledNotebook::Create completes
+// per notebook_manager.cpp:124-125, so creation-time writes silently drop
+// their emits (FolderManager::EmitEvent checks event_manager_ != nullptr).
+//
+// This test locks the contract: creation-time silence is EXPECTED and
+// INTENTIONAL. Accidental earlier wiring (e.g., moving SetEventManager to
+// line 122) would cause unwanted sync.should_run events before the notebook
+// is in configs_cache_, creating subtle bugs.
+//
+// Strategy:
+// 1. Create context + EventManager + SyncManager (full setup)
+// 2. Subscribe to TWO event types: kNotebookConfigChanged and kFolderConfigChanged
+// 3. Call vxcore_notebook_create (should emit ZERO for both)
+// 4. Sanity check: vxcore_folder_create on the new notebook (should emit >=1
+//    for kFolderConfigChanged, proving the EventManager is functional)
+// -------------------------------------------------------------------------
+int test_create_notebook_no_emit_during_creation() {
+  std::cout << "  Running test_create_notebook_no_emit_during_creation..." << std::endl;
+  vxcore_set_test_mode(1);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Subscribe to notebook config events (counter A).
+  EventCapture cap_notebook;
+  err = vxcore_on_event(ctx, vxcore::events::kNotebookConfigChanged, capture_event_cb,
+                        &cap_notebook);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Subscribe to folder config events (counter B).
+  EventCapture cap_folder;
+  err = vxcore_on_event(ctx, vxcore::events::kFolderConfigChanged, capture_event_cb,
+                        &cap_folder);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Create notebook. The internal UpdateConfig (InitOnCreation) and root
+  // SaveFolderConfig calls should NOT emit because event_manager is nullptr
+  // during BundledNotebook::Create.
+  char *notebook_id = nullptr;
+  std::string nb_path = get_test_path("md_evt_create_no_emit_nb");
+  cleanup_test_dir(nb_path);
+  err = vxcore_notebook_create(ctx, nb_path.c_str(),
+                               "{\"name\":\"CreateNoEmitTest\",\"description\":\"Testing\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Assert: creation-time silence (A == 0 AND B == 0).
+  // This locks the contract that event_manager wiring happens AFTER
+  // BundledNotebook::Create.
+  ASSERT_EQ(cap_notebook.call_count, 0);
+  ASSERT_EQ(cap_folder.call_count, 0);
+
+  // Sanity check: now that the notebook is wired, a subsequent operation
+  // MUST emit. Create a folder on the new notebook.
+  char *folder_id = nullptr;
+  int cap_folder_before = cap_folder.call_count;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "SanityCheckFolder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id);
+
+  // The folder creation MUST have fired at least one kFolderConfigChanged emit
+  // for the root folder update (parent). This proves the EventManager is
+  // functional and was correctly wired AFTER the initial creation.
+  int cap_folder_after = cap_folder.call_count;
+  ASSERT_TRUE(cap_folder_after > cap_folder_before);
+
+  // Cleanup.
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_create_notebook_no_emit_during_creation passed (A=" << cap_notebook.call_count
+            << " B=" << cap_folder.call_count << " B_sanity=" << cap_folder_after << ")" << std::endl;
+  return 0;
+}
+
 int main() {
   // T4 subtests (folder.config_changed persistence event).
   RUN_TEST(test_folder_config_changed_emits_on_create_folder);
@@ -1121,6 +1205,9 @@ int main() {
   RUN_TEST(test_notebook_config_changed_emits_on_update_config);
   RUN_TEST(test_notebook_config_changed_no_emit_when_event_manager_absent);
   RUN_TEST(test_notebook_config_changed_no_emit_on_write_failure);
+
+  // T13 REGRESSION GUARD: CreateNotebook creation-time no emit.
+  RUN_TEST(test_create_notebook_no_emit_during_creation);
 
   // T7 subtests (file.attached / file.detached / file.attachments_replaced
   // semantic attachment events). Three positive emits + two idempotent
