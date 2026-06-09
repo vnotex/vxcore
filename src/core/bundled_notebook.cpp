@@ -173,6 +173,10 @@ VxCoreError BundledNotebook::LoadConfig() {
 }
 
 VxCoreError BundledNotebook::UpdateConfig(const NotebookConfig &config) {
+  if (IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+
   assert(config_.id == config.id);
 
   config_ = config;
@@ -221,6 +225,10 @@ std::string BundledNotebook::GetRecycleBinPath() const {
 }
 
 VxCoreError BundledNotebook::EmptyRecycleBin() {
+  if (IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+
   std::string recycle_bin_path = GetRecycleBinPath();
   try {
     auto rb_path = PathFromUtf8(recycle_bin_path);

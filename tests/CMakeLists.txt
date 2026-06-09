@@ -30,6 +30,15 @@ add_vxcore_test(test_notebook)
 add_vxcore_test(test_session_record_readonly)
 
 add_vxcore_test(test_folder)
+
+# test_bundled_folder_manager_read_only: T9 of open-notebook-remote-readonly
+# plan. Verifies that every public mutator on BundledFolderManager honors the
+# Notebook::IsReadOnly() guard (returns VXCORE_ERR_READ_ONLY + leaves disk
+# state unchanged) and that the same mutators still succeed once the
+# notebook is flipped back to writable. Source guards: 21 sites in
+# src/core/bundled_folder_manager.cpp (commit b7f13c5).
+add_vxcore_test(test_bundled_folder_manager_read_only)
+
 add_vxcore_test(test_node)
 add_vxcore_test(test_search)
 add_vxcore_test(test_tag_sync)
@@ -37,6 +46,7 @@ add_vxcore_test(test_filetype)
 add_vxcore_test(test_workspace)
 add_vxcore_test(test_buffer)
 add_vxcore_test(test_buffer_save_read_only)
+add_vxcore_test(test_notebook_mutators_read_only)
 add_vxcore_test(test_history)
 add_vxcore_test(test_log_handler)
 add_vxcore_test(test_session_persistence)
@@ -45,6 +55,7 @@ add_vxcore_test(test_e2e_assets)
 add_vxcore_test(test_sync INTERNALS)
 add_vxcore_test(test_sync_config_backcompat)
 add_vxcore_test(test_notebook_readonly_flag)
+add_vxcore_test(test_raw_folder_manager_read_only)
 add_vxcore_test(test_sync_status_queries INTERNALS)
 add_vxcore_test(test_sync_config_cache INTERNALS)
 add_vxcore_test(test_vxcore_sync_is_registered INTERNALS)
@@ -696,6 +707,38 @@ target_link_libraries(test_gitkeep_roundtrip PRIVATE
     libgit2package
     nlohmann_json)
 add_test(NAME test_gitkeep_roundtrip COMMAND test_gitkeep_roundtrip)
+
+# test_git_sync_clone: T13 of open-notebook-remote-readonly plan. Exercises
+# GitSyncBackend::Clone, the wrapper around BootstrapFromEmptyRemote that
+# materializes a notebook from a remote sync URL into an empty target dir.
+# Same direct-compile pattern as test_gitkeep_roundtrip (this binary owns
+# its own GitSyncBackend + libgit2 ref-count statics, sidestepping the
+# Windows DLL static-storage duplication problem).
+add_executable(test_git_sync_clone test_git_sync_clone.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_backend_registry.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/retry_policy.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_config_fixer.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_options.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_repo_bootstrap.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/gitkeep_sweeper.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp)
+target_include_directories(test_git_sync_clone PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_git_sync_clone PRIVATE
+    git_sync_test_helpers
+    libgit2package
+    nlohmann_json)
+add_test(NAME test_git_sync_clone COMMAND test_git_sync_clone)
 
 # test_sync_credentials_api: T1+T2 of notebook-git-sync-ui plan. Exercises the
 # C ABI wrappers vxcore_sync_set_credentials and vxcore_sync_enable_with_credentials

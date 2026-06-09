@@ -384,6 +384,10 @@ TagNode *Notebook::FindTag(const std::string &tag_name) {
 }
 
 VxCoreError Notebook::CreateTag(const std::string &tag_name, const std::string &parent_tag) {
+  if (IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+
   if (tag_name.empty()) {
     return VXCORE_ERR_INVALID_PARAM;
   }
@@ -412,6 +416,10 @@ VxCoreError Notebook::CreateTag(const std::string &tag_name, const std::string &
 }
 
 VxCoreError Notebook::CreateTagPath(const std::string &tag_path) {
+  if (IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+
   if (tag_path.empty()) {
     return VXCORE_ERR_INVALID_PARAM;
   }
@@ -439,6 +447,10 @@ VxCoreError Notebook::CreateTagPath(const std::string &tag_path) {
 }
 
 VxCoreError Notebook::DeleteTag(const std::string &tag_name) {
+  if (IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+
   if (tag_name.empty()) {
     return VXCORE_ERR_INVALID_PARAM;
   }
@@ -509,6 +521,10 @@ VxCoreError Notebook::DeleteTag(const std::string &tag_name) {
 }
 
 VxCoreError Notebook::MoveTag(const std::string &tag_name, const std::string &parent_tag) {
+  if (IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+
   if (tag_name.empty()) {
     return VXCORE_ERR_INVALID_PARAM;
   }

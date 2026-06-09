@@ -175,6 +175,10 @@ std::string RawNotebook::GetMetadataFolder() const { return GetLocalDataFolder()
 std::string RawNotebook::GetConfigPath() const { return ""; }
 
 VxCoreError RawNotebook::UpdateConfig(const NotebookConfig &config) {
+  if (IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+
   assert(config_.id == config.id);
   config_ = config;
   return SaveConfigToDb();
@@ -192,27 +196,47 @@ std::string RawNotebook::GetRecycleBinPath() const {
 }
 
 VxCoreError RawNotebook::EmptyRecycleBin() {
+  if (IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+
   // Raw notebooks do not support recycle bin
   return VXCORE_ERR_UNSUPPORTED;
 }
 
 VxCoreError RawNotebook::CreateTag(const std::string &tag_name, const std::string &parent_tag) {
+  if (IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+
   (void)tag_name;
   (void)parent_tag;
   return VXCORE_ERR_UNSUPPORTED;
 }
 
 VxCoreError RawNotebook::CreateTagPath(const std::string &tag_path) {
+  if (IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+
   (void)tag_path;
   return VXCORE_ERR_UNSUPPORTED;
 }
 
 VxCoreError RawNotebook::DeleteTag(const std::string &tag_name) {
+  if (IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+
   (void)tag_name;
   return VXCORE_ERR_UNSUPPORTED;
 }
 
 VxCoreError RawNotebook::MoveTag(const std::string &tag_name, const std::string &parent_tag) {
+  if (IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+
   (void)tag_name;
   (void)parent_tag;
   return VXCORE_ERR_UNSUPPORTED;
