@@ -8969,6 +8969,98 @@ int test_folder_copy_recursive_subfolder_uuids() {
   return 0;
 }
 
+int test_bundled_folder_manager_read_only() {
+  std::cout << "  Running test_bundled_folder_manager_read_only..." << std::endl;
+  cleanup_test_dir(get_test_path("test_readonly_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_readonly_nb").c_str(),
+                               "{\"name\":\"ReadOnly Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // First, verify operations work normally
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "test_folder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "test.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Now set notebook to read-only
+  err = vxcore_notebook_set_read_only(ctx, notebook_id, 1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify CreateFolder returns VXCORE_ERR_READ_ONLY
+  char *ro_folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "readonly_folder", &ro_folder_id);
+  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+
+  // Verify DeleteFolder returns VXCORE_ERR_READ_ONLY
+  err = vxcore_node_delete(ctx, notebook_id, "test_folder");
+  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+
+  // Verify RenameFolder returns VXCORE_ERR_READ_ONLY
+  err = vxcore_node_rename(ctx, notebook_id, "test_folder", "renamed_folder");
+  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+
+  // Verify MoveFolder returns VXCORE_ERR_READ_ONLY
+  // (first create a destination folder in read-write mode, then lock)
+  // Already locked, so any move should fail
+  err = vxcore_node_move(ctx, notebook_id, "test_folder", ".");
+  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+
+  // Verify UpdateFolderMetadata returns VXCORE_ERR_READ_ONLY
+  err = vxcore_node_update_metadata(ctx, notebook_id, "test_folder", R"({"key": "value"})");
+  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+
+  // Verify CreateFile returns VXCORE_ERR_READ_ONLY
+  char *ro_file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "readonly.md", &ro_file_id);
+  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+
+  // Verify DeleteFile returns VXCORE_ERR_READ_ONLY
+  err = vxcore_node_delete(ctx, notebook_id, "test.md");
+  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+
+  // Verify RenameFile returns VXCORE_ERR_READ_ONLY
+  err = vxcore_node_rename(ctx, notebook_id, "test.md", "renamed.md");
+  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+
+  // Verify MoveFile returns VXCORE_ERR_READ_ONLY
+  err = vxcore_node_move(ctx, notebook_id, "test.md", ".");
+  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+
+  // Verify UpdateFileMetadata returns VXCORE_ERR_READ_ONLY
+  err = vxcore_node_update_metadata(ctx, notebook_id, "test.md", R"({"key": "value"})");
+  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+
+  // Verify UpdateFileTags returns VXCORE_ERR_READ_ONLY
+  err = vxcore_file_update_tags(ctx, notebook_id, "test.md", "[]");
+  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+
+  // Now set notebook back to read-write
+  err = vxcore_notebook_set_read_only(ctx, notebook_id, 0);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Verify operations work again
+  err = vxcore_folder_create(ctx, notebook_id, ".", "reopened_folder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_readonly_nb"));
+  std::cout << "  \xe2\x9c\x93 test_bundled_folder_manager_read_only passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -9209,6 +9301,9 @@ int main() {
   RUN_TEST(test_raw_concurrent_filesystem_modification);
   RUN_TEST(test_raw_external_nodes_returns_empty);
   RUN_TEST(test_raw_full_lifecycle_flow);
+
+  // BundledFolderManager read-only tests
+  RUN_TEST(test_bundled_folder_manager_read_only);
 
   std::cout << "✓ All folder tests passed" << std::endl;
   return 0;
