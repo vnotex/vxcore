@@ -420,6 +420,9 @@ VxCoreError RawFolderManager::GetFolderConfig(const std::string &folder_path,
 VxCoreError RawFolderManager::CreateFolder(const std::string &parent_path,
                                            const std::string &folder_name,
                                            std::string &out_folder_id) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("RawFolderManager::CreateFolder: parent=%s, name=%s", parent_path.c_str(),
                   folder_name.c_str());
 
@@ -483,6 +486,9 @@ VxCoreError RawFolderManager::CreateFolder(const std::string &parent_path,
 }
 
 VxCoreError RawFolderManager::DeleteFolder(const std::string &folder_path) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("RawFolderManager::DeleteFolder: path=%s", folder_path.c_str());
 
   VxCoreError err = InitRootFolder();
@@ -528,6 +534,9 @@ VxCoreError RawFolderManager::DeleteFolder(const std::string &folder_path) {
 
 VxCoreError RawFolderManager::UpdateFolderMetadata(const std::string &folder_path,
                                                    const std::string &metadata_json) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VxCoreError err = InitRootFolder();
   if (err != VXCORE_OK) {
     return err;
@@ -578,6 +587,9 @@ VxCoreError RawFolderManager::UpdateFolderMetadata(const std::string &folder_pat
 
 VxCoreError RawFolderManager::UpdateNodeTimestamps(const std::string &node_path,
                                                    int64_t created_utc, int64_t modified_utc) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   if (created_utc <= 0 && modified_utc <= 0) {
     return VXCORE_OK;  // Nothing to update
   }
@@ -702,6 +714,9 @@ VxCoreError RawFolderManager::GetFolderMetadata(const std::string &folder_path,
 
 VxCoreError RawFolderManager::RenameFolder(const std::string &folder_path,
                                            const std::string &new_name) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("RawFolderManager::RenameFolder: path=%s, new_name=%s", folder_path.c_str(),
                   new_name.c_str());
 
@@ -755,6 +770,9 @@ VxCoreError RawFolderManager::RenameFolder(const std::string &folder_path,
 
 VxCoreError RawFolderManager::MoveFolder(const std::string &src_path,
                                          const std::string &dest_parent_path) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("RawFolderManager::MoveFolder: src=%s, dest=%s", src_path.c_str(),
                   dest_parent_path.c_str());
 
@@ -953,6 +971,9 @@ VxCoreError RawFolderManager::CopyFolder(const std::string &src_path,
                                          const std::string &dest_parent_path,
                                          const std::string &new_name,
                                          std::string &out_folder_id) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("RawFolderManager::CopyFolder: src=%s, dest=%s, name=%s", src_path.c_str(),
                   dest_parent_path.c_str(), new_name.c_str());
 
@@ -1029,6 +1050,9 @@ VxCoreError RawFolderManager::CopyFolder(const std::string &src_path,
 VxCoreError RawFolderManager::CreateFile(const std::string &folder_path,
                                          const std::string &file_name,
                                          std::string &out_file_id) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VxCoreError err = InitRootFolder();
   if (err != VXCORE_OK) {
     return err;
@@ -1089,6 +1113,9 @@ VxCoreError RawFolderManager::CreateFile(const std::string &folder_path,
 }
 
 VxCoreError RawFolderManager::DeleteFile(const std::string &file_path) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VxCoreError err = InitRootFolder();
   if (err != VXCORE_OK) {
     return err;
@@ -1135,6 +1162,9 @@ VxCoreError RawFolderManager::DeleteFile(const std::string &file_path) {
 
 VxCoreError RawFolderManager::UpdateFileMetadata(const std::string &file_path,
                                                  const std::string &metadata_json) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VxCoreError err = InitRootFolder();
   if (err != VXCORE_OK) {
     return err;
@@ -1192,12 +1222,18 @@ VxCoreError RawFolderManager::UpdateFileMetadata(const std::string &file_path,
 
 VxCoreError RawFolderManager::UpdateFileTags(const std::string &file_path,
                                              const std::string &tags_json) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   (void)file_path;
   (void)tags_json;
   return VXCORE_ERR_UNSUPPORTED;
 }
 
 VxCoreError RawFolderManager::TagFile(const std::string &file_path, const std::string &tag_name) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   (void)file_path;
   (void)tag_name;
   return VXCORE_ERR_UNSUPPORTED;
@@ -1205,6 +1241,9 @@ VxCoreError RawFolderManager::TagFile(const std::string &file_path, const std::s
 
 VxCoreError RawFolderManager::UntagFile(const std::string &file_path,
                                         const std::string &tag_name) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   (void)file_path;
   (void)tag_name;
   return VXCORE_ERR_UNSUPPORTED;
@@ -1301,6 +1340,9 @@ VxCoreError RawFolderManager::GetFileMetadata(const std::string &file_path,
 
 VxCoreError RawFolderManager::RenameFile(const std::string &file_path,
                                          const std::string &new_name) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VxCoreError err = InitRootFolder();
   if (err != VXCORE_OK) {
     return err;
@@ -1353,6 +1395,9 @@ VxCoreError RawFolderManager::RenameFile(const std::string &file_path,
 
 VxCoreError RawFolderManager::MoveFile(const std::string &file_path,
                                        const std::string &dest_folder_path) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VxCoreError err = InitRootFolder();
   if (err != VXCORE_OK) {
     return err;
@@ -1459,6 +1504,9 @@ VxCoreError RawFolderManager::MoveFile(const std::string &file_path,
 VxCoreError RawFolderManager::CopyFile(const std::string &file_path,
                                        const std::string &dest_folder_path,
                                        const std::string &new_name, std::string &out_file_id) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VxCoreError err = InitRootFolder();
   if (err != VXCORE_OK) {
     return err;
@@ -1597,6 +1645,9 @@ VxCoreError RawFolderManager::CopyFile(const std::string &file_path,
 VxCoreError RawFolderManager::ImportFile(const std::string &folder_path,
                                          const std::string &external_file_path,
                                          std::string &out_file_id) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("ImportFile: folder=%s, external_file=%s", folder_path.c_str(),
                   external_file_path.c_str());
 
@@ -1684,6 +1735,9 @@ VxCoreError RawFolderManager::ImportFolder(const std::string &dest_folder_path,
                                            const std::string &external_folder_path,
                                            const std::string &suffix_allowlist,
                                            std::string &out_folder_id) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("ImportFolder: dest=%s, external=%s, suffix_allowlist=%s",
                   dest_folder_path.c_str(), external_folder_path.c_str(),
                   suffix_allowlist.c_str());
@@ -2009,6 +2063,9 @@ VxCoreError RawFolderManager::GetFileAttachments(const std::string &file_path,
 
 VxCoreError RawFolderManager::UpdateFileAttachments(const std::string &file_path,
                                                     const std::string &attachments_json) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   (void)file_path;
   (void)attachments_json;
   return VXCORE_ERR_UNSUPPORTED;
@@ -2016,6 +2073,9 @@ VxCoreError RawFolderManager::UpdateFileAttachments(const std::string &file_path
 
 VxCoreError RawFolderManager::AddFileAttachment(const std::string &file_path,
                                                 const std::string &attachment) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   (void)file_path;
   (void)attachment;
   return VXCORE_ERR_UNSUPPORTED;
@@ -2023,6 +2083,9 @@ VxCoreError RawFolderManager::AddFileAttachment(const std::string &file_path,
 
 VxCoreError RawFolderManager::DeleteFileAttachment(const std::string &file_path,
                                                    const std::string &attachment) {
+  if (notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
   (void)file_path;
   (void)attachment;
   return VXCORE_ERR_UNSUPPORTED;
