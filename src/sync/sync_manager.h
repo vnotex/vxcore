@@ -52,6 +52,39 @@ class SyncManager {
 
   VXCORE_API VxCoreError DisableSync(const std::string &notebook_id);
 
+  // T18 of open-notebook-remote-readonly plan.
+  //
+  // Backend-agnostic clone orchestrator. Dispatches to the registered
+  // backend by name (config.backend) via SyncBackendRegistry, performs the
+  // clone into target_dir, validates the result IS a VNote notebook, and
+  // registers it via NotebookManager.
+  //
+  // Preconditions: target_dir exists, is empty, and is writable. Caller
+  // is responsible for creating + verifying the directory.
+  //
+  // Postconditions:
+  //   On VXCORE_OK: out_notebook_id is set; the notebook is registered
+  //                 with NotebookManager (subsequent vxcore_notebook_list
+  //                 will include it); the .git layout exists at
+  //                 <target_dir>/vx_notebook/vx_sync/; sync is NOT
+  //                 registered in states_ -- caller must call EnableSync
+  //                 separately if they want sync registered.
+  //   On failure:  target_dir contents are UNDEFINED (may have partial
+  //                clone state). Caller MUST clean up target_dir.
+  //                NO notebook is registered with NotebookManager.
+  //
+  // Error codes (passes through Clone errors plus):
+  //   VXCORE_ERR_UNKNOWN_BACKEND -- config.backend not registered
+  //   VXCORE_ERR_INVALID_PARAM   -- config.backend empty
+  //   VXCORE_ERR_NOT_IMPLEMENTED -- backend doesn't advertise Cloneable
+  //   VXCORE_ERR_NOT_FOUND       -- clone succeeded but vx_notebook/config.json missing
+  //   VXCORE_ERR_JSON_PARSE      -- vx_notebook/config.json malformed
+  //   VXCORE_ERR_INVALID_STATE   -- config.json valid JSON but missing/empty "id"
+  VXCORE_API VxCoreError CloneNotebook(const std::string &target_dir,
+                                       const SyncConfig &config,
+                                       std::shared_ptr<ICredentialProvider> provider,
+                                       std::string &out_notebook_id);
+
   VXCORE_API VxCoreError TriggerSync(const std::string &notebook_id);
 
   // Wave 12.2 / F5.9: cancellable overload. Threads @token through to the

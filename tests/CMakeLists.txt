@@ -740,6 +740,15 @@ target_link_libraries(test_git_sync_clone PRIVATE
     nlohmann_json)
 add_test(NAME test_git_sync_clone COMMAND test_git_sync_clone)
 
+# test_sync_clone_orchestrator: T18 of open-notebook-remote-readonly plan.
+# Exercises the backend-agnostic SyncManager::CloneNotebook orchestrator
+# (defined in src/sync/sync_manager.cpp). Links via add_vxcore_test() so
+# vxcore.dll provides SyncManager + GitSyncBackend registration; adds
+# git_sync_test_helpers for the bare-repo fixture and nlohmann_json for
+# seeding vx_notebook/config.json content.
+add_vxcore_test(test_sync_clone_orchestrator)
+target_link_libraries(test_sync_clone_orchestrator PRIVATE git_sync_test_helpers nlohmann_json)
+
 # test_sync_credentials_api: T1+T2 of notebook-git-sync-ui plan. Exercises the
 # C ABI wrappers vxcore_sync_set_credentials and vxcore_sync_enable_with_credentials
 # end-to-end against a real libgit2 file:// bare-repo fixture. Reuses the

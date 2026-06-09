@@ -11,6 +11,7 @@
 #include "sync/credential_provider.h"
 #include "sync/git/libgit2_init.h"
 #include "sync/sync_backend_registry.h"
+#include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
 
@@ -357,6 +358,116 @@ VxCoreError SyncManager::DisableSync(const std::string &notebook_id) {
   // doomed_backend destructs here (lock released).
 
   VXCORE_LOG_INFO("Sync disabled for notebook: %s", notebook_id.c_str());
+  return VXCORE_OK;
+}
+
+VxCoreError SyncManager::CloneNotebook(const std::string &target_dir, const SyncConfig &config,
+                                       std::shared_ptr<ICredentialProvider> provider,
+                                       std::string &out_notebook_id) {
+  VXCORE_LOG_INFO("SyncManager::CloneNotebook: target_dir=%s backend=%s", target_dir.c_str(),
+                  config.backend.c_str());
+  out_notebook_id.clear();
+
+  // Step 1: validate backend name non-empty. Per the SyncBackendRegistry
+  // contract Create() returns nullptr for both unknown AND empty names, so
+  // we differentiate the empty case here for a distinct error code that
+  // callers can show as "you forgot to set a backend" vs "the backend
+  // you asked for isn't built into this binary".
+  if (config.backend.empty()) {
+    VXCORE_LOG_WARN("SyncManager::CloneNotebook: empty backend in config");
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  // Libgit2 init guard for the git backend (mirrors EnableSyncImpl). The
+  // registry would happily construct a GitSyncBackend even on a host where
+  // libgit2 failed to initialize; the resulting Clone would then crash
+  // inside libgit2. Reject explicitly with the existing error code.
+  if (config.backend == "git" && !LibGit2Init::ok()) {
+    VXCORE_LOG_ERROR("SyncManager::CloneNotebook: libgit2 init failed");
+    return VXCORE_ERR_GIT_INIT_FAILED;
+  }
+
+  // Step 2: factory dispatch via the registry — external call, no lock.
+  std::unique_ptr<ISyncBackend> backend =
+      SyncBackendRegistry::Instance().Create(config.backend, config, provider);
+  if (!backend) {
+    VXCORE_LOG_WARN("SyncManager::CloneNotebook: unknown backend '%s'", config.backend.c_str());
+    return VXCORE_ERR_UNKNOWN_BACKEND;
+  }
+
+  // Step 3: capability gate — Clone() default body returns NOT_IMPLEMENTED,
+  // but a backend can also opt-out by leaving Cloneable off its capability
+  // bitmap. Reject up-front so we don't bother running Clone() just to
+  // bounce out of its default implementation.
+  if ((backend->GetCapabilities() & static_cast<uint32_t>(SyncCapability::Cloneable)) == 0u) {
+    VXCORE_LOG_WARN("SyncManager::CloneNotebook: backend '%s' does not advertise Cloneable",
+                    config.backend.c_str());
+    return VXCORE_ERR_NOT_IMPLEMENTED;
+  }
+
+  // Step 4: drive the clone. Backend writes the .git layout into
+  // target_dir/vx_notebook/vx_sync/ and checks out the working tree. The
+  // caller owns target_dir cleanup on failure (T22 staging-dir pattern).
+  VxCoreError clone_err = backend->Clone(target_dir, config);
+  if (clone_err != VXCORE_OK) {
+    VXCORE_LOG_WARN("SyncManager::CloneNotebook: backend Clone returned %d", clone_err);
+    return clone_err;
+  }
+
+  // Backend has done its job. The transient backend instance gets destroyed
+  // here — Clone is one-shot per T13's contract and we do NOT register it
+  // in backends_. A subsequent EnableSync call (for the RW path) will
+  // construct a fresh GitSyncBackend that hits OpenExistingRepo on the
+  // .git layout we just wrote.
+  backend.reset();
+
+  // Step 5: validate the cloned tree IS a VNote notebook. BootstrapFromEmptyRemote
+  // populates the working tree from whatever's in the remote — that may or
+  // may not include vx_notebook/config.json (e.g., cloning a plain git repo).
+  // The "vx_notebook/config.json" path mirrors Notebook::kConfigFileName +
+  // BundledNotebook::kMetadataFolderName but those are protected/private —
+  // duplicating the literal here is the cheapest fix and any drift would be
+  // caught by test_clone_orchestrator_no_config_json.
+  const std::string config_json_path =
+      ConcatenatePaths(ConcatenatePaths(target_dir, "vx_notebook"), "config.json");
+  if (!IsRegularFile(config_json_path)) {
+    VXCORE_LOG_WARN("SyncManager::CloneNotebook: cloned tree missing vx_notebook/config.json");
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  // Step 6: validate the config.json parses and carries a non-empty "id".
+  // Empty id means "this might be a structurally-valid notebook but lacks
+  // identity" — we refuse it rather than registering a notebook whose id
+  // would collide with any other future clone. Use the LoadJsonFile helper
+  // (no-throw error code) so a malformed file gives JSON_PARSE rather than
+  // an exception escaping into the API layer.
+  nlohmann::json config_json;
+  VxCoreError load_err = LoadJsonFile(PathFromUtf8(config_json_path), config_json);
+  if (load_err != VXCORE_OK) {
+    VXCORE_LOG_WARN("SyncManager::CloneNotebook: cloned config.json failed to load (err=%d)",
+                    load_err);
+    return load_err;
+  }
+  if (!config_json.is_object() || !config_json.contains("id") ||
+      !config_json["id"].is_string() || config_json["id"].get<std::string>().empty()) {
+    VXCORE_LOG_WARN("SyncManager::CloneNotebook: cloned config.json has empty/missing id");
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  // Step 7: hand off to NotebookManager. OpenNotebook re-parses the on-disk
+  // config (so we don't trust our just-parsed copy past validation), wires
+  // up the metadata store, and registers in session.json. The returned id
+  // matches the on-disk "id" field, so callers can correlate the clone
+  // result with the JSON they just observed.
+  std::string opened_id;
+  VxCoreError open_err = notebook_manager_->OpenNotebook(target_dir, opened_id);
+  if (open_err != VXCORE_OK) {
+    VXCORE_LOG_ERROR("SyncManager::CloneNotebook: OpenNotebook failed (err=%d)", open_err);
+    return open_err;
+  }
+  out_notebook_id = std::move(opened_id);
+  VXCORE_LOG_INFO("SyncManager::CloneNotebook: registered notebook id=%s",
+                  out_notebook_id.c_str());
   return VXCORE_OK;
 }
 
