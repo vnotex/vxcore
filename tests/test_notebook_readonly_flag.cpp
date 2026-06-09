@@ -128,9 +128,12 @@ int test_readonly_flag_independent_from_modified() {
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_TRUE(is_readonly);
 
-  // Modify the config (which may set some other internal flag)
+  // Attempt to modify the config while read-only is true. After T12's
+  // BundledNotebook::UpdateConfig guard, this must be rejected — proving
+  // the read-only flag and the modified_ flag are independent (a rejected
+  // update never even reaches the modified_ bookkeeping).
   err = vxcore_notebook_update_config(ctx, notebook_id, "{\"name\":\"Updated Name\"}");
-  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
 
   // Verify read-only flag is still true (independent)
   is_readonly = false;
@@ -140,6 +143,10 @@ int test_readonly_flag_independent_from_modified() {
 
   // Set read-only to false again
   err = vxcore_notebook_set_read_only(ctx, notebook_id, false);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Sanity: same update_config call now succeeds with the guard cleared.
+  err = vxcore_notebook_update_config(ctx, notebook_id, "{\"name\":\"Updated Name\"}");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Verify it's false

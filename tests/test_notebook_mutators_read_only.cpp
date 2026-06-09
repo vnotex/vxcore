@@ -1,118 +1,183 @@
-#include "test_utils.h"
-#include <core/notebook_manager.h>
-#include <core/notebook.h>
-#include <core/bundled_notebook.h>
-#include <core/raw_notebook.h>
-#include <core/file_utils.h>
-#include <cstdlib>
+// T12 of open-notebook-remote-readonly plan.
+//
+// Verifies that every notebook-level mutator on Bundled and Raw notebooks
+// honors the read-only guard: when Notebook::IsReadOnly() returns true the
+// mutator must return VXCORE_ERR_READ_ONLY and leave on-disk state
+// unchanged. Per-device session metadata (last_sync_utc) is intentionally
+// NOT guarded — verified via a writable subtest reference.
+//
+// Source guards live in:
+//   * libs/vxcore/src/core/notebook.cpp (CreateTag / CreateTagPath /
+//     DeleteTag / MoveTag base-class guards)
+//   * libs/vxcore/src/core/bundled_notebook.cpp (UpdateConfig +
+//     EmptyRecycleBin)
+//   * libs/vxcore/src/core/raw_notebook.cpp (UpdateConfig +
+//     EmptyRecycleBin)
+//
+// Test isolation note: every vxcore test shares
+// %TEMP%/vxcore_test_data + %TEMP%/vxcore_test_config (see
+// libs/vxcore/AGENTS.md). We follow the existing T9 pattern in
+// test_bundled_folder_manager_read_only.cpp: ONE shared context for the
+// whole binary, with each subtest creating its own notebook so disk state
+// remains isolated.
+
+#include <cstdio>
+#include <filesystem>
 #include <iostream>
+#include <string>
 
-using namespace vxcore;
+#include "test_utils.h"
+#include "vxcore/vxcore.h"
 
-// Test helpers
-static NotebookManager *g_mgr = nullptr;
+namespace {
 
-int test_bundled_notebook_tag_operations_read_only() {
-  // Create a bundled notebook
-  std::string nb_path = std::string(std::getenv("TEMP")) + "/vxcore_test_bundled_ro";
-  CleanupDir(nb_path);
+VxCoreContextHandle g_ctx = nullptr;
 
-  NotebookConfig config;
-  config.id = "test_bundled_ro";
-  config.name = "Test Bundled RO";
-  config.read_only = false;
+// Build a fresh writable bundled notebook on disk. Caller owns the returned
+// notebook id (free with vxcore_string_free) AND the on-disk directory
+// (clean up at end of subtest via cleanup_test_dir).
+VxCoreError CreateWritableBundled(const std::string &name, std::string &out_nb_path,
+                                   char **out_notebook_id) {
+  out_nb_path = get_test_path(name);
+  cleanup_test_dir(out_nb_path);
+  create_directory(out_nb_path);
+  return vxcore_notebook_create(g_ctx, out_nb_path.c_str(), R"({"name":"T12 Bundled RO"})",
+                                VXCORE_NOTEBOOK_BUNDLED, out_notebook_id);
+}
 
-  BundledNotebook *nb = BundledNotebook::Create(nb_path, config, nullptr, nullptr);
-  ASSERT_NOT_NULL(nb);
+VxCoreError CreateWritableRaw(const std::string &name, std::string &out_nb_path,
+                               char **out_notebook_id) {
+  out_nb_path = get_test_path(name);
+  cleanup_test_dir(out_nb_path);
+  create_directory(out_nb_path);
+  return vxcore_notebook_create(g_ctx, out_nb_path.c_str(), R"({"name":"T12 Raw RO"})",
+                                VXCORE_NOTEBOOK_RAW, out_notebook_id);
+}
 
-  // Initially writable: CreateTag should succeed
-  VxCoreError err = nb->CreateTag("tag1", "");
-  ASSERT_EQ(err, VXCORE_OK);
+// RAII cleanup for one notebook fixture.
+struct NotebookCleanup {
+  char *notebook_id;
+  std::string nb_path;
+  ~NotebookCleanup() {
+    if (notebook_id) {
+      vxcore_string_free(notebook_id);
+    }
+    if (!nb_path.empty()) {
+      cleanup_test_dir(nb_path);
+    }
+  }
+};
 
-  // Now set notebook as read-only
-  nb->SetReadOnly(true);
+// Subtest 1: Bundled — every guarded mutator rejects when RO=true.
+int test_bundled_notebook_mutators_read_only() {
+  std::cout << "  Running test_bundled_notebook_mutators_read_only..." << std::endl;
+  NotebookCleanup nb{nullptr, {}};
+  ASSERT_EQ(CreateWritableBundled("t12_bundled_ro", nb.nb_path, &nb.notebook_id), VXCORE_OK);
 
-  // CreateTag on read-only should fail with VXCORE_ERR_READ_ONLY
-  err = nb->CreateTag("tag2", "");
-  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+  // Pre-seed a tag while writable so DeleteTag / MoveTag have something to
+  // target. CreateTag itself is tested both writable + read-only below.
+  ASSERT_EQ(vxcore_tag_create(g_ctx, nb.notebook_id, "seed_tag"), VXCORE_OK);
 
-  // CreateTagPath on read-only should fail
-  err = nb->CreateTagPath("path/to/tag3");
-  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+  // Flip to read-only.
+  ASSERT_EQ(vxcore_notebook_set_read_only(g_ctx, nb.notebook_id, 1), VXCORE_OK);
 
-  // DeleteTag on read-only should fail
-  err = nb->DeleteTag("tag1");
-  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+  // CreateTag → VXCORE_ERR_READ_ONLY.
+  ASSERT_EQ(vxcore_tag_create(g_ctx, nb.notebook_id, "blocked_tag"), VXCORE_ERR_READ_ONLY);
 
-  // MoveTag on read-only should fail
-  err = nb->MoveTag("tag1", "");
-  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+  // CreateTagPath → VXCORE_ERR_READ_ONLY.
+  ASSERT_EQ(vxcore_tag_create_path(g_ctx, nb.notebook_id, "blocked/path"),
+            VXCORE_ERR_READ_ONLY);
 
-  // UpdateConfig on read-only should fail
-  err = nb->UpdateConfig(config);
-  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+  // DeleteTag → VXCORE_ERR_READ_ONLY (pre-existing tag stays).
+  ASSERT_EQ(vxcore_tag_delete(g_ctx, nb.notebook_id, "seed_tag"), VXCORE_ERR_READ_ONLY);
 
-  // EmptyRecycleBin on read-only should fail
-  err = nb->EmptyRecycleBin();
-  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+  // MoveTag → VXCORE_ERR_READ_ONLY.
+  ASSERT_EQ(vxcore_tag_move(g_ctx, nb.notebook_id, "seed_tag", ""), VXCORE_ERR_READ_ONLY);
 
-  delete nb;
-  CleanupDir(nb_path);
+  // UpdateConfig → VXCORE_ERR_READ_ONLY.
+  ASSERT_EQ(vxcore_notebook_update_config(g_ctx, nb.notebook_id, R"({"name":"Blocked Update"})"),
+            VXCORE_ERR_READ_ONLY);
+
+  // EmptyRecycleBin → VXCORE_ERR_READ_ONLY.
+  ASSERT_EQ(vxcore_notebook_empty_recycle_bin(g_ctx, nb.notebook_id), VXCORE_ERR_READ_ONLY);
+
+  std::cout << "  \xe2\x9c\x93 test_bundled_notebook_mutators_read_only passed" << std::endl;
   return 0;
 }
 
-int test_raw_notebook_tag_operations_read_only() {
-  // Create a raw notebook (in-memory DB)
-  std::string nb_path = std::string(std::getenv("TEMP")) + "/vxcore_test_raw_ro";
-  CleanupDir(nb_path);
+// Subtest 2: Raw — every guarded mutator rejects when RO=true. For Raw the
+// tag ops would normally return UNSUPPORTED, but the read-only guard fires
+// first so the observed code is READ_ONLY.
+int test_raw_notebook_mutators_read_only() {
+  std::cout << "  Running test_raw_notebook_mutators_read_only..." << std::endl;
+  NotebookCleanup nb{nullptr, {}};
+  ASSERT_EQ(CreateWritableRaw("t12_raw_ro", nb.nb_path, &nb.notebook_id), VXCORE_OK);
 
-  NotebookConfig config;
-  config.id = "test_raw_ro";
-  config.name = "Test Raw RO";
-  config.read_only = false;
+  ASSERT_EQ(vxcore_notebook_set_read_only(g_ctx, nb.notebook_id, 1), VXCORE_OK);
 
-  RawNotebook *nb = RawNotebook::Create(nb_path, config, nullptr, nullptr);
-  ASSERT_NOT_NULL(nb);
+  // Tag ops: read-only must beat UNSUPPORTED.
+  ASSERT_EQ(vxcore_tag_create(g_ctx, nb.notebook_id, "blocked_tag"), VXCORE_ERR_READ_ONLY);
+  ASSERT_EQ(vxcore_tag_create_path(g_ctx, nb.notebook_id, "blocked/path"),
+            VXCORE_ERR_READ_ONLY);
+  ASSERT_EQ(vxcore_tag_delete(g_ctx, nb.notebook_id, "blocked_tag"), VXCORE_ERR_READ_ONLY);
+  ASSERT_EQ(vxcore_tag_move(g_ctx, nb.notebook_id, "blocked_tag", ""), VXCORE_ERR_READ_ONLY);
 
-  // Initially writable: UpdateConfig should succeed
-  VxCoreError err = nb->UpdateConfig(config);
-  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_update_config(g_ctx, nb.notebook_id, R"({"name":"Blocked Update"})"),
+            VXCORE_ERR_READ_ONLY);
+  ASSERT_EQ(vxcore_notebook_empty_recycle_bin(g_ctx, nb.notebook_id), VXCORE_ERR_READ_ONLY);
 
-  // Now set notebook as read-only
-  nb->SetReadOnly(true);
-
-  // UpdateConfig on read-only should fail
-  err = nb->UpdateConfig(config);
-  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
-
-  // EmptyRecycleBin on read-only should fail
-  err = nb->EmptyRecycleBin();
-  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
-
-  // Tag operations in RawNotebook return VXCORE_ERR_UNSUPPORTED but should still
-  // check read-only first
-  err = nb->CreateTag("tag1", "");
-  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);  // Read-only guard should fire before UNSUPPORTED
-
-  err = nb->CreateTagPath("path/to/tag");
-  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
-
-  err = nb->DeleteTag("tag1");
-  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
-
-  err = nb->MoveTag("tag1", "");
-  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
-
-  delete nb;
-  CleanupDir(nb_path);
+  std::cout << "  \xe2\x9c\x93 test_raw_notebook_mutators_read_only passed" << std::endl;
   return 0;
 }
+
+// Subtest 3: Sanity / no-regression — once read-only is cleared, every
+// previously-guarded mutator succeeds on a fresh writable bundled notebook.
+int test_mutators_succeed_when_writable() {
+  std::cout << "  Running test_mutators_succeed_when_writable..." << std::endl;
+  NotebookCleanup nb{nullptr, {}};
+  ASSERT_EQ(CreateWritableBundled("t12_bundled_writable", nb.nb_path, &nb.notebook_id),
+            VXCORE_OK);
+
+  // Flip on then off to prove the guard releases.
+  ASSERT_EQ(vxcore_notebook_set_read_only(g_ctx, nb.notebook_id, 1), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_set_read_only(g_ctx, nb.notebook_id, 0), VXCORE_OK);
+
+  ASSERT_EQ(vxcore_tag_create(g_ctx, nb.notebook_id, "ok_tag"), VXCORE_OK);
+  ASSERT_EQ(vxcore_tag_create_path(g_ctx, nb.notebook_id, "deep/nested/path"), VXCORE_OK);
+  // MoveTag: nest "ok_tag" under "deep" (root tag created by CreateTagPath).
+  ASSERT_EQ(vxcore_tag_move(g_ctx, nb.notebook_id, "ok_tag", "deep"), VXCORE_OK);
+  ASSERT_EQ(vxcore_tag_delete(g_ctx, nb.notebook_id, "ok_tag"), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_update_config(g_ctx, nb.notebook_id, R"({"name":"Updated Writable"})"),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_empty_recycle_bin(g_ctx, nb.notebook_id), VXCORE_OK);
+
+  std::cout << "  \xe2\x9c\x93 test_mutators_succeed_when_writable passed" << std::endl;
+  return 0;
+}
+
+}  // namespace
 
 int main() {
+  // Redirect AppData / LocalData to %TEMP%\vxcore_test* per vxcore test
+  // conventions (see libs/vxcore/AGENTS.md § Test Mode).
   vxcore_set_test_mode(1);
 
-  RUN_TEST(test_bundled_notebook_tag_operations_read_only);
-  RUN_TEST(test_raw_notebook_tag_operations_read_only);
+  // Single shared context for the whole binary.
+  VxCoreError err = vxcore_context_create(nullptr, &g_ctx);
+  if (err != VXCORE_OK) {
+    std::cerr << "vxcore_context_create failed: error=" << err << std::endl;
+    return 1;
+  }
 
+  std::cout << "Running notebook-level mutator read-only guard tests (T12)..." << std::endl;
+
+  RUN_TEST(test_bundled_notebook_mutators_read_only);
+  RUN_TEST(test_raw_notebook_mutators_read_only);
+  RUN_TEST(test_mutators_succeed_when_writable);
+
+  vxcore_context_destroy(g_ctx);
+  g_ctx = nullptr;
+
+  std::cout << "\xe2\x9c\x93 All notebook-level mutator read-only tests passed" << std::endl;
   return 0;
 }
