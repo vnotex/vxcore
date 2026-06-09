@@ -226,6 +226,15 @@ VXCORE_API VxCoreError vxcore_buffer_save(VxCoreContextHandle context, const cha
   }
 
   try {
+    // Check read-only status before attempting to save
+    auto *buffer = ctx->buffer_manager->GetBuffer(id);
+    if (buffer) {
+      auto *notebook = buffer->GetNotebook();
+      if (notebook && notebook->IsReadOnly()) {
+        return VXCORE_ERR_READ_ONLY;
+      }
+    }
+
     VxCoreError err = ctx->buffer_manager->SaveBuffer(id);
     if (err != VXCORE_OK) {
       ctx->last_error = "Failed to save buffer";
