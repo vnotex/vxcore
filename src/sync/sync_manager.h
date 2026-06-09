@@ -52,6 +52,24 @@ class SyncManager {
 
   VXCORE_API VxCoreError DisableSync(const std::string &notebook_id);
 
+  // Release the in-memory backend for one notebook (frees libgit2 repo
+  // handle via ~GitSyncBackend, which on Windows unmaps mmapped pack
+  // files and closes their file descriptors).  Does NOT touch on-disk
+  // JSON sync_* fields, does NOT touch the OS keychain, does NOT fire
+  // any sync-disable events.  After this returns, the runtime state
+  // (backends_ + states_ + configs_cache_) is cleared for this
+  // notebook but on-disk sync_* fields remain set.  Whether a later
+  // EnableSync succeeds without further user input depends on whether
+  // the consumer kept credentials available — vxcore does NOT manage
+  // credential lifecycle.
+  //
+  // Use this on notebook close to drop runtime sync state without
+  // tearing down the user's persisted sync configuration.
+  //
+  // Idempotent: returns VXCORE_OK on a notebook that was never
+  // registered.
+  VXCORE_API VxCoreError UnregisterBackend(const std::string &notebook_id);
+
   // T18 of open-notebook-remote-readonly plan.
   //
   // Backend-agnostic clone orchestrator. Dispatches to the registered

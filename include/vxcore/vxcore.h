@@ -1192,6 +1192,33 @@ VXCORE_API VxCoreError vxcore_sync_clone_cancellable(VxCoreContextHandle context
                                                      VxCoreSyncCancellation *token,
                                                      char **out_notebook_id);
 
+// Release the in-memory sync backend for one notebook (frees the libgit2
+// repo handle; on Windows this unmaps mmapped .pack files and closes
+// their file descriptors so the notebook folder becomes deletable from
+// the OS file manager).
+//
+// DOES NOT touch on-disk JSON sync_* fields (syncEnabled / syncBackend /
+// syncRemoteUrl remain set).  DOES NOT touch the OS keychain (the
+// consumer owns credential lifecycle).  DOES NOT fire sync-disable
+// events (this is not the "user turned sync off" path).
+//
+// Use this from the consumer's notebook-close path to drop runtime sync
+// state without tearing down the user's persisted sync configuration.
+// A later call to vxcore_sync_enable for the same notebook will re-
+// register the backend IF the caller supplies credentials again
+// (vxcore does NOT manage credential lifecycle).
+//
+// Idempotent: returns VXCORE_OK on a notebook that was never registered.
+//
+// Errors:
+//   VXCORE_ERR_NULL_POINTER   context or notebook_id is NULL
+//   VXCORE_ERR_UNKNOWN        sync_manager not initialized (matches the
+//                             vxcore_sync_disable convention; no
+//                             VXCORE_ERR_INTERNAL enumerator exists)
+//   VXCORE_OK                 backend released (or no-op)
+VXCORE_API VxCoreError vxcore_sync_unregister_notebook(VxCoreContextHandle context,
+                                                       const char *notebook_id);
+
 // ============ Event System ============
 
 // Subscribe to a named event. The callback fires when the event is emitted.

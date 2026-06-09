@@ -363,6 +363,35 @@ VxCoreError SyncManager::DisableSync(const std::string &notebook_id) {
   return VXCORE_OK;
 }
 
+VxCoreError SyncManager::UnregisterBackend(const std::string &notebook_id) {
+  VXCORE_LOG_DEBUG("SyncManager::UnregisterBackend: notebook_id=%s", notebook_id.c_str());
+
+  // Mirrors DisableSync's locking discipline (AGENTS rule 6: "DisableSync
+  // MUST destroy the backend outside the lock"). The only difference is
+  // semantic: UnregisterBackend releases the runtime state for one notebook
+  // without ANY persistence side effects (no on-disk JSON clear, no event
+  // emission), used by consumers (e.g. VNote's notebook-close path) to
+  // unmap libgit2 pack files without telling the user "sync was disabled".
+  std::unique_ptr<ISyncBackend> doomed_backend;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto it = backends_.find(notebook_id);
+    if (it == backends_.end()) {
+      // Idempotent: notebook was never registered, nothing to release.
+      return VXCORE_OK;
+    }
+    doomed_backend = std::move(it->second);
+    backends_.erase(it);
+    states_.erase(notebook_id);
+    configs_cache_.erase(notebook_id);
+  }
+  // doomed_backend destructs here (lock released) → ~GitSyncBackend →
+  // git_repository_free → pack-file mmaps unmapped + fds closed.
+
+  VXCORE_LOG_INFO("Sync runtime unregistered for notebook: %s", notebook_id.c_str());
+  return VXCORE_OK;
+}
+
 VxCoreError SyncManager::CloneNotebook(const std::string &target_dir, const SyncConfig &config,
                                        std::shared_ptr<ICredentialProvider> provider,
                                        std::string &out_notebook_id) {

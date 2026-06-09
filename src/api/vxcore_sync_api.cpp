@@ -139,6 +139,30 @@ VXCORE_API VxCoreError vxcore_sync_disable(VxCoreContextHandle context, const ch
   }
 }
 
+VXCORE_API VxCoreError vxcore_sync_unregister_notebook(VxCoreContextHandle context,
+                                                       const char *notebook_id) {
+  if (!context || !notebook_id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    if (!ctx->sync_manager) {
+      ctx->last_error = "Sync manager not initialized";
+      return VXCORE_ERR_UNKNOWN;
+    }
+
+    return ctx->sync_manager->UnregisterBackend(notebook_id);
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error unregistering sync";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_sync_trigger(VxCoreContextHandle context, const char *notebook_id) {
   if (!context || !notebook_id) {
     return VXCORE_ERR_NULL_POINTER;
