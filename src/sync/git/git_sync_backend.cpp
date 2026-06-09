@@ -76,7 +76,8 @@ SyncCapabilities GitSyncBackend::GetCapabilities() const {
          static_cast<uint32_t>(SyncCapability::ConflictResolution) |
          static_cast<uint32_t>(SyncCapability::IncrementalSync) |
          static_cast<uint32_t>(SyncCapability::AuthRequired) |
-         static_cast<uint32_t>(SyncCapability::ProgressReporting);
+         static_cast<uint32_t>(SyncCapability::ProgressReporting) |
+         static_cast<uint32_t>(SyncCapability::Cloneable);
 }
 
 bool GitSyncBackend::IsInitialized() const {
@@ -205,6 +206,58 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
   }
 
   return VXCORE_ERR_NOT_IMPLEMENTED;
+}
+
+// T13 of open-notebook-remote-readonly plan: clone wrapper around
+// BootstrapFromEmptyRemote.
+//
+// Preconditions (caller's responsibility — backend does NOT validate):
+//   * target_dir exists and is empty.
+//
+// Design notes:
+//   * Snapshot the credential provider with the SAME mutex pattern Initialize
+//     uses; ensures a concurrent ReplaceCredsProvider cannot tear the
+//     shared_ptr mid-clone.
+//   * BootstrapFromEmptyRemote already does the heavy lifting (init+fetch+
+//     checkout, scrub gitlink, set up refs/heads/main). Reuse it verbatim
+//     so the Windows file:// workaround stays in one place.
+//   * The returned `git_repository *` is always freed — Clone is a one-shot
+//     transient that MUST NOT leak handles or cache state. Initialize is the
+//     entry that caches `repo_` / sets `initialized_`; Clone deliberately
+//     does neither (a subsequent Initialize on this same backend will branch
+//     into OpenExistingRepo because the on-disk layout now exists).
+//   * Does NOT acquire op_mutex_. Concurrent Clone vs. Sync on the same
+//     backend instance is the caller's contract (and is moot in practice:
+//     Clone runs against a fresh, never-Initialized backend so no other
+//     libgit2 call is in flight on this instance).
+VxCoreError GitSyncBackend::Clone(const std::string &target_dir,
+                                  const SyncConfig &config) {
+  if (config.remote_url.empty()) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  // Snapshot the provider — matches Initialize's pattern exactly.
+  std::shared_ptr<ICredentialProvider> provider_snapshot;
+  {
+    std::lock_guard<std::mutex> p_lock(creds_provider_mu_);
+    provider_snapshot = creds_provider_;
+  }
+
+  const std::string git_dir = target_dir + "/vx_notebook/vx_sync";
+
+  git_repository *repo = nullptr;
+  VxCoreError err = BootstrapFromEmptyRemote(
+      target_dir, git_dir, config, provider_snapshot,
+      /*rebase_in_progress=*/nullptr, &repo);
+
+  // Always free the local repo handle — Clone is one-shot; we do NOT cache
+  // repo_ here (Initialize owns that contract).
+  if (repo != nullptr) {
+    git_repository_free(repo);
+    repo = nullptr;
+  }
+
+  return err;
 }
 
 VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) {

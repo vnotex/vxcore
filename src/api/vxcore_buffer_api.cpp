@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 
 #include "api/api_utils.h"
+#include "core/buffer.h"
 #include "core/buffer_manager.h"
 #include "core/buffer_provider.h"
 #include "core/context.h"
@@ -12,6 +13,31 @@
 #include "core/notebook_manager.h"
 #include "utils/base64.h"
 #include "vxcore/vxcore.h"
+
+namespace {
+
+// Returns VXCORE_ERR_READ_ONLY if the buffer's owning notebook is read-only,
+// VXCORE_OK otherwise (including when the buffer is unknown or has no notebook).
+// Used to guard every vxcore_buffer_* function that performs a disk write.
+// Defensive: a missing buffer or external (notebook-less) buffer is NOT
+// flagged, allowing the downstream call to surface the usual not-found/
+// unsupported error or proceed when no notebook is involved.
+VxCoreError CheckBufferNotebookReadOnly(vxcore::VxCoreContext *ctx, const char *buffer_id) {
+  if (!ctx || !ctx->buffer_manager || !buffer_id) {
+    return VXCORE_OK;
+  }
+  auto *buffer = ctx->buffer_manager->GetBuffer(buffer_id);
+  if (!buffer) {
+    return VXCORE_OK;
+  }
+  auto *notebook = buffer->GetNotebook();
+  if (notebook && notebook->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+  return VXCORE_OK;
+}
+
+}  // namespace
 
 VXCORE_API VxCoreError vxcore_buffer_open(VxCoreContextHandle context, const char *notebook_id,
                                           const char *file_path, char **out_id) {
@@ -226,13 +252,13 @@ VXCORE_API VxCoreError vxcore_buffer_save(VxCoreContextHandle context, const cha
   }
 
   try {
-    // Check read-only status before attempting to save
-    auto *buffer = ctx->buffer_manager->GetBuffer(id);
-    if (buffer) {
-      auto *notebook = buffer->GetNotebook();
-      if (notebook && notebook->IsReadOnly()) {
-        return VXCORE_ERR_READ_ONLY;
-      }
+    // Reject save if the owning notebook is read-only. Performed AFTER the
+    // input/context null-checks above but BEFORE any disk I/O so the on-disk
+    // file is byte-for-byte unchanged and the buffer's dirty flag is preserved
+    // (caller can re-attempt or surface an error to the UI).
+    VxCoreError ro_err = CheckBufferNotebookReadOnly(ctx, id);
+    if (ro_err != VXCORE_OK) {
+      return ro_err;
     }
 
     VxCoreError err = ctx->buffer_manager->SaveBuffer(id);
@@ -618,6 +644,12 @@ VXCORE_API VxCoreError vxcore_buffer_insert_asset_raw(VxCoreContextHandle contex
   }
 
   try {
+    // Reject the disk-write if the owning notebook is read-only.
+    VxCoreError ro_err = CheckBufferNotebookReadOnly(ctx, buffer_id);
+    if (ro_err != VXCORE_OK) {
+      return ro_err;
+    }
+
     auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
     if (!provider) {
       ctx->last_error = "Buffer provider not available (unsupported notebook type)";
@@ -654,6 +686,12 @@ VXCORE_API VxCoreError vxcore_buffer_insert_asset(VxCoreContextHandle context,
   }
 
   try {
+    // Reject the disk-write if the owning notebook is read-only.
+    VxCoreError ro_err = CheckBufferNotebookReadOnly(ctx, buffer_id);
+    if (ro_err != VXCORE_OK) {
+      return ro_err;
+    }
+
     auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
     if (!provider) {
       ctx->last_error = "Buffer provider not available (unsupported notebook type)";
@@ -688,6 +726,12 @@ VXCORE_API VxCoreError vxcore_buffer_delete_asset(VxCoreContextHandle context,
   }
 
   try {
+    // Reject the disk-write if the owning notebook is read-only.
+    VxCoreError ro_err = CheckBufferNotebookReadOnly(ctx, buffer_id);
+    if (ro_err != VXCORE_OK) {
+      return ro_err;
+    }
+
     auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
     if (!provider) {
       ctx->last_error = "Buffer provider not available (unsupported notebook type)";
@@ -788,6 +832,12 @@ VXCORE_API VxCoreError vxcore_buffer_insert_attachment(VxCoreContextHandle conte
   }
 
   try {
+    // Reject the disk-write if the owning notebook is read-only.
+    VxCoreError ro_err = CheckBufferNotebookReadOnly(ctx, buffer_id);
+    if (ro_err != VXCORE_OK) {
+      return ro_err;
+    }
+
     auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
     if (!provider) {
       ctx->last_error = "Buffer provider not available (unsupported notebook type)";
@@ -822,6 +872,12 @@ VXCORE_API VxCoreError vxcore_buffer_delete_attachment(VxCoreContextHandle conte
   }
 
   try {
+    // Reject the disk-write if the owning notebook is read-only.
+    VxCoreError ro_err = CheckBufferNotebookReadOnly(ctx, buffer_id);
+    if (ro_err != VXCORE_OK) {
+      return ro_err;
+    }
+
     auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
     if (!provider) {
       ctx->last_error = "Buffer provider not available (unsupported notebook type)";
@@ -854,6 +910,12 @@ VXCORE_API VxCoreError vxcore_buffer_rename_attachment(VxCoreContextHandle conte
   }
 
   try {
+    // Reject the disk-write if the owning notebook is read-only.
+    VxCoreError ro_err = CheckBufferNotebookReadOnly(ctx, buffer_id);
+    if (ro_err != VXCORE_OK) {
+      return ro_err;
+    }
+
     auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
     if (!provider) {
       ctx->last_error = "Buffer provider not available (unsupported notebook type)";

@@ -303,9 +303,9 @@ VxCoreError BundledFolderManager::GetFolderConfig(const std::string &folder_path
 VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
                                                const std::string &folder_name,
                                                std::string &out_folder_id) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   VXCORE_LOG_INFO("Creating folder: parent=%s, name=%s", parent_path.c_str(), folder_name.c_str());
   VXCORE_LOG_DEBUG("CreateFolder: folder_name bytes=[%s] len=%zu", folder_name.c_str(),
                    folder_name.size());
@@ -383,9 +383,9 @@ VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
 }
 
 VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   VXCORE_LOG_INFO("Deleting folder: path=%s", folder_path.c_str());
 
   const auto clean_folder_path = GetCleanRelativePath(folder_path);
@@ -456,9 +456,9 @@ VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
 
 VxCoreError BundledFolderManager::UpdateFolderMetadata(const std::string &folder_path,
                                                        const std::string &metadata_json) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   const auto clean_folder_path = GetCleanRelativePath(folder_path);
 
   FolderConfig *config = nullptr;
@@ -499,9 +499,9 @@ VxCoreError BundledFolderManager::UpdateFolderMetadata(const std::string &folder
 
 VxCoreError BundledFolderManager::UpdateNodeTimestamps(const std::string &node_path,
                                                        int64_t created_utc, int64_t modified_utc) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   if (created_utc <= 0 && modified_utc <= 0) {
     return VXCORE_OK;  // Nothing to update
   }
@@ -589,9 +589,9 @@ VxCoreError BundledFolderManager::GetFolderMetadata(const std::string &folder_pa
 
 VxCoreError BundledFolderManager::RenameFolder(const std::string &folder_path,
                                                const std::string &new_name) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   VXCORE_LOG_INFO("RenameFolder: folder_path=%s, new_name=%s", folder_path.c_str(),
                   new_name.c_str());
   VXCORE_LOG_DEBUG("RenameFolder: new_name bytes=[%s] len=%zu", new_name.c_str(), new_name.size());
@@ -679,9 +679,9 @@ VxCoreError BundledFolderManager::RenameFolder(const std::string &folder_path,
 
 VxCoreError BundledFolderManager::MoveFolder(const std::string &src_path,
                                              const std::string &dest_parent_path) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   VXCORE_LOG_INFO("MoveFolder: src_path=%s, dest_parent_path=%s", src_path.c_str(),
                   dest_parent_path.c_str());
 
@@ -896,9 +896,9 @@ VxCoreError BundledFolderManager::CopyFolder(const std::string &src_path,
                                              const std::string &dest_parent_path,
                                              const std::string &new_name,
                                              std::string &out_folder_id) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   const auto clean_src_path = GetCleanRelativePath(src_path);
   const auto clean_dest_parent_path = GetCleanRelativePath(dest_parent_path);
 
@@ -985,9 +985,9 @@ VxCoreError BundledFolderManager::CopyFolder(const std::string &src_path,
 VxCoreError BundledFolderManager::CreateFile(const std::string &folder_path,
                                              const std::string &file_name,
                                              std::string &out_file_id) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   VXCORE_LOG_INFO("Creating file: folder=%s, name=%s", folder_path.c_str(), file_name.c_str());
   VXCORE_LOG_DEBUG("CreateFile: file_name bytes=[%s] len=%zu", file_name.c_str(), file_name.size());
 
@@ -1050,9 +1050,9 @@ VxCoreError BundledFolderManager::CreateFile(const std::string &folder_path,
 }
 
 VxCoreError BundledFolderManager::DeleteFile(const std::string &file_path) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -1111,9 +1111,9 @@ VxCoreError BundledFolderManager::DeleteFile(const std::string &file_path) {
 
 VxCoreError BundledFolderManager::UpdateFileMetadata(const std::string &file_path,
                                                      const std::string &metadata_json) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -1161,9 +1161,9 @@ VxCoreError BundledFolderManager::UpdateFileMetadata(const std::string &file_pat
 
 VxCoreError BundledFolderManager::UpdateFileTags(const std::string &file_path,
                                                  const std::string &tags_json) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -1221,9 +1221,9 @@ VxCoreError BundledFolderManager::UpdateFileTags(const std::string &file_path,
 
 VxCoreError BundledFolderManager::TagFile(const std::string &file_path,
                                           const std::string &tag_name) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -1271,9 +1271,9 @@ VxCoreError BundledFolderManager::TagFile(const std::string &file_path,
 
 VxCoreError BundledFolderManager::UntagFile(const std::string &file_path,
                                             const std::string &tag_name) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -1370,9 +1370,9 @@ VxCoreError BundledFolderManager::GetFileMetadata(const std::string &file_path,
 
 VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
                                              const std::string &new_name) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, old_name] = SplitPath(clean_file_path);
@@ -1441,9 +1441,9 @@ VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
 
 VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
                                            const std::string &dest_folder_path) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   const auto clean_src_file_path = GetCleanRelativePath(src_file_path);
   const auto clean_dest_folder_path = GetCleanRelativePath(dest_folder_path);
 
@@ -1567,9 +1567,9 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
 VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
                                            const std::string &dest_folder_path,
                                            const std::string &new_name, std::string &out_file_id) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   const auto clean_src_file_path = GetCleanRelativePath(src_file_path);
   const auto clean_dest_folder_path = GetCleanRelativePath(dest_folder_path);
 
@@ -2047,9 +2047,9 @@ std::string BundledFolderManager::GenerateUniqueFileName(const std::string &fold
 VxCoreError BundledFolderManager::ImportFile(const std::string &folder_path,
                                              const std::string &external_file_path,
                                              std::string &out_file_id) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   VXCORE_LOG_INFO("ImportFile: folder=%s, external_file=%s", folder_path.c_str(),
                   external_file_path.c_str());
   const fs::path external_file_path_fs = PathFromUtf8(external_file_path);
@@ -2136,9 +2136,9 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
                                                const std::string &external_folder_path,
                                                const std::string &suffix_allowlist,
                                                std::string &out_folder_id) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   VXCORE_LOG_INFO("ImportFolder: dest=%s, external=%s, suffix_allowlist=%s",
                   dest_folder_path.c_str(), external_folder_path.c_str(), suffix_allowlist.c_str());
 
@@ -2740,9 +2740,9 @@ VxCoreError BundledFolderManager::GetFileAttachments(const std::string &file_pat
 
 VxCoreError BundledFolderManager::UpdateFileAttachments(const std::string &file_path,
                                                         const std::string &attachments_json) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -2794,9 +2794,9 @@ VxCoreError BundledFolderManager::UpdateFileAttachments(const std::string &file_
 
 VxCoreError BundledFolderManager::AddFileAttachment(const std::string &file_path,
                                                     const std::string &attachment) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -2843,9 +2843,9 @@ VxCoreError BundledFolderManager::AddFileAttachment(const std::string &file_path
 
 VxCoreError BundledFolderManager::DeleteFileAttachment(const std::string &file_path,
                                                        const std::string &attachment) {
-  if (notebook_->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook_ && notebook_->IsReadOnly()) {
+      return VXCORE_ERR_READ_ONLY;
+    }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);

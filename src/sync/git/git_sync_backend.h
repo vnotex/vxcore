@@ -61,6 +61,16 @@ class GitSyncBackend : public ISyncBackend {
   std::shared_ptr<ICredentialProvider> GetCredsProviderSnapshot() const override;
   VxCoreError Initialize(const std::string &root_folder,
                          const SyncConfig &config) override;
+  // T13 of open-notebook-remote-readonly plan: clone the remote at
+  // config.remote_url into target_dir using BootstrapFromEmptyRemote (the
+  // proven Windows-friendly init+fetch+checkout primitive — git_clone over
+  // file:// hangs on Windows). Clone is a one-shot, transient operation: it
+  // does NOT set initialized_ and does NOT cache the local repo handle.
+  // Caller is responsible for guaranteeing target_dir exists and is empty.
+  // SyncManager-level orchestration (post-clone EnableSync registration, etc.)
+  // is the job of T18's SyncManager::CloneNotebook, not this backend method.
+  VxCoreError Clone(const std::string &target_dir,
+                    const SyncConfig &config) override;
   VxCoreError Sync(SyncProgressCallback callback, void *userdata) override;
   VxCoreError GetStatus(std::vector<SyncFileInfo> &out_files) override;
   VxCoreError GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) override;
