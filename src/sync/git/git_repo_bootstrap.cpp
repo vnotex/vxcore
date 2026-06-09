@@ -169,7 +169,8 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
                                      const SyncConfig &config,
                                      std::shared_ptr<ICredentialProvider> creds_provider,
                                      git_rebase **rebase_in_progress,
-                                     git_repository **out_repo) {
+                                     git_repository **out_repo,
+                                     SyncCancellation *cancellation) {
   *out_repo = nullptr;
 
   git_repositoryPtr repo;
@@ -196,7 +197,7 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
   }
 
   git_fetch_options fopts = GIT_FETCH_OPTIONS_INIT;
-  auto bundle = MakeRemoteCallbacks(creds_provider.get(), config.remote_url);
+  auto bundle = MakeRemoteCallbacks(creds_provider.get(), config.remote_url, cancellation);
   fopts.callbacks = bundle.callbacks;
 
   rc = git_remote_fetch(remote.get(), /*refspecs=*/nullptr, &fopts,

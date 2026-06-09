@@ -821,3 +821,18 @@ add_test(NAME test_sync_backend_metadata COMMAND test_sync_backend_metadata)
 # and nlohmann_json for seeding vx_notebook/config.json content.
 add_vxcore_test(test_vxcore_sync_clone_capi)
 target_link_libraries(test_vxcore_sync_clone_capi PRIVATE git_sync_test_helpers nlohmann_json)
+
+# test_vxcore_sync_clone_cancellable: openurl-followups Item 2.
+# Exercises the new vxcore_sync_clone_cancellable C ABI surface — the
+# cancellation overload that mirrors vxcore_sync_clone but accepts an
+# optional VxCoreSyncCancellation* token. Three subtests:
+#   1. BEFORE-clone cancel (strict): token cancelled before invocation.
+#   2. MID-clone cancel (race-tolerant): worker thread fires Cancel mid-
+#      clone against a file:// fixture; tolerant of races since file://
+#      is fast enough to legitimately complete before Cancel lands.
+#   3. null-token equivalence: proves the shim relationship between
+#      vxcore_sync_clone (legacy) and vxcore_sync_clone_cancellable.
+# Same linkage pattern as test_vxcore_sync_clone_capi: vxcore.dll +
+# git_sync_test_helpers (bare-repo fixture) + nlohmann_json.
+add_vxcore_test(test_vxcore_sync_clone_cancellable)
+target_link_libraries(test_vxcore_sync_clone_cancellable PRIVATE git_sync_test_helpers nlohmann_json)

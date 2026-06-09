@@ -85,6 +85,22 @@ class SyncManager {
                                        std::shared_ptr<ICredentialProvider> provider,
                                        std::string &out_notebook_id);
 
+  // Cancellable overload. Mirrors the legacy CloneNotebook above and adds
+  // an optional SyncCancellationPtr that is installed on the transient
+  // backend BEFORE the Clone() call and cleared AFTER, regardless of
+  // result. Lifecycle matches TriggerSync(id, cancellation). Null token
+  // degrades to the legacy non-cancellable path bit-for-bit. The 4-arg
+  // overload above forwards here with nullptr.
+  //
+  // Note: no state_mutex_ involvement. The backend is constructed locally
+  // and never registered in backends_; only the cancellation token is
+  // installed on it for the lifetime of the Clone call.
+  VXCORE_API VxCoreError CloneNotebook(const std::string &target_dir,
+                                       const SyncConfig &config,
+                                       std::shared_ptr<ICredentialProvider> provider,
+                                       SyncCancellationPtr cancellation,
+                                       std::string &out_notebook_id);
+
   VXCORE_API VxCoreError TriggerSync(const std::string &notebook_id);
 
   // Wave 12.2 / F5.9: cancellable overload. Threads @token through to the

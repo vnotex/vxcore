@@ -578,12 +578,30 @@ VXCORE_API VxCoreError vxcore_sync_get_last_sync_utc(VxCoreContextHandle context
 // test test_notebook_open_ex.cpp documents the same workaround. We accept
 // the slightly more verbose `is_discarded()` plumbing in exchange for a
 // predictable error path.
+//
+// The cancellation overload (introduced for openurl-followups Item 2)
+// shares the entire body and forwards a SyncCancellationPtr through to
+// SyncManager::CloneNotebook. The legacy entry point is now a 1-line shim
+// that forwards a null token, preserving the pre-cancellation contract
+// bit-for-bit.
 VXCORE_API VxCoreError vxcore_sync_clone(VxCoreContextHandle context, const char *target_dir,
                                           const char *config_json,
                                           const char *credentials_json,
                                           char **out_notebook_id) {
+  return vxcore_sync_clone_cancellable(context, target_dir, config_json, credentials_json,
+                                       /*token=*/nullptr, out_notebook_id);
+}
+
+VXCORE_API VxCoreError vxcore_sync_clone_cancellable(VxCoreContextHandle context,
+                                                     const char *target_dir,
+                                                     const char *config_json,
+                                                     const char *credentials_json,
+                                                     VxCoreSyncCancellation *token,
+                                                     char **out_notebook_id) {
   // credentials_json is intentionally nullable (NoOpCredentialProvider
-  // fallback for anonymous clones); all other args are required.
+  // fallback for anonymous clones); the cancellation @token is also
+  // optional (NULL means "no cancellation wired", identical to the legacy
+  // vxcore_sync_clone behavior). All other args are required.
   if (!context || !target_dir || !config_json || !out_notebook_id) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -649,9 +667,17 @@ VXCORE_API VxCoreError vxcore_sync_clone(VxCoreContextHandle context, const char
       provider = std::make_shared<vxcore::NoOpCredentialProvider>();
     }
 
+    // Forward the cancellation token (copy, so the C handle stays free to
+    // outlive this call — the pipeline snapshots internally). Null token
+    // degrades to the legacy non-cancellable path.
+    vxcore::SyncCancellationPtr cancellation_ptr =
+        (token != nullptr) ? token->ptr : nullptr;
+
     std::string notebook_id;
     VxCoreError err = ctx->sync_manager->CloneNotebook(target_dir, config,
-                                                       std::move(provider), notebook_id);
+                                                       std::move(provider),
+                                                       std::move(cancellation_ptr),
+                                                       notebook_id);
     if (err != VXCORE_OK) {
       // SyncManager::CloneNotebook leaves notebook_id empty on failure.
       // Keep *out_notebook_id at the nullptr we set above and forward the

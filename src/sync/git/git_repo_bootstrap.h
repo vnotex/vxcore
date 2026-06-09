@@ -12,6 +12,7 @@
 namespace vxcore {
 
 class ICredentialProvider;
+class SyncCancellation;
 
 // Remove the libgit2-managed `.git` gitlink file from the workdir.
 //
@@ -43,12 +44,19 @@ VxCoreError OpenExistingRepo(const std::string &root_folder,
                              git_repository **out_repo);
 
 // Branch 2 (T15): clone-into-empty-remote.
+//
+// The optional |cancellation| parameter (added for the openurl-followups
+// Item 2 work) is forwarded to MakeRemoteCallbacks so libgit2's
+// transfer_progress callback can observe a cancel request from another
+// thread and abort the fetch with GIT_EUSER. Null preserves pre-Wave-12
+// behavior exactly (no callback installed, file:// happy-path unchanged).
 VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
                                      const std::string &git_dir,
                                      const SyncConfig &config,
                                      std::shared_ptr<ICredentialProvider> creds_provider,
                                      git_rebase **rebase_in_progress,
-                                     git_repository **out_repo);
+                                     git_repository **out_repo,
+                                     SyncCancellation *cancellation = nullptr);
 
 // Branch 3 (T16): init+push to empty-remote.
 VxCoreError BootstrapToEmptyRemote(const std::string &root_folder,

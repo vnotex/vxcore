@@ -1163,6 +1163,35 @@ VXCORE_API VxCoreError vxcore_sync_clone(VxCoreContextHandle context,
                                           const char *credentials_json,
                                           char **out_notebook_id);
 
+// Cancellable clone variant. Mirrors vxcore_sync_clone but accepts an
+// optional VxCoreSyncCancellation token (created via
+// vxcore_sync_create_cancellation, cancellable from any thread via
+// vxcore_sync_cancel). When @token is NULL the behavior is identical to
+// vxcore_sync_clone (legacy path preserved bit-for-bit).
+//
+// When @token is non-NULL the token is installed on the backend BEFORE the
+// libgit2 fetch+checkout runs and cleared AFTER, regardless of result. A
+// concurrent vxcore_sync_cancel(@token) request flips an atomic flag that
+// libgit2's transfer_progress callback reads on every chunk, aborting the
+// operation with VXCORE_ERR_CANCELLED. Cancellation BEFORE any libgit2
+// fetch starts is also honored: the token is checked at every phase
+// boundary inside the pipeline.
+//
+// Cleanup contract: on VXCORE_ERR_CANCELLED, target_dir contents are
+// UNDEFINED (libgit2 may have populated it partially before the abort).
+// The caller is responsible for removing target_dir — vxcore does NOT
+// touch it. Same contract as vxcore_sync_clone's other failure paths.
+//
+// All other arguments, error codes, threading semantics, and JSON schemas
+// match vxcore_sync_clone exactly. See that function's docstring (above)
+// for the full contract.
+VXCORE_API VxCoreError vxcore_sync_clone_cancellable(VxCoreContextHandle context,
+                                                     const char *target_dir,
+                                                     const char *config_json,
+                                                     const char *credentials_json,
+                                                     VxCoreSyncCancellation *token,
+                                                     char **out_notebook_id);
+
 // ============ Event System ============
 
 // Subscribe to a named event. The callback fires when the event is emitted.

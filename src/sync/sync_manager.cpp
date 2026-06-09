@@ -364,8 +364,18 @@ VxCoreError SyncManager::DisableSync(const std::string &notebook_id) {
 VxCoreError SyncManager::CloneNotebook(const std::string &target_dir, const SyncConfig &config,
                                        std::shared_ptr<ICredentialProvider> provider,
                                        std::string &out_notebook_id) {
-  VXCORE_LOG_INFO("SyncManager::CloneNotebook: target_dir=%s backend=%s", target_dir.c_str(),
-                  config.backend.c_str());
+  // Legacy non-cancellable wrapper. Forward to the cancellable overload
+  // with null token — preserves pre-cancellation behavior bit-for-bit.
+  return CloneNotebook(target_dir, config, std::move(provider), /*cancellation=*/nullptr,
+                       out_notebook_id);
+}
+
+VxCoreError SyncManager::CloneNotebook(const std::string &target_dir, const SyncConfig &config,
+                                       std::shared_ptr<ICredentialProvider> provider,
+                                       SyncCancellationPtr cancellation,
+                                       std::string &out_notebook_id) {
+  VXCORE_LOG_INFO("SyncManager::CloneNotebook: target_dir=%s backend=%s cancellable=%d",
+                  target_dir.c_str(), config.backend.c_str(), cancellation ? 1 : 0);
   out_notebook_id.clear();
 
   // Step 1: validate backend name non-empty. Per the SyncBackendRegistry
@@ -408,10 +418,38 @@ VxCoreError SyncManager::CloneNotebook(const std::string &target_dir, const Sync
   // Step 4: drive the clone. Backend writes the .git layout into
   // target_dir/vx_notebook/vx_sync/ and checks out the working tree. The
   // caller owns target_dir cleanup on failure (T22 staging-dir pattern).
+  //
+  // Install the cancellation token BEFORE Clone() so an early Cancel()
+  // between install and Clone() entry is observed by the in-flight Clone().
+  // Mirrors TriggerSync's lifecycle exactly. Clear unconditionally after
+  // — the transient backend is about to be destroyed, but clearing keeps
+  // the contract explicit and safe for backends that ignore SetCancellation
+  // (default no-op base method).
+  //
+  // Pre-flight cancellation check: file:// fetches with minimal data may
+  // legitimately never fire libgit2's transfer_progress callback, leaving
+  // the cancellation flag unobserved. Explicit pre-check gives BEFORE-clone
+  // cancel a reliable guarantee independent of libgit2's callback cadence.
+  if (cancellation && cancellation->IsCancelled()) {
+    VXCORE_LOG_INFO("SyncManager::CloneNotebook: cancellation requested before Clone()");
+    return VXCORE_ERR_CANCELLED;
+  }
+  backend->SetCancellation(cancellation);
   VxCoreError clone_err = backend->Clone(target_dir, config);
+  backend->SetCancellation(nullptr);
   if (clone_err != VXCORE_OK) {
     VXCORE_LOG_WARN("SyncManager::CloneNotebook: backend Clone returned %d", clone_err);
     return clone_err;
+  }
+
+  // Post-clone cancellation check: even if backend->Clone() returned
+  // VXCORE_OK, the user may have requested cancellation just as the libgit2
+  // op completed. Honor that intent by NOT registering the notebook (the
+  // caller is responsible for target_dir cleanup, matching the
+  // "cancellation = no notebook registered" contract).
+  if (cancellation && cancellation->IsCancelled()) {
+    VXCORE_LOG_INFO("SyncManager::CloneNotebook: cancellation observed after Clone() completed");
+    return VXCORE_ERR_CANCELLED;
   }
 
   // Backend has done its job. The transient backend instance gets destroyed

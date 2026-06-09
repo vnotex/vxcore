@@ -186,7 +186,7 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
     if (!has_user_files && !config_.remote_url.empty()) {
       VxCoreError err = BootstrapFromEmptyRemote(
           root_folder_, git_dir_, config_, provider_snapshot, &rebase_in_progress_,
-          &repo_);
+          &repo_, /*cancellation=*/nullptr);
       if (err == VXCORE_OK) {
         initialized_ = true;
       }
@@ -243,12 +243,23 @@ VxCoreError GitSyncBackend::Clone(const std::string &target_dir,
     provider_snapshot = creds_provider_;
   }
 
+  // Snapshot the cancellation token — same pattern as DoStageAndCommitLocked
+  // (lines ~316-320). The shared_ptr keeps the SyncCancellation alive for
+  // the entire BootstrapFromEmptyRemote call; we pass the raw pointer
+  // because GitCredentialPayload::cancellation is a non-owning view.
+  SyncCancellationPtr cancellation_snapshot;
+  {
+    std::lock_guard<std::mutex> c_lock(cancellation_mu_);
+    cancellation_snapshot = cancellation_;
+  }
+
   const std::string git_dir = target_dir + "/vx_notebook/vx_sync";
 
   git_repository *repo = nullptr;
   VxCoreError err = BootstrapFromEmptyRemote(
       target_dir, git_dir, config, provider_snapshot,
-      /*rebase_in_progress=*/nullptr, &repo);
+      /*rebase_in_progress=*/nullptr, &repo,
+      cancellation_snapshot.get());
 
   // Always free the local repo handle — Clone is one-shot; we do NOT cache
   // repo_ here (Initialize owns that contract).
