@@ -1,5 +1,6 @@
 #include "notebook.h"
 
+#include <vxcore/notebook_json_keys.h>
 #include <vxcore/vxcore_types.h>
 
 #include <algorithm>
@@ -8,7 +9,6 @@
 #include "db/sqlite_metadata_store.h"
 #include "folder_manager.h"
 #include "metadata_store.h"
-#include "notebook_json_keys.h"
 #include "sync/sync_json_keys.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"

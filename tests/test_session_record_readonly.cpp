@@ -1,9 +1,9 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
+#include <vxcore/notebook_json_keys.h>
 #include <fstream>
 
 #include "core/notebook.h"
-#include "core/notebook_json_keys.h"
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
 

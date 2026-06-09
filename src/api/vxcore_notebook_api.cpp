@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include <nlohmann/json.hpp>
+#include <vxcore/notebook_json_keys.h>
 
 #include "api/api_utils.h"
 #include "core/buffer_manager.h"
@@ -9,7 +10,6 @@
 #include "core/history_manager.h"
 #include "core/metadata_store.h"
 #include "core/notebook.h"
-#include "core/notebook_json_keys.h"
 #include "core/notebook_manager.h"
 #include "utils/logger.h"
 #include "vxcore/vxcore.h"

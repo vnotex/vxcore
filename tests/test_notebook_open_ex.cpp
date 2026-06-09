@@ -18,8 +18,8 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vxcore/notebook_json_keys.h>
 
-#include "core/notebook_json_keys.h"
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
 
