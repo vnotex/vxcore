@@ -105,6 +105,21 @@ VXCORE_API VxCoreError vxcore_notebook_update_config(VxCoreContextHandle context
 VXCORE_API VxCoreError vxcore_notebook_rebuild_cache(VxCoreContextHandle context,
                                                      const char *notebook_id);
 
+// ============ Read-Only Flag Operations ============
+// Set the notebook's read-only flag. This is a per-device runtime flag,
+// persisted in NotebookRecord (session state). Read-only notebooks cannot
+// be mutated (no file/folder edits, saves, or sync operations).
+// Both bundled and raw notebooks support this flag.
+VXCORE_API VxCoreError vxcore_notebook_set_read_only(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     bool read_only);
+
+// Get the notebook's read-only flag.
+// Returns the current read-only state in out_read_only.
+VXCORE_API VxCoreError vxcore_notebook_is_read_only(VxCoreContextHandle context,
+                                                    const char *notebook_id,
+                                                    bool *out_read_only);
+
 // ============ Recycle Bin Operations (Bundled Notebooks Only) ============
 // Get the path to the recycle bin folder.
 // Returns empty string for raw notebooks (not supported).

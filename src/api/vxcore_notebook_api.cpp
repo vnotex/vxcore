@@ -460,10 +460,59 @@ VXCORE_API VxCoreError vxcore_notebook_history_get_resolved(VxCoreContextHandle 
       return VXCORE_ERR_OUT_OF_MEMORY;
     }
 
-    *out_history_json = json_copy;
+     *out_history_json = json_copy;
     return VXCORE_OK;
   } catch (...) {
     ctx->last_error = "Unknown error getting resolved notebook history";
     return VXCORE_ERR_UNKNOWN;
   }
 }
+
+VXCORE_API VxCoreError vxcore_notebook_set_read_only(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     bool read_only) {
+  if (!context || !notebook_id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    notebook->SetReadOnly(read_only);
+    return VXCORE_OK;
+  } catch (...) {
+    ctx->last_error = "Unknown error setting notebook read-only flag";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_notebook_is_read_only(VxCoreContextHandle context,
+                                                    const char *notebook_id,
+                                                    bool *out_read_only) {
+  if (!context || !notebook_id || !out_read_only) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    *out_read_only = notebook->IsReadOnly();
+    return VXCORE_OK;
+  } catch (...) {
+    ctx->last_error = "Unknown error getting notebook read-only flag";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+

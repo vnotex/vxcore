@@ -348,6 +348,14 @@ int64_t Notebook::GetLastSyncUtc() const {
   }
 }
 
+void Notebook::SetReadOnly(bool read_only) noexcept {
+  read_only_ = read_only;
+}
+
+bool Notebook::IsReadOnly() const noexcept {
+  return read_only_;
+}
+
 void Notebook::Close() {
   VXCORE_LOG_INFO("Closing notebook: id=%s", config_.id.c_str());
 

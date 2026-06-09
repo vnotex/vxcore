@@ -28,6 +28,12 @@ struct TagNode {
   nlohmann::json ToJson() const;
 };
 
+// Note: Read-only state is INTENTIONALLY NOT a NotebookConfig field.
+// Read-only is a per-device property (set on Notebook runtime via
+// Notebook::SetReadOnly, persisted in NotebookRecord). Putting it in
+// NotebookConfig would sync the flag across all devices, including
+// ones that have a valid PAT — which is the opposite of intent.
+// See .sisyphus/plans/open-notebook-remote-readonly.md fork B.
 struct VXCORE_API NotebookConfig {
   std::string id;
   std::string name;
@@ -92,6 +98,13 @@ class Notebook {
   void SetLastSyncUtc(int64_t ts_millis);
   int64_t GetLastSyncUtc() const;
 
+  // Per-device read-only flag. When set to true, the notebook cannot be
+  // mutated (no file/folder edits, saves, or sync registration).
+  // This is a runtime flag, persisted in NotebookRecord (session state).
+  // Both bundled and raw notebooks support this flag.
+  void SetReadOnly(bool read_only) noexcept;
+  bool IsReadOnly() const noexcept;
+
   // Closes the notebook, releasing all resources (DB connections, etc.).
   // Must be called before deleting the notebook's local data folder.
   void Close();
@@ -142,6 +155,7 @@ class Notebook {
   std::unique_ptr<FolderManager> folder_manager_;
   std::unique_ptr<MetadataStore> metadata_store_;
   EventManager *event_manager_ = nullptr;
+  bool read_only_ = false;
 
   static const char *kConfigFileName;
 };
