@@ -88,6 +88,34 @@ VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const
 VXCORE_API VxCoreError vxcore_notebook_open(VxCoreContextHandle context, const char *path,
                                             char **out_notebook_id);
 
+// Extended open accepting JSON options. T14 of open-notebook-remote-readonly:
+// generalizes vxcore_notebook_open so a clone-without-PAT path can land
+// directly in the read-only state without a follow-up
+// vxcore_notebook_set_read_only call (which would still race with session
+// persistence). The existing vxcore_notebook_open is preserved as a 1-line
+// shim that calls vxcore_notebook_open_ex(ctx, path, "{}", out_notebook_id)
+// -- back-compat is achieved by construction.
+//
+// options_json schema:
+//   { "readOnly": bool }  // default false; future keys ignored
+//
+// options_json semantics:
+//   - NULL or empty string -> treated as "{}"
+//   - Malformed JSON, top-level non-object (e.g. "[]") -> VXCORE_ERR_JSON_PARSE
+//   - Unknown keys are silently ignored (forward-compat)
+//
+// On VXCORE_OK: *out_notebook_id is set; the underlying Notebook has been
+// flipped via SetReadOnly() to the requested state AND the NotebookRecord
+// persisted to session.json reflects that state -- so a subsequent app
+// restart restores the same RO state (T15 wires the restore side).
+//
+// On VXCORE_ERR_JSON_PARSE: *out_notebook_id is cleared to nullptr and NO
+// notebook is registered (the orchestrator validates the options before
+// touching NotebookManager).
+VXCORE_API VxCoreError vxcore_notebook_open_ex(VxCoreContextHandle context, const char *path,
+                                                const char *options_json,
+                                                char **out_notebook_id);
+
 VXCORE_API VxCoreError vxcore_notebook_close(VxCoreContextHandle context, const char *notebook_id);
 
 VXCORE_API VxCoreError vxcore_notebook_list(VxCoreContextHandle context, char **out_notebooks_json);

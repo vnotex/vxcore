@@ -48,6 +48,16 @@ class NotebookManager {
   VxCoreError ResolveNodeById(const std::string &node_id, std::string &out_notebook_id,
                               std::string &out_relative_path);
 
+  // T14 of open-notebook-remote-readonly: persist the per-device read-only
+  // flag for a notebook into session.json. Updates the matching
+  // NotebookRecord.read_only and rewrites session config. No-op if the
+  // notebook is unknown. Best-effort -- I/O failures are logged but never
+  // propagated (matches the Notebook::SetLastSyncUtc semantics; the
+  // runtime flag has already been flipped by SetReadOnly(), so the worst
+  // outcome of a write failure is that the next session reverts to the
+  // pre-T14 default).
+  void RecordNotebookReadOnly(const std::string &notebook_id, bool read_only);
+
  private:
   void LoadOpenNotebooks();
   Notebook *FindNotebookByRootFolder(const std::string &root_folder);

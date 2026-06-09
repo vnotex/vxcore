@@ -336,9 +336,41 @@ VxCoreError NotebookManager::UpdateNotebookRecord(const Notebook &notebook) {
   record->id = notebook.GetId();
   record->root_folder = notebook.GetRootFolder();
   record->type = notebook.GetType();
+  // T14: persist the per-device read-only flag alongside the rest of the
+  // record so subsequent session-restore (T15's LoadOpenNotebooks change)
+  // can re-apply it via Notebook::SetReadOnly. Bundled and Raw notebooks
+  // both participate; the runtime flag lives on the base class.
+  record->read_only = notebook.IsReadOnly();
 
   config_manager_->SaveSessionConfig();
   return VXCORE_OK;
+}
+
+void NotebookManager::RecordNotebookReadOnly(const std::string &notebook_id, bool read_only) {
+  // T14: best-effort persistence of the per-device RO flag. The runtime
+  // flag has already been mutated on the Notebook by the caller via
+  // SetReadOnly; this method just mirrors it into the persisted
+  // NotebookRecord so the next session restore picks it up.
+  auto *notebook = GetNotebook(notebook_id);
+  if (!notebook) {
+    VXCORE_LOG_WARN("RecordNotebookReadOnly: notebook not found id=%s", notebook_id.c_str());
+    return;
+  }
+  // Defensive: callers should have already called SetReadOnly, but to make
+  // this method usable from any path (T14 calls it after SetReadOnly; future
+  // callers might pass through) we honor the explicit flag rather than
+  // re-reading notebook->IsReadOnly().
+  notebook->SetReadOnly(read_only);
+  // UpdateNotebookRecord reads notebook->IsReadOnly() into record->read_only
+  // and rewrites session.json. Failure (e.g. disk full) logs through the
+  // SaveSessionConfig path -- we don't propagate because the runtime flag
+  // is already correct and the caller (vxcore_notebook_open_ex) has already
+  // succeeded; failing here would orphan the registered notebook.
+  VxCoreError err = UpdateNotebookRecord(*notebook);
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_WARN("RecordNotebookReadOnly: UpdateNotebookRecord failed for id=%s, err=%d",
+                    notebook_id.c_str(), err);
+  }
 }
 
 NotebookRecord *NotebookManager::FindNotebookRecord(const std::string &id) {

@@ -47,6 +47,16 @@ add_vxcore_test(test_workspace)
 add_vxcore_test(test_buffer)
 add_vxcore_test(test_buffer_save_read_only)
 add_vxcore_test(test_notebook_mutators_read_only)
+# test_notebook_open_ex: T14 of open-notebook-remote-readonly plan. Verifies
+# the new vxcore_notebook_open_ex C API parses {"readOnly":true} from the
+# options JSON, flips the notebook's runtime SetReadOnly state, persists
+# read_only into the matching NotebookRecord in session.json, treats
+# malformed options_json as VXCORE_ERR_JSON_PARSE without registering a
+# notebook, and that the legacy vxcore_notebook_open shim still works
+# unchanged. Links via add_vxcore_test() (vxcore.dll provides both the
+# C API and the session persistence layer).
+add_vxcore_test(test_notebook_open_ex)
+target_link_libraries(test_notebook_open_ex PRIVATE nlohmann_json)
 add_vxcore_test(test_history)
 add_vxcore_test(test_log_handler)
 add_vxcore_test(test_session_persistence)
