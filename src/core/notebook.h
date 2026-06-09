@@ -54,10 +54,11 @@ struct VXCORE_API NotebookConfig {
   nlohmann::json ToJson() const;
 };
 
-struct NotebookRecord {
+struct VXCORE_API NotebookRecord {
   std::string id;
   std::string root_folder;
   NotebookType type;
+  bool read_only = false;
 
   NotebookRecord();
 

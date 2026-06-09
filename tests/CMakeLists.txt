@@ -24,6 +24,11 @@ endfunction()
 add_vxcore_test(test_core)
 add_vxcore_test(test_error_codes)
 add_vxcore_test(test_notebook)
+
+# test_session_record_readonly: Tests NotebookRecord serialization.
+# Needs internal C++ symbols so we link against vxcore library via add_vxcore_test.
+add_vxcore_test(test_session_record_readonly)
+
 add_vxcore_test(test_folder)
 add_vxcore_test(test_node)
 add_vxcore_test(test_search)

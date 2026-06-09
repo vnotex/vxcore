@@ -8,6 +8,7 @@
 #include "db/sqlite_metadata_store.h"
 #include "folder_manager.h"
 #include "metadata_store.h"
+#include "notebook_json_keys.h"
 #include "sync/sync_json_keys.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
@@ -136,6 +137,9 @@ NotebookRecord NotebookRecord::FromJson(const nlohmann::json &json) {
     std::string typeStr = json["type"].get<std::string>();
     record.type = (typeStr == "raw") ? NotebookType::Raw : NotebookType::Bundled;
   }
+  if (json.contains(kJsonKeyReadOnly) && json[kJsonKeyReadOnly].is_boolean()) {
+    record.read_only = json[kJsonKeyReadOnly].get<bool>();
+  }
   return record;
 }
 
@@ -144,6 +148,7 @@ nlohmann::json NotebookRecord::ToJson() const {
   json["id"] = id;
   json["rootFolder"] = root_folder;
   json["type"] = (type == NotebookType::Raw) ? "raw" : "bundled";
+  json[kJsonKeyReadOnly] = read_only;
   return json;
 }
 
