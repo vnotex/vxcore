@@ -3,6 +3,8 @@
 #include <chrono>
 #include <mutex>
 
+#include <vxcore/notebook_json_keys.h>
+
 #include "core/event_manager.h"
 #include "core/event_names.h"
 #include "core/notebook.h"
@@ -38,8 +40,8 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
   auto mark_dirty = [this](const std::string &event_name, const nlohmann::json &data) {
     auto mark_dirty_start = std::chrono::steady_clock::now();
     
-    if (data.contains("notebookId") && data["notebookId"].is_string()) {
-      std::string nb_id = data["notebookId"].get<std::string>();
+    if (data.contains(kJsonKeyNotebookId) && data[kJsonKeyNotebookId].is_string()) {
+      std::string nb_id = data[kJsonKeyNotebookId].get<std::string>();
       // Task 7.5 (F3.2): cache-presence is the correct predicate here — it
       // means "EnableSync has populated runtime state for this notebook in
       // this process". Wave 10.1 (F2.4 part 2): the read MUST take
@@ -128,7 +130,7 @@ void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
 
   // Emit sync.should_run OUTSIDE any SyncManager lock. EventManager listeners
   // may re-enter SyncManager (e.g., the Qt auto-route consumer that calls TriggerSync).
-  event_manager_->Emit(events::kSyncShouldRun, {{"notebookId", notebook_id}});
+  event_manager_->Emit(events::kSyncShouldRun, {{kJsonKeyNotebookId, notebook_id}});
   VXCORE_LOG_INFO("SyncManager: emitted sync.should_run for notebook: %s", notebook_id.c_str());
   
   auto maybe_enqueue_end = std::chrono::steady_clock::now();
@@ -486,8 +488,8 @@ VxCoreError SyncManager::CloneNotebook(const std::string &target_dir, const Sync
                     load_err);
     return load_err;
   }
-  if (!config_json.is_object() || !config_json.contains("id") ||
-      !config_json["id"].is_string() || config_json["id"].get<std::string>().empty()) {
+  if (!config_json.is_object() || !config_json.contains(kJsonKeyId) ||
+      !config_json[kJsonKeyId].is_string() || config_json[kJsonKeyId].get<std::string>().empty()) {
     VXCORE_LOG_WARN("SyncManager::CloneNotebook: cloned config.json has empty/missing id");
     return VXCORE_ERR_INVALID_STATE;
   }
@@ -606,7 +608,7 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
   // fan-out is "external" per AGENTS.md § SyncManager Locking Discipline
   // rule 3 — listeners may call back into SyncManager.
   if (event_manager_) {
-    event_manager_->Emit(events::kSyncStarted, {{"notebookId", notebook_id}});
+    event_manager_->Emit(events::kSyncStarted, {{kJsonKeyNotebookId, notebook_id}});
   }
 
   // EXTERNAL CALLS — outside state_mutex_. SetCancellation runs first so
@@ -662,7 +664,7 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
       files.push_back(c.path);
     }
     event_manager_->Emit(events::kSyncConflict,
-                         {{"notebookId", notebook_id}, {"files", files}});
+                         {{kJsonKeyNotebookId, notebook_id}, {"files", files}});
   }
 
   // T7 (sync-queue-convergence): emit sync.finished OUTSIDE state_mutex_.
@@ -670,7 +672,7 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
   // OK / CONFLICT / NETWORK / AUTH_FAILED / ... without a separate event.
   if (event_manager_) {
     event_manager_->Emit(events::kSyncFinished,
-                         {{"notebookId", notebook_id},
+                         {{kJsonKeyNotebookId, notebook_id},
                           {"result", static_cast<int>(sync_err)}});
   }
   return sync_err;

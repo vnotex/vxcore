@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <filesystem>
 
+#include <vxcore/notebook_json_keys.h>
+
 #include "buffer_provider.h"
 #include "config_manager.h"
 #include "core/event_manager.h"
@@ -406,7 +408,7 @@ VxCoreError BufferManager::SaveBuffer(const std::string &id) {
   const std::string nb_id = buffer->GetNotebookId();
   if (!nb_id.empty()) {
     EmitEvent(events::kFileSaved,
-              {{"notebookId", nb_id}, {"path", buffer->GetFilePath()}});
+              {{kJsonKeyNotebookId, nb_id}, {"path", buffer->GetFilePath()}});
   }
 
   return VXCORE_OK;

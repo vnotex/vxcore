@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <fstream>
 
+#include <vxcore/notebook_json_keys.h>
+
 #include "buffer_provider.h"
 #include "external_buffer_provider.h"
 #include "notebook.h"
@@ -392,11 +394,11 @@ BufferRecord::BufferRecord() {}
 
 BufferRecord BufferRecord::FromJson(const nlohmann::json &json) {
   BufferRecord record;
-  if (json.contains("id") && json["id"].is_string()) {
-    record.id = json["id"].get<std::string>();
+  if (json.contains(kJsonKeyId) && json[kJsonKeyId].is_string()) {
+    record.id = json[kJsonKeyId].get<std::string>();
   }
-  if (json.contains("notebookId") && json["notebookId"].is_string()) {
-    record.notebook_id = json["notebookId"].get<std::string>();
+  if (json.contains(kJsonKeyNotebookId) && json[kJsonKeyNotebookId].is_string()) {
+    record.notebook_id = json[kJsonKeyNotebookId].get<std::string>();
   }
   if (json.contains("filePath") && json["filePath"].is_string()) {
     record.file_path = json["filePath"].get<std::string>();
@@ -406,8 +408,8 @@ BufferRecord BufferRecord::FromJson(const nlohmann::json &json) {
 
 nlohmann::json BufferRecord::ToJson() const {
   nlohmann::json json = nlohmann::json::object();
-  json["id"] = id;
-  json["notebookId"] = notebook_id;
+  json[kJsonKeyId] = id;
+  json[kJsonKeyNotebookId] = notebook_id;
   json["filePath"] = file_path;
   return json;
 }

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <filesystem>
 
+#include <vxcore/notebook_json_keys.h>
+
 #include "bundled_notebook.h"
 #include "config_manager.h"
 #include "core/event_manager.h"
@@ -137,7 +139,7 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
 
     VXCORE_LOG_INFO("Notebook created successfully: id=%s", out_notebook_id.c_str());
     if (event_manager_) {
-      event_manager_->Emit(events::kNotebookOpened, {{"notebookId", out_notebook_id}});
+      event_manager_->Emit(events::kNotebookOpened, {{kJsonKeyNotebookId, out_notebook_id}});
     }
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &e) {
@@ -193,7 +195,7 @@ VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
 
   VXCORE_LOG_INFO("Notebook open successfully: id=%s", out_notebook_id.c_str());
   if (event_manager_) {
-    event_manager_->Emit(events::kNotebookOpened, {{"notebookId", out_notebook_id}});
+    event_manager_->Emit(events::kNotebookOpened, {{kJsonKeyNotebookId, out_notebook_id}});
   }
   return VXCORE_OK;
 }
@@ -227,7 +229,7 @@ VxCoreError NotebookManager::CloseNotebook(const std::string &notebook_id) {
 
   VXCORE_LOG_INFO("Notebook closed successfully: id=%s", notebook_id.c_str());
   if (event_manager_) {
-    event_manager_->Emit(events::kNotebookClosed, {{"notebookId", notebook_id}});
+    event_manager_->Emit(events::kNotebookClosed, {{kJsonKeyNotebookId, notebook_id}});
   }
   return VXCORE_OK;
 }
@@ -270,8 +272,8 @@ VxCoreError NotebookManager::GetNotebookConfig(const std::string &notebook_id,
 
 nlohmann::json NotebookManager::ToNotebookConfig(const Notebook &notebook) const {
   nlohmann::json json = notebook.GetConfig().ToJson();
-  json["rootFolder"] = notebook.GetRootFolder();
-  json["type"] = notebook.GetTypeStr();
+  json[kJsonKeyRootFolder] = notebook.GetRootFolder();
+  json[kJsonKeyType] = notebook.GetTypeStr();
   return json;
 }
 

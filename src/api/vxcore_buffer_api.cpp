@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include <nlohmann/json.hpp>
+#include <vxcore/notebook_json_keys.h>
 
 #include "api/api_utils.h"
 #include "core/buffer.h"
@@ -180,13 +181,13 @@ VXCORE_API VxCoreError vxcore_buffer_get(VxCoreContextHandle context, const char
 
     // Build JSON manually (Buffer is now a class, not struct with ToJson)
     nlohmann::json json = nlohmann::json::object();
-    json["id"] = buffer->GetId();
-    json["notebookId"] = buffer->GetNotebookId();
+    json[vxcore::kJsonKeyId] = buffer->GetId();
+    json[vxcore::kJsonKeyNotebookId] = buffer->GetNotebookId();
     json["filePath"] = buffer->GetFilePath();
     json["revision"] = buffer->GetRevision();
     json["modified"] = buffer->IsModified();
     json["state"] = static_cast<int>(buffer->GetState());
-    json["metadata"] = buffer->GetMetadata();
+    json[vxcore::kJsonKeyMetadata] = buffer->GetMetadata();
     json["lastModifiedTime"] = buffer->GetLastModifiedTime();
     json["contentLoaded"] = buffer->IsContentLoaded();
     // Note: content field omitted (retrieved separately via get_content APIs)
@@ -218,13 +219,13 @@ VXCORE_API VxCoreError vxcore_buffer_list(VxCoreContextHandle context, char **ou
     nlohmann::json json = nlohmann::json::array();
     for (const auto *buf : buffers) {
       nlohmann::json buf_json = nlohmann::json::object();
-      buf_json["id"] = buf->GetId();
-      buf_json["notebookId"] = buf->GetNotebookId();
+      buf_json[vxcore::kJsonKeyId] = buf->GetId();
+      buf_json[vxcore::kJsonKeyNotebookId] = buf->GetNotebookId();
       buf_json["filePath"] = buf->GetFilePath();
       buf_json["revision"] = buf->GetRevision();
       buf_json["modified"] = buf->IsModified();
       buf_json["state"] = static_cast<int>(buf->GetState());
-      buf_json["metadata"] = buf->GetMetadata();
+      buf_json[vxcore::kJsonKeyMetadata] = buf->GetMetadata();
       buf_json["lastModifiedTime"] = buf->GetLastModifiedTime();
       buf_json["contentLoaded"] = buf->IsContentLoaded();
       json.push_back(buf_json);

@@ -25,23 +25,23 @@ TagNode::TagNode(const std::string &name, const std::string &parent)
 
 TagNode TagNode::FromJson(const nlohmann::json &json) {
   TagNode tag;
-  if (json.contains("name") && json["name"].is_string()) {
-    tag.name = json["name"].get<std::string>();
+  if (json.contains(kJsonKeyName) && json[kJsonKeyName].is_string()) {
+    tag.name = json[kJsonKeyName].get<std::string>();
   }
-  if (json.contains("parent") && json["parent"].is_string()) {
-    tag.parent = json["parent"].get<std::string>();
+  if (json.contains(kJsonKeyParent) && json[kJsonKeyParent].is_string()) {
+    tag.parent = json[kJsonKeyParent].get<std::string>();
   }
-  if (json.contains("metadata") && json["metadata"].is_object()) {
-    tag.metadata = json["metadata"];
+  if (json.contains(kJsonKeyMetadata) && json[kJsonKeyMetadata].is_object()) {
+    tag.metadata = json[kJsonKeyMetadata];
   }
   return tag;
 }
 
 nlohmann::json TagNode::ToJson() const {
   nlohmann::json json = nlohmann::json::object();
-  json["name"] = name;
-  json["parent"] = parent;
-  json["metadata"] = metadata;
+  json[kJsonKeyName] = name;
+  json[kJsonKeyParent] = parent;
+  json[kJsonKeyMetadata] = metadata;
   return json;
 }
 
@@ -50,32 +50,32 @@ NotebookConfig::NotebookConfig()
 
 NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
   NotebookConfig config;
-  if (json.contains("id") && json["id"].is_string()) {
-    config.id = json["id"].get<std::string>();
+  if (json.contains(kJsonKeyId) && json[kJsonKeyId].is_string()) {
+    config.id = json[kJsonKeyId].get<std::string>();
   }
-  if (json.contains("name") && json["name"].is_string()) {
-    config.name = json["name"].get<std::string>();
+  if (json.contains(kJsonKeyName) && json[kJsonKeyName].is_string()) {
+    config.name = json[kJsonKeyName].get<std::string>();
   }
-  if (json.contains("description") && json["description"].is_string()) {
-    config.description = json["description"].get<std::string>();
+  if (json.contains(kJsonKeyDescription) && json[kJsonKeyDescription].is_string()) {
+    config.description = json[kJsonKeyDescription].get<std::string>();
   }
-  if (json.contains("assetsFolder") && json["assetsFolder"].is_string()) {
-    config.assets_folder = json["assetsFolder"].get<std::string>();
+  if (json.contains(kJsonKeyAssetsFolder) && json[kJsonKeyAssetsFolder].is_string()) {
+    config.assets_folder = json[kJsonKeyAssetsFolder].get<std::string>();
   }
   // Note: attachmentsFolder is deprecated - attachments are now stored in assets folder
-  if (json.contains("metadata") && json["metadata"].is_object()) {
-    config.metadata = json["metadata"];
+  if (json.contains(kJsonKeyMetadata) && json[kJsonKeyMetadata].is_object()) {
+    config.metadata = json[kJsonKeyMetadata];
   }
-  if (json.contains("tags") && json["tags"].is_array()) {
-    for (const auto &tag_json : json["tags"]) {
+  if (json.contains(kJsonKeyTags) && json[kJsonKeyTags].is_array()) {
+    for (const auto &tag_json : json[kJsonKeyTags]) {
       config.tags.push_back(TagNode::FromJson(tag_json));
     }
   }
-  if (json.contains("tagsModifiedUtc") && json["tagsModifiedUtc"].is_number_integer()) {
-    config.tags_modified_utc = json["tagsModifiedUtc"].get<int64_t>();
+  if (json.contains(kJsonKeyTagsModifiedUtc) && json[kJsonKeyTagsModifiedUtc].is_number_integer()) {
+    config.tags_modified_utc = json[kJsonKeyTagsModifiedUtc].get<int64_t>();
   }
-  if (json.contains("ignored") && json["ignored"].is_array()) {
-    for (const auto &item : json["ignored"]) {
+  if (json.contains(kJsonKeyIgnored) && json[kJsonKeyIgnored].is_array()) {
+    for (const auto &item : json[kJsonKeyIgnored]) {
       if (item.is_string()) {
         config.ignored.push_back(item.get<std::string>());
       }
@@ -99,23 +99,23 @@ NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
 
 nlohmann::json NotebookConfig::ToJson() const {
   nlohmann::json json = nlohmann::json::object();
-  json["id"] = id;
-  json["name"] = name;
-  json["description"] = description;
-  json["assetsFolder"] = assets_folder;
+  json[kJsonKeyId] = id;
+  json[kJsonKeyName] = name;
+  json[kJsonKeyDescription] = description;
+  json[kJsonKeyAssetsFolder] = assets_folder;
   // Note: attachmentsFolder is deprecated - attachments are now stored in assets folder
-  json["metadata"] = metadata;
+  json[kJsonKeyMetadata] = metadata;
   nlohmann::json tags_array = nlohmann::json::array();
   for (const auto &tag : tags) {
     tags_array.push_back(tag.ToJson());
   }
-  json["tags"] = std::move(tags_array);
-  json["tagsModifiedUtc"] = tags_modified_utc;
+  json[kJsonKeyTags] = std::move(tags_array);
+  json[kJsonKeyTagsModifiedUtc] = tags_modified_utc;
   nlohmann::json ignored_array = nlohmann::json::array();
   for (const auto &pattern : ignored) {
     ignored_array.push_back(pattern);
   }
-  json["ignored"] = std::move(ignored_array);
+  json[kJsonKeyIgnored] = std::move(ignored_array);
   json[kJsonKeySyncEnabled] = sync_enabled;
   json[kJsonKeySyncBackend] = sync_backend;
   json[kJsonKeySyncRemoteUrl] = sync_remote_url;
@@ -127,14 +127,14 @@ NotebookRecord::NotebookRecord() : type(NotebookType::Bundled) {}
 
 NotebookRecord NotebookRecord::FromJson(const nlohmann::json &json) {
   NotebookRecord record;
-  if (json.contains("id") && json["id"].is_string()) {
-    record.id = json["id"].get<std::string>();
+  if (json.contains(kJsonKeyId) && json[kJsonKeyId].is_string()) {
+    record.id = json[kJsonKeyId].get<std::string>();
   }
-  if (json.contains("rootFolder") && json["rootFolder"].is_string()) {
-    record.root_folder = json["rootFolder"].get<std::string>();
+  if (json.contains(kJsonKeyRootFolder) && json[kJsonKeyRootFolder].is_string()) {
+    record.root_folder = json[kJsonKeyRootFolder].get<std::string>();
   }
-  if (json.contains("type") && json["type"].is_string()) {
-    std::string typeStr = json["type"].get<std::string>();
+  if (json.contains(kJsonKeyType) && json[kJsonKeyType].is_string()) {
+    std::string typeStr = json[kJsonKeyType].get<std::string>();
     record.type = (typeStr == "raw") ? NotebookType::Raw : NotebookType::Bundled;
   }
   if (json.contains(kJsonKeyReadOnly) && json[kJsonKeyReadOnly].is_boolean()) {
@@ -145,9 +145,9 @@ NotebookRecord NotebookRecord::FromJson(const nlohmann::json &json) {
 
 nlohmann::json NotebookRecord::ToJson() const {
   nlohmann::json json = nlohmann::json::object();
-  json["id"] = id;
-  json["rootFolder"] = root_folder;
-  json["type"] = (type == NotebookType::Raw) ? "raw" : "bundled";
+  json[kJsonKeyId] = id;
+  json[kJsonKeyRootFolder] = root_folder;
+  json[kJsonKeyType] = (type == NotebookType::Raw) ? "raw" : "bundled";
   json[kJsonKeyReadOnly] = read_only;
   return json;
 }

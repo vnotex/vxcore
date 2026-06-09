@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <fstream>
 
+#include <vxcore/notebook_json_keys.h>
+
 #include "bundled_folder_manager.h"
 #include "event_manager.h"
 #include "event_names.h"
@@ -196,7 +198,7 @@ VxCoreError BundledNotebook::UpdateConfig(const NotebookConfig &config) {
     // unconditionally would crash on notebook creation.
     if (event_manager_ != nullptr) {
       event_manager_->Emit(events::kNotebookConfigChanged,
-                           {{"notebookId", config_.id}});
+                           {{kJsonKeyNotebookId, config_.id}});
     }
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &) {

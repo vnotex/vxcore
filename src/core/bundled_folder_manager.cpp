@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <vxcore/notebook_json_keys.h>
+
 #include "bundled_notebook.h"
 #include "core/content_processor/asset_utils.h"
 #include "core/content_processor/content_processor.h"
@@ -254,7 +256,7 @@ VxCoreError BundledFolderManager::SaveFolderConfig(const std::string &folder_pat
     file << json.dump(2);
     file.close();
     EmitEvent(events::kFolderConfigChanged,
-              {{"notebookId", notebook_->GetId()}, {"path", folder_path}});
+              {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", folder_path}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
@@ -378,7 +380,7 @@ VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
   VXCORE_LOG_DEBUG("CreateFolder: emitting folder.created notebook_id=%s path=%s",
                    notebook_->GetId().c_str(), folder_relative_path.c_str());
   EmitEvent(events::kFolderCreated,
-            {{"notebookId", notebook_->GetId()}, {"path", folder_relative_path}});
+            {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", folder_relative_path}});
   return VXCORE_OK;
 }
 
@@ -447,7 +449,7 @@ VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
 
     VXCORE_LOG_INFO("Folder deleted successfully: path=%s", clean_folder_path.c_str());
     EmitEvent(events::kFolderDeleted,
-              {{"notebookId", notebook_->GetId()}, {"path", clean_folder_path}});
+              {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", clean_folder_path}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
@@ -490,7 +492,7 @@ VxCoreError BundledFolderManager::UpdateFolderMetadata(const std::string &folder
     }
 
     EmitEvent(events::kFolderMetadataUpdated,
-              {{"notebookId", notebook_->GetId()}, {"path", clean_folder_path}});
+              {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", clean_folder_path}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
@@ -1045,7 +1047,7 @@ VxCoreError BundledFolderManager::CreateFile(const std::string &folder_path,
 
   auto file_rel_path = ConcatenatePaths(clean_folder_path, file_name);
   EmitEvent(events::kFileCreated,
-            {{"notebookId", notebook_->GetId()}, {"path", file_rel_path}});
+            {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", file_rel_path}});
   return VXCORE_OK;
 }
 
@@ -1102,7 +1104,7 @@ VxCoreError BundledFolderManager::DeleteFile(const std::string &file_path) {
 
     VXCORE_LOG_INFO("DeleteFile successful: file %s deleted", clean_file_path.c_str());
     EmitEvent(events::kFileDeleted,
-              {{"notebookId", notebook_->GetId()}, {"path", clean_file_path}});
+              {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", clean_file_path}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
@@ -1152,7 +1154,7 @@ VxCoreError BundledFolderManager::UpdateFileMetadata(const std::string &file_pat
     }
 
     EmitEvent(events::kFileMetadataUpdated,
-              {{"notebookId", notebook_->GetId()}, {"path", clean_file_path}});
+              {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", clean_file_path}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
@@ -1210,7 +1212,7 @@ VxCoreError BundledFolderManager::UpdateFileTags(const std::string &file_path,
     }
 
     EmitEvent(events::kFileTagsReplaced,
-              {{"notebookId", notebook_->GetId()},
+              {{kJsonKeyNotebookId, notebook_->GetId()},
                {"path", clean_file_path},
                {"tags", new_tags}});
     return VXCORE_OK;
@@ -1265,7 +1267,7 @@ VxCoreError BundledFolderManager::TagFile(const std::string &file_path,
   }
 
   EmitEvent(events::kFileTagged,
-            {{"notebookId", notebook_->GetId()}, {"path", clean_file_path}, {"tag", tag_name}});
+            {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", clean_file_path}, {"tag", tag_name}});
   return VXCORE_OK;
 }
 
@@ -1311,7 +1313,7 @@ VxCoreError BundledFolderManager::UntagFile(const std::string &file_path,
   }
 
   EmitEvent(events::kFileUntagged,
-            {{"notebookId", notebook_->GetId()}, {"path", clean_file_path}, {"tag", tag_name}});
+            {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", clean_file_path}, {"tag", tag_name}});
   return VXCORE_OK;
 }
 
@@ -1433,7 +1435,7 @@ VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
   VXCORE_LOG_INFO("RenameFile successful: file renamed from %s to %s", clean_file_path.c_str(),
                   ConcatenatePaths(folder_path, new_name).c_str());
   EmitEvent(events::kFileMoved,
-            {{"notebookId", notebook_->GetId()},
+            {{kJsonKeyNotebookId, notebook_->GetId()},
              {"oldPath", clean_file_path},
              {"newPath", ConcatenatePaths(folder_path, new_name)}});
   return VXCORE_OK;
@@ -1558,7 +1560,7 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
   VXCORE_LOG_INFO("MoveFile successful: file moved from %s to %s", clean_src_file_path.c_str(),
                   ConcatenatePaths(clean_dest_folder_path, file_name).c_str());
   EmitEvent(events::kFileMoved,
-            {{"notebookId", notebook_->GetId()},
+            {{kJsonKeyNotebookId, notebook_->GetId()},
              {"oldPath", clean_src_file_path},
              {"newPath", ConcatenatePaths(clean_dest_folder_path, file_name)}});
   return VXCORE_OK;
@@ -2783,7 +2785,7 @@ VxCoreError BundledFolderManager::UpdateFileAttachments(const std::string &file_
     }
 
     EmitEvent(events::kFileAttachmentsReplaced,
-              {{"notebookId", notebook_->GetId()},
+              {{kJsonKeyNotebookId, notebook_->GetId()},
                {"path", clean_file_path},
                {"attachments", new_attachments}});
     return VXCORE_OK;
@@ -2835,7 +2837,7 @@ VxCoreError BundledFolderManager::AddFileAttachment(const std::string &file_path
   }
 
   EmitEvent(events::kFileAttached,
-            {{"notebookId", notebook_->GetId()},
+            {{kJsonKeyNotebookId, notebook_->GetId()},
              {"path", clean_file_path},
              {"attachment", attachment}});
   return VXCORE_OK;
@@ -2884,7 +2886,7 @@ VxCoreError BundledFolderManager::DeleteFileAttachment(const std::string &file_p
   }
 
   EmitEvent(events::kFileDetached,
-            {{"notebookId", notebook_->GetId()},
+            {{kJsonKeyNotebookId, notebook_->GetId()},
              {"path", clean_file_path},
              {"attachment", attachment}});
   return VXCORE_OK;
