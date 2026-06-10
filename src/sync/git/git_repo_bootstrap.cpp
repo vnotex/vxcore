@@ -18,7 +18,34 @@ namespace vxcore {
 
 namespace {
 
+// File-scope notify_cb wired into BootstrapFromEmptyRemote's checkout. Pure
+// observability -- does NOT change semantics. If a future remote shape causes
+// a real conflict, each conflicting path is logged via VXCORE_LOG_WARN
+// instead of being lost in a "N conflicts" count.
+int LogCheckoutConflictCb(git_checkout_notify_t why, const char *path,
+                          const git_diff_file *baseline,
+                          const git_diff_file *target,
+                          const git_diff_file *workdir, void *payload) {
+  (void)baseline;
+  (void)target;
+  (void)workdir;
+  (void)payload;
+  if ((why & GIT_CHECKOUT_NOTIFY_CONFLICT) != 0 && path != nullptr) {
+    VXCORE_LOG_WARN(
+        "BootstrapFromEmptyRemote: checkout conflict on path: %s", path);
+  }
+  return 0;
+}
+
 // Shared helper for Branch 2 (clone) and Branch 3 (init+push).
+//
+// Deliberately leaves the working tree untouched: only initializes the gitdir,
+// creates the origin remote, and applies the default git config. The two
+// callers are responsible for seeding .gitignore / .gitattributes at the
+// correct point in their respective sequences -- BEFORE StageAll for
+// init+push (so defaults land in the initial commit), AFTER git_checkout_tree
+// for clone (so the remote's versions win on collision; WriteIfMissing then
+// seeds only when the remote did not provide them).
 //
 // Wave 6.3 F4.4: credentials reference replaced with
 // shared_ptr<ICredentialProvider>. The constructed transient pipeline holds
@@ -71,9 +98,6 @@ VxCoreError InitEmptyRepoWithRemote(const std::string &root_folder,
   if (cfg_err != VXCORE_OK) {
     return cfg_err;
   }
-
-  WriteIfMissing(root_folder + "/.gitignore", BuildGitignoreContent(config));
-  WriteIfMissing(root_folder + "/.gitattributes", kDefaultGitattributes);
 
   git_remotePtr remote;
   {
@@ -222,6 +246,8 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
   }
   if (rc != 0) {
     git_error_clear();
+    WriteIfMissing(root_folder + "/.gitignore", BuildGitignoreContent(config));
+    WriteIfMissing(root_folder + "/.gitattributes", kDefaultGitattributes);
     *out_repo = repo.release();
     return VXCORE_OK;
   }
@@ -238,10 +264,15 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
 
   git_checkout_options copts = GIT_CHECKOUT_OPTIONS_INIT;
   copts.checkout_strategy = GIT_CHECKOUT_SAFE;
+  copts.notify_flags = GIT_CHECKOUT_NOTIFY_CONFLICT;
+  copts.notify_cb = LogCheckoutConflictCb;
   rc = git_checkout_tree(repo.get(), target.get(), &copts);
   if (rc != 0) {
     return TranslateGitError(rc);
   }
+
+  WriteIfMissing(root_folder + "/.gitignore", BuildGitignoreContent(config));
+  WriteIfMissing(root_folder + "/.gitattributes", kDefaultGitattributes);
 
   git_oid target_oid = *git_object_id(target.get());
   target.reset();
@@ -285,6 +316,9 @@ VxCoreError BootstrapToEmptyRemote(const std::string &root_folder,
       return init_err;
     }
   }
+
+  WriteIfMissing(root_folder + "/.gitignore", BuildGitignoreContent(config));
+  WriteIfMissing(root_folder + "/.gitattributes", kDefaultGitattributes);
 
   GitSyncPipeline pipeline(repo.get(), git_dir, root_folder, config, creds_provider,
                            rebase_in_progress);

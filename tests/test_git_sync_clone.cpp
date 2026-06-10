@@ -23,7 +23,9 @@
 #include <git2.h>
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -172,6 +174,89 @@ int test_clone_fails_on_nonexistent_remote() {
   return 0;
 }
 
+// Regression for the libgit2 clone-conflict bug: when the remote already
+// contains a .gitignore (every VNote-pushed remote does, because
+// BootstrapToEmptyRemote seeds it on first push), BootstrapFromEmptyRemote
+// used to write vxcore's own default version of that file into the working
+// tree BEFORE git_checkout_tree(GIT_CHECKOUT_SAFE), so the checkout refused
+// to overwrite the untracked local copy and the call returned
+// VXCORE_ERR_SYNC_CONFLICT.
+//
+// The fix (sibling task T2 in git_repo_bootstrap.cpp) defers the local seed
+// to AFTER the checkout, so the remote's file wins the collision and the
+// post-checkout WriteIfMissing correctly no-ops on the path the remote
+// provided. The bug fires with ANY single colliding path; .gitattributes
+// is a symmetric code path and this single-file test exercises both.
+//
+// Note on test helper limitations: vxcore_test::commit_file initializes a
+// fresh local clone each call without fetching, so successive calls produce
+// orphan initial commits whose push to origin/main is rejected
+// non-fast-forward. We seed exactly ONE file (the bug-relevant one) to
+// stay within the helper's supported contract. The REMOTE-side .gitignore
+// content is INTENTIONALLY different from vxcore::kDefaultGitignore so the
+// post-clone equality assertion PROVES the remote won the collision — not
+// the vxcore default the buggy code path would have left behind.
+int test_clone_succeeds_when_remote_has_default_metadata_files() {
+  std::cout
+      << "  Running test_clone_succeeds_when_remote_has_default_metadata_files..."
+      << std::endl;
+
+  const std::string bare_path =
+      get_test_path("git_sync_clone_metadata_collision_bare");
+  const std::string target_dir =
+      get_test_path("git_sync_clone_metadata_collision_target");
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(target_dir);
+
+  // Seed the bare repo with a remote-authored .gitignore. Single commit
+  // so vxcore_test::commit_file's "fresh local clone, no fetch" pattern
+  // works cleanly (no non-fast-forward push rejection).
+  const std::string bare_url = vxcore_test::create_bare_repo(bare_path);
+  const std::string remote_gitignore_content =
+      "# remote-side gitignore\nbuild/\n";
+  vxcore_test::commit_file(bare_path, ".gitignore", remote_gitignore_content,
+                           "seed: .gitignore");
+
+  // Pre-create the empty target_dir (caller's contract per ISyncBackend::Clone).
+  create_directory(target_dir);
+
+  vxcore::SyncConfig config;
+  config.backend = "git";
+  config.remote_url = bare_url;
+  config.interval_seconds = 300;
+
+  vxcore::GitSyncBackend backend;
+  VxCoreError err = backend.Clone(target_dir, config);
+
+  // Bug-anchoring assertion: returns VXCORE_ERR_SYNC_CONFLICT (22) BEFORE
+  // T2's fix and VXCORE_OK AFTER.
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Remote's .gitignore content must have won the collision. Proves the fix
+  // path placed the remote's version on disk; WriteIfMissing then correctly
+  // no-op'd because the file already existed.
+  {
+    std::ifstream ifs(utf8_to_fs_path(target_dir + "/.gitignore"),
+                      std::ios::binary);
+    ASSERT_TRUE(ifs.is_open());
+    std::stringstream buf;
+    buf << ifs.rdbuf();
+    ASSERT_EQ(buf.str(), remote_gitignore_content);
+  }
+
+  // .gitattributes was NOT in the remote tree, so WriteIfMissing on the
+  // post-checkout path SHOULD have written vxcore's default. Confirms the
+  // "missing -> seed" branch of the new code in BootstrapFromEmptyRemote.
+  ASSERT_TRUE(path_exists(target_dir + "/.gitattributes"));
+
+  cleanup_test_dir(bare_path);
+  cleanup_test_dir(target_dir);
+  std::cout
+      << "  test_clone_succeeds_when_remote_has_default_metadata_files passed"
+      << std::endl;
+  return 0;
+}
+
 // Sanity check: capability bit advertisement matches the implementation.
 // (Anchors T6's SyncCapability::Cloneable contract for this backend.)
 int test_clone_capability_bit_set() {
@@ -191,6 +276,7 @@ int main() {
   RUN_TEST(test_clone_rejects_empty_remote_url);
   RUN_TEST(test_clone_happy_path_from_bare_fixture);
   RUN_TEST(test_clone_fails_on_nonexistent_remote);
+  RUN_TEST(test_clone_succeeds_when_remote_has_default_metadata_files);
   std::cout << "All test_git_sync_clone tests passed" << std::endl;
   return 0;
 }
