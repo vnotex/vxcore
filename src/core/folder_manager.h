@@ -140,6 +140,26 @@ class FolderManager {
   virtual VxCoreError ListFolderContents(const std::string &folder_path, bool include_folders_info,
                                          FolderContents &out_contents) = 0;
 
+  // Atomically rewrite the order of a folder's children (files / subfolders)
+  // in its persisted config. The submitted JSON has shape:
+  //   {"folders":["<name1>", ...], "files":["<name1>", ...]}
+  // Either key is OPTIONAL; a missing key means "do NOT touch that sub-array".
+  // When a key IS present, its array MUST be an EXACT permutation of the
+  // folder's existing children of that kind (no add / remove / rename — use
+  // the dedicated APIs for those). A mismatch returns
+  // VXCORE_ERR_PERMUTATION_MISMATCH and leaves disk untouched.
+  //
+  // A no-op (every present sub-array already matches the current order
+  // exactly) returns VXCORE_OK WITHOUT writing to disk and WITHOUT emitting
+  // any event.
+  //
+  // On the success path the implementation persists the new order via the
+  // notebook-type's normal "save folder config" path (so the umbrella
+  // folder.config_changed event still fires for auto-sync) and ALSO emits
+  // the dedicated folder.children_reordered structural event.
+  virtual VxCoreError SetChildrenOrder(const std::string &folder_path,
+                                       const std::string &ordered_json) = 0;
+
   // List external (unindexed) filesystem nodes in a folder.
   // External nodes exist on filesystem but are not tracked in metadata.
   // Returns files and folders that are present on disk but not in FolderConfig.

@@ -691,6 +691,39 @@ VXCORE_API VxCoreError vxcore_folder_get_available_name(VxCoreContextHandle cont
   }
 }
 
+VXCORE_API VxCoreError vxcore_folder_set_children_order(VxCoreContextHandle context,
+                                                        const char *notebook_id,
+                                                        const char *folder_path,
+                                                        const char *ordered_json) {
+  if (!context || !notebook_id || !folder_path || !ordered_json) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+    if (!folder_manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    // "" or "." → notebook root, matching vxcore_folder_list_children
+    // convention at line 307 above.
+    std::string path = std::string(folder_path).empty() ? "." : folder_path;
+    return folder_manager->SetChildrenOrder(path, ordered_json);
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_file_peek(VxCoreContextHandle context, const char *notebook_id,
                                         const char *file_path, size_t max_bytes,
                                         char **out_content) {

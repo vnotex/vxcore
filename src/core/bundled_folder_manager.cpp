@@ -2891,4 +2891,162 @@ VxCoreError BundledFolderManager::DeleteFileAttachment(const std::string &file_p
              {"attachment", attachment}});
   return VXCORE_OK;
 }
+
+VxCoreError BundledFolderManager::SetChildrenOrder(const std::string &folder_path,
+                                                   const std::string &ordered_json) {
+  if (notebook_ && notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+
+  // Parse the JSON payload. Empty / malformed / non-object → invalid param.
+  nlohmann::json payload;
+  try {
+    payload = nlohmann::json::parse(ordered_json);
+  } catch (const std::exception &e) {
+    VXCORE_LOG_WARN("SetChildrenOrder: failed to parse ordered_json: %s", e.what());
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  if (!payload.is_object()) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  const bool has_folders = payload.contains("folders");
+  const bool has_files = payload.contains("files");
+  if (!has_folders && !has_files) {
+    // Nothing to do; treat as a clean no-op (no write, no event).
+    return VXCORE_OK;
+  }
+
+  std::vector<std::string> new_folders;
+  std::vector<std::string> new_files;
+  try {
+    if (has_folders) {
+      if (!payload["folders"].is_array()) {
+        return VXCORE_ERR_INVALID_PARAM;
+      }
+      new_folders = payload["folders"].get<std::vector<std::string>>();
+    }
+    if (has_files) {
+      if (!payload["files"].is_array()) {
+        return VXCORE_ERR_INVALID_PARAM;
+      }
+      new_files = payload["files"].get<std::vector<std::string>>();
+    }
+  } catch (const std::exception &e) {
+    VXCORE_LOG_WARN("SetChildrenOrder: folders/files entries must be strings: %s", e.what());
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  const auto clean_folder_path = GetCleanRelativePath(folder_path);
+
+  FolderConfig *config = nullptr;
+  VxCoreError error = GetFolderConfig(clean_folder_path, &config);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+
+  // Permutation check (per sub-array if present) — multiset comparison so
+  // duplicate names would be detected too (though folder/file names are
+  // unique within a folder by construction). Mismatch leaves disk untouched.
+  if (has_folders) {
+    std::vector<std::string> current = config->folders;
+    std::vector<std::string> submitted = new_folders;
+    if (current.size() != submitted.size()) {
+      VXCORE_LOG_WARN("SetChildrenOrder: folders length mismatch (current=%zu, submitted=%zu)",
+                      current.size(), submitted.size());
+      return VXCORE_ERR_PERMUTATION_MISMATCH;
+    }
+    std::sort(current.begin(), current.end());
+    std::sort(submitted.begin(), submitted.end());
+    if (current != submitted) {
+      VXCORE_LOG_WARN("SetChildrenOrder: folders is not a permutation of existing children");
+      return VXCORE_ERR_PERMUTATION_MISMATCH;
+    }
+  }
+  if (has_files) {
+    std::vector<std::string> current;
+    current.reserve(config->files.size());
+    for (const auto &file : config->files) {
+      current.push_back(file.name);
+    }
+    std::vector<std::string> submitted = new_files;
+    if (current.size() != submitted.size()) {
+      VXCORE_LOG_WARN("SetChildrenOrder: files length mismatch (current=%zu, submitted=%zu)",
+                      current.size(), submitted.size());
+      return VXCORE_ERR_PERMUTATION_MISMATCH;
+    }
+    std::sort(current.begin(), current.end());
+    std::sort(submitted.begin(), submitted.end());
+    if (current != submitted) {
+      VXCORE_LOG_WARN("SetChildrenOrder: files is not a permutation of existing children");
+      return VXCORE_ERR_PERMUTATION_MISMATCH;
+    }
+  }
+
+  // No-op detection: every present sub-array already matches current order.
+  bool folders_unchanged = true;
+  bool files_unchanged = true;
+  if (has_folders) {
+    folders_unchanged = (new_folders == config->folders);
+  }
+  if (has_files) {
+    if (config->files.size() != new_files.size()) {
+      files_unchanged = false;
+    } else {
+      for (size_t i = 0; i < new_files.size(); ++i) {
+        if (config->files[i].name != new_files[i]) {
+          files_unchanged = false;
+          break;
+        }
+      }
+    }
+  }
+  if (folders_unchanged && files_unchanged) {
+    // No write, no event — disk truly untouched.
+    return VXCORE_OK;
+  }
+
+  // Reorder in-place via vector reassignment (NOT push_back).
+  if (has_folders && !folders_unchanged) {
+    config->folders = new_folders;
+  }
+  if (has_files && !files_unchanged) {
+    std::vector<FileRecord> reordered;
+    reordered.reserve(new_files.size());
+    for (const auto &name : new_files) {
+      FileRecord *rec = FindFileRecord(*config, name);
+      if (!rec) {
+        // Should be unreachable: permutation check above guarantees presence.
+        VXCORE_LOG_ERROR("SetChildrenOrder: missing FileRecord for permuted name=%s",
+                         name.c_str());
+        return VXCORE_ERR_PERMUTATION_MISMATCH;
+      }
+      reordered.push_back(*rec);
+    }
+    config->files = std::move(reordered);
+  }
+  config->modified_utc = GetCurrentTimestampMillis();
+
+  // Persist via the canonical save path (fires folder.config_changed for
+  // auto-sync wakeup) and then emit our dedicated structural event.
+  error = SaveFolderConfig(clean_folder_path, *config);
+  if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("SetChildrenOrder: SaveFolderConfig failed: error=%d", error);
+    return error;
+  }
+
+  nlohmann::json event_payload = {
+      {kJsonKeyNotebookId, notebook_->GetId()},
+      {"path", clean_folder_path},
+  };
+  if (has_folders && !folders_unchanged) {
+    event_payload["folders"] = new_folders;
+  }
+  if (has_files && !files_unchanged) {
+    event_payload["files"] = new_files;
+  }
+  EmitEvent(events::kFolderChildrenReordered, event_payload);
+  return VXCORE_OK;
+}
+
 }  // namespace vxcore

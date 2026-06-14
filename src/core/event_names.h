@@ -117,6 +117,19 @@ constexpr const char *kFileAttached = "file.attached";
 constexpr const char *kFileDetached = "file.detached";
 constexpr const char *kFileAttachmentsReplaced = "file.attachments_replaced";
 
+// folder.children_reordered: emitted by BundledFolderManager::SetChildrenOrder
+//   after the folder's vx.json has been atomically rewritten with the new
+//   child ordering. Fires on the success path ONLY — NOT on no-op (current
+//   order unchanged) and NOT on error paths (permutation mismatch, parse
+//   failure, missing folder). The umbrella folder.config_changed event still
+//   fires from SaveFolderConfig for auto-sync wakeup; this dedicated
+//   structural event lets richer UI consumers react to reorder specifically.
+//   Payload: {"notebookId": "<id>", "path": "<rel-folder-path>",
+//             "folders": ["<name1>", ...]?, "files": ["<name1>", ...]?}
+//   The folders/files arrays are present only when the corresponding
+//   sub-array was reordered in this call.
+constexpr const char *kFolderChildrenReordered = "folder.children_reordered";
+
 }  // namespace events
 }  // namespace vxcore
 

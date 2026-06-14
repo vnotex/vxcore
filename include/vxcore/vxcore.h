@@ -221,6 +221,40 @@ VXCORE_API VxCoreError vxcore_folder_get_available_name(VxCoreContextHandle cont
                                                         const char *folder_path,
                                                         const char *new_name,
                                                         char **out_available_name);
+
+// Atomically rewrite the order of a folder's children (files / subfolders) in
+// its vx.json. The submitted JSON has shape:
+//   {"folders":["<name1>", ...], "files":["<name1>", ...]}
+// Either key is optional; a missing key means "do NOT touch that sub-array".
+// When a key IS present, its array MUST be an EXACT permutation of the
+// folder's existing children of that kind (no add / remove / rename — use
+// the dedicated APIs for those); a mismatch returns
+// VXCORE_ERR_PERMUTATION_MISMATCH and leaves disk untouched.
+//
+// folder_path: Path relative to notebook root ("" or "." for the notebook root).
+// ordered_json: JSON object as described above.
+//
+// Behaviour:
+//   - VXCORE_OK on a successful reorder. The folder's vx.json is rewritten
+//     once (atomic from the consumer's perspective: a single SaveFolderConfig
+//     call), and a `folder.children_reordered` event is emitted on top of
+//     the existing `folder.config_changed` umbrella event.
+//   - VXCORE_OK on a no-op (every present sub-array already matches the
+//     current order exactly). Disk is NOT touched and NO event fires.
+//   - VXCORE_ERR_INVALID_PARAM if any argument is NULL or ordered_json is
+//     malformed / non-object.
+//   - VXCORE_ERR_NOT_FOUND if the notebook or folder cannot be located.
+//   - VXCORE_ERR_PERMUTATION_MISMATCH if the submitted list is not an exact
+//     permutation of existing children for the present sub-array(s). Disk
+//     is NOT touched and NO event fires.
+//   - VXCORE_ERR_NOT_IMPLEMENTED for raw notebooks (bundled only today).
+//
+// Architectural twin: see vxcore_workspace_set_buffer_order (below) for the
+// equivalent ordering API in the workspace layer.
+VXCORE_API VxCoreError vxcore_folder_set_children_order(VxCoreContextHandle context,
+                                                        const char *notebook_id,
+                                                        const char *folder_path,
+                                                        const char *ordered_json);
 // ============ File Operations ============
 VXCORE_API VxCoreError vxcore_file_create(VxCoreContextHandle context, const char *notebook_id,
                                           const char *folder_path, const char *file_name,
@@ -524,6 +558,8 @@ VXCORE_API VxCoreError vxcore_workspace_set_current_buffer(VxCoreContextHandle c
 // Set the buffer order in a workspace.
 // buffer_ids_json: JSON array of buffer ID strings defining the new order.
 // Only buffers already in the workspace are kept; unknown IDs are ignored.
+// See vxcore_folder_set_children_order for the equivalent ordering API in
+// the folder layer (file / subfolder reorder via JSON-string permutation).
 VXCORE_API VxCoreError vxcore_workspace_set_buffer_order(VxCoreContextHandle context,
                                                          const char *workspace_id,
                                                          const char *buffer_ids_json);

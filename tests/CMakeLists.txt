@@ -31,6 +31,15 @@ add_vxcore_test(test_session_record_readonly)
 
 add_vxcore_test(test_folder)
 
+# test_folder_child_order: Tasks T1+T5 of notebook-explorer-drag-reorder plan.
+# Covers vxcore_folder_set_children_order — atomic reorder of a folder's
+# children with permutation validation, no-op detection, and dedicated
+# folder.children_reordered event emission. Uses only the public C API
+# (vxcore.dll + vxcore_on_event subscription), so links via add_vxcore_test()
+# rather than direct-compile.
+add_vxcore_test(test_folder_child_order)
+target_link_libraries(test_folder_child_order PRIVATE nlohmann_json)
+
 # test_bundled_folder_manager_read_only: T9 of open-notebook-remote-readonly
 # plan. Verifies that every public mutator on BundledFolderManager honors the
 # Notebook::IsReadOnly() guard (returns VXCORE_ERR_READ_ONLY + leaves disk

@@ -68,6 +68,9 @@ class RawFolderManager : public FolderManager {
   VxCoreError ListFolderContents(const std::string &folder_path, bool include_folders_info,
                                  FolderContents &out_contents) override;
 
+  VxCoreError SetChildrenOrder(const std::string &folder_path,
+                               const std::string &ordered_json) override;
+
   VxCoreError ListExternalNodes(const std::string &folder_path,
                                 FolderContents &out_contents) override;
 

@@ -2091,4 +2091,15 @@ VxCoreError RawFolderManager::DeleteFileAttachment(const std::string &file_path,
   return VXCORE_ERR_UNSUPPORTED;
 }
 
+VxCoreError RawFolderManager::SetChildrenOrder(const std::string &folder_path,
+                                               const std::string &ordered_json) {
+  // Raw notebooks do not maintain a persisted child-order today (no vx.json
+  // FolderConfig.folders / .files vectors to permute). Reorder is bundled-
+  // notebook only; raw notebooks are out of scope per the vxcore AGENTS.md
+  // known-gaps table for raw notebook event/structural ops.
+  (void)folder_path;
+  (void)ordered_json;
+  return VXCORE_ERR_NOT_IMPLEMENTED;
+}
+
 }  // namespace vxcore
