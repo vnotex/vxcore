@@ -346,6 +346,12 @@ VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
 
   parent_config->folders.push_back(folder_name);
   parent_config->modified_utc = GetCurrentTimestampMillis();
+  // DIAG (temporary CI race investigation): record manager identity + parent
+  // cache key/pointer at create time, to compare against reorder time.
+  VXCORE_LOG_WARN("DIAG CreateFolder: this=%p parentKey='%s' parentCfg=%p folders=%zu cache_size=%zu",
+                  static_cast<const void *>(this), clean_parent_path.c_str(),
+                  static_cast<const void *>(parent_config), parent_config->folders.size(),
+                  config_cache_.size());
   error = SaveFolderConfig(clean_parent_path, *parent_config);
   if (error != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to save parent folder config: error=%d", error);
@@ -2943,6 +2949,28 @@ VxCoreError BundledFolderManager::SetChildrenOrder(const std::string &folder_pat
   VxCoreError error = GetFolderConfig(clean_folder_path, &config);
   if (error != VXCORE_OK) {
     return error;
+  }
+
+  // DIAG (temporary CI race investigation): dump manager identity + full cache
+  // state at reorder time so the CI log reveals why config->folders is empty.
+  {
+    std::string folders_dump;
+    for (const auto &f : config->folders) {
+      folders_dump += f;
+      folders_dump += ",";
+    }
+    VXCORE_LOG_WARN("DIAG SetChildrenOrder: this=%p in='%s' key='%s' config=%p folders=%zu [%s] "
+                    "files=%zu cache_size=%zu",
+                    static_cast<const void *>(this), folder_path.c_str(),
+                    clean_folder_path.c_str(), static_cast<const void *>(config),
+                    config->folders.size(), folders_dump.c_str(), config->files.size(),
+                    config_cache_.size());
+    for (const auto &kv : config_cache_) {
+      VXCORE_LOG_WARN("DIAG   cache['%s'] ptr=%p folders=%zu files=%zu", kv.first.c_str(),
+                      static_cast<const void *>(kv.second.get()),
+                      kv.second ? kv.second->folders.size() : 0,
+                      kv.second ? kv.second->files.size() : 0);
+    }
   }
 
   // Permutation check (per sub-array if present) — multiset comparison so
