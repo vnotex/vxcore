@@ -29,11 +29,13 @@
 // (T10 plan OUT list). Read-only is toggled via the C ABI
 // vxcore_notebook_set_read_only added in T3.
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
