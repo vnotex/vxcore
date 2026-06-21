@@ -8,6 +8,7 @@
 #include "core/metadata_store.h"
 #include "core/notebook_manager.h"
 #include "utils/file_utils.h"
+#include "vxcore/notebook_json_keys.h"
 #include "vxcore/vxcore.h"
 
 VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const char *notebook_id,
@@ -312,17 +313,43 @@ VXCORE_API VxCoreError vxcore_folder_list_children(VxCoreContextHandle context,
       return error;
     }
 
+    // Per-child existence reporting is a BUNDLED-only, OUTPUT-ONLY concern. Raw
+    // notebooks self-heal on read and must keep byte-identical listing output.
+    const bool is_bundled = notebook->GetType() == vxcore::NotebookType::Bundled;
+
+    // Folder-missing guard (bundled only): if the listed folder's own content
+    // dir is gone from disk, surface it as a missing node rather than emitting a
+    // phantom listing. Metadata (vx.json) may still exist, so ListFolderContents
+    // above succeeds; the disk check is what distinguishes a phantom folder.
+    if (is_bundled && !folder_manager->NodeContentExistsOnDisk(path, /*is_folder=*/true)) {
+      return VXCORE_ERR_NODE_NOT_EXISTS;
+    }
+
     // Build JSON response
     nlohmann::json result;
     nlohmann::json files_json = nlohmann::json::array();
     nlohmann::json folders_json = nlohmann::json::array();
 
     for (const auto &file : contents.files) {
-      files_json.push_back(file.ToJsonWithType());
+      nlohmann::json file_json = file.ToJsonWithType();
+      // Mark (do NOT filter) children whose on-disk content is gone, so the UI
+      // can gray + offer removal. Transient: never persisted to vx.json.
+      if (is_bundled) {
+        const std::string child_path = vxcore::ConcatenatePaths(path, file.name);
+        file_json[vxcore::kJsonKeyNodeExists] =
+            folder_manager->NodeContentExistsOnDisk(child_path, /*is_folder=*/false);
+      }
+      files_json.push_back(file_json);
     }
 
     for (const auto &folder : contents.folders) {
-      folders_json.push_back(folder.ToJson());
+      nlohmann::json folder_json = folder.ToJson();
+      if (is_bundled) {
+        const std::string child_path = vxcore::ConcatenatePaths(path, folder.name);
+        folder_json[vxcore::kJsonKeyNodeExists] =
+            folder_manager->NodeContentExistsOnDisk(child_path, /*is_folder=*/true);
+      }
+      folders_json.push_back(folder_json);
     }
 
     result["files"] = files_json;
