@@ -49,6 +49,15 @@ target_link_libraries(test_folder_child_order PRIVATE nlohmann_json)
 add_vxcore_test(test_bundled_folder_manager_read_only)
 
 add_vxcore_test(test_node)
+
+# test_missing_nodes: T4 of the missing-files-on-disk plan. Verifies the
+# reactive missing-content gate on the bundled read/access C-APIs
+# (vxcore_node_get_config / vxcore_node_get_metadata / vxcore_buffer_open)
+# returns VXCORE_ERR_NODE_NOT_EXISTS when an indexed node's content is gone
+# from disk, while vxcore_node_unindex still removes the phantom and raw
+# notebooks stay unaffected. Public C-API only, so links via add_vxcore_test().
+add_vxcore_test(test_missing_nodes)
+
 add_vxcore_test(test_search)
 add_vxcore_test(test_tag_sync)
 add_vxcore_test(test_filetype)
