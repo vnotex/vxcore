@@ -397,7 +397,17 @@ VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
   const fs::path content_fs_path = PathFromUtf8(content_path);
   const fs::path config_fs_path = PathFromUtf8(config_path);
 
-  if (!fs::exists(content_fs_path)) {
+  // A folder whose on-disk content was removed outside VNote is a "phantom":
+  // it must still be DELETABLE (the index entry is stale and the user wants it
+  // gone), so we must NOT hard-fail here just because the content dir is absent.
+  // Use the folder-specific on-disk check (IsDirectory) rather than fs::exists:
+  // if some unrelated FILE now sits at the folder's path, it is NOT this
+  // folder's content and must not be swept into the recycle bin.
+  const bool content_exists = FolderContentExistsOnDisk(clean_folder_path);
+  // Guard the contract for genuinely-unindexed paths: if there is neither
+  // content NOR metadata for this path, it was never a real node -> NOT_FOUND
+  // (and we must emit no folder.deleted event for a node that never existed).
+  if (!content_exists && !fs::exists(config_fs_path)) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
@@ -427,12 +437,16 @@ VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
   }
 
   try {
-    // Move content folder to recycle bin instead of permanent delete
-    VxCoreError move_error = MoveToRecycleBin(content_fs_path);
-    if (move_error != VXCORE_OK) {
-      VXCORE_LOG_WARN("Failed to move folder to recycle bin, falling back to delete: %s",
-                      content_path.c_str());
-      fs::remove_all(content_fs_path);
+    // Move content folder to recycle bin instead of permanent delete.
+    // For a phantom (content already gone) there is nothing to move/remove;
+    // skip straight to metadata cleanup below.
+    if (content_exists) {
+      VxCoreError move_error = MoveToRecycleBin(content_fs_path);
+      if (move_error != VXCORE_OK) {
+        VXCORE_LOG_WARN("Failed to move folder to recycle bin, falling back to delete: %s",
+                        content_path.c_str());
+        fs::remove_all(content_fs_path);
+      }
     }
 
     // Always permanently delete the config folder (vx.json metadata)

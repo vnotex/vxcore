@@ -65,6 +65,24 @@ std::string PathToUtf8ForTest(const std::filesystem::path &path) {
 #endif
 }
 
+bool RootListingContainsFolder(VxCoreContextHandle ctx, const char *notebook_id,
+                               const std::string &folder_name) {
+  char *children_json = nullptr;
+  VxCoreError err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  if (err != VXCORE_OK || !children_json) {
+    return false;
+  }
+
+  auto children = nlohmann::json::parse(children_json);
+  vxcore_string_free(children_json);
+  for (const auto &folder : children["folders"]) {
+    if (folder.value("name", std::string()) == folder_name) {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 int test_folder_create() {
@@ -2303,6 +2321,226 @@ int test_recycle_bin_folder_delete() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_recycle_bin_folder_nb"));
   std::cout << "  ✓ test_recycle_bin_folder_delete passed" << std::endl;
+  return 0;
+}
+
+int test_phantom_folder_delete() {
+  std::cout << "  Running test_phantom_folder_delete..." << std::endl;
+  cleanup_test_dir(get_test_path("test_phantom_folder_delete_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_phantom_folder_delete_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "phantom_dir", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "phantom_dir", "inner.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  const std::string root_path = get_test_path("test_phantom_folder_delete_nb");
+  const std::string folder_path = root_path + "/phantom_dir";
+  const std::string metadata_path = root_path + "/vx_notebook/contents/phantom_dir";
+  ASSERT(path_exists(folder_path));
+  ASSERT(path_exists(metadata_path + "/vx.json"));
+
+  std::error_code ec;
+  std::filesystem::remove_all(PathFromUtf8ForTest(folder_path), ec);
+  ASSERT(!ec);
+  ASSERT(!path_exists(folder_path));
+  ASSERT(path_exists(metadata_path + "/vx.json"));
+
+  err = vxcore_node_delete(ctx, notebook_id, "phantom_dir");
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_FALSE(RootListingContainsFolder(ctx, notebook_id, "phantom_dir"));
+  ASSERT(!path_exists(metadata_path));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_phantom_folder_delete_nb"));
+  std::cout << "  ✓ test_phantom_folder_delete passed" << std::endl;
+  return 0;
+}
+
+int test_phantom_folder_with_descendants_delete() {
+  std::cout << "  Running test_phantom_folder_with_descendants_delete..." << std::endl;
+  cleanup_test_dir(get_test_path("test_phantom_folder_descendants_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_phantom_folder_descendants_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "g", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+  err = vxcore_folder_create(ctx, notebook_id, "g", "h", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "g", "a.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+  err = vxcore_file_create(ctx, notebook_id, "g/h", "b.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  const std::string root_path = get_test_path("test_phantom_folder_descendants_nb");
+  const std::string folder_path = root_path + "/g";
+  const std::string metadata_path = root_path + "/vx_notebook/contents/g";
+  ASSERT(path_exists(folder_path + "/a.md"));
+  ASSERT(path_exists(folder_path + "/h/b.md"));
+  ASSERT(path_exists(metadata_path + "/vx.json"));
+  ASSERT(path_exists(metadata_path + "/h/vx.json"));
+
+  std::error_code ec;
+  std::filesystem::remove_all(PathFromUtf8ForTest(folder_path), ec);
+  ASSERT(!ec);
+  ASSERT(!path_exists(folder_path));
+  ASSERT(path_exists(metadata_path + "/h/vx.json"));
+
+  err = vxcore_node_delete(ctx, notebook_id, "g");
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_FALSE(RootListingContainsFolder(ctx, notebook_id, "g"));
+  ASSERT(!path_exists(metadata_path));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_phantom_folder_descendants_nb"));
+  std::cout << "  ✓ test_phantom_folder_with_descendants_delete passed" << std::endl;
+  return 0;
+}
+
+int test_delete_truly_nonexistent_folder() {
+  std::cout << "  Running test_delete_truly_nonexistent_folder..." << std::endl;
+  cleanup_test_dir(get_test_path("test_delete_truly_nonexistent_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_delete_truly_nonexistent_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_node_delete(ctx, notebook_id, "never_existed");
+  ASSERT_EQ(err, VXCORE_ERR_NOT_FOUND);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_delete_truly_nonexistent_nb"));
+  std::cout << "  ✓ test_delete_truly_nonexistent_folder passed" << std::endl;
+  return 0;
+}
+
+int test_phantom_folder_stray_file_at_path() {
+  std::cout << "  Running test_phantom_folder_stray_file_at_path..." << std::endl;
+  cleanup_test_dir(get_test_path("test_phantom_folder_stray_file_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_phantom_folder_stray_file_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "sf_dir", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  const std::string root_path = get_test_path("test_phantom_folder_stray_file_nb");
+  const std::string folder_path = root_path + "/sf_dir";
+  ASSERT(path_exists(folder_path));
+
+  std::error_code ec;
+  std::filesystem::remove_all(PathFromUtf8ForTest(folder_path), ec);
+  ASSERT(!ec);
+  ASSERT(!path_exists(folder_path));
+  std::ofstream stray_file(PathFromUtf8ForTest(folder_path), std::ios::binary);
+  stray_file << "stray";
+  stray_file.close();
+  ASSERT(path_exists(folder_path));
+
+  err = vxcore_node_delete(ctx, notebook_id, "sf_dir");
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT(path_exists(folder_path));
+  ASSERT_FALSE(RootListingContainsFolder(ctx, notebook_id, "sf_dir"));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_phantom_folder_stray_file_nb"));
+  std::cout << "  ✓ test_phantom_folder_stray_file_at_path passed" << std::endl;
+  return 0;
+}
+
+int test_phantom_folder_delete_readonly() {
+  std::cout << "  Running test_phantom_folder_delete_readonly..." << std::endl;
+  cleanup_test_dir(get_test_path("test_phantom_folder_readonly_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_phantom_folder_readonly_nb").c_str(),
+                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "ro_dir", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  const std::string root_path = get_test_path("test_phantom_folder_readonly_nb");
+  const std::string folder_path = root_path + "/ro_dir";
+  const std::string metadata_path = root_path + "/vx_notebook/contents/ro_dir";
+  ASSERT(path_exists(folder_path));
+  ASSERT(path_exists(metadata_path + "/vx.json"));
+
+  std::error_code ec;
+  std::filesystem::remove_all(PathFromUtf8ForTest(folder_path), ec);
+  ASSERT(!ec);
+  ASSERT(!path_exists(folder_path));
+  ASSERT(path_exists(metadata_path + "/vx.json"));
+
+  err = vxcore_notebook_set_read_only(ctx, notebook_id, 1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_node_delete(ctx, notebook_id, "ro_dir");
+  ASSERT_EQ(err, VXCORE_ERR_READ_ONLY);
+  ASSERT(path_exists(metadata_path + "/vx.json"));
+
+  err = vxcore_notebook_set_read_only(ctx, notebook_id, 0);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_phantom_folder_readonly_nb"));
+  std::cout << "  ✓ test_phantom_folder_delete_readonly passed" << std::endl;
   return 0;
 }
 
@@ -9139,6 +9377,11 @@ int main() {
   // Recycle bin tests
   RUN_TEST(test_recycle_bin_file_delete);
   RUN_TEST(test_recycle_bin_folder_delete);
+  RUN_TEST(test_phantom_folder_delete);
+  RUN_TEST(test_phantom_folder_with_descendants_delete);
+  RUN_TEST(test_delete_truly_nonexistent_folder);
+  RUN_TEST(test_phantom_folder_stray_file_at_path);
+  RUN_TEST(test_phantom_folder_delete_readonly);
   RUN_TEST(test_recycle_bin_name_conflict);
   RUN_TEST(test_recycle_bin_get_path);
   RUN_TEST(test_recycle_bin_empty);
