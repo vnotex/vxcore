@@ -100,6 +100,11 @@ inline constexpr const char *kJsonKeyCloneTargetDir = "targetDir";  // alias
 inline constexpr const char *kJsonKeyCloneOptions = "options";
 inline constexpr const char *kJsonKeyIsReadOnly = "isReadOnly";
 
+// ---------- Folder listing keys (vxcore_folder_list_children) ---------------
+// Transient per-child metadata emitted in folder listing JSON. These keys are
+// OUTPUT-ONLY and MUST NOT be persisted to vx.json or any config file.
+inline constexpr const char *kJsonKeyNodeExists = "exists";
+
 }  // namespace vxcore
 
 #endif  // VXCORE_NOTEBOOK_JSON_KEYS_H
