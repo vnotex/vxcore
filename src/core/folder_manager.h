@@ -187,6 +187,17 @@ class FolderManager {
   VxCoreError GetAvailableName(const std::string &folder_path, const std::string &new_name,
                                std::string &out_available_name);
 
+  // Returns whether the node's CONTENT currently exists on disk with the
+  // expected type (file vs folder). The default implementation returns true
+  // ("do not gate"), so notebook types that self-heal or do not track on-disk
+  // presence (e.g. raw notebooks) are unaffected without any change. Bundled
+  // notebooks override this to detect indexed-but-missing nodes.
+  virtual bool NodeContentExistsOnDisk(const std::string &relative_path, bool is_folder) const {
+    (void)relative_path;
+    (void)is_folder;
+    return true;
+  }
+
  protected:
   inline std::string GetCleanRelativePath(const std::string &path) const {
     return notebook_->GetCleanRelativePath(path);

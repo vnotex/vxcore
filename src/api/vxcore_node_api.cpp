@@ -63,6 +63,15 @@ VXCORE_API VxCoreError vxcore_node_get_config(VxCoreContextHandle context, const
       return err;
     }
 
+    // Reactive missing-content gate (bundled notebooks only): the node is
+    // indexed in metadata but its content is gone from disk. The base
+    // FolderManager default returns true, so raw notebooks are unaffected.
+    if (!folder_manager->NodeContentExistsOnDisk(node_path,
+                                                 node_type == vxcore::NodeType::Folder)) {
+      ctx->last_error = "Node no longer exists on disk";
+      return VXCORE_ERR_NODE_NOT_EXISTS;
+    }
+
     // Get config with type information
     std::string config_json;
     if (node_type == vxcore::NodeType::File) {
@@ -326,6 +335,15 @@ VXCORE_API VxCoreError vxcore_node_get_metadata(VxCoreContextHandle context,
     VxCoreError err = DetectNodeType(notebook, node_path, node_type);
     if (err != VXCORE_OK) {
       return err;
+    }
+
+    // Reactive missing-content gate (bundled notebooks only): the node is
+    // indexed in metadata but its content is gone from disk. The base
+    // FolderManager default returns true, so raw notebooks are unaffected.
+    if (!folder_manager->NodeContentExistsOnDisk(node_path,
+                                                 node_type == vxcore::NodeType::Folder)) {
+      ctx->last_error = "Node no longer exists on disk";
+      return VXCORE_ERR_NODE_NOT_EXISTS;
     }
 
     std::string metadata_json;

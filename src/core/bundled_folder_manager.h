@@ -122,6 +122,12 @@ class BundledFolderManager : public FolderManager {
   // Returns the path to the recycle bin folder
   std::string GetRecycleBinPath() const;
 
+  // Bridges the private FileContentExistsOnDisk / FolderContentExistsOnDisk
+  // helpers to the FolderManager base interface so the C-API layer (which only
+  // holds a FolderManager*) can gate read/access operations on bundled nodes
+  // whose content has disappeared from disk.
+  bool NodeContentExistsOnDisk(const std::string &relative_path, bool is_folder) const override;
+
  private:
   VxCoreError GetFolderConfig(const std::string &folder_path, FolderConfig **out_config,
                               const std::string *parent_id = nullptr);
@@ -150,6 +156,14 @@ class BundledFolderManager : public FolderManager {
   VxCoreError ProcessCopiedFolderTree(const std::string &dest_path,
                                       const std::string &parent_id,
                                       const std::string &new_name = "");
+
+  // Check if a file's content exists on disk at the expected location.
+  // Returns true IFF the on-disk content path is a regular file.
+  bool FileContentExistsOnDisk(const std::string &relative_path) const;
+
+  // Check if a folder's content exists on disk at the expected location.
+  // Returns true IFF the on-disk content path is a directory.
+  bool FolderContentExistsOnDisk(const std::string &relative_path) const;
 
   // Recycle bin helpers
   std::string GenerateUniqueRecycleBinName(const std::string &name) const;

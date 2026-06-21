@@ -9,6 +9,7 @@
 #include "core/buffer_manager.h"
 #include "core/buffer_provider.h"
 #include "core/context.h"
+#include "core/folder_manager.h"
 #include "core/metadata_store.h"
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
@@ -54,6 +55,26 @@ VXCORE_API VxCoreError vxcore_buffer_open(VxCoreContextHandle context, const cha
 
   try {
     std::string nb_id = notebook_id ? notebook_id : "";
+
+    // Reactive missing-content gate (bundled notebooks only): refuse to open a
+    // buffer for a file that is indexed in metadata but whose content is gone
+    // from disk. Only applies when a notebook context is present (external
+    // files have an empty notebook_id and resolve their own absolute path).
+    // The base FolderManager default returns true, so raw notebooks and any
+    // other manager are unaffected without an explicit type branch here. This
+    // does NOT change the already-open-buffer VXCORE_BUFFER_FILE_MISSING path.
+    if (!nb_id.empty() && ctx->notebook_manager) {
+      vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(nb_id);
+      if (notebook) {
+        vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
+        if (folder_manager &&
+            !folder_manager->NodeContentExistsOnDisk(file_path, /*is_folder=*/false)) {
+          ctx->last_error = "Node no longer exists on disk";
+          return VXCORE_ERR_NODE_NOT_EXISTS;
+        }
+      }
+    }
+
     std::string id = ctx->buffer_manager->OpenBuffer(nb_id, file_path);
     if (id.empty()) {
       return VXCORE_ERR_INVALID_PARAM;

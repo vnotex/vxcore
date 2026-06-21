@@ -3049,4 +3049,19 @@ VxCoreError BundledFolderManager::SetChildrenOrder(const std::string &folder_pat
   return VXCORE_OK;
 }
 
+bool BundledFolderManager::FileContentExistsOnDisk(const std::string &relative_path) const {
+  const std::string content_path = GetContentPath(relative_path);
+  return IsRegularFile(content_path);
+}
+
+bool BundledFolderManager::FolderContentExistsOnDisk(const std::string &relative_path) const {
+  const std::string content_path = GetContentPath(relative_path);
+  return IsDirectory(content_path);
+}
+
+bool BundledFolderManager::NodeContentExistsOnDisk(const std::string &relative_path,
+                                                   bool is_folder) const {
+  return is_folder ? FolderContentExistsOnDisk(relative_path) : FileContentExistsOnDisk(relative_path);
+}
+
 }  // namespace vxcore
