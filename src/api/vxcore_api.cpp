@@ -121,6 +121,8 @@ VXCORE_API const char *vxcore_error_message(VxCoreError error) {
       return "Notebook is read-only";
     case VXCORE_ERR_PERMUTATION_MISMATCH:
       return "Submitted order is not an exact permutation of existing children";
+    case VXCORE_ERR_NODE_NOT_EXISTS:
+      return "Node no longer exists on disk";
     default:
       return "Unknown error";
   }
