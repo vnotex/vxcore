@@ -253,14 +253,14 @@ int test_notebook_config_sync_fields() {
   nlohmann::json config = nlohmann::json::parse(config_json);
   ASSERT_EQ(config["syncEnabled"].get<bool>(), false);
   ASSERT_EQ(config["syncBackend"].get<std::string>(), "");
-  ASSERT_EQ(config["syncIntervalSeconds"].get<int>(), 60);
+  ASSERT_EQ(config["autoSyncEnabled"].get<bool>(), true);
   vxcore_string_free(config_json);
 
   // Update with sync fields
   err = vxcore_notebook_update_config(
       ctx, notebook_id,
       "{\"syncEnabled\":true,\"syncBackend\":\"git\","
-      "\"syncRemoteUrl\":\"https://example.com/repo.git\",\"syncIntervalSeconds\":120}");
+      "\"syncRemoteUrl\":\"https://example.com/repo.git\",\"autoSyncEnabled\":false}");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Read back and verify
@@ -273,7 +273,7 @@ int test_notebook_config_sync_fields() {
   ASSERT_EQ(updated["syncEnabled"].get<bool>(), true);
   ASSERT_EQ(updated["syncBackend"].get<std::string>(), "git");
   ASSERT_EQ(updated["syncRemoteUrl"].get<std::string>(), "https://example.com/repo.git");
-  ASSERT_EQ(updated["syncIntervalSeconds"].get<int>(), 120);
+  ASSERT_EQ(updated["autoSyncEnabled"].get<bool>(), false);
   vxcore_string_free(updated_json);
 
   vxcore_string_free(notebook_id);
@@ -288,12 +288,12 @@ int test_sync_config_from_json_with_backend_options() {
   nlohmann::json j = {
       {"backend", "webdav"},
       {"remoteUrl", "https://example.com/dav"},
-      {"intervalSeconds", 120},
+      {"autoSyncEnabled", false},
       {"backendOptions", {{"authHeader", "Bearer token123"}, {"depth", 1}}}};
   auto config = vxcore::SyncConfig::FromJson(j);
   ASSERT_EQ(config.backend, "webdav");
   ASSERT_EQ(config.remote_url, "https://example.com/dav");
-  ASSERT_EQ(config.interval_seconds, 120);
+  ASSERT_FALSE(config.auto_sync_enabled);
   ASSERT_TRUE(config.backend_options.is_object());
   ASSERT_EQ(config.backend_options["authHeader"], "Bearer token123");
   ASSERT_EQ(config.backend_options["depth"], 1);
@@ -320,13 +320,13 @@ int test_sync_config_roundtrip_backend_options() {
   vxcore::SyncConfig original;
   original.backend = "custom";
   original.remote_url = "custom://host";
-  original.interval_seconds = 60;
+  original.auto_sync_enabled = false;
   original.backend_options = {{"nested", {{"key", "value"}}}, {"list", {1, 2, 3}}};
   auto j = original.ToJson();
   auto restored = vxcore::SyncConfig::FromJson(j);
   ASSERT_EQ(restored.backend, original.backend);
   ASSERT_EQ(restored.remote_url, original.remote_url);
-  ASSERT_EQ(restored.interval_seconds, original.interval_seconds);
+  ASSERT_EQ(restored.auto_sync_enabled, original.auto_sync_enabled);
   ASSERT_EQ(restored.backend_options, original.backend_options);
   std::cout << "  \xE2\x9C\x93 test_sync_config_roundtrip_backend_options passed" << std::endl;
   return 0;
@@ -600,7 +600,7 @@ int test_auto_sync_does_not_double_emit() {
 
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\","
-                               "\"intervalSeconds\":1}",
+                                "\"autoSyncEnabled\":true}",
                                nullptr),
             VXCORE_OK);
 
@@ -754,7 +754,7 @@ int test_auto_sync_conflict_carries_files() {
 
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\","
-                               "\"intervalSeconds\":1}",
+                                "\"autoSyncEnabled\":true}",
                                nullptr),
             VXCORE_OK);
 
@@ -849,7 +849,7 @@ int test_tag_file_triggers_sync_chain() {
   // unobservable.
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\","
-                               "\"intervalSeconds\":1}",
+                                "\"autoSyncEnabled\":true}",
                                nullptr),
             VXCORE_OK);
 
@@ -961,7 +961,7 @@ int test_rename_folder_triggers_sync_chain_via_persistence() {
   // unobservable.
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\","
-                               "\"intervalSeconds\":1}",
+                                "\"autoSyncEnabled\":true}",
                                nullptr),
             VXCORE_OK);
 
@@ -1028,6 +1028,70 @@ int test_rename_folder_triggers_sync_chain_via_persistence() {
   return 0;
 }
 
+// ----------------------------------------------------------------------------
+// Auto-sync gate (sync-interval-debounce): enabling a notebook with
+// "autoSyncEnabled":false must suppress the sync.should_run emission that the
+// auto path would otherwise fire when a watched mutation marks the notebook
+// dirty. The gate lives in SyncManager::MaybeEnqueueSync (it skips the Emit
+// when effective_cfg.auto_sync_enabled is false). Crucially the notebook is
+// STILL marked dirty (the polling-fallback half of the contract via
+// GetDirtyNotebooks); only the event-driven wakeup is suppressed. This mirrors
+// the "should NOT emit" assertions in test_buffer_save_marks_dirty.cpp and the
+// dirty-tracking gold standard in test_event_manager.cpp.
+// ----------------------------------------------------------------------------
+int test_auto_sync_disabled_suppresses_should_run() {
+  std::cout << "  Running test_auto_sync_disabled_suppresses_should_run..." << std::endl;
+  cleanup_test_dir(get_test_path("test_auto_sync_disabled"));
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_auto_sync_disabled").c_str(),
+                                   "{\"name\":\"AutoSyncDisabled\"}", VXCORE_NOTEBOOK_BUNDLED,
+                                   &notebook_id),
+            VXCORE_OK);
+
+  // Enable sync but with the auto-sync gate OFF for this notebook.
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\","
+                               "\"autoSyncEnabled\":false}",
+                               nullptr),
+            VXCORE_OK);
+
+  // Subscribe a counter to sync.should_run. The capture-less lambda converts
+  // to a C function pointer matching VxCoreEventCallback.
+  std::atomic<int> should_run_count{0};
+  auto count_cb = [](const char *, const char *, void *userdata) {
+    static_cast<std::atomic<int> *>(userdata)->fetch_add(1);
+  };
+  ASSERT_EQ(vxcore_on_event(ctx, "sync.should_run", count_cb, &should_run_count), VXCORE_OK);
+
+  // ACT: a watched mutation. file.created -> mark_dirty -> MaybeEnqueueSync,
+  // whose gate suppresses the emit because auto_sync_enabled == false.
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "no_auto.md", &file_id), VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // ASSERT 1: the gate suppressed EVERY sync.should_run emit.
+  ASSERT_EQ(should_run_count.load(), 0);
+
+  // ASSERT 2: the notebook is STILL dirty. The gate suppresses only the
+  // event-driven wakeup; mark_dirty's DirtyTracker entry (the polling
+  // fallback) is unaffected. This proves we suppressed emission, not tracking.
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  auto dirty = vctx->sync_manager->GetDirtyNotebooks();
+  ASSERT_EQ(dirty.size(), 1u);
+  ASSERT_EQ(dirty[0], std::string(notebook_id));
+
+  vxcore_off_event(ctx, "sync.should_run", count_cb);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_auto_sync_disabled"));
+  std::cout << "  \xE2\x9C\x93 test_auto_sync_disabled_suppresses_should_run passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running sync tests..." << std::endl;
 
@@ -1057,6 +1121,7 @@ int main() {
   RUN_TEST(test_auto_sync_conflict_carries_files);
   RUN_TEST(test_tag_file_triggers_sync_chain);
   RUN_TEST(test_rename_folder_triggers_sync_chain_via_persistence);
+  RUN_TEST(test_auto_sync_disabled_suppresses_should_run);
 
   std::cout << "\xE2\x9C\x93 All sync tests passed" << std::endl;
   return 0;

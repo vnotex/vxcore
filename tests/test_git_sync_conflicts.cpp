@@ -249,7 +249,7 @@ void setup_conflicted_backend(vxcore::GitSyncBackend &backend,
   vxcore::SyncConfig config;
   config.backend = "git";
   config.remote_url = bare_url;
-  config.interval_seconds = 300;
+  config.auto_sync_enabled = true;
 
   if (backend.Initialize(notebook_root, config) != VXCORE_OK) {
     throw std::runtime_error("setup: Initialize failed");

@@ -101,7 +101,7 @@ int test_git_init_reopens_existing_repo() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     VxCoreError rc = backend.Initialize(notebook_root, config);
@@ -145,7 +145,7 @@ int test_git_init_rejects_url_mismatch() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url_b;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     VxCoreError rc = backend.Initialize(notebook_root, config);
@@ -190,7 +190,7 @@ int test_git_init_rejects_both_non_empty() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     VxCoreError rc = backend.Initialize(notebook_root, config);
@@ -229,7 +229,7 @@ int test_git_init_rejects_corrupt_repo() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = "file:///tmp/does-not-matter.git";
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     VxCoreError rc = backend.Initialize(notebook_root, config);
@@ -318,7 +318,7 @@ int test_git_init_applies_config() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     {
       vxcore::GitSyncBackend backend;
@@ -365,7 +365,7 @@ int test_git_init_uses_credential_author_when_set() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     {
       vxcore::GitSyncBackend backend;
@@ -415,7 +415,7 @@ int test_git_init_clone_into_empty_notebook() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     VxCoreError rc = backend.Initialize(notebook_root, config);
@@ -466,7 +466,7 @@ int test_git_init_clone_with_pat_uses_3arg_overload() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     auto provider = std::make_shared<vxcore::MockCredentialProvider>();
@@ -509,7 +509,7 @@ int test_git_init_clone_uses_separate_gitdir() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     VxCoreError rc = backend.Initialize(notebook_root, config);
@@ -560,7 +560,7 @@ int test_git_init_push_existing_notebook_to_empty_remote() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     {
       vxcore::GitSyncBackend backend;

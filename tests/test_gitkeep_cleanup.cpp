@@ -61,7 +61,7 @@ VxCoreError setup_synced_notebook(Fixture &f, const std::string &test_tag) {
   vxcore::SyncConfig config;
   config.backend = "git";
   config.remote_url = bare_url;
-  config.interval_seconds = 300;
+  config.auto_sync_enabled = true;
   return f.backend.Initialize(f.notebook_root, config);
 }
 

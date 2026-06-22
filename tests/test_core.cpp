@@ -141,23 +141,24 @@ int test_config_by_name_both_locations() {
 }
 
 // Regression test for vxcore_context_update_config: every recognized top-level
-// field (version, search, fileTypes, recoverLastSession) must be updatable,
-// partial updates must preserve untouched fields, and unknown keys must be
-// ignored without dropping known state. Prior to the merge_patch rewrite the
-// function only recognized recoverLastSession; all other fields were silently
-// dropped on every save.
+// field (version, search, fileTypes, recoverLastSession, autoSyncDebounceSeconds)
+// must be updatable, partial updates must preserve untouched fields, and unknown
+// keys must be ignored without dropping known state. Prior to the merge_patch
+// rewrite the function only recognized recoverLastSession; all other fields were
+// silently dropped on every save.
 int test_update_config_merges_all_fields() {
   std::cout << "  Running test_update_config_merges_all_fields..." << std::endl;
   VxCoreContextHandle ctx = nullptr;
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
 
-  // 1. Bulk update: send all four recognized fields plus an unknown key.
+  // 1. Bulk update: send all five recognized fields plus an unknown key.
   const char *bulk =
       "{"
       "\"version\":\"9.9.9\","
       "\"search\":{\"backends\":[\"only-rg\"]},"
       "\"fileTypes\":{\"types\":[]},"
       "\"recoverLastSession\":false,"
+      "\"autoSyncDebounceSeconds\":120,"
       "\"someUnknownKey\":\"should-be-dropped\""
       "}";
   ASSERT_EQ(vxcore_context_update_config(ctx, bulk), VXCORE_OK);
@@ -169,13 +170,15 @@ int test_update_config_merges_all_fields() {
 
   ASSERT_EQ(j["version"].get<std::string>(), std::string("9.9.9"));
   ASSERT_EQ(j["recoverLastSession"].get<bool>(), false);
+  ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 120);
   ASSERT_TRUE(j["search"]["backends"].is_array());
   ASSERT_EQ(j["search"]["backends"].size(), static_cast<size_t>(1));
   ASSERT_EQ(j["search"]["backends"][0].get<std::string>(), std::string("only-rg"));
   ASSERT_FALSE(j.contains("someUnknownKey"));
 
-  // 2. Partial update: change only recoverLastSession. Version and search must
-  //    survive untouched (the bug we just fixed used to wipe them on save).
+  // 2. Partial update: change only recoverLastSession. Version, search, and
+  //    autoSyncDebounceSeconds must survive untouched (the bug we just fixed
+  //    used to wipe them on save).
   const char *partial = "{\"recoverLastSession\":true}";
   ASSERT_EQ(vxcore_context_update_config(ctx, partial), VXCORE_OK);
 
@@ -185,6 +188,7 @@ int test_update_config_merges_all_fields() {
 
   ASSERT_EQ(j["recoverLastSession"].get<bool>(), true);
   ASSERT_EQ(j["version"].get<std::string>(), std::string("9.9.9"));
+  ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 120);
   ASSERT_EQ(j["search"]["backends"][0].get<std::string>(), std::string("only-rg"));
 
   // 3. Invalid input: non-object JSON must be rejected, leaving state intact.
@@ -193,8 +197,22 @@ int test_update_config_merges_all_fields() {
   j = nlohmann::json::parse(json_str);
   vxcore_string_free(json_str);
   ASSERT_EQ(j["version"].get<std::string>(), std::string("9.9.9"));
+  ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 120);
 
+  // 4. Default value: when autoSyncDebounceSeconds is never set, the default
+  //    is 60 (from the C++ ctor initializer list). Destroy ctx first and clear
+  //    test data to ensure ctx2 starts fresh.
   vxcore_context_destroy(ctx);
+  vxcore_clear_test_directory();
+
+  VxCoreContextHandle ctx2 = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx2), VXCORE_OK);
+  ASSERT_EQ(vxcore_context_get_config(ctx2, &json_str), VXCORE_OK);
+  j = nlohmann::json::parse(json_str);
+  vxcore_string_free(json_str);
+  ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 60);
+  vxcore_context_destroy(ctx2);
+
   std::cout << "  ✓ test_update_config_merges_all_fields passed" << std::endl;
   return 0;
 }

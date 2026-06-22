@@ -65,7 +65,7 @@ std::string MinimalNotebookConfigJson(const std::string &id, const std::string &
   cfg["syncEnabled"] = false;
   cfg["syncBackend"] = "";
   cfg["syncRemoteUrl"] = "";
-  cfg["syncIntervalSeconds"] = 60;
+  cfg["autoSyncEnabled"] = true;
   return cfg.dump(2);
 }
 
@@ -98,7 +98,7 @@ int test_clone_orchestrator_happy_path() {
   SyncConfig config;
   config.backend = "git";
   config.remote_url = bare_url;
-  config.interval_seconds = 300;
+  config.auto_sync_enabled = true;
 
   std::string out_id;
   VxCoreError err =
@@ -149,7 +149,7 @@ int test_clone_orchestrator_no_config_json() {
   SyncConfig config;
   config.backend = "git";
   config.remote_url = bare_url;
-  config.interval_seconds = 300;
+  config.auto_sync_enabled = true;
 
   std::string out_id;
   VxCoreError err =
@@ -206,7 +206,7 @@ int test_clone_orchestrator_empty_id() {
   SyncConfig config;
   config.backend = "git";
   config.remote_url = bare_url;
-  config.interval_seconds = 300;
+  config.auto_sync_enabled = true;
 
   std::string out_id;
   VxCoreError err =
@@ -246,7 +246,7 @@ int test_clone_orchestrator_unknown_backend() {
   SyncConfig config;
   config.backend = "nonexistent_backend_xyz";
   config.remote_url = "file:///does/not/matter";
-  config.interval_seconds = 300;
+  config.auto_sync_enabled = true;
 
   std::string out_id;
   VxCoreError err =
@@ -279,7 +279,7 @@ int test_clone_orchestrator_empty_backend() {
   SyncConfig config;
   config.backend = "";  // The validation trigger.
   config.remote_url = "file:///irrelevant";
-  config.interval_seconds = 300;
+  config.auto_sync_enabled = true;
 
   std::string out_id;
   VxCoreError err =

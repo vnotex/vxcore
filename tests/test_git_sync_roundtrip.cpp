@@ -370,7 +370,7 @@ int test_git_stage_all_includes_modified_files() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -416,7 +416,7 @@ int test_git_stage_all_excludes_vx_sync_even_without_gitignore() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -470,7 +470,7 @@ int test_git_commit_creates_one_commit() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -518,7 +518,7 @@ int test_git_commit_skips_empty() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -569,7 +569,7 @@ int test_git_commit_uses_default_author() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -615,7 +615,7 @@ int test_git_fetch_updates_origin_main() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -664,7 +664,7 @@ int test_git_rebase_clean_fast_forward() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -708,7 +708,7 @@ int test_git_rebase_diverged_no_conflict() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -758,7 +758,7 @@ int test_git_rebase_conflict_surfaces() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -814,7 +814,7 @@ int test_git_push_fast_forward() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -860,7 +860,7 @@ int test_git_sync_round_trip_succeeds() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -912,7 +912,7 @@ int test_git_sync_emits_progress_phases() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);

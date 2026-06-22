@@ -56,7 +56,7 @@ std::string MinimalNotebookConfigJson(const std::string &id, const std::string &
   cfg["syncEnabled"] = false;
   cfg["syncBackend"] = "";
   cfg["syncRemoteUrl"] = "";
-  cfg["syncIntervalSeconds"] = 60;
+  cfg["autoSyncEnabled"] = true;
   return cfg.dump(2);
 }
 

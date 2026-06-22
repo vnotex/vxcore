@@ -70,7 +70,7 @@ int test_clone_happy_path_from_bare_fixture() {
   vxcore::SyncConfig config;
   config.backend = "git";
   config.remote_url = bare_url;
-  config.interval_seconds = 300;
+  config.auto_sync_enabled = true;
 
   vxcore::GitSyncBackend backend;
   VxCoreError err = backend.Clone(target_dir, config);
@@ -105,7 +105,7 @@ int test_clone_rejects_empty_remote_url() {
   vxcore::SyncConfig config;
   config.backend = "git";
   config.remote_url = "";  // the validation trigger
-  config.interval_seconds = 300;
+  config.auto_sync_enabled = true;
 
   vxcore::GitSyncBackend backend;
   VxCoreError err = backend.Clone(target_dir, config);
@@ -152,7 +152,7 @@ int test_clone_fails_on_nonexistent_remote() {
   vxcore::SyncConfig config;
   config.backend = "git";
   config.remote_url = url;
-  config.interval_seconds = 300;
+  config.auto_sync_enabled = true;
 
   vxcore::GitSyncBackend backend;
   VxCoreError err = backend.Clone(target_dir, config);
@@ -223,7 +223,7 @@ int test_clone_succeeds_when_remote_has_default_metadata_files() {
   vxcore::SyncConfig config;
   config.backend = "git";
   config.remote_url = bare_url;
-  config.interval_seconds = 300;
+  config.auto_sync_enabled = true;
 
   vxcore::GitSyncBackend backend;
   VxCoreError err = backend.Clone(target_dir, config);

@@ -56,7 +56,7 @@ std::string MinimalNotebookConfigJson(const std::string &id, const std::string &
   cfg["syncEnabled"] = false;
   cfg["syncBackend"] = "";
   cfg["syncRemoteUrl"] = "";
-  cfg["syncIntervalSeconds"] = 60;
+  cfg["autoSyncEnabled"] = true;
   return cfg.dump(2);
 }
 
@@ -278,7 +278,7 @@ int test_clone_capi_happy_path() {
   // helper that produces enable_cfg can be reused for clone_cfg.
   const std::string config_json =
       std::string("{\"backend\":\"git\",\"remoteUrl\":\"") + bare_url +
-      "\",\"intervalSeconds\":300}";
+      "\",\"autoSyncEnabled\":true}";
   // Anonymous clone: empty creds object. vxcore_sync_clone treats this as
   // "InMemoryCredentialProvider with empty PAT", which libgit2 resolves
   // anonymously against file:// remotes.

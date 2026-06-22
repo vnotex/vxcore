@@ -113,7 +113,7 @@ SyncConfig MakeMockConfig() {
   SyncConfig cfg;
   cfg.backend = "mock";
   cfg.remote_url = "test://stress";
-  cfg.interval_seconds = 60;
+  cfg.auto_sync_enabled = true;
   return cfg;
 }
 

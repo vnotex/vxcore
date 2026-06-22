@@ -76,7 +76,7 @@ int test_git_get_status_modified_file() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -116,7 +116,7 @@ int test_git_get_status_new_file() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -156,7 +156,7 @@ int test_git_get_status_clean() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);
@@ -202,7 +202,7 @@ int test_git_get_status_excludes_vx_sync() {
     vxcore::SyncConfig config;
     config.backend = "git";
     config.remote_url = bare_url;
-    config.interval_seconds = 300;
+    config.auto_sync_enabled = true;
 
     vxcore::GitSyncBackend backend;
     ASSERT_EQ(backend.Initialize(notebook_root, config), VXCORE_OK);

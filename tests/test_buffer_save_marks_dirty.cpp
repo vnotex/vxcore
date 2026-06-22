@@ -5,9 +5,9 @@
 // longer owns dispatch via the named "sync" WorkQueue; that path was
 // removed in commit cba4e21 per src/sync/AGENTS.md). Subtests cover the
 // happy path plus all "should NOT emit" edge cases: non-sync notebook,
-// failed save, virtual buffer, external buffer. Subtest 6 locks in the new
-// 60-second defaults for SyncConfig::interval_seconds and
-// NotebookConfig::sync_interval_seconds (T4/T5 of the plan).
+// failed save, virtual buffer, external buffer. Subtest 6 locks in the
+// default of the boolean auto-sync gate: SyncConfig::auto_sync_enabled and
+// NotebookConfig::auto_sync_enabled both default to true.
 //
 // Structural template: test_sync_manager_dispatch.cpp (MockSyncBackend +
 // RegisterBackendForTesting + reinterpret_cast<VxCoreContext *> pattern).
@@ -370,23 +370,23 @@ int test_external_buffer_save_does_not_emit() {
 }
 
 // ----------------------------------------------------------------------------
-// Subtest 6: lock in the new 60-second defaults (T4: SyncConfig,
+// Subtest 6: lock in the boolean auto-sync gate defaults (T4: SyncConfig,
 // T5: NotebookConfig). SyncConfig is tested directly because its FromJson +
 // ctor are header-inlined. NotebookConfig is tested via the C API
 // (vxcore_notebook_create + vxcore_notebook_get_config) because its ctor +
 // FromJson are non-exported out-of-line symbols inside vxcore.dll.
 // ----------------------------------------------------------------------------
-int test_defaults_are_60() {
-  std::cout << "  Running test_defaults_are_60..." << std::endl;
+int test_defaults_auto_sync_enabled() {
+  std::cout << "  Running test_defaults_auto_sync_enabled..." << std::endl;
 
-  // Default-constructed SyncConfig — interval_seconds defaults to 60.
+  // Default-constructed SyncConfig — auto_sync_enabled defaults to true.
   SyncConfig cfg_default;
-  ASSERT_EQ(cfg_default.interval_seconds, 60);
+  ASSERT_TRUE(cfg_default.auto_sync_enabled);
 
-  // FromJson with no intervalSeconds key preserves the default.
+  // FromJson with no autoSyncEnabled key preserves the default.
   nlohmann::json sync_json = nlohmann::json::parse("{\"backend\":\"git\"}");
   SyncConfig cfg_from_json = SyncConfig::FromJson(sync_json);
-  ASSERT_EQ(cfg_from_json.interval_seconds, 60);
+  ASSERT_TRUE(cfg_from_json.auto_sync_enabled);
 
   // NotebookConfig default — verified via the C API to avoid linking against
   // non-exported symbols.
@@ -398,7 +398,7 @@ int test_defaults_are_60() {
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
 
   char *notebook_id = nullptr;
-  // Create notebook with only "name" set — no syncIntervalSeconds key.
+  // Create notebook with only "name" set — no autoSyncEnabled key.
   ASSERT_EQ(vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"DefaultsTest\"}",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
@@ -406,15 +406,15 @@ int test_defaults_are_60() {
   char *config_json = nullptr;
   ASSERT_EQ(vxcore_notebook_get_config(ctx, notebook_id, &config_json), VXCORE_OK);
   nlohmann::json config = nlohmann::json::parse(config_json);
-  ASSERT_TRUE(config.contains("syncIntervalSeconds"));
-  ASSERT_TRUE(config["syncIntervalSeconds"].is_number_integer());
-  ASSERT_EQ(config["syncIntervalSeconds"].get<int>(), 60);
+  ASSERT_TRUE(config.contains("autoSyncEnabled"));
+  ASSERT_TRUE(config["autoSyncEnabled"].is_boolean());
+  ASSERT_EQ(config["autoSyncEnabled"].get<bool>(), true);
 
   vxcore_string_free(config_json);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(nb_path);
-  std::cout << "  \xE2\x9C\x93 test_defaults_are_60 passed" << std::endl;
+  std::cout << "  \xE2\x9C\x93 test_defaults_auto_sync_enabled passed" << std::endl;
   return 0;
 }
 
@@ -427,7 +427,7 @@ int main() {
   RUN_TEST(test_failed_save_does_not_emit);
   RUN_TEST(test_virtual_buffer_save_does_not_emit);
   RUN_TEST(test_external_buffer_save_does_not_emit);
-  RUN_TEST(test_defaults_are_60);
+  RUN_TEST(test_defaults_auto_sync_enabled);
   std::cout << "All buffer-save dirty-tracking tests passed\n";
   return 0;
 }

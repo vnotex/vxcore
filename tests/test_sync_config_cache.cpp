@@ -35,10 +35,10 @@ namespace {
 // so SyncManager::GetSyncConfig's cache-miss branch reads non-default values.
 VxCoreError PersistSyncFields(VxCoreContextHandle ctx, const char *notebook_id,
                               const std::string &backend, const std::string &remote_url,
-                              int interval_seconds) {
+                              bool auto_sync_enabled) {
   std::string json = "{\"syncEnabled\":true,\"syncBackend\":\"" + backend +
                      "\",\"syncRemoteUrl\":\"" + remote_url +
-                     "\",\"syncIntervalSeconds\":" + std::to_string(interval_seconds) + "}";
+                     "\",\"autoSyncEnabled\":" + (auto_sync_enabled ? "true" : "false") + "}";
   return vxcore_notebook_update_config(ctx, notebook_id, json.c_str());
 }
 
@@ -61,10 +61,10 @@ int test_write_persists_then_caches() {
             VXCORE_OK);
 
   // EnableSync (via C API) populates the cache with backend="mock",
-  // interval=60 (default in SyncConfig).
+  // auto_sync_enabled=false (explicitly set in the blob below).
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
                                "{\"backend\":\"mock\",\"remoteUrl\":\"mock://orig\","
-                               "\"intervalSeconds\":42}",
+                               "\"autoSyncEnabled\":false}",
                                nullptr),
             VXCORE_OK);
 
@@ -76,18 +76,18 @@ int test_write_persists_then_caches() {
   ASSERT_EQ(vctx->sync_manager->GetSyncConfig(notebook_id, cfg), VXCORE_OK);
   ASSERT(cfg.backend == "mock");
   ASSERT(cfg.remote_url == "mock://orig");
-  ASSERT_EQ(cfg.interval_seconds, 42);
+  ASSERT_FALSE(cfg.auto_sync_enabled);
 
   // Mutate the underlying NotebookConfig JSON out-of-band. Without
   // invalidation, the cache must continue to win — proving that "write
   // persists to cache" and that reads do not silently fall through to disk.
-  ASSERT_EQ(PersistSyncFields(ctx, notebook_id, "mock", "mock://changed", 999), VXCORE_OK);
+  ASSERT_EQ(PersistSyncFields(ctx, notebook_id, "mock", "mock://changed", true), VXCORE_OK);
 
   vxcore::SyncConfig cfg2;
   ASSERT_EQ(vctx->sync_manager->GetSyncConfig(notebook_id, cfg2), VXCORE_OK);
   ASSERT(cfg2.backend == "mock");
   ASSERT(cfg2.remote_url == "mock://orig");  // cached, NOT disk value
-  ASSERT_EQ(cfg2.interval_seconds, 42);
+  ASSERT_FALSE(cfg2.auto_sync_enabled);      // cached false, NOT disk true
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
@@ -117,23 +117,23 @@ int test_invalidate_forces_reread() {
   // Pre-populate the persisted NotebookConfig fields (no EnableSync — this
   // simulates an S4 notebook where the disk has the truth but the runtime
   // cache is empty).
-  ASSERT_EQ(PersistSyncFields(ctx, notebook_id, "mock", "mock://v1", 17), VXCORE_OK);
+  ASSERT_EQ(PersistSyncFields(ctx, notebook_id, "mock", "mock://v1", false), VXCORE_OK);
 
   // First GetSyncConfig: cache miss, populates cache from disk.
   vxcore::SyncConfig cfg1;
   ASSERT_EQ(vctx->sync_manager->GetSyncConfig(notebook_id, cfg1), VXCORE_OK);
   ASSERT(cfg1.backend == "mock");
   ASSERT(cfg1.remote_url == "mock://v1");
-  ASSERT_EQ(cfg1.interval_seconds, 17);
+  ASSERT_FALSE(cfg1.auto_sync_enabled);
 
   // Mutate the underlying NotebookConfig JSON out-of-band.
-  ASSERT_EQ(PersistSyncFields(ctx, notebook_id, "mock", "mock://v2", 23), VXCORE_OK);
+  ASSERT_EQ(PersistSyncFields(ctx, notebook_id, "mock", "mock://v2", true), VXCORE_OK);
 
   // Without invalidation: cache wins, returns v1.
   vxcore::SyncConfig cfg2;
   ASSERT_EQ(vctx->sync_manager->GetSyncConfig(notebook_id, cfg2), VXCORE_OK);
   ASSERT(cfg2.remote_url == "mock://v1");
-  ASSERT_EQ(cfg2.interval_seconds, 17);
+  ASSERT_FALSE(cfg2.auto_sync_enabled);
 
   // Invalidate then re-read: cache miss forces fresh disk read; v2 surfaces.
   vctx->sync_manager->InvalidateConfigCache(notebook_id);
@@ -141,7 +141,7 @@ int test_invalidate_forces_reread() {
   ASSERT_EQ(vctx->sync_manager->GetSyncConfig(notebook_id, cfg3), VXCORE_OK);
   ASSERT(cfg3.backend == "mock");
   ASSERT(cfg3.remote_url == "mock://v2");
-  ASSERT_EQ(cfg3.interval_seconds, 23);
+  ASSERT_TRUE(cfg3.auto_sync_enabled);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);

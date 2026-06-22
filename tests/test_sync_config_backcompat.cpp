@@ -1,11 +1,20 @@
-// Task 7.3 (F3.3): SyncConfig::enabled was removed.
+// Clean-break behavior for SyncConfig's sync gate (sync-interval-debounce).
 //
-// - Serializer must NOT emit the `"enabled"` key any more.
-// - Deserializer must SILENTLY ignore legacy `"enabled"` keys (backward compat
-//   with on-disk JSON written by older builds).
+// The legacy integer interval gate was removed and replaced by a single
+// boolean gate `auto_sync_enabled` (JSON key `"autoSyncEnabled"`, default
+// true). This is a CLEAN BREAK: there is no migration path that reads the old
+// integer keys, so a config that lacks `"autoSyncEnabled"` simply falls back
+// to the default (true) — exactly as if the legacy keys were never there.
 //
-// This test exercises both contracts and links only against `vxcore`'s public
-// API surface for `SyncConfig::FromJson`/`ToJson` — no backend wiring required.
+// This test pins the new contracts:
+//   - Serializer emits `"autoSyncEnabled"` and NEVER the long-removed
+//     `"enabled"` flag.
+//   - Deserializer defaults `auto_sync_enabled` to true when `"autoSyncEnabled"`
+//     is absent (the legacy on-disk shape), honors an explicit boolean, and
+//     silently ignores the removed `"enabled"` key.
+//
+// It links only against `vxcore`'s public API surface for
+// `SyncConfig::FromJson`/`ToJson` — no backend wiring required.
 
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -16,71 +25,76 @@
 
 namespace {
 
-int test_enabled_field_absent_in_serialize() {
-  std::cout << "  Running test_enabled_field_absent_in_serialize..." << std::endl;
+int test_serialize_emits_bool_gate() {
+  std::cout << "  Running test_serialize_emits_bool_gate..." << std::endl;
 
   vxcore::SyncConfig cfg;
   cfg.backend = "git";
   cfg.remote_url = "https://example.invalid/repo.git";
-  cfg.interval_seconds = 120;
+  cfg.auto_sync_enabled = false;  // non-default, so the round-trip is meaningful
   cfg.exclude_paths = {"*.tmp"};
   cfg.auto_commit_merges = false;
 
   const nlohmann::json j = cfg.ToJson();
-  ASSERT_FALSE(j.contains("enabled"));
 
-  // Sanity-check that the rest of the fields are still being emitted as before.
+  // The boolean gate is emitted and round-trips the value we set.
+  ASSERT_TRUE(j.contains("autoSyncEnabled"));
+  ASSERT_FALSE(j["autoSyncEnabled"].get<bool>());
+
+  // The other fields are still emitted as before.
   ASSERT_TRUE(j.contains("backend"));
   ASSERT_TRUE(j.contains("remoteUrl"));
-  ASSERT_TRUE(j.contains("intervalSeconds"));
   ASSERT_TRUE(j.contains("excludePaths"));
   ASSERT_TRUE(j.contains("autoCommitMerges"));
 
-  // And that the serialized string itself never contains the substring
-  // — guards against accidental re-introduction via a sibling key, e.g.
-  // backendOptions["enabled"].
+  // The long-removed `enabled` flag must NEVER appear, including via a sibling
+  // or nested key.
+  ASSERT_FALSE(j.contains("enabled"));
   const std::string dumped = j.dump();
   ASSERT_TRUE(dumped.find("\"enabled\"") == std::string::npos);
 
-  std::cout << "  PASSED test_enabled_field_absent_in_serialize" << std::endl;
+  std::cout << "  PASSED test_serialize_emits_bool_gate" << std::endl;
   return 0;
 }
 
-int test_enabled_field_ignored_in_deserialize() {
-  std::cout << "  Running test_enabled_field_ignored_in_deserialize..." << std::endl;
+int test_deserialize_defaults_when_gate_absent() {
+  std::cout << "  Running test_deserialize_defaults_when_gate_absent..." << std::endl;
 
-  // Legacy on-disk shape: `enabled` is present but should be silently dropped.
+  // Legacy on-disk shape: no `autoSyncEnabled` key at all (older builds never
+  // wrote it). FromJson must fall back to the default of true. The removed
+  // `enabled` flag, if present, is silently dropped.
   const std::string legacy =
       "{"
       "\"backend\":\"git\","
       "\"remoteUrl\":\"https://example.invalid/repo.git\","
-      "\"intervalSeconds\":45,"
       "\"enabled\":true,"
       "\"autoCommitMerges\":true"
       "}";
 
   const nlohmann::json j = nlohmann::json::parse(legacy);
-
-  // FromJson must not throw, must not crash, and must round-trip the other
-  // fields unchanged.
   vxcore::SyncConfig cfg = vxcore::SyncConfig::FromJson(j);
   ASSERT_EQ(cfg.backend, std::string("git"));
   ASSERT_EQ(cfg.remote_url, std::string("https://example.invalid/repo.git"));
-  ASSERT_EQ(cfg.interval_seconds, 45);
+  ASSERT_TRUE(cfg.auto_sync_enabled);  // absent gate => default true
   ASSERT_TRUE(cfg.auto_commit_merges);
 
-  // Round-trip back to JSON and confirm the legacy `enabled` key is gone.
+  // Round-trip back to JSON: the boolean gate is present (defaulted to true)
+  // and the legacy `enabled` key is gone.
   const nlohmann::json reserialized = cfg.ToJson();
+  ASSERT_TRUE(reserialized.contains("autoSyncEnabled"));
+  ASSERT_TRUE(reserialized["autoSyncEnabled"].get<bool>());
   ASSERT_FALSE(reserialized.contains("enabled"));
 
-  // Also exercise the `"enabled":false` case for completeness.
+  // Explicit `"autoSyncEnabled":false` is honored even when the removed
+  // `enabled` key is also present.
   const nlohmann::json j_false = nlohmann::json::parse(
-      "{\"backend\":\"git\",\"remoteUrl\":\"x\",\"enabled\":false}");
+      "{\"backend\":\"git\",\"remoteUrl\":\"x\",\"autoSyncEnabled\":false,\"enabled\":true}");
   vxcore::SyncConfig cfg_false = vxcore::SyncConfig::FromJson(j_false);
   ASSERT_EQ(cfg_false.backend, std::string("git"));
   ASSERT_EQ(cfg_false.remote_url, std::string("x"));
+  ASSERT_FALSE(cfg_false.auto_sync_enabled);
 
-  std::cout << "  PASSED test_enabled_field_ignored_in_deserialize" << std::endl;
+  std::cout << "  PASSED test_deserialize_defaults_when_gate_absent" << std::endl;
   return 0;
 }
 
@@ -90,8 +104,8 @@ int main() {
   vxcore_set_test_mode(1);
 
   int failed = 0;
-  RUN_TEST(test_enabled_field_absent_in_serialize);
-  RUN_TEST(test_enabled_field_ignored_in_deserialize);
+  RUN_TEST(test_serialize_emits_bool_gate);
+  RUN_TEST(test_deserialize_defaults_when_gate_absent);
 
   if (failed > 0) {
     std::cerr << failed << " test(s) failed" << std::endl;
