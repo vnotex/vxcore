@@ -448,6 +448,218 @@ int test_list_children_no_persist() {
   return 0;
 }
 
+int test_rename_phantom_file_returns_node_not_exists() {
+  std::cout << "  Running test_rename_phantom_file_returns_node_not_exists..." << std::endl;
+  const std::string nb_path = get_test_path("test_missing_rename_phantom_file_nb");
+  cleanup_test_dir(nb_path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"Test Notebook\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "a.md", &file_id), VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  delete_disk_path(content_path(nb_path, "a.md"));
+
+  ASSERT_EQ(vxcore_node_rename(ctx, notebook_id, "a.md", "b.md"),
+            VXCORE_ERR_NODE_NOT_EXISTS);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_rename_phantom_file_returns_node_not_exists passed" << std::endl;
+  return 0;
+}
+
+int test_move_phantom_file_returns_node_not_exists() {
+  std::cout << "  Running test_move_phantom_file_returns_node_not_exists..." << std::endl;
+  const std::string nb_path = get_test_path("test_missing_move_phantom_file_nb");
+  cleanup_test_dir(nb_path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"Test Notebook\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  char *folder_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "dst", &folder_id), VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "a.md", &file_id), VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  delete_disk_path(content_path(nb_path, "a.md"));
+
+  ASSERT_EQ(vxcore_node_move(ctx, notebook_id, "a.md", "dst"),
+            VXCORE_ERR_NODE_NOT_EXISTS);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_move_phantom_file_returns_node_not_exists passed" << std::endl;
+  return 0;
+}
+
+int test_copy_phantom_file_returns_node_not_exists() {
+  std::cout << "  Running test_copy_phantom_file_returns_node_not_exists..." << std::endl;
+  const std::string nb_path = get_test_path("test_missing_copy_phantom_file_nb");
+  cleanup_test_dir(nb_path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"Test Notebook\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  char *folder_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "dst", &folder_id), VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "a.md", &file_id), VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  delete_disk_path(content_path(nb_path, "a.md"));
+
+  char *out_id = nullptr;
+  ASSERT_EQ(vxcore_node_copy(ctx, notebook_id, "a.md", "dst", "", &out_id),
+            VXCORE_ERR_NODE_NOT_EXISTS);
+  ASSERT_NULL(out_id);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_copy_phantom_file_returns_node_not_exists passed" << std::endl;
+  return 0;
+}
+
+int test_rename_phantom_folder_returns_node_not_exists() {
+  std::cout << "  Running test_rename_phantom_folder_returns_node_not_exists..." << std::endl;
+  const std::string nb_path = get_test_path("test_missing_rename_phantom_folder_nb");
+  cleanup_test_dir(nb_path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"Test Notebook\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  char *folder_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "f", &folder_id), VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  delete_disk_path(content_path(nb_path, "f"));
+
+  ASSERT_EQ(vxcore_node_rename(ctx, notebook_id, "f", "g"), VXCORE_ERR_NODE_NOT_EXISTS);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_rename_phantom_folder_returns_node_not_exists passed" << std::endl;
+  return 0;
+}
+
+int test_move_phantom_folder_returns_node_not_exists() {
+  std::cout << "  Running test_move_phantom_folder_returns_node_not_exists..." << std::endl;
+  const std::string nb_path = get_test_path("test_missing_move_phantom_folder_nb");
+  cleanup_test_dir(nb_path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"Test Notebook\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  char *folder_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "f", &folder_id), VXCORE_OK);
+  vxcore_string_free(folder_id);
+  folder_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "dst", &folder_id), VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  delete_disk_path(content_path(nb_path, "f"));
+
+  ASSERT_EQ(vxcore_node_move(ctx, notebook_id, "f", "dst"), VXCORE_ERR_NODE_NOT_EXISTS);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_move_phantom_folder_returns_node_not_exists passed" << std::endl;
+  return 0;
+}
+
+int test_copy_phantom_folder_returns_node_not_exists() {
+  std::cout << "  Running test_copy_phantom_folder_returns_node_not_exists..." << std::endl;
+  const std::string nb_path = get_test_path("test_missing_copy_phantom_folder_nb");
+  cleanup_test_dir(nb_path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"Test Notebook\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  char *folder_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "f", &folder_id), VXCORE_OK);
+  vxcore_string_free(folder_id);
+  folder_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "dst", &folder_id), VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  delete_disk_path(content_path(nb_path, "f"));
+
+  char *out_id = nullptr;
+  ASSERT_EQ(vxcore_node_copy(ctx, notebook_id, "f", "dst", "", &out_id),
+            VXCORE_ERR_NODE_NOT_EXISTS);
+  ASSERT_NULL(out_id);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_copy_phantom_folder_returns_node_not_exists passed" << std::endl;
+  return 0;
+}
+
+int test_rename_unindexed_path_still_not_found() {
+  std::cout << "  Running test_rename_unindexed_path_still_not_found..." << std::endl;
+  const std::string nb_path = get_test_path("test_missing_rename_unindexed_nb");
+  cleanup_test_dir(nb_path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, nb_path.c_str(), "{\"name\":\"Test Notebook\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  ASSERT_EQ(vxcore_node_rename(ctx, notebook_id, "never_indexed", "x"), VXCORE_ERR_NOT_FOUND);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb_path);
+  std::cout << "  ✓ test_rename_unindexed_path_still_not_found passed" << std::endl;
+  return 0;
+}
+
 int main() {
   vxcore_set_test_mode(1);
   vxcore_clear_test_directory();
@@ -462,6 +674,13 @@ int main() {
   RUN_TEST(test_list_children_marks_missing);
   RUN_TEST(test_list_children_missing_folder);
   RUN_TEST(test_list_children_no_persist);
+  RUN_TEST(test_rename_phantom_file_returns_node_not_exists);
+  RUN_TEST(test_move_phantom_file_returns_node_not_exists);
+  RUN_TEST(test_copy_phantom_file_returns_node_not_exists);
+  RUN_TEST(test_rename_phantom_folder_returns_node_not_exists);
+  RUN_TEST(test_move_phantom_folder_returns_node_not_exists);
+  RUN_TEST(test_copy_phantom_folder_returns_node_not_exists);
+  RUN_TEST(test_rename_unindexed_path_still_not_found);
 
   std::cout << "✓ All missing-nodes tests passed!" << std::endl;
   return 0;

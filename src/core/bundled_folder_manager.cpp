@@ -621,6 +621,14 @@ VxCoreError BundledFolderManager::RenameFolder(const std::string &folder_path,
   const fs::path old_config_path_fs = PathFromUtf8(old_config_path);
 
   if (!fs::exists(old_content_path_fs)) {
+    // Distinguish a phantom (indexed in metadata but content deleted on disk)
+    // from a genuinely-unindexed path. Only the phantom case gets the dedicated
+    // NODE_NOT_EXISTS code (so the UI can offer to remove it from the index);
+    // an unknown path stays NOT_FOUND.
+    FolderConfig *existing_config = nullptr;
+    if (GetFolderConfig(clean_folder_path, &existing_config) == VXCORE_OK && existing_config) {
+      return VXCORE_ERR_NODE_NOT_EXISTS;
+    }
     return VXCORE_ERR_NOT_FOUND;
   }
 
@@ -711,6 +719,14 @@ VxCoreError BundledFolderManager::MoveFolder(const std::string &src_path,
   const fs::path src_config_path_fs = PathFromUtf8(src_config_path);
 
   if (!fs::exists(src_content_path_fs)) {
+    // Distinguish a phantom (indexed in metadata but content deleted on disk)
+    // from a genuinely-unindexed path. Only the phantom case gets the dedicated
+    // NODE_NOT_EXISTS code (so the UI can offer to remove it from the index);
+    // an unknown path stays NOT_FOUND.
+    FolderConfig *existing_config = nullptr;
+    if (GetFolderConfig(clean_src_path, &existing_config) == VXCORE_OK && existing_config) {
+      return VXCORE_ERR_NODE_NOT_EXISTS;
+    }
     return VXCORE_ERR_NOT_FOUND;
   }
 
@@ -927,6 +943,14 @@ VxCoreError BundledFolderManager::CopyFolder(const std::string &src_path,
                   clean_dest_parent_path.c_str(), folder_name.c_str());
 
   if (!fs::exists(src_content_path_fs)) {
+    // Distinguish a phantom (indexed in metadata but content deleted on disk)
+    // from a genuinely-unindexed path. Only the phantom case gets the dedicated
+    // NODE_NOT_EXISTS code (so the UI can offer to remove it from the index);
+    // an unknown path stays NOT_FOUND.
+    FolderConfig *existing_config = nullptr;
+    if (GetFolderConfig(clean_src_path, &existing_config) == VXCORE_OK && existing_config) {
+      return VXCORE_ERR_NODE_NOT_EXISTS;
+    }
     return VXCORE_ERR_NOT_FOUND;
   }
 
@@ -1417,7 +1441,7 @@ VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
   fs::path new_file_path = PathFromUtf8(content_path) / PathFromUtf8(new_name);
 
   if (!fs::exists(old_file_path)) {
-    return VXCORE_ERR_NOT_FOUND;
+    return VXCORE_ERR_NODE_NOT_EXISTS;
   }
 
   if (fs::exists(new_file_path)) {
@@ -1495,7 +1519,7 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
   fs::path dest_fs_path = PathFromUtf8(dest_content_path) / PathFromUtf8(file_name);
 
   if (!fs::exists(src_fs_path)) {
-    return VXCORE_ERR_NOT_FOUND;
+    return VXCORE_ERR_NODE_NOT_EXISTS;
   }
 
   if (fs::exists(dest_fs_path)) {
@@ -1622,7 +1646,7 @@ VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
   fs::path dest_fs_path = PathFromUtf8(dest_content_path) / PathFromUtf8(target_name);
 
   if (!fs::exists(src_fs_path)) {
-    return VXCORE_ERR_NOT_FOUND;
+    return VXCORE_ERR_NODE_NOT_EXISTS;
   }
 
   if (fs::exists(dest_fs_path)) {
