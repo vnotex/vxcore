@@ -64,7 +64,7 @@ struct SyncConfig {
   // an `"enabled"` key is silently ignored by FromJson() for backward compat.
   std::string backend;
   std::string remote_url;
-  int interval_seconds = 60;
+  bool auto_sync_enabled = true;
   std::vector<std::string> exclude_paths = {"*.vswp", "vx_notebook/vx_sync/"};
   nlohmann::json backend_options;
   bool auto_commit_merges = true;

@@ -95,7 +95,7 @@ Every SyncManager method that operates on a notebook follows this pattern:
 | `src/core/context.h` | `VxCoreContext` owns `sync_manager`, `event_manager`, `work_queue_manager` (member order matters — see Thread Safety) |
 | `src/core/event_manager.h/.cpp` | `EventManager` subscribe/emit system — SyncManager subscribes to file/folder events |
 | `src/core/event_names.h` | Event name constants: `file.created`, `file.saved`, `file.deleted`, `file.moved`, `folder.created`, `folder.deleted`, `notebook.opened`, `notebook.closed` |
-| `src/core/notebook.h` | `NotebookConfig` sync fields: `sync_enabled`, `sync_backend`, `sync_remote_url`, `sync_interval_seconds` |
+| `src/core/notebook.h` | `NotebookConfig` sync fields: `sync_enabled`, `sync_backend`, `sync_remote_url`, `auto_sync_enabled` |
 | `src/core/notebook.cpp` | `FromJson()`/`ToJson()` for sync fields |
 | `tests/test_sync.cpp` | 14 test cases: error paths, raw rejection, config roundtrip, `backend_options`/`extra` roundtrip |
 | `tests/test_event_manager.cpp` | 18 tests including 4 SyncManager dirty-tracking integration tests |
@@ -132,7 +132,7 @@ enum class SyncConflictResolution {
 
 | Struct | Fields | Notes |
 |--------|--------|-------|
-| `SyncConfig` | `enabled`, `backend`, `remote_url`, `interval_seconds`, `exclude_paths`, `backend_options`, `auto_commit_merges` | Has `FromJson()`/`ToJson()`. Default interval: 60 seconds. Default excludes: `*.vswp`, `vx_notebook/vx_sync/`. `backend_options` is an opaque JSON bag for backend-specific config. `auto_commit_merges` (default true) gates Pull auto-commit behavior — see Pull Auto-Commit Semantics below. |
+| `SyncConfig` | `enabled`, `backend`, `remote_url`, `auto_sync_enabled`, `exclude_paths`, `backend_options`, `auto_commit_merges` | Has `FromJson()`/`ToJson()`. Default `auto_sync_enabled`: true. Default excludes: `*.vswp`, `vx_notebook/vx_sync/`. `backend_options` is an opaque JSON bag for backend-specific config. `auto_commit_merges` (default true) gates Pull auto-commit behavior — see Pull Auto-Commit Semantics below. |
 | `SyncProgress` | `message`, `percentage`, `current_state` | Passed to `SyncProgressCallback` during sync operations |
 | `SyncFileInfo` | `path`, `status` | Per-file sync status |
 | `SyncConflictInfo` | `path`, `local_modified_utc`, `remote_modified_utc`, `is_binary` | Conflict metadata for resolution UI |
@@ -192,7 +192,7 @@ Output strings must be freed with `vxcore_string_free()`.
 
 | Function | Parameters | Notes |
 |----------|-----------|-------|
-| `vxcore_sync_enable` | `notebook_id`, `config_json`, `credentials_json` (nullable, see next row) | JSON keys: `backend`, `remoteUrl`, `intervalSeconds`, `backendOptions` |
+| `vxcore_sync_enable` | `notebook_id`, `config_json`, `credentials_json` (nullable, see next row) | JSON keys: `backend`, `remoteUrl`, `autoSyncEnabled`, `backendOptions` |
 | `vxcore_sync_disable` | `notebook_id` | Clears backend, state, and config for notebook |
 | `vxcore_sync_trigger` | `notebook_id` | Returns `SYNC_NOT_ENABLED` or `NOT_IMPLEMENTED` until backend exists. Clears dirty state on success. |
 | `vxcore_sync_get_status` | `notebook_id`, `out_status_json` | Output: `{"state":"idle","files":[{"path":"...","status":"..."}]}` |
@@ -209,14 +209,14 @@ Output strings must be freed with `vxcore_string_free()`.
 |---------------------|------------------------|------|
 | `backend` | `SyncConfig::backend` | string |
 | `remoteUrl` | `SyncConfig::remote_url` | string |
-| `intervalSeconds` | `SyncConfig::interval_seconds` | int |
+| `autoSyncEnabled` | `SyncConfig::auto_sync_enabled` | bool |
 | `backendOptions` | `SyncConfig::backend_options` | object (opaque). For the git backend, parsed into the typed `GitOptions` struct (`src/sync/git/git_options.h`) once during `Initialize()`. Known keys: `sslVerify` (bool, default true), `connectTimeoutMs` (int, default 30000), `proxyUrl` (string, default empty). Unknown keys are ignored; malformed values silently fall back to defaults. |
 | `excludePaths` | `SyncConfig::exclude_paths` | string array |
 | `extra` | `SyncCredentials::extra` | object (opaque) |
 | `syncEnabled` | `NotebookConfig::sync_enabled` | bool |
 | `syncBackend` | `NotebookConfig::sync_backend` | string |
 | `syncRemoteUrl` | `NotebookConfig::sync_remote_url` | string |
-| `syncIntervalSeconds` | `NotebookConfig::sync_interval_seconds` | int |
+| `autoSyncEnabled` | `NotebookConfig::auto_sync_enabled` | bool |
 | `localModifiedUtc` | `SyncConflictInfo::local_modified_utc` | int64 |
 | `remoteModifiedUtc` | `SyncConflictInfo::remote_modified_utc` | int64 |
 | `isBinary` | `SyncConflictInfo::is_binary` | bool |
@@ -231,7 +231,7 @@ struct NotebookConfig {
   bool sync_enabled = false;
   std::string sync_backend;          // e.g., "git", "webdav"
   std::string sync_remote_url;       // e.g., "https://github.com/user/repo.git"
-  int sync_interval_seconds = 60;    // Auto-sync interval (default 60 seconds)
+  bool auto_sync_enabled = true;     // Auto-sync on dirty gate (default true)
 };
 ```
 
@@ -331,7 +331,7 @@ before fetch+rebase. This ensures uncommitted edits survive the rebase.
 | `true` (default) | Pull stages + auto-commits before rebase. Rebase replays on top of the auto-commit. Working tree is clean after Pull. | Preserves current behavior; recommended for most users. |
 | `false` | Pull stages but skips the commit. Staged changes remain in the index. Rebase proceeds with clean working tree (staged changes are committed by rebase as part of replay). Caller is responsible for managing staged state. | Advanced: caller wants explicit control over commit messages or timing. |
 
-**JSON field name:** `autoCommitMerges` (camelCase, matches `intervalSeconds`, `remoteUrl` style).
+**JSON field name:** `autoCommitMerges` (camelCase, matches `autoSyncEnabled`, `remoteUrl` style).
 
 **Default preservation:** Setting defaults to `true` so existing notebooks and callers see no behavior change.
 
@@ -711,13 +711,13 @@ flow now ends at `sync.should_run` and the consumer owns dispatch. The
 
 `SyncManager::SetEventManager()` subscribes to `file.created`, `file.saved`, `file.deleted`, `file.moved`, `folder.created`, and `folder.deleted`. For each event whose notebook has sync enabled, the ID is marked in `DirtyTracker`.
 
-`MaybeEnqueueSync` emits `sync.should_run` once per dirty mark with no debounce, throttle, or coalescing. It still short-circuits when `event_manager_` is null or when `GetSyncConfig` fails / returns `interval_seconds <= 0` (these are correctness gates — missing destination or auto-sync disabled for the notebook — not scheduling policy). vxcore is the fact-emitter. The previous in-library debounce was removed in commit `cba4e21` because it dropped legitimate triggers when multiple saves landed within the same window.
+`MaybeEnqueueSync` emits `sync.should_run` once per dirty mark with no debounce, throttle, or coalescing. It still short-circuits when `event_manager_` is null or when `GetSyncConfig` fails / returns `auto_sync_enabled == false` (these are correctness gates — missing destination or auto-sync disabled for the notebook — not scheduling policy). vxcore is the fact-emitter. The previous in-library debounce was removed in commit `cba4e21` because it dropped legitimate triggers when multiple saves landed within the same window.
 
 ### Consumer responsibility
 
 Consumers OWN every scheduling decision: debounce, throttle, coalesce, backpressure, retry, periodic safety net. VNote does this in `SyncService::onSyncShouldRun` → `SyncWorkQueueManager::enqueue`, where the `coalesceKey="trigger"` mechanism collapses concurrent triggers per notebook into a single in-flight sync. See `src/core/services/AGENTS.md` § SyncService.
 
-`SyncConfig::interval_seconds` is a HINT for scheduling cadence. vxcore does NOT use it to debounce or throttle. The only place the library consults it is a correctness guard in `MaybeEnqueueSync` that suppresses emission when `interval_seconds <= 0` (treated as "auto-sync disabled for this notebook"). Consumers own all scheduling policy and may also consult `interval_seconds` to seed their own debounce window.
+`SyncConfig::auto_sync_enabled` is a pure on/off gate, NOT a scheduling cadence. vxcore does NOT debounce or throttle. The only place the library consults it is a correctness guard in `MaybeEnqueueSync` that suppresses emission when `auto_sync_enabled == false` (treated as "auto-sync disabled for this notebook"). Consumers own all scheduling policy (debounce, throttle, coalesce) and seed their own windows from app-level config, not from this per-notebook flag.
 
 ### Non-Qt embedders (legacy polling path)
 

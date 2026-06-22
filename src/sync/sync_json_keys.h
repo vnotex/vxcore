@@ -20,13 +20,16 @@ namespace vxcore {
 inline constexpr const char *kJsonKeySyncEnabled = "syncEnabled";
 inline constexpr const char *kJsonKeySyncBackend = "syncBackend";
 inline constexpr const char *kJsonKeySyncRemoteUrl = "syncRemoteUrl";
-inline constexpr const char *kJsonKeySyncIntervalSeconds = "syncIntervalSeconds";
+
+// Boolean auto-sync gate shared by BOTH the persisted NotebookConfig and the
+// C-API SyncConfig blob. true (default) = auto-sync on dirty allowed;
+// false = auto-sync suppressed (manual sync only).
+inline constexpr const char *kJsonKeyAutoSyncEnabled = "autoSyncEnabled";
 
 // SyncConfig fields (sent over the C API as the config_json argument
 // to vxcore_sync_enable). Parsed by SyncConfig::FromJson / ToJson.
 inline constexpr const char *kJsonKeyBackend = "backend";
 inline constexpr const char *kJsonKeyRemoteUrl = "remoteUrl";
-inline constexpr const char *kJsonKeyIntervalSeconds = "intervalSeconds";
 inline constexpr const char *kJsonKeyBackendOptions = "backendOptions";
 inline constexpr const char *kJsonKeyExcludePaths = "excludePaths";
 inline constexpr const char *kJsonKeyAutoCommitMerges = "autoCommitMerges";

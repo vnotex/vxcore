@@ -221,7 +221,7 @@ struct SyncConfig {
   bool enabled = false;
   std::string backend;
   std::string remote_url;
-  int interval_seconds = 300;
+  bool auto_sync_enabled = true;
   std::vector<std::string> exclude_paths = {"*.vswp", "vx_notebook/vx_sync/"};
 
   // NEW: opaque bag for backend-specific options.
@@ -231,6 +231,8 @@ struct SyncConfig {
   nlohmann::json backend_options;
 };
 ```
+
+> Historical note: this field was originally the int `interval_seconds = 300`. It was renamed (clean break, no migration) to the boolean `auto_sync_enabled = true`, a pure on/off gate that suppresses `sync.should_run` when false. vxcore no longer carries any auto-sync cadence; the trailing-throttle cadence now lives Qt-side in `SyncService`, keyed off the global `autoSyncDebounceSeconds` value in `vxcore.json`.
 
 **Changes to `SyncCredentials`:**
 

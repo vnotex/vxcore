@@ -46,7 +46,7 @@ struct VXCORE_API NotebookConfig {
   bool sync_enabled = false;
   std::string sync_backend;
   std::string sync_remote_url;
-  int sync_interval_seconds = 60;
+  bool auto_sync_enabled = true;
 
   NotebookConfig();
 

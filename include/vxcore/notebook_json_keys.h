@@ -53,7 +53,7 @@
 //
 // 4. SYNC KEYS ARE SEPARATE.
 //    Sync-related JSON keys (`syncEnabled`, `syncBackend`, `syncRemoteUrl`,
-//    `syncIntervalSeconds`, `backend`, `remoteUrl`, etc.) live in their own
+//    `autoSyncEnabled`, `backend`, `remoteUrl`, etc.) live in their own
 //    header: `libs/vxcore/src/sync/sync_json_keys.h`. That header is
 //    currently internal to vxcore; this notebook header is the first PUBLIC
 //    constant header. If sync keys need to be consumed by Qt-side code in

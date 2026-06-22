@@ -90,9 +90,8 @@ NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
   if (json.contains(kJsonKeySyncRemoteUrl) && json[kJsonKeySyncRemoteUrl].is_string()) {
     config.sync_remote_url = json[kJsonKeySyncRemoteUrl].get<std::string>();
   }
-  if (json.contains(kJsonKeySyncIntervalSeconds) &&
-      json[kJsonKeySyncIntervalSeconds].is_number_integer()) {
-    config.sync_interval_seconds = json[kJsonKeySyncIntervalSeconds].get<int>();
+  if (json.contains(kJsonKeyAutoSyncEnabled) && json[kJsonKeyAutoSyncEnabled].is_boolean()) {
+    config.auto_sync_enabled = json[kJsonKeyAutoSyncEnabled].get<bool>();
   }
   return config;
 }
@@ -119,7 +118,7 @@ nlohmann::json NotebookConfig::ToJson() const {
   json[kJsonKeySyncEnabled] = sync_enabled;
   json[kJsonKeySyncBackend] = sync_backend;
   json[kJsonKeySyncRemoteUrl] = sync_remote_url;
-  json[kJsonKeySyncIntervalSeconds] = sync_interval_seconds;
+  json[kJsonKeyAutoSyncEnabled] = auto_sync_enabled;
   return json;
 }
 

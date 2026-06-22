@@ -12,8 +12,8 @@ SyncConfig SyncConfig::FromJson(const nlohmann::json &json) {
     config.backend = json[kJsonKeyBackend].get<std::string>();
   if (json.contains(kJsonKeyRemoteUrl) && json[kJsonKeyRemoteUrl].is_string())
     config.remote_url = json[kJsonKeyRemoteUrl].get<std::string>();
-  if (json.contains(kJsonKeyIntervalSeconds) && json[kJsonKeyIntervalSeconds].is_number_integer())
-    config.interval_seconds = json[kJsonKeyIntervalSeconds].get<int>();
+  if (json.contains(kJsonKeyAutoSyncEnabled) && json[kJsonKeyAutoSyncEnabled].is_boolean())
+    config.auto_sync_enabled = json[kJsonKeyAutoSyncEnabled].get<bool>();
   // NOTE (F3.3): the legacy `"enabled"` key is silently ignored for backward
   // compat with on-disk JSON written before the field was dropped. Whether
   // sync is "on" for a notebook is encoded by SyncManager registration.
@@ -34,7 +34,7 @@ nlohmann::json SyncConfig::ToJson() const {
   nlohmann::json j;
   j[kJsonKeyBackend] = backend;
   j[kJsonKeyRemoteUrl] = remote_url;
-  j[kJsonKeyIntervalSeconds] = interval_seconds;
+  j[kJsonKeyAutoSyncEnabled] = auto_sync_enabled;
   j[kJsonKeyExcludePaths] = exclude_paths;
   j[kJsonKeyAutoCommitMerges] = auto_commit_merges;
   if (!backend_options.is_null() && !backend_options.empty())

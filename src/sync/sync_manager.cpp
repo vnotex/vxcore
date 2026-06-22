@@ -91,8 +91,8 @@ void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
   auto maybe_enqueue_start = std::chrono::steady_clock::now();
   
   // (Debounce removal fix): vxcore no longer applies debounce inside MaybeEnqueueSync.
-  // Each call emits sync.should_run exactly once, regardless of interval. The debounce
-  // gate that checked "interval_seconds <= 0" and "now - last_enqueue_time_ < interval"
+  // Each call emits sync.should_run exactly once, regardless of cadence. The debounce
+  // gate that checked "auto_sync_enabled" and "now - last_enqueue_time_ < interval"
   // has been removed. The Qt-side SyncWorkQueueManager coalesces concurrent triggers via
   // coalesceKey="trigger", which is the correct and only dedup mechanism. Without this
   // fix, the second folder-created event within 60s was silently dropped, leaving the
@@ -115,11 +115,11 @@ void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
 
   // Verify notebook has sync config (even though we no longer debounce,
   // we still need a valid SyncConfig to proceed). If config is missing or
-  // interval_seconds <= 0, skip emission.
+  // auto-sync is disabled for the notebook, skip emission.
   SyncConfig effective_cfg;
   if (GetSyncConfig(notebook_id, effective_cfg) != VXCORE_OK ||
-      effective_cfg.interval_seconds <= 0) {
-    VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: skipped (no config or interval<=0) "
+      !effective_cfg.auto_sync_enabled) {
+    VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: skipped (no config or auto-sync disabled) "
                      "notebook_id=%s",
                      notebook_id.c_str());
     return;
@@ -570,7 +570,7 @@ VxCoreError SyncManager::GetSyncConfig(const std::string &notebook_id, SyncConfi
   const auto &nc = notebook->GetConfig();
   out_config.backend = nc.sync_backend;
   out_config.remote_url = nc.sync_remote_url;
-  out_config.interval_seconds = nc.sync_interval_seconds;
+  out_config.auto_sync_enabled = nc.auto_sync_enabled;
 
   // Re-acquire lock to populate cache.
   {

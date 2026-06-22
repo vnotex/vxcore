@@ -56,8 +56,8 @@ VXCORE_API VxCoreError vxcore_context_get_config(VxCoreContextHandle context, ch
 // (via JSON merge_patch over the current serialized form), then persists the
 // full config to disk. Fields the caller does not include are preserved.
 // Recognized top-level keys: "version" (string), "search" (object),
-// "fileTypes" (object), "recoverLastSession" (boolean). Unknown keys are
-// silently ignored.
+// "fileTypes" (object), "recoverLastSession" (boolean), "autoSyncDebounceSeconds" (integer).
+// Unknown keys are silently ignored.
 // The argument must parse to a JSON object; returns VXCORE_ERR_INVALID_PARAM
 // otherwise.
 VXCORE_API VxCoreError vxcore_context_update_config(VxCoreContextHandle context,
@@ -941,8 +941,8 @@ VXCORE_API VxCoreError vxcore_snippet_apply(VxCoreContextHandle context, const c
 // Enable sync for a notebook.
 // notebook_id: ID of the notebook.
 // config_json: JSON object with sync configuration:
-//   {"backend":"git","remoteUrl":"...","intervalSeconds":60}
-// Default intervalSeconds is 60 (matches SyncConfig::interval_seconds in
+//   {"backend":"git","remoteUrl":"...","autoSyncEnabled":true}
+// Default autoSyncEnabled is true (matches SyncConfig::auto_sync_enabled in
 // libs/vxcore/src/sync/sync_types.h).
 // credentials_json: OPTIONAL JSON object with credentials. May be NULL.
 //   When non-NULL, same shape as vxcore_sync_set_credentials (all fields
@@ -1144,7 +1144,7 @@ VXCORE_API VxCoreError vxcore_sync_get_last_sync_utc(VxCoreContextHandle context
 //   {
 //     "backend": "git",         // required, non-empty
 //     "remoteUrl": "...",        // required for git
-//     "intervalSeconds": 60,     // optional, default 60
+//     "autoSyncEnabled": true,   // optional, default true
 //     "backendOptions": { ... }  // optional, backend-specific
 //   }
 //

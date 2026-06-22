@@ -23,8 +23,9 @@ struct VxCoreConfig {
   SearchConfig search;
   FileTypesConfig file_types;
   bool recover_last_session;
+  int auto_sync_debounce_seconds;
 
-  VxCoreConfig() : version("0.1.0"), search(), file_types(), recover_last_session(true) {}
+  VxCoreConfig() : version("0.1.0"), search(), file_types(), recover_last_session(true), auto_sync_debounce_seconds(60) {}
 
   static VxCoreConfig FromJson(const nlohmann::json &json);
   nlohmann::json ToJson() const;

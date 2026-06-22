@@ -35,6 +35,9 @@ VxCoreConfig VxCoreConfig::FromJson(const nlohmann::json &json) {
   if (json.contains("recoverLastSession") && json["recoverLastSession"].is_boolean()) {
     config.recover_last_session = json["recoverLastSession"].get<bool>();
   }
+  if (json.contains("autoSyncDebounceSeconds") && json["autoSyncDebounceSeconds"].is_number_integer()) {
+    config.auto_sync_debounce_seconds = json["autoSyncDebounceSeconds"].get<int>();
+  }
   return config;
 }
 
@@ -44,6 +47,7 @@ nlohmann::json VxCoreConfig::ToJson() const {
   json["search"] = search.ToJson();
   json["fileTypes"] = file_types.ToJson();
   json["recoverLastSession"] = recover_last_session;
+  json["autoSyncDebounceSeconds"] = auto_sync_debounce_seconds;
   return json;
 }
 
