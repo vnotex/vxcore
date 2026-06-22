@@ -177,6 +177,21 @@ int64_t SyncManager::LastSyncTime(const std::string &notebook_id) const {
   return notebook->GetLastSyncUtc();
 }
 
+void SyncManager::SetLastSyncTime(const std::string &notebook_id, int64_t utc_millis) {
+  // Mirror of LastSyncTime (the getter). Persists the per-device
+  // last-successful-sync timestamp into metadata.db via Notebook::SetLastSyncUtc.
+  // Lock-free like the getter: SetLastSyncUtc is not a backend/external call, so
+  // it is exempt from the state_mutex_ "no external code under lock" rule. The
+  // two-phase production sync path (StageOnly + NetworkPhaseOnly) does NOT write
+  // this; VNote drives it from SyncService::onSyncFinished on the GUI thread, the
+  // single thread that touches a notebook's metadata.db in production.
+  auto *notebook = notebook_manager_->GetNotebook(notebook_id);
+  if (!notebook) {
+    return;
+  }
+  notebook->SetLastSyncUtc(utc_millis);
+}
+
 bool SyncManager::IsRegistered(const std::string &notebook_id) const {
   // Wave 14: lightweight runtime-registration predicate. Only acquires
   // state_mutex_ for the map lookup; NEVER calls into the backend. The

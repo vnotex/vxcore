@@ -451,6 +451,61 @@ int test_last_sync_utc_persistence() {
   return 0;
 }
 
+// Setter API (vxcore_sync_set_last_sync_utc) round-trip. VNote drives this from
+// the GUI thread on a successful two-phase sync, since StageOnly/NetworkPhaseOnly
+// (the production path) do NOT write last_sync_utc themselves. No mock backend /
+// trigger needed: we assert the setter↔getter contract directly.
+int test_set_last_sync_utc_roundtrip() {
+  std::cout << "  Running test_set_last_sync_utc_roundtrip..." << std::endl;
+  const std::string root = get_test_path("test_set_last_sync_utc");
+  cleanup_test_dir(root);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(),
+                                   "{\"name\":\"SetLastSyncUtc Test\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  ASSERT_NOT_NULL(notebook_id);
+
+  // Before any write: getter returns 0 (never synced on this device).
+  int64_t v = -1;
+  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, &v), VXCORE_OK);
+  ASSERT_EQ(v, 0);
+
+  // Set an explicit value and read it straight back.
+  const int64_t kStamp = 1700000000000LL;  // 2023-11-14T22:13:20Z
+  ASSERT_EQ(vxcore_sync_set_last_sync_utc(ctx, notebook_id, kStamp), VXCORE_OK);
+  v = 0;
+  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, &v), VXCORE_OK);
+  ASSERT_EQ(v, kStamp);
+
+  // Overwrite with a newer value (idempotent last-writer-wins).
+  const int64_t kStamp2 = 1800000000000LL;
+  ASSERT_EQ(vxcore_sync_set_last_sync_utc(ctx, notebook_id, kStamp2), VXCORE_OK);
+  v = 0;
+  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, &v), VXCORE_OK);
+  ASSERT_EQ(v, kStamp2);
+
+  // Null-pointer guards.
+  ASSERT_EQ(vxcore_sync_set_last_sync_utc(nullptr, notebook_id, kStamp),
+            VXCORE_ERR_NULL_POINTER);
+  ASSERT_EQ(vxcore_sync_set_last_sync_utc(ctx, nullptr, kStamp), VXCORE_ERR_NULL_POINTER);
+
+  // Not-found: unknown notebook id returns NOT_FOUND (no persistence).
+  ASSERT_EQ(vxcore_sync_set_last_sync_utc(ctx, "nonexistent-nb-id", kStamp),
+            VXCORE_ERR_NOT_FOUND);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  std::cout << "  \xE2\x9C\x93 test_set_last_sync_utc_roundtrip passed" << std::endl;
+  return 0;
+}
+
+
 // ----------------------------------------------------------------------------
 // T7 (sync-queue-convergence): TriggerSync now emits sync.started and
 // sync.finished events directly (single source). The lambda inside
@@ -1114,6 +1169,7 @@ int main() {
   RUN_TEST(test_sync_enable_with_backend_options_via_c_api);
   RUN_TEST(test_sync_config_to_json_omits_empty_backend_options);
   RUN_TEST(test_last_sync_utc_persistence);
+  RUN_TEST(test_set_last_sync_utc_roundtrip);
   RUN_TEST(test_trigger_sync_emits_started_and_finished);
   RUN_TEST(test_trigger_sync_emits_finished_with_error_code);
   RUN_TEST(test_auto_sync_does_not_double_emit);

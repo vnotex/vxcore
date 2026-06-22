@@ -237,6 +237,15 @@ class SyncManager {
   // notebook is unknown or never synced on this device. Const + no callbacks.
   VXCORE_API int64_t LastSyncTime(const std::string &notebook_id) const;
 
+  // Persist the per-device "last successful sync timestamp" (milliseconds since
+  // Unix epoch, UTC) into the notebook's metadata.db via
+  // Notebook::SetLastSyncUtc. Mirrors LastSyncTime (the getter). No-op when the
+  // notebook is unknown. Lock-free like the getter and NOT a backend/external
+  // call; callers MUST serialize metadata.db access (in VNote this runs on the
+  // GUI thread from SyncService::onSyncFinished, matching all other
+  // metadata.db access — see VNote root AGENTS.md Save Path Threading Contract).
+  VXCORE_API void SetLastSyncTime(const std::string &notebook_id, int64_t utc_millis);
+
   // Wave 13.1 (F5.7 part 2): register a progress observer that will be invoked
   // OUTSIDE state_mutex_ for every progress event produced by an in-flight
   // backend Sync(). The observer is invoked on whatever thread the backend

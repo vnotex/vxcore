@@ -590,6 +590,41 @@ VXCORE_API VxCoreError vxcore_sync_get_last_sync_utc(VxCoreContextHandle context
   }
 }
 
+VXCORE_API VxCoreError vxcore_sync_set_last_sync_utc(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     int64_t utc_millis) {
+  if (!context || !notebook_id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    // Setter mirror of vxcore_sync_get_last_sync_utc. Routes through
+    // SyncManager::SetLastSyncTime which delegates to Notebook::SetLastSyncUtc
+    // (writes metadata.db). Same units (ms since Unix epoch, UTC). Missing
+    // notebook → NOT_FOUND, mirroring the getter's existence check exactly.
+    if (!ctx->sync_manager) {
+      ctx->last_error = "Sync manager not initialized";
+      return VXCORE_ERR_UNKNOWN;
+    }
+    auto *nb = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!nb) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+    ctx->sync_manager->SetLastSyncTime(notebook_id, utc_millis);
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error writing last sync timestamp";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+
 // T19 of open-notebook-remote-readonly: C-ABI translation of
 // SyncManager::CloneNotebook. Mirrors the JSON-parsing shape of
 // vxcore_sync_enable (above) so callers can build config_json /

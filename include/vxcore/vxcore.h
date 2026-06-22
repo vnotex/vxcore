@@ -1131,6 +1131,22 @@ VXCORE_API VxCoreError vxcore_sync_get_last_sync_utc(VxCoreContextHandle context
                                                      const char *notebook_id,
                                                      int64_t *out_utc_millis);
 
+// Persist the per-device last successful sync timestamp for a notebook, in
+// milliseconds since Unix epoch. Setter mirror of
+// vxcore_sync_get_last_sync_utc; writes the same metadata.db value
+// (per-machine local data folder, NOT the git-synced config.json). Intended to
+// be called by the consumer on its single metadata-owning thread (the GUI
+// thread in VNote) right after a successful sync round-trip — the two-phase
+// sync path (stage_only + network_phase) does not write this itself.
+//
+// Errors:
+//   VXCORE_ERR_NULL_POINTER   context or notebook_id is null
+//   VXCORE_ERR_NOT_FOUND      notebook is not loaded in NotebookManager
+//   VXCORE_OK                 success (timestamp persisted)
+VXCORE_API VxCoreError vxcore_sync_set_last_sync_utc(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     int64_t utc_millis);
+
 // Clone a remote notebook into target_dir using the backend specified in
 // config_json. T19 of open-notebook-remote-readonly: C-ABI translation of
 // SyncManager::CloneNotebook (the backend-agnostic clone orchestrator).
