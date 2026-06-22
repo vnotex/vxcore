@@ -283,7 +283,10 @@ class SyncManager {
                              std::shared_ptr<ICredentialProvider> provider,
                              SyncBackendFactory factory_override);
 
-  // Enqueue a sync job on the "sync" WorkQueue if the debounce interval has elapsed.
+  // Emit the "sync.should_run" event for a sync-enabled notebook whose
+  // auto_sync_enabled gate is true. vxcore performs NO debounce/throttle — the
+  // consumer owns all scheduling policy (the previous "sync" WorkQueue enqueue
+  // path was removed). last_enqueue_time_ is recorded for observability only.
   // Wave 9.2 (F2.4): no longer holds dirty_mutex_ (DirtyTracker is self-locking
   // and was already released by the caller before invocation).
   void MaybeEnqueueSync(const std::string &notebook_id);
