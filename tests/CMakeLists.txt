@@ -75,6 +75,15 @@ add_vxcore_test(test_notebook_mutators_read_only)
 # C API and the session persistence layer).
 add_vxcore_test(test_notebook_open_ex)
 target_link_libraries(test_notebook_open_ex PRIVATE nlohmann_json)
+# test_notebook_record_reconcile: Part B of fix-notebook-reappears-id-mismatch.
+# Regression test proving the "closed notebook reappears after restart" bug
+# stays fixed: exercises the NotebookManager defense-in-depth fix (A1
+# create-on-existing id preservation, A2 close-by-id-OR-root, A4 load-time id
+# reconcile + same-root dedupe) through the public C API only. Links via
+# add_vxcore_test() (vxcore.dll provides the C API + session persistence);
+# nlohmann_json for the JSON crafting of session/config files.
+add_vxcore_test(test_notebook_record_reconcile)
+target_link_libraries(test_notebook_record_reconcile PRIVATE nlohmann_json)
 add_vxcore_test(test_history)
 add_vxcore_test(test_log_handler)
 add_vxcore_test(test_session_persistence)
