@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <unordered_map>
 
 #include <vxcore/notebook_json_keys.h>
 
@@ -29,25 +30,35 @@ void NotebookManager::LoadOpenNotebooks() {
   const auto local_data_folder = config_manager_->GetLocalDataPath();
   notebooks_.clear();
 
+  // Deterministic reconcile/dedupe: build a fresh record list where exactly one
+  // record survives per cleaned root, a loadable record always wins over a
+  // phantom, and a stale persisted id is healed against the loaded config.json
+  // id. Phantoms (failed-to-load, e.g. folder not yet hydrated by OneDrive) are
+  // preserved so a notebook is never silently lost.
+  std::vector<NotebookRecord> reconciled;
+  reconciled.reserve(session_config.notebooks.size());
+  std::unordered_map<std::string, size_t> root_index;   // cleaned root -> index in reconciled
+  std::unordered_map<std::string, bool> root_loaded;     // cleaned root -> slot is loaded vs phantom
+  bool changed = false;
+
   for (const auto &record : session_config.notebooks) {
+    const std::string root_clean = CleanPath(record.root_folder);
+
     std::unique_ptr<Notebook> notebook;
-    const std::string root_folder = CleanPath(record.root_folder);
     switch (record.type) {
       case NotebookType::Bundled: {
-        auto error = BundledNotebook::Open(local_data_folder, root_folder, notebook);
+        auto error = BundledNotebook::Open(local_data_folder, root_clean, notebook);
         if (error != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to load bundled notebook: root_folder=%s, error=%d",
                            record.root_folder.c_str(), error);
-          continue;
         }
         break;
       }
       case NotebookType::Raw: {
-        auto error = RawNotebook::Open(local_data_folder, root_folder, record.id, notebook);
+        auto error = RawNotebook::Open(local_data_folder, root_clean, record.id, notebook);
         if (error != VXCORE_OK) {
           VXCORE_LOG_ERROR("Failed to load raw notebook: root_folder=%s, error=%d",
                            record.root_folder.c_str(), error);
-          continue;
         }
         break;
       }
@@ -60,16 +71,70 @@ void NotebookManager::LoadOpenNotebooks() {
       // T15: re-apply the persisted per-device read-only flag before the
       // notebook is published to the manager's map, so a downstream
       // GetNotebook(id)->IsReadOnly() sees the same state the session was
-      // shut down in. Both bundled and raw notebooks honor the flag --
-      // SetReadOnly is on the base class. Missing field is back-compat
-      // (NotebookRecord::read_only defaults to false), so old session.json
-      // files without the field continue to load notebooks as writable.
+      // shut down in. Missing field is back-compat (defaults to false).
       notebook->SetReadOnly(record.read_only);
+
+      // Reconcile a stale persisted id against the ground-truth id loaded from
+      // config.json (the root_folder is the stable identity on this device).
+      NotebookRecord kept = record;
+      if (record.id != notebook->GetId()) {
+        VXCORE_LOG_WARN("LoadOpenNotebooks: reconciling stale record id %s -> %s for root=%s",
+                        record.id.c_str(), notebook->GetId().c_str(), root_clean.c_str());
+        kept.id = notebook->GetId();
+        changed = true;
+      }
+
       VXCORE_LOG_INFO("Loaded open notebook: id=%s, root_folder=%s, read_only=%d",
                       notebook->GetId().c_str(), notebook->GetRootFolder().c_str(),
                       record.read_only ? 1 : 0);
+
+      if (root_clean.empty()) {
+        // Malformed empty root: always keep, never dedupe/overwrite.
+        reconciled.push_back(std::move(kept));
+      } else {
+        auto found = root_index.find(root_clean);
+        if (found == root_index.end()) {
+          // Root unseen: append and remember its slot as loaded.
+          root_index[root_clean] = reconciled.size();
+          root_loaded[root_clean] = true;
+          reconciled.push_back(std::move(kept));
+        } else if (!root_loaded[root_clean]) {
+          // Existing slot is a phantom: a loadable record replaces it.
+          reconciled[found->second] = std::move(kept);
+          root_loaded[root_clean] = true;
+          changed = true;
+        } else {
+          // Slot already loaded: drop this duplicate.
+          changed = true;
+        }
+      }
+
       notebooks_[notebook->GetId()] = std::move(notebook);
+    } else {
+      // Phantom: KEEP the record (a load failure is often transient) but dedupe
+      // duplicate phantoms / phantoms shadowed by a same-root loaded record.
+      if (root_clean.empty()) {
+        // Malformed empty root: always keep, never dedupe.
+        VXCORE_LOG_WARN("LoadOpenNotebooks: keeping unloaded (phantom) record id=%s root=%s",
+                        record.id.c_str(), root_clean.c_str());
+        reconciled.push_back(record);
+      } else if (root_index.find(root_clean) == root_index.end()) {
+        // Root unseen: keep the phantom and remember its slot.
+        VXCORE_LOG_WARN("LoadOpenNotebooks: keeping unloaded (phantom) record id=%s root=%s",
+                        record.id.c_str(), root_clean.c_str());
+        root_index[root_clean] = reconciled.size();
+        root_loaded[root_clean] = false;
+        reconciled.push_back(record);
+      } else {
+        // A loaded or earlier phantom for the same root already represents it.
+        changed = true;
+      }
     }
+  }
+
+  if (changed) {
+    session_config.notebooks = std::move(reconciled);
+    config_manager_->SaveSessionConfig();
   }
 }
 
@@ -86,8 +151,17 @@ VxCoreError NotebookManager::CreateNotebook(const std::string &root_folder, Note
     if (!std::filesystem::exists(rootPath)) {
       std::filesystem::create_directories(rootPath);
       VXCORE_LOG_DEBUG("Created root directory: %s", root_folder_clean.c_str());
-    } else {
-      // TODO: check if @root_folder already has a notebook.
+    } else if (type == NotebookType::Bundled &&
+               // Notebook::kConfigFileName is protected/unreachable here; use the
+               // literal "config.json" (its value, defined in notebook.cpp).
+               IsRegularFile(ConcatenatePaths(
+                   ConcatenatePaths(root_folder_clean, BundledNotebook::kMetadataFolderName),
+                   "config.json"))) {
+      VXCORE_LOG_WARN(
+          "CreateNotebook: '%s' already holds a bundled notebook; treating as re-add, "
+          "preserving existing id",
+          root_folder_clean.c_str());
+      return OpenNotebook(root_folder, out_notebook_id);
     }
 
     const auto local_data_folder = config_manager_->GetLocalDataPath();
@@ -209,6 +283,10 @@ VxCoreError NotebookManager::CloseNotebook(const std::string &notebook_id) {
     return VXCORE_ERR_NOT_FOUND;
   }
 
+  // Capture the cleaned root before the runtime entry is erased so the session
+  // record can be matched by root even when its persisted id is stale.
+  const std::string root_clean = CleanPath(it->second->GetRootFolder());
+
   // Close notebook first to release DB file lock before deleting local data
   it->second->Close();
 
@@ -216,14 +294,15 @@ VxCoreError NotebookManager::CloseNotebook(const std::string &notebook_id) {
 
   notebooks_.erase(it);
 
-  // Remove notebook record from session config
+  // Remove notebook record(s) from session config: match by id OR cleaned root,
+  // so a record with a stale id (diverged from config.json) is still removed.
   auto &session_config = config_manager_->GetSessionConfig();
-  auto rec_it =
-      std::find_if(session_config.notebooks.begin(), session_config.notebooks.end(),
-                   [&notebook_id](const NotebookRecord &r) { return r.id == notebook_id; });
-  if (rec_it != session_config.notebooks.end()) {
-    session_config.notebooks.erase(rec_it);
-  }
+  session_config.notebooks.erase(
+      std::remove_if(session_config.notebooks.begin(), session_config.notebooks.end(),
+                     [&notebook_id, &root_clean](const NotebookRecord &r) {
+                       return r.id == notebook_id || CleanPath(r.root_folder) == root_clean;
+                     }),
+      session_config.notebooks.end());
 
   config_manager_->SaveSessionConfig();
 
@@ -339,11 +418,21 @@ Notebook *NotebookManager::GetNotebook(const std::string &notebook_id) {
 
 VxCoreError NotebookManager::UpdateNotebookRecord(const Notebook &notebook) {
   auto &session_config = config_manager_->GetSessionConfig();
-  NotebookRecord *record = FindNotebookRecord(notebook.GetId());
-  if (!record) {
-    session_config.notebooks.emplace_back();
-    record = &session_config.notebooks.back();
-  }
+  const std::string id = notebook.GetId();
+  const std::string root_clean = CleanPath(notebook.GetRootFolder());
+
+  // Remove every record that matches by id OR cleaned root, then upsert a single
+  // canonical record. This guarantees exactly one record per (id, root) and heals
+  // a pre-existing duplicate or id/root mismatch on the next write.
+  session_config.notebooks.erase(
+      std::remove_if(session_config.notebooks.begin(), session_config.notebooks.end(),
+                     [&id, &root_clean](const NotebookRecord &r) {
+                       return r.id == id || CleanPath(r.root_folder) == root_clean;
+                     }),
+      session_config.notebooks.end());
+
+  session_config.notebooks.emplace_back();
+  NotebookRecord *record = &session_config.notebooks.back();
   record->id = notebook.GetId();
   record->root_folder = notebook.GetRootFolder();
   record->type = notebook.GetType();
