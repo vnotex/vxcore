@@ -9,8 +9,9 @@
 
 // Helper: read session config file directly from disk
 static nlohmann::json read_session_file() {
-  // In test mode, both app_data and local_data point to temp/vxcore_test_config
-  auto path = std::filesystem::temp_directory_path() / "vxcore_test_config" / "vxsession.json";
+  // In test mode, local_data points to temp/vxcore_test_config/local
+  auto path =
+      std::filesystem::temp_directory_path() / "vxcore_test_config" / "local" / "vxsession.json";
   if (!std::filesystem::exists(path)) {
     return nlohmann::json::object();
   }
@@ -220,7 +221,7 @@ int test_session_recovery_disabled() {
   // Write config with recoverLastSession=false
   {
     auto config_path =
-        std::filesystem::temp_directory_path() / "vxcore_test_config" / "vxcore.json";
+        std::filesystem::temp_directory_path() / "vxcore_test_config" / "app" / "vxcore.json";
     nlohmann::json config = {{"version", "0.1.0"}, {"recoverLastSession", false}};
     std::ofstream file(config_path);
     file << config.dump(2);

@@ -27,11 +27,11 @@ using namespace vxcore;
 
 namespace {
 
-// Path to the on-disk session.json file. ConfigManager writes it to the
+// Path to the on-disk session file. ConfigManager writes it to the
 // per-test local data path which, in test mode, equals
-// %TEMP%/vxcore_test_config/vxsession.json.
+// %TEMP%/vxcore_test_config/local/vxsession.json.
 std::string SessionConfigPath() {
-  return fs_path_to_utf8(std::filesystem::temp_directory_path() / "vxcore_test_config" /
+  return fs_path_to_utf8(std::filesystem::temp_directory_path() / "vxcore_test_config" / "local" /
                           "vxsession.json");
 }
 

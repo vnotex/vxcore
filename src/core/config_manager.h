@@ -26,8 +26,8 @@ class ConfigManager {
   std::string GetDataPath(VxCoreDataLocation location) const;
   std::string GetLocalDataPath() const { return PathToUtf8(local_data_path_); }
   std::string GetAppDataPath() const { return PathToUtf8(app_data_path_); }
-  std::string GetConfigPath() const { return PathToUtf8(app_data_path_ / "vxcore.json"); }
-  std::string GetSessionConfigPath() const { return PathToUtf8(local_data_path_ / "session.json"); }
+  std::string GetConfigPath() const;
+  std::string GetSessionConfigPath() const;
 
   VxCoreError SaveConfig();
   VxCoreError SaveSessionConfig();

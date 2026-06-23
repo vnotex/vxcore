@@ -11,6 +11,11 @@ namespace vxcore {
 const char *kCoreConfigFileName = "vxcore.json";
 const char *kSessionConfigFileName = "vxsession.json";
 const char *kPortableConfigFolderName = "config";
+// App (roaming-style settings) vs local (regenerable cache/session) subfolders.
+// Used by both portable and test modes to keep the VXCORE_DATA_APP/VXCORE_DATA_LOCAL
+// namespaces disjoint, mirroring the non-portable platform layout.
+const char *kAppSubfolderName = "app";
+const char *kLocalSubfolderName = "local";
 const char *kTestConfigFolderName = "vxcore_test_config";
 
 bool ConfigManager::test_mode_ = false;
@@ -19,14 +24,21 @@ std::string ConfigManager::app_name_ = "vxcore";
 
 ConfigManager::ConfigManager() : config_(), session_config_() {
   if (test_mode_) {
+    // Split app/local into subfolders so test mode faithfully mirrors the
+    // production App != Local invariant. The parent vxcore_test_config dir is
+    // still the wipe root (see ClearTestDirectory / GetDataPathInTestMode).
     auto temp_path = PathFromUtf8(GetDataPathInTestMode());
-    app_data_path_ = temp_path;
-    local_data_path_ = temp_path;
+    app_data_path_ = temp_path / kAppSubfolderName;
+    local_data_path_ = temp_path / kLocalSubfolderName;
   } else {
     auto portable_config_path = PathProvider::GetExecutionFolderPath() / kPortableConfigFolderName;
     if (std::filesystem::exists(portable_config_path)) {
-      app_data_path_ = portable_config_path;
-      local_data_path_ = portable_config_path;
+      // Portable install: keep everything under the executable's config folder, but
+      // still split app (roaming-style settings) and local (regenerable cache/session)
+      // into distinct subfolders so the VXCORE_DATA_APP/VXCORE_DATA_LOCAL namespaces
+      // stay disjoint (mirrors the non-portable layout).
+      app_data_path_ = portable_config_path / kAppSubfolderName;
+      local_data_path_ = portable_config_path / kLocalSubfolderName;
     } else {
       app_data_path_ = PathProvider::GetAppDataPath(app_name_);
       local_data_path_ = PathProvider::GetLocalDataPath(app_name_);
@@ -178,6 +190,14 @@ std::string ConfigManager::GetDataPath(VxCoreDataLocation location) const {
     default:
       return std::string();
   }
+}
+
+std::string ConfigManager::GetConfigPath() const {
+  return PathToUtf8(app_data_path_ / kCoreConfigFileName);
+}
+
+std::string ConfigManager::GetSessionConfigPath() const {
+  return PathToUtf8(local_data_path_ / kSessionConfigFileName);
 }
 
 bool ConfigManager::IsValidConfigBaseName(const std::string &base_name) const {
