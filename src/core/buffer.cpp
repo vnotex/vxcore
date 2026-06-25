@@ -1,11 +1,11 @@
 #include "buffer.h"
 
+#include <vxcore/notebook_json_keys.h>
+
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
-
-#include <vxcore/notebook_json_keys.h>
 
 #include "buffer_provider.h"
 #include "external_buffer_provider.h"
@@ -16,6 +16,30 @@
 #include "utils/utils.h"
 
 namespace vxcore {
+
+namespace {
+// Collapse CRLF and lone CR to a single LF so two byte streams that differ only
+// in line-ending convention compare equal. Used by the external-change detector
+// to tolerate line-ending-only rewrites from external editors. (VNote's git sync
+// backend sets core.autocrlf=false, so sync itself does not rewrite EOLs, but
+// third-party tools might.)
+std::vector<uint8_t> NormalizeEol(const std::vector<uint8_t> &data) {
+  std::vector<uint8_t> out;
+  out.reserve(data.size());
+  for (size_t i = 0; i < data.size(); ++i) {
+    uint8_t c = data[i];
+    if (c == '\r') {
+      out.push_back('\n');
+      if (i + 1 < data.size() && data[i + 1] == '\n') {
+        ++i;  // Skip the LF of a CRLF pair.
+      }
+    } else {
+      out.push_back(c);
+    }
+  }
+  return out;
+}
+}  // namespace
 
 Buffer::Buffer()
     : notebook_(nullptr),
@@ -377,17 +401,72 @@ void Buffer::CheckExternalChanges(const std::string &full_path) {
     int64_t current_mtime =
         std::chrono::duration_cast<std::chrono::milliseconds>(ftime.time_since_epoch()).count();
 
-    // Compare with stored modification time
-    if (current_mtime != last_modified_time_) {
-      state_ = VXCORE_BUFFER_FILE_CHANGED;
-      VXCORE_LOG_WARN("File changed externally: %s", full_path.c_str());
-    } else if (state_ == VXCORE_BUFFER_FILE_CHANGED || state_ == VXCORE_BUFFER_FILE_MISSING) {
-      // File restored to normal state
-      state_ = VXCORE_BUFFER_NORMAL;
+    if (current_mtime == last_modified_time_) {
+      // mtime matches our last known stamp: nothing changed on disk.
+      if (state_ == VXCORE_BUFFER_FILE_CHANGED || state_ == VXCORE_BUFFER_FILE_MISSING) {
+        state_ = VXCORE_BUFFER_NORMAL;  // File restored to normal state.
+      }
+      return;
     }
+
+    // mtime differs from our stamp. A bare mtime bump is frequently benign and
+    // must NOT, by itself, be reported as an external modification. Common benign
+    // sources: VNote's own worker-thread save re-stamp racing this check, the git
+    // sync backend rewriting the working tree with byte-identical content during
+    // checkout/rebase, Windows lazy metadata flush, antivirus / cloud-sync touches.
+    // Only a real CONTENT difference is a true external edit, so confirm by
+    // comparing the on-disk bytes against our in-memory content_ before flagging.
+    //
+    // Thread-safety: the consumer (Qt-side BufferService) gates this check so it
+    // never runs while a save worker mutates content_ for this buffer; content_
+    // is therefore stable for the duration of the comparison below.
+    if (FileContentMatchesBuffer(full_path)) {
+      // Benign mtime change: refresh the stamp and stay NORMAL. The stamp is
+      // refreshed ONLY on confirmed content equality, so a real, still-unresolved
+      // external edit keeps flagging on every subsequent check until resolved.
+      last_modified_time_ = current_mtime;
+      if (state_ == VXCORE_BUFFER_FILE_CHANGED || state_ == VXCORE_BUFFER_FILE_MISSING) {
+        state_ = VXCORE_BUFFER_NORMAL;
+      }
+      return;
+    }
+
+    // Real external modification: content differs. Leave last_modified_time_
+    // UNTOUCHED so repeated checks keep flagging until the user resolves it.
+    state_ = VXCORE_BUFFER_FILE_CHANGED;
+    VXCORE_LOG_WARN("File changed externally: %s", full_path.c_str());
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Exception checking file changes for %s: %s", full_path.c_str(), e.what());
   }
+}
+
+bool Buffer::FileContentMatchesBuffer(const std::string &full_path) const {
+  std::filesystem::path fs_path = PathFromUtf8(full_path);
+  std::ifstream file(fs_path, std::ios::binary | std::ios::ate);
+  if (!file.is_open()) {
+    return false;  // Unreadable → treat as differing (caller will flag CHANGED).
+  }
+
+  std::streamsize size = file.tellg();
+  if (size < 0) {
+    return false;
+  }
+  file.seekg(0, std::ios::beg);
+
+  std::vector<uint8_t> disk(static_cast<size_t>(size));
+  if (size > 0 && !file.read(reinterpret_cast<char *>(disk.data()), size)) {
+    return false;
+  }
+
+  // Fast path: exact byte equality. Covers identical-content rewrites (git
+  // checkout, self-save re-stamp race, lazy mtime flush) without normalization.
+  if (disk.size() == content_.size() && std::equal(disk.begin(), disk.end(), content_.begin())) {
+    return true;
+  }
+
+  // Slow path: EOL-insensitive comparison so a line-ending-only rewrite by an
+  // external tool is treated as benign.
+  return NormalizeEol(disk) == NormalizeEol(content_);
 }
 
 BufferRecord::BufferRecord() {}

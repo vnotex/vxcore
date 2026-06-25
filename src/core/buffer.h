@@ -83,6 +83,12 @@ class Buffer {
   // Create appropriate provider based on context
   void CreateProvider();
 
+  // Return true if the on-disk file at @full_path has the same content as the
+  // cached content_ (exact byte match, or equal after EOL normalization).
+  // Used by CheckExternalChanges to suppress benign mtime-only changes.
+  // Caller must ensure no concurrent mutation of content_ (Qt-side gate).
+  bool FileContentMatchesBuffer(const std::string &full_path) const;
+
   std::string id_;
   Notebook *notebook_;       // nullptr for external files (non-owning)
   std::string file_path_;    // Relative to notebook root, or absolute for external

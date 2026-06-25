@@ -499,6 +499,31 @@ std::filesystem::rename(PathFromUtf8(old_path), PathFromUtf8(new_path));
 - `src/utils/string_utils.h`: `ToLowerString()`, `MatchesPattern()`, `MatchesPatterns()`
 - `src/utils/logger.h`: `VXCORE_LOG_TRACE/DEBUG/INFO/WARN/ERROR/FATAL`
 
+### Buffer external-change detection (`Buffer::CheckExternalChanges`)
+
+`Buffer::CheckExternalChanges` (`src/core/buffer.cpp`) decides whether an open buffer's
+file was modified on disk by an external tool. It is **content-aware, not mtime-only**:
+a bare `last_write_time` change is NOT sufficient to report `VXCORE_BUFFER_FILE_CHANGED`.
+
+Algorithm: if `current_mtime == last_modified_time_` → NORMAL. Otherwise compare on-disk
+bytes against the cached `content_` — exact byte match first, then EOL-normalized
+(`NormalizeEol`, CRLF/CR → LF) — via `FileContentMatchesBuffer`. On match it is a benign
+mtime bump (VNote's own worker-thread save re-stamp, the git sync backend rewriting the
+working tree with identical content during checkout/rebase, Windows lazy metadata flush,
+AV/cloud-sync touches): refresh `last_modified_time_` to `current_mtime` and stay NORMAL.
+Only a real content difference sets `FILE_CHANGED`, and the stamp is refreshed **only** on
+confirmed equality so a genuine unresolved external edit keeps flagging on every check.
+
+**Thread-safety contract (consumer-owned):** `content_` is read here without a lock, by
+design — vxcore `Buffer` has no per-buffer mutex (adding one was rejected; see
+`src/core/services/buffersavequeue.cpp` header). The Qt consumer MUST NOT call this while a
+save is mutating the same buffer; VNote enforces this by skipping the check when
+`BufferSaveQueue::isBusy(notebookId, bufferId)` (see VNote's
+`src/core/services/AGENTS.md` § External-change detection gate). Keep this method free of
+scheduling/timing policy — it reports a FACT (changed vs. not), the consumer owns WHEN to
+check. Coverage: `tests/test_buffer.cpp` (`test_buffer_external_change_content_aware`,
+`test_buffer_mtime_no_jitter`, `test_buffer_check_external_changes`).
+
 ### Logging
 
 ```cpp

@@ -3433,7 +3433,7 @@ int test_buffer_check_external_changes_unloaded() {
   char *notebook_id = nullptr;
   std::string notebook_path = get_test_path("test_buffer_ext_unloaded");
   err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Unloaded Test\"}",
-                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create file with content on disk
@@ -3509,7 +3509,7 @@ int test_buffer_mtime_no_jitter() {
   char *notebook_id = nullptr;
   std::string notebook_path = get_test_path("test_buffer_mtime_jitter");
   err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Jitter Test\"}",
-                                VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *file_id = nullptr;
@@ -3537,8 +3537,7 @@ int test_buffer_mtime_no_jitter() {
     err = vxcore_buffer_get_state(ctx, buffer_id, &state);
     ASSERT_EQ(err, VXCORE_OK);
     if (state != VXCORE_BUFFER_NORMAL) {
-      std::cerr << "  FAIL: Jitter detected at iteration " << i
-                << " state=" << state << std::endl;
+      std::cerr << "  FAIL: Jitter detected at iteration " << i << " state=" << state << std::endl;
       return 1;
     }
   }
@@ -3549,6 +3548,91 @@ int test_buffer_mtime_no_jitter() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_buffer_mtime_jitter"));
   std::cout << "  ✓ test_buffer_mtime_no_jitter passed" << std::endl;
+  return 0;
+}
+
+// Content-aware external-change detection: a bare mtime bump with identical
+// (or EOL-only-different) content must NOT be reported as FILE_CHANGED.
+int test_buffer_external_change_content_aware() {
+  std::cout << "  Running test_buffer_external_change_content_aware..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buffer_ext_content"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  std::string notebook_path = get_test_path("test_buffer_ext_content");
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Content Aware\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  std::string file_path = notebook_path + "/note.md";
+  create_test_file(file_path, "line1\nline2\nline3");
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "note.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Establish baseline (content_ loaded, last_modified_time_ stamped).
+  err = vxcore_buffer_reload(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  VxCoreBufferState state;
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_NORMAL);
+
+  // (b) Rewrite the SAME content with a fresh mtime -> benign, stays NORMAL.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  create_test_file(file_path, "line1\nline2\nline3");
+  err = vxcore_buffer_check_external_changes(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_NORMAL);
+
+  // Stamp must have been refreshed: a second check sees no change, stays NORMAL.
+  err = vxcore_buffer_check_external_changes(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_NORMAL);
+
+  // (c)/(e) Rewrite with CRLF line endings (different bytes AND different size)
+  // but identical logical content -> benign, stays NORMAL.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  create_test_file(file_path, "line1\r\nline2\r\nline3");
+  err = vxcore_buffer_check_external_changes(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_NORMAL);
+
+  // (d) Rewrite with genuinely different content -> FILE_CHANGED.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  create_test_file(file_path, "line1\nTOTALLY DIFFERENT\nline3");
+  err = vxcore_buffer_check_external_changes(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_FILE_CHANGED);
+
+  // A real change must keep flagging (stamp NOT refreshed) until resolved.
+  err = vxcore_buffer_check_external_changes(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_get_state(ctx, buffer_id, &state);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(state, VXCORE_BUFFER_FILE_CHANGED);
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buffer_ext_content"));
+  std::cout << "  ✓ test_buffer_external_change_content_aware passed" << std::endl;
   return 0;
 }
 
@@ -3570,6 +3654,7 @@ int main() {
   RUN_TEST(test_buffer_external_file);
   RUN_TEST(test_buffer_state);
   RUN_TEST(test_buffer_check_external_changes);
+  RUN_TEST(test_buffer_external_change_content_aware);
   RUN_TEST(test_buffer_is_modified);
   RUN_TEST(test_buffer_get_revision);
 
