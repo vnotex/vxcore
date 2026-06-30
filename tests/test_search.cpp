@@ -1,10 +1,19 @@
+#include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <filesystem>
+#include <future>
 #include <iostream>
 #include <map>
 #include <string>
 #include <thread>
+#include <vector>
 
+#include "core/context.h"
+#include "core/work_queue.h"
 #include "nlohmann/json.hpp"
+#include "search/simple_search_backend.h"
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
 
@@ -2038,11 +2047,16 @@ int test_search_content_parallel_ordering() {
   ASSERT_EQ(json_results["matchCount"].get<int>(), 60);
   ASSERT_EQ(json_results["matches"].size(), 60);
 
+  // Characterization (b): the parallel path MUST preserve file-enumeration
+  // order byte-for-byte. Assert the EXACT basename at each index (not just a
+  // substring match) so a reordering refactor cannot slip through undetected.
   for (int i = 0; i < 60; ++i) {
     std::string suffix = (i < 10 ? "0" : "") + std::to_string(i);
     std::string expected = "file_" + suffix + ".md";
     std::string path = json_results["matches"][i]["path"].get<std::string>();
-    ASSERT(path.find(expected) != std::string::npos);
+    size_t last_slash = path.find_last_of('/');
+    std::string basename = (last_slash == std::string::npos) ? path : path.substr(last_slash + 1);
+    ASSERT_EQ(basename, expected);
   }
 
   vxcore_string_free(results);
@@ -2050,6 +2064,81 @@ int test_search_content_parallel_ordering() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_content_parallel_ordering"));
   std::cout << "  âœ“ test_search_content_parallel_ordering passed" << std::endl;
+  return 0;
+}
+
+int test_search_content_parallel_max_results_exact() {
+  std::cout << "  Running test_search_content_parallel_max_results_exact..." << std::endl;
+  vxcore_set_test_mode(1);
+  cleanup_test_dir(get_test_path("test_content_parallel_max_exact"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_content_parallel_max_exact").c_str(),
+                               "{\"name\":\"Test Content Parallel Max Exact\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // 60 files (> kParallelSearchThreshold = 50) forces the parallel path. Each
+  // file holds exactly ONE matching line so the total match count is
+  // deterministic and truncation lands cleanly on a file boundary.
+  for (int i = 0; i < 60; ++i) {
+    char *file_id = nullptr;
+    std::string suffix = (i < 10 ? "0" : "") + std::to_string(i);
+    std::string file_name = "mfile_" + suffix + ".md";
+    err = vxcore_file_create(ctx, notebook_id, ".", file_name.c_str(), &file_id);
+    ASSERT_EQ(err, VXCORE_OK);
+    vxcore_string_free(file_id);
+    write_file(get_test_path("test_content_parallel_max_exact") + "/" + file_name,
+               "capped_hit here\n");
+  }
+
+  const char *query_json = R"({
+    "pattern": "capped_hit",
+    "caseSensitive": false,
+    "wholeWord": false,
+    "regex": false,
+    "maxResults": 10,
+    "scope": {
+      "folderPath": ".",
+      "recursive": true
+    }
+  })";
+
+  char *results = nullptr;
+  err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+
+  auto json_results = nlohmann::json::parse(results);
+
+  // Characterization (c): parallel truncation returns EXACTLY max_results
+  // matches (one per file here), in file-enumeration order, truncated=true.
+  ASSERT_EQ(json_results["truncated"].get<bool>(), true);
+  ASSERT_EQ(json_results["matchCount"].get<int>(), 10);
+  ASSERT_EQ(json_results["matches"].size(), 10);
+
+  int total_nested = 0;
+  for (int i = 0; i < 10; ++i) {
+    std::string suffix = std::string("0") + std::to_string(i);
+    std::string expected = "mfile_" + suffix + ".md";
+    std::string path = json_results["matches"][i]["path"].get<std::string>();
+    size_t last_slash = path.find_last_of('/');
+    std::string basename = (last_slash == std::string::npos) ? path : path.substr(last_slash + 1);
+    ASSERT_EQ(basename, expected);
+    ASSERT_EQ(json_results["matches"][i]["matchCount"].get<int>(), 1);
+    total_nested += static_cast<int>(json_results["matches"][i]["matches"].size());
+  }
+  ASSERT_EQ(total_nested, 10);
+
+  vxcore_string_free(results);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_content_parallel_max_exact"));
+  std::cout << "  âœ“ test_search_content_parallel_max_results_exact passed" << std::endl;
   return 0;
 }
 
@@ -2094,6 +2183,11 @@ int test_search_content_cancel_pre_set() {
   char *results = nullptr;
   err = vxcore_search_content_ex(ctx, notebook_id, query_json, nullptr, &cancel_flag, &results);
   ASSERT_EQ(err, VXCORE_ERR_CANCELLED);
+
+  // Characterization (d): a pre-set cancel yields NO result payload. The API
+  // returns early on VXCORE_ERR_CANCELLED without ever writing out_results_json,
+  // so the caller's pointer stays exactly as initialized (nullptr).
+  ASSERT(results == nullptr);
 
   if (results != nullptr) {
     vxcore_string_free(results);
@@ -2394,6 +2488,112 @@ int test_search_content_parallel_no_matches() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_content_parallel_no_matches"));
   std::cout << "  âœ“ test_search_content_parallel_no_matches passed" << std::endl;
+  return 0;
+}
+
+int test_search_content_workqueue_multidrain() {
+  std::cout << "  Running test_search_content_workqueue_multidrain..." << std::endl;
+  vxcore_set_test_mode(1);
+  cleanup_test_dir(get_test_path("test_content_workqueue_multidrain"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_content_workqueue_multidrain").c_str(),
+                               "{\"name\":\"Test Content WorkQueue Multidrain\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  for (int i = 0; i < 60; ++i) {
+    char *file_id = nullptr;
+    std::string suffix = (i < 10 ? "0" : "") + std::to_string(i);
+    std::string file_name = "wq_" + suffix + ".md";
+    err = vxcore_file_create(ctx, notebook_id, ".", file_name.c_str(), &file_id);
+    ASSERT_EQ(err, VXCORE_OK);
+    vxcore_string_free(file_id);
+    write_file(get_test_path("test_content_workqueue_multidrain") + "/" + file_name,
+               "drain_marker\n");
+  }
+
+  const char *query_json = R"({
+    "pattern": "drain_marker",
+    "caseSensitive": false,
+    "wholeWord": false,
+    "regex": false,
+    "maxResults": 1000,
+    "scope": {
+      "folderPath": ".",
+      "recursive": true
+    }
+  })";
+
+  // Four external drainers hammer the shared search queue concurrently with the
+  // initiator's own help-drain, proving correctness under contended draining.
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> drainers;
+  for (int t = 0; t < 4; ++t) {
+    drainers.emplace_back([ctx, &stop]() {
+      while (!stop.load(std::memory_order_acquire)) {
+        vxcore_work_queue_process_next(ctx, "vxcore.search", 100);
+      }
+    });
+  }
+
+  char *results = nullptr;
+  err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results);
+
+  stop.store(true, std::memory_order_release);
+  for (auto &d : drainers) {
+    d.join();
+  }
+
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+
+  auto json_results = nlohmann::json::parse(results);
+  ASSERT_EQ(json_results["matchCount"].get<int>(), 60);
+  ASSERT_EQ(json_results["matches"].size(), 60);
+  ASSERT_EQ(json_results["truncated"].get<bool>(), false);
+
+  // Concurrent external draining must not perturb file-enumeration order.
+  for (int i = 0; i < 60; ++i) {
+    std::string suffix = (i < 10 ? "0" : "") + std::to_string(i);
+    std::string expected = "wq_" + suffix + ".md";
+    std::string path = json_results["matches"][i]["path"].get<std::string>();
+    size_t last_slash = path.find_last_of('/');
+    std::string basename = (last_slash == std::string::npos) ? path : path.substr(last_slash + 1);
+    ASSERT_EQ(basename, expected);
+  }
+
+  vxcore_string_free(results);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_content_workqueue_multidrain"));
+  std::cout << "  \xE2\x9C\x93 test_search_content_workqueue_multidrain passed" << std::endl;
+  return 0;
+}
+
+int test_search_queue_precreated() {
+  std::cout << "  Running test_search_queue_precreated..." << std::endl;
+  vxcore_set_test_mode(1);
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto *real_ctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  ASSERT_NOT_NULL(real_ctx->work_queue_manager.get());
+
+  // The search queue must exist BEFORE any search runs (pre-created in
+  // vxcore_context_create); an unrelated name must not. Get() distinguishes
+  // absent from present, unlike vxcore_work_queue_size (0 for absent AND empty).
+  ASSERT_NOT_NULL(real_ctx->work_queue_manager->Get("vxcore.search"));
+  ASSERT_NULL(real_ctx->work_queue_manager->Get("bogus.name"));
+
+  vxcore_context_destroy(ctx);
+  std::cout << "  \xE2\x9C\x93 test_search_queue_precreated passed" << std::endl;
   return 0;
 }
 
@@ -3385,9 +3585,9 @@ int test_raw_search_empty_notebook() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_raw_search_empty").c_str(),
-                               "{\"name\":\"Raw Search Empty\"}", VXCORE_NOTEBOOK_RAW,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_raw_search_empty").c_str(),
+                             "{\"name\":\"Raw Search Empty\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // File name search on empty notebook
@@ -3458,9 +3658,9 @@ int test_raw_search_nested_folders() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_raw_search_nested").c_str(),
-                               "{\"name\":\"Raw Search Nested\"}", VXCORE_NOTEBOOK_RAW,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_raw_search_nested").c_str(),
+                             "{\"name\":\"Raw Search Nested\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create nested structure: root/file1.md, docs/file2.md, docs/deep/file3.md
@@ -3607,6 +3807,435 @@ int test_raw_search_content_in_subfolder() {
   return 0;
 }
 
+// ============================================================================
+// T6: Empirical concurrency / exception coverage for the caller-helps-drain
+// SearchParallel rewrite. Every hang-capable subtest runs the search on a
+// dedicated thread and fails (rather than hanging the suite) if it does not
+// finish within a watchdog budget.
+// ============================================================================
+
+// Runs `fn` on a worker thread; returns false if it does not finish within
+// `timeout_seconds`. A stuck worker is detached so a regression surfaces as a
+// failed assertion instead of a frozen ctest run.
+template <typename Fn>
+static bool run_with_watchdog(Fn fn, int timeout_seconds) {
+  std::promise<void> done_promise;
+  std::future<void> done = done_promise.get_future();
+  std::thread worker([&]() {
+    fn();
+    done_promise.set_value();
+  });
+  bool finished =
+      done.wait_for(std::chrono::seconds(timeout_seconds)) == std::future_status::ready;
+  if (finished) {
+    worker.join();
+  } else {
+    worker.detach();
+  }
+  return finished;
+}
+
+static std::string pad3(int i) {
+  char buf[8];
+  std::snprintf(buf, sizeof(buf), "%03d", i);
+  return std::string(buf);
+}
+
+int test_search_content_no_external_drain() {
+  std::cout << "  Running test_search_content_no_external_drain..." << std::endl;
+  vxcore_set_test_mode(1);
+  cleanup_test_dir(get_test_path("test_content_no_external_drain"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_content_no_external_drain").c_str(),
+                               "{\"name\":\"No External Drain\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const int kFileCount = 80;
+  for (int i = 0; i < kFileCount; ++i) {
+    char *file_id = nullptr;
+    std::string file_name = "nd_" + pad3(i) + ".md";
+    err = vxcore_file_create(ctx, notebook_id, ".", file_name.c_str(), &file_id);
+    ASSERT_EQ(err, VXCORE_OK);
+    vxcore_string_free(file_id);
+    write_file(get_test_path("test_content_no_external_drain") + "/" + file_name,
+               "self_drain_marker\n");
+  }
+
+  const char *query_json = R"({
+    "pattern": "self_drain_marker",
+    "caseSensitive": false,
+    "wholeWord": false,
+    "regex": false,
+    "maxResults": 1000,
+    "scope": { "folderPath": ".", "recursive": true }
+  })";
+
+  char *results = nullptr;
+  VxCoreError search_err = VXCORE_ERR_UNKNOWN;
+  bool finished = run_with_watchdog(
+      [&]() { search_err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results); },
+      10);
+  ASSERT(finished);
+  ASSERT_EQ(search_err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+
+  auto json_results = nlohmann::json::parse(results);
+  ASSERT_EQ(json_results["matchCount"].get<int>(), kFileCount);
+  ASSERT_EQ(json_results["matches"].size(), 80);
+  for (int i = 0; i < kFileCount; ++i) {
+    std::string expected = "nd_" + pad3(i) + ".md";
+    std::string path = json_results["matches"][i]["path"].get<std::string>();
+    size_t last_slash = path.find_last_of('/');
+    std::string basename = (last_slash == std::string::npos) ? path : path.substr(last_slash + 1);
+    ASSERT_EQ(basename, expected);
+  }
+
+  vxcore_string_free(results);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_content_no_external_drain"));
+  std::cout << "  \xE2\x9C\x93 test_search_content_no_external_drain passed" << std::endl;
+  return 0;
+}
+
+int test_search_content_multidrain_parallelism() {
+  std::cout << "  Running test_search_content_multidrain_parallelism..." << std::endl;
+  vxcore_set_test_mode(1);
+  cleanup_test_dir(get_test_path("test_content_multidrain_parallelism"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_content_multidrain_parallelism").c_str(),
+                               "{\"name\":\"Multidrain Parallelism\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const int kFileCount = 200;
+  for (int i = 0; i < kFileCount; ++i) {
+    char *file_id = nullptr;
+    std::string file_name = "mp_" + pad3(i) + ".md";
+    err = vxcore_file_create(ctx, notebook_id, ".", file_name.c_str(), &file_id);
+    ASSERT_EQ(err, VXCORE_OK);
+    vxcore_string_free(file_id);
+    write_file(get_test_path("test_content_multidrain_parallelism") + "/" + file_name,
+               "parallel_marker\n");
+  }
+
+  const char *query_json = R"({
+    "pattern": "parallel_marker",
+    "caseSensitive": false,
+    "wholeWord": false,
+    "regex": false,
+    "maxResults": 5000,
+    "scope": { "folderPath": ".", "recursive": true }
+  })";
+
+  vxcore::SimpleSearchBackend::TestArmParallelismProbe(
+      std::min<size_t>(4, static_cast<size_t>(kFileCount)));
+
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> drainers;
+  for (int t = 0; t < 4; ++t) {
+    drainers.emplace_back([ctx, &stop]() {
+      while (!stop.load(std::memory_order_acquire)) {
+        vxcore_work_queue_process_next(ctx, "vxcore.search", 100);
+      }
+    });
+  }
+
+  char *results = nullptr;
+  VxCoreError search_err = VXCORE_ERR_UNKNOWN;
+  bool finished = run_with_watchdog(
+      [&]() { search_err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results); },
+      15);
+
+  stop.store(true, std::memory_order_release);
+  for (auto &d : drainers) {
+    d.join();
+  }
+
+  size_t distinct = vxcore::SimpleSearchBackend::TestDistinctWorkerThreadCount();
+  vxcore::SimpleSearchBackend::TestArmParallelismProbe(0);
+
+  ASSERT(finished);
+  ASSERT_EQ(search_err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+
+  std::cout << "    observed distinct worker threads = " << distinct << std::endl;
+  ASSERT(distinct >= 2);
+
+  auto json_results = nlohmann::json::parse(results);
+  ASSERT_EQ(json_results["matchCount"].get<int>(), kFileCount);
+  ASSERT_EQ(json_results["matches"].size(), 200);
+  for (int i = 0; i < kFileCount; ++i) {
+    std::string expected = "mp_" + pad3(i) + ".md";
+    std::string path = json_results["matches"][i]["path"].get<std::string>();
+    size_t last_slash = path.find_last_of('/');
+    std::string basename = (last_slash == std::string::npos) ? path : path.substr(last_slash + 1);
+    ASSERT_EQ(basename, expected);
+  }
+
+  vxcore_string_free(results);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_content_multidrain_parallelism"));
+  std::cout << "  \xE2\x9C\x93 test_search_content_multidrain_parallelism passed" << std::endl;
+  return 0;
+}
+
+int test_search_content_concurrent_no_deadlock() {
+  std::cout << "  Running test_search_content_concurrent_no_deadlock..." << std::endl;
+  vxcore_set_test_mode(1);
+  cleanup_test_dir(get_test_path("test_content_concurrent_nb1"));
+  cleanup_test_dir(get_test_path("test_content_concurrent_nb2"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *nb1 = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_content_concurrent_nb1").c_str(),
+                               "{\"name\":\"Concurrent NB1\"}", VXCORE_NOTEBOOK_BUNDLED, &nb1);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *nb2 = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_content_concurrent_nb2").c_str(),
+                               "{\"name\":\"Concurrent NB2\"}", VXCORE_NOTEBOOK_BUNDLED, &nb2);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const int kFileCount = 60;
+  for (int i = 0; i < kFileCount; ++i) {
+    std::string file_name = "cc_" + pad3(i) + ".md";
+    char *id1 = nullptr;
+    err = vxcore_file_create(ctx, nb1, ".", file_name.c_str(), &id1);
+    ASSERT_EQ(err, VXCORE_OK);
+    vxcore_string_free(id1);
+    write_file(get_test_path("test_content_concurrent_nb1") + "/" + file_name,
+               "concurrent_marker\n");
+
+    char *id2 = nullptr;
+    err = vxcore_file_create(ctx, nb2, ".", file_name.c_str(), &id2);
+    ASSERT_EQ(err, VXCORE_OK);
+    vxcore_string_free(id2);
+    write_file(get_test_path("test_content_concurrent_nb2") + "/" + file_name,
+               "concurrent_marker\n");
+  }
+
+  const char *query_json = R"({
+    "pattern": "concurrent_marker",
+    "caseSensitive": false,
+    "wholeWord": false,
+    "regex": false,
+    "maxResults": 5000,
+    "scope": { "folderPath": ".", "recursive": true }
+  })";
+
+  VxCoreError e1 = VXCORE_ERR_UNKNOWN;
+  VxCoreError e2 = VXCORE_ERR_UNKNOWN;
+  char *r1 = nullptr;
+  char *r2 = nullptr;
+  bool finished = run_with_watchdog(
+      [&]() {
+        std::thread t1(
+            [&]() { e1 = vxcore_search_content(ctx, nb1, query_json, nullptr, &r1); });
+        std::thread t2(
+            [&]() { e2 = vxcore_search_content(ctx, nb2, query_json, nullptr, &r2); });
+        t1.join();
+        t2.join();
+      },
+      20);
+  ASSERT(finished);
+  ASSERT_EQ(e1, VXCORE_OK);
+  ASSERT_EQ(e2, VXCORE_OK);
+  ASSERT_NOT_NULL(r1);
+  ASSERT_NOT_NULL(r2);
+
+  auto j1 = nlohmann::json::parse(r1);
+  auto j2 = nlohmann::json::parse(r2);
+  ASSERT_EQ(j1["matchCount"].get<int>(), kFileCount);
+  ASSERT_EQ(j2["matchCount"].get<int>(), kFileCount);
+
+  vxcore_string_free(r1);
+  vxcore_string_free(r2);
+  vxcore_string_free(nb1);
+  vxcore_string_free(nb2);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_content_concurrent_nb1"));
+  cleanup_test_dir(get_test_path("test_content_concurrent_nb2"));
+  std::cout << "  \xE2\x9C\x93 test_search_content_concurrent_no_deadlock passed" << std::endl;
+  return 0;
+}
+
+int test_search_content_queue_shutdown_unblocks() {
+  std::cout << "  Running test_search_content_queue_shutdown_unblocks..." << std::endl;
+  vxcore_set_test_mode(1);
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  std::atomic<bool> returned{false};
+  std::thread blocker([ctx, &returned]() {
+    vxcore_work_queue_process_next(ctx, "vxcore.search", -1);
+    returned.store(true, std::memory_order_release);
+  });
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  vxcore_work_queue_shutdown(ctx, "vxcore.search");
+
+  auto start = std::chrono::steady_clock::now();
+  while (!returned.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() - start < std::chrono::seconds(5)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  bool unblocked = returned.load(std::memory_order_acquire);
+  if (unblocked) {
+    blocker.join();
+  } else {
+    blocker.detach();
+  }
+  ASSERT(unblocked);
+
+  vxcore_context_destroy(ctx);
+  std::cout << "  \xE2\x9C\x93 test_search_content_queue_shutdown_unblocks passed" << std::endl;
+  return 0;
+}
+
+int test_search_content_unreadable_file_no_strand() {
+  std::cout << "  Running test_search_content_unreadable_file_no_strand..." << std::endl;
+  vxcore_set_test_mode(1);
+  cleanup_test_dir(get_test_path("test_content_unreadable_file"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_content_unreadable_file").c_str(),
+                               "{\"name\":\"Unreadable File\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const int kFileCount = 60;
+  const int kVictim = 30;
+  for (int i = 0; i < kFileCount; ++i) {
+    char *file_id = nullptr;
+    std::string file_name = "st_" + pad3(i) + ".md";
+    err = vxcore_file_create(ctx, notebook_id, ".", file_name.c_str(), &file_id);
+    ASSERT_EQ(err, VXCORE_OK);
+    vxcore_string_free(file_id);
+    write_file(get_test_path("test_content_unreadable_file") + "/" + file_name, "strand_marker\n");
+  }
+
+  // Invariant under test: an indexed-but-missing file is still enumerated, so
+  // its work item's ifstream open fails yet MUST still decrement `remaining`.
+  std::string victim_name = "st_" + pad3(kVictim) + ".md";
+  std::string victim_path = get_test_path("test_content_unreadable_file") + "/" + victim_name;
+  std::error_code ec;
+  std::filesystem::remove(utf8_to_fs_path(victim_path), ec);
+  ASSERT(!std::filesystem::exists(utf8_to_fs_path(victim_path)));
+
+  const char *query_json = R"({
+    "pattern": "strand_marker",
+    "caseSensitive": false,
+    "wholeWord": false,
+    "regex": false,
+    "maxResults": 5000,
+    "scope": { "folderPath": ".", "recursive": true }
+  })";
+
+  char *results = nullptr;
+  VxCoreError search_err = VXCORE_ERR_UNKNOWN;
+  bool finished = run_with_watchdog(
+      [&]() { search_err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results); },
+      10);
+  ASSERT(finished);
+  ASSERT_EQ(search_err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+
+  auto json_results = nlohmann::json::parse(results);
+  ASSERT_EQ(json_results["matchCount"].get<int>(), kFileCount - 1);
+  for (const auto &matched_file : json_results["matches"]) {
+    std::string path = matched_file["path"].get<std::string>();
+    ASSERT(path.find(victim_name) == std::string::npos);
+  }
+
+  vxcore_string_free(results);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_content_unreadable_file"));
+  std::cout << "  \xE2\x9C\x93 test_search_content_unreadable_file_no_strand passed" << std::endl;
+  return 0;
+}
+
+int test_search_content_throwing_match_no_crash() {
+  std::cout << "  Running test_search_content_throwing_match_no_crash..." << std::endl;
+  vxcore_set_test_mode(1);
+  cleanup_test_dir(get_test_path("test_content_throwing_match"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_content_throwing_match").c_str(),
+                               "{\"name\":\"Throwing Match\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const int kFileCount = 60;
+  for (int i = 0; i < kFileCount; ++i) {
+    char *file_id = nullptr;
+    std::string file_name = "tm_" + pad3(i) + ".md";
+    err = vxcore_file_create(ctx, notebook_id, ".", file_name.c_str(), &file_id);
+    ASSERT_EQ(err, VXCORE_OK);
+    vxcore_string_free(file_id);
+    write_file(get_test_path("test_content_throwing_match") + "/" + file_name, "scan_marker\n");
+  }
+
+  const char *query_json = R"({
+    "pattern": "scan_marker",
+    "caseSensitive": false,
+    "wholeWord": false,
+    "regex": true,
+    "maxResults": 5000,
+    "scope": { "folderPath": ".", "recursive": true }
+  })";
+
+  // libstdc++'s std::regex executor cannot throw at match time (its executor
+  // has zero __throw_regex_error sites; backtracking hangs and deep nesting
+  // segfaults instead). Induce a real scan-path throw via the sanctioned
+  // one-shot test seam to exercise the identical work-item -> first_exc ->
+  // initiator rethrow -> SearchContent catch -> VXCORE_ERR_UNKNOWN path.
+  vxcore::SimpleSearchBackend::TestArmScanThrowOnce();
+
+  char *results = nullptr;
+  VxCoreError search_err = VXCORE_OK;
+  bool finished = run_with_watchdog(
+      [&]() { search_err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results); },
+      10);
+  ASSERT(finished);
+  ASSERT_EQ(search_err, VXCORE_ERR_UNKNOWN);
+
+  if (results != nullptr) {
+    vxcore_string_free(results);
+  }
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_content_throwing_match"));
+  std::cout << "  \xE2\x9C\x93 test_search_content_throwing_match_no_crash passed" << std::endl;
+  return 0;
+}
+
 int main() {
   vxcore_set_test_mode(1);
   vxcore_clear_test_directory();
@@ -3659,12 +4288,22 @@ int main() {
   RUN_TEST(test_content_search_no_matches);
   RUN_TEST(test_search_content_parallel_100_files);
   RUN_TEST(test_search_content_parallel_ordering);
+  RUN_TEST(test_search_content_parallel_max_results_exact);
   RUN_TEST(test_search_content_cancel_pre_set);
   RUN_TEST(test_search_content_cancel_mid_search);
   RUN_TEST(test_search_content_threshold_below);
   RUN_TEST(test_search_content_threshold_at);
   RUN_TEST(test_search_content_max_results_parallel);
   RUN_TEST(test_search_content_parallel_no_matches);
+  RUN_TEST(test_search_content_workqueue_multidrain);
+  RUN_TEST(test_search_queue_precreated);
+
+  RUN_TEST(test_search_content_no_external_drain);
+  RUN_TEST(test_search_content_multidrain_parallelism);
+  RUN_TEST(test_search_content_concurrent_no_deadlock);
+  RUN_TEST(test_search_content_queue_shutdown_unblocks);
+  RUN_TEST(test_search_content_unreadable_file_no_strand);
+  RUN_TEST(test_search_content_throwing_match_no_crash);
 
   RUN_TEST(test_raw_search_files_by_name);
   RUN_TEST(test_raw_search_content);

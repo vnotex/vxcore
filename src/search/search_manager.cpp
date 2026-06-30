@@ -34,7 +34,7 @@ SearchManager::SearchManager(Notebook *notebook, const std::string &search_backe
 
 SearchManager::~SearchManager() = default;
 
-void SearchManager::SetThreadPool(BS::thread_pool<> *pool) { thread_pool_ = pool; }
+void SearchManager::SetWorkQueue(WorkQueue *queue) { work_queue_ = queue; }
 
 void SearchManager::SetCancelFlag(const volatile int *flag) { cancel_flag_ = flag; }
 
@@ -97,7 +97,7 @@ VxCoreError SearchManager::SearchContent(const std::string &query_json,
     auto &total_matches = result["matches"];
     if (search_backend_) {
       if (auto *simple = dynamic_cast<SimpleSearchBackend *>(search_backend_.get())) {
-        simple->SetThreadPool(thread_pool_);
+        simple->SetWorkQueue(work_queue_);
         simple->SetCancelFlag(cancel_flag_);
       }
 

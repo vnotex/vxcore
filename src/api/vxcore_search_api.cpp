@@ -1,16 +1,16 @@
-#include <BS_thread_pool/BS_thread_pool.hpp>
-
 #include "api/api_utils.h"
 #include "core/config_manager.h"
 #include "core/context.h"
 #include "core/notebook_manager.h"
+#include "core/work_queue.h"
 #include "search/rg_search_backend.h"
 #include "search/search_manager.h"
+#include "search/search_queue_name.h"
 #include "vxcore/vxcore.h"
 
 std::unique_ptr<vxcore::SearchManager> CreateSearchManager(vxcore::VxCoreContext *ctx,
                                                            vxcore::Notebook *notebook,
-                                                           BS::thread_pool<> *pool,
+                                                           vxcore::WorkQueue *queue,
                                                            const volatile int *cancel_flag) {
   std::string backend = "simple";
   if (ctx && ctx->config_manager) {
@@ -26,7 +26,7 @@ std::unique_ptr<vxcore::SearchManager> CreateSearchManager(vxcore::VxCoreContext
     }
   }
   auto manager = std::make_unique<vxcore::SearchManager>(notebook, backend);
-  manager->SetThreadPool(pool);
+  manager->SetWorkQueue(queue);
   manager->SetCancelFlag(cancel_flag);
   return manager;
 }
@@ -89,7 +89,8 @@ VXCORE_API VxCoreError vxcore_search_content(VxCoreContextHandle context, const 
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    auto search_manager = CreateSearchManager(ctx, notebook, &ctx->GetThreadPool(), nullptr);
+    auto search_manager = CreateSearchManager(
+        ctx, notebook, ctx->work_queue_manager->GetOrCreate(vxcore::kSearchQueueName), nullptr);
 
     std::string results_json;
     std::string input_files_str = input_files_json ? input_files_json : "";
@@ -133,7 +134,8 @@ VXCORE_API VxCoreError vxcore_search_content_ex(VxCoreContextHandle context,
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    auto search_manager = CreateSearchManager(ctx, notebook, &ctx->GetThreadPool(), cancel_flag);
+    auto search_manager = CreateSearchManager(
+        ctx, notebook, ctx->work_queue_manager->GetOrCreate(vxcore::kSearchQueueName), cancel_flag);
 
     std::string results_json;
     std::string input_files_str = input_files_json ? input_files_json : "";

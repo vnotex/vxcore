@@ -1,7 +1,6 @@
 #ifndef VXCORE_SEARCH_MANAGER_H
 #define VXCORE_SEARCH_MANAGER_H
 
-#include <BS_thread_pool/BS_thread_pool.hpp>
 #include <memory>
 #include <string>
 #include <vector>
@@ -14,6 +13,7 @@
 namespace vxcore {
 
 class Notebook;
+class WorkQueue;
 
 struct FileRecord;
 struct FolderRecord;
@@ -32,7 +32,7 @@ class SearchManager {
   VxCoreError SearchByTags(const std::string &query_json, const std::string &input_files_json,
                            std::string &out_results_json);
 
-  void SetThreadPool(BS::thread_pool<> *pool);
+  void SetWorkQueue(WorkQueue *queue);
   void SetCancelFlag(const volatile int *flag);
 
  private:
@@ -75,7 +75,7 @@ class SearchManager {
 
   Notebook *notebook_;
   std::unique_ptr<ISearchBackend> search_backend_;
-  BS::thread_pool<> *thread_pool_ = nullptr;
+  WorkQueue *work_queue_ = nullptr;
   const volatile int *cancel_flag_ = nullptr;
 };
 

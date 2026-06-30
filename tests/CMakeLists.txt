@@ -365,6 +365,7 @@ add_test(NAME test_rg_search_backend COMMAND test_rg_search_backend)
 add_executable(test_simple_search_backend test_simple_search_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/search/simple_search_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/search/search_file_info.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/work_queue.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)

@@ -1,9 +1,17 @@
 #include "simple_search_backend.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
+#include <exception>
 #include <fstream>
-#include <future>
+#include <mutex>
+#include <set>
+#include <stdexcept>
+#include <thread>
+#include <vector>
 
 #include "search_file_info.h"
 #include "utils/file_utils.h"
@@ -16,6 +24,35 @@ namespace vxcore {
 namespace {
 
 constexpr int kParallelSearchThreshold = 50;
+
+std::atomic<bool> g_probe_armed{false};
+std::atomic<bool> g_scan_throw_armed{false};
+std::mutex g_probe_mu;
+std::condition_variable g_probe_cv;
+std::set<std::thread::id> g_probe_thread_ids;
+size_t g_probe_expected = 0;
+size_t g_probe_arrived = 0;
+
+void RunWorkItemProbeHook() {
+  if (g_scan_throw_armed.load(std::memory_order_relaxed) &&
+      g_scan_throw_armed.exchange(false, std::memory_order_relaxed)) {
+    throw std::runtime_error("vxcore test-induced scan-path exception");
+  }
+
+  if (!g_probe_armed.load(std::memory_order_relaxed)) {
+    return;
+  }
+
+  std::unique_lock<std::mutex> lk(g_probe_mu);
+  g_probe_thread_ids.insert(std::this_thread::get_id());
+  ++g_probe_arrived;
+  if (g_probe_arrived >= g_probe_expected) {
+    g_probe_cv.notify_all();
+    return;
+  }
+  g_probe_cv.wait_for(lk, std::chrono::seconds(2),
+                      [] { return g_probe_arrived >= g_probe_expected; });
+}
 
 }  // namespace
 
@@ -104,9 +141,27 @@ bool SimpleSearchBackend::MatchesPattern(const std::string &line, const std::str
   }
 }
 
-void SimpleSearchBackend::SetThreadPool(BS::thread_pool<> *pool) { thread_pool_ = pool; }
+void SimpleSearchBackend::SetWorkQueue(WorkQueue *queue) { work_queue_ = queue; }
 
 void SimpleSearchBackend::SetCancelFlag(const volatile int *flag) { cancel_flag_ = flag; }
+
+void SimpleSearchBackend::TestArmParallelismProbe(size_t expectedParticipants) {
+  std::lock_guard<std::mutex> lk(g_probe_mu);
+  g_probe_expected = expectedParticipants;
+  g_probe_arrived = 0;
+  g_probe_thread_ids.clear();
+  g_probe_armed.store(expectedParticipants != 0, std::memory_order_relaxed);
+  g_probe_cv.notify_all();
+}
+
+size_t SimpleSearchBackend::TestDistinctWorkerThreadCount() {
+  std::lock_guard<std::mutex> lk(g_probe_mu);
+  return g_probe_thread_ids.size();
+}
+
+void SimpleSearchBackend::TestArmScanThrowOnce() {
+  g_scan_throw_armed.store(true, std::memory_order_relaxed);
+}
 
 VxCoreError SimpleSearchBackend::SearchSequential(
     const std::vector<SearchFileInfo> &files,
@@ -170,39 +225,37 @@ VxCoreError SimpleSearchBackend::SearchParallel(
     const std::vector<std::string> &lowercased_exclude_patterns,
     const std::vector<std::regex> &exclude_regexes, int max_results,
     ContentSearchResult &out_result) {
-  struct ChunkSearchResult {
-    ContentSearchResult result;
-    bool cancelled = false;
-  };
+  constexpr int kHelpDrainPollMs = 5;
 
   const size_t file_count = files.size();
-  const size_t worker_count =
-      std::max(static_cast<size_t>(1), static_cast<size_t>(thread_pool_->get_thread_count()));
-  const size_t chunk_count = std::min(file_count, worker_count);
-  const size_t base_chunk_size = file_count / chunk_count;
-  const size_t remainder = file_count % chunk_count;
 
-  std::vector<std::future<ChunkSearchResult>> futures;
-  futures.reserve(chunk_count);
+  // Distinct output slot per file index — no shared mutex: a worker only ever
+  // writes slots[i] for its own i, so writes never race.
+  std::vector<ContentSearchMatchedFile> slots(file_count);
+  std::atomic<int> remaining{static_cast<int>(file_count)};
+  std::mutex exc_mu;
+  std::exception_ptr first_exc;
 
-  size_t start = 0;
-  for (size_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
-    const size_t chunk_size = base_chunk_size + (chunk_index < remainder ? 1 : 0);
-    const size_t end = start + chunk_size;
+  for (size_t i = 0; i < file_count; ++i) {
+    auto work = [&, i]() {
+      // Decrement remaining on EVERY exit path (cancel-skip, open failure,
+      // normal completion, exception) so the drain loop can never hang.
+      struct RemainingGuard {
+        std::atomic<int> &remaining;
+        ~RemainingGuard() { remaining.fetch_sub(1, std::memory_order_release); }
+      } guard{remaining};
 
-    futures.push_back(thread_pool_->submit_task([&, start, end]() -> ChunkSearchResult {
-      ChunkSearchResult chunk_result;
+      try {
+        RunWorkItemProbeHook();
 
-      for (size_t i = start; i < end; ++i) {
         if (cancel_flag_ && *cancel_flag_ != 0) {
-          chunk_result.cancelled = true;
-          break;
+          return;
         }
 
         const auto &file_info = files[i];
         std::ifstream file(PathFromUtf8(file_info.absolute_path));
         if (!file.is_open()) {
-          continue;
+          return;
         }
 
         std::vector<SearchMatch> file_matches;
@@ -230,31 +283,45 @@ VxCoreError SimpleSearchBackend::SearchParallel(
           matched_file.path = file_info.path;
           matched_file.id = file_info.id;
           matched_file.matches = std::move(file_matches);
-          chunk_result.result.matched_files.push_back(std::move(matched_file));
+          slots[i] = std::move(matched_file);
+        }
+      } catch (...) {
+        std::lock_guard<std::mutex> lk(exc_mu);
+        if (!first_exc) {
+          first_exc = std::current_exception();
         }
       }
+    };
 
-      return chunk_result;
-    }));
-
-    start = end;
-  }
-
-  bool cancelled = false;
-  std::vector<ChunkSearchResult> chunk_results;
-  chunk_results.reserve(chunk_count);
-  for (auto &future : futures) {
-    auto chunk_result = future.get();
-    cancelled = cancelled || chunk_result.cancelled;
-    chunk_results.push_back(std::move(chunk_result));
-  }
-
-  for (auto &chunk_result : chunk_results) {
-    for (auto &matched_file : chunk_result.result.matched_files) {
-      out_result.matched_files.push_back(std::move(matched_file));
+    if (!work_queue_->Enqueue(std::move(work))) {
+      // Enqueue failed (queue shut down): the item will never run, so account
+      // for it here — never strand the remaining counter.
+      remaining.fetch_sub(1, std::memory_order_release);
     }
   }
 
+  // Caller-helps-drain: the initiator processes items until all work completes.
+  // External drainers may help concurrently, so poll with a small POSITIVE
+  // timeout — a <= 0 timeout would block the initiator on an empty queue while
+  // other threads still hold in-flight work.
+  while (remaining.load(std::memory_order_acquire) > 0) {
+    work_queue_->ProcessNext(kHelpDrainPollMs);
+  }
+
+  // Rethrow on the initiator thread so it propagates through Search ->
+  // SearchManager::SearchContent catch(const std::exception&) -> ERR_UNKNOWN.
+  // Returning an error code here would be swallowed to VXCORE_OK instead.
+  if (first_exc) {
+    std::rethrow_exception(first_exc);
+  }
+
+  for (auto &slot : slots) {
+    if (!slot.matches.empty()) {
+      out_result.matched_files.push_back(std::move(slot));
+    }
+  }
+
+  // Scan-all-then-truncate on a file boundary (parity with the old path).
   if (max_results > 0) {
     int total = 0;
     for (size_t i = 0; i < out_result.matched_files.size(); ++i) {
@@ -272,7 +339,7 @@ VxCoreError SimpleSearchBackend::SearchParallel(
   }
 
 done_truncation:
-  if (cancelled || (cancel_flag_ && *cancel_flag_ != 0)) {
+  if (cancel_flag_ && *cancel_flag_ != 0) {
     return VXCORE_ERR_CANCELLED;
   }
 
@@ -334,14 +401,13 @@ VxCoreError SimpleSearchBackend::Search(const std::vector<SearchFileInfo> &files
     return err;
   }
 
-  if (!thread_pool_ || static_cast<int>(files.size()) < kParallelSearchThreshold) {
+  if (!work_queue_ || static_cast<int>(files.size()) < kParallelSearchThreshold) {
     VXCORE_LOG_DEBUG("Content search: using sequential path (%zu files)", files.size());
     return SearchSequential(files, do_match, content_exclude_patterns, lowercased_exclude_patterns,
                             exclude_regexes, max_results, out_result);
   }
 
-  VXCORE_LOG_DEBUG("Content search: using parallel path (%zu files, %u threads)", files.size(),
-                   thread_pool_->get_thread_count());
+  VXCORE_LOG_DEBUG("Content search: using parallel path (%zu files)", files.size());
   return SearchParallel(files, do_match, content_exclude_patterns, lowercased_exclude_patterns,
                         exclude_regexes, max_results, out_result);
 }
