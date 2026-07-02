@@ -9,6 +9,7 @@ project(vxcore
 option(VXCORE_BUILD_SHARED "Build shared library" ON)
 option(VXCORE_BUILD_CLI "Build command-line interface" ON)
 option(VXCORE_BUILD_TESTS "Build tests" ON)
+option(VXCORE_BUILD_TOOLS "Build diagnostic tools" OFF)
 option(VXCORE_INSTALL "Enable install targets" ON)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -52,6 +53,10 @@ add_subdirectory(src)
 
 if(VXCORE_BUILD_CLI)
     add_subdirectory(cli)
+endif()
+
+if(VXCORE_BUILD_TOOLS)
+    add_subdirectory(tools/search-validate)
 endif()
 
 if(VXCORE_BUILD_TESTS)
