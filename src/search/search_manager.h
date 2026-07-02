@@ -1,6 +1,7 @@
 #ifndef VXCORE_SEARCH_MANAGER_H
 #define VXCORE_SEARCH_MANAGER_H
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -28,6 +29,19 @@ class SearchManager {
 
   VxCoreError SearchContent(const std::string &query_json, const std::string &input_files_json,
                             std::string &out_results_json);
+
+  // Streaming content search. Fetches the target file set, then dispatches to the backend's
+  // SearchStreaming primitive, JSON-encoding each completed chunk slice into the existing
+  // content-search shape ({"matchCount","truncated":false,"matches":[...]}) before invoking
+  // |on_batch|. NO truncation is applied (the primitive owns none). |batch_size| == 0 selects
+  // the backend default. |on_batch| MAY be invoked concurrently from multiple drain threads
+  // and MUST be thread-safe; the batch_json string is valid only for the call's duration.
+  // Returns VXCORE_ERR_CANCELLED if a configured cancel flag was observed mid-stream.
+  using SearchContentBatchFn =
+      std::function<void(int batch_index, int total_batches, const std::string &batch_json)>;
+  VxCoreError SearchContentStreaming(const std::string &query_json,
+                                     const std::string &input_files_json, int batch_size,
+                                     const SearchContentBatchFn &on_batch);
 
   VxCoreError SearchByTags(const std::string &query_json, const std::string &input_files_json,
                            std::string &out_results_json);

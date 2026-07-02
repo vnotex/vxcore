@@ -6,6 +6,7 @@
 #include <future>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1270,6 +1271,157 @@ int test_search_content_exclude_patterns() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_content_exclude"));
   std::cout << "  âœ“ test_search_content_exclude_patterns passed" << std::endl;
+  return 0;
+}
+
+// Thread-safe accumulator for vxcore_search_content_streaming C-API callbacks. Batches are
+// stored by batch_index (NOT arrival order) so they can be reassembled in input-file order.
+struct CApiStreamCollector {
+  std::mutex mu;
+  std::map<int, nlohmann::json> by_index;  // batch_index -> parsed batch_json
+  int total_batches = -1;
+  int callback_count = 0;
+
+  // Reassemble every matched file across all batches, in ascending batch_index order.
+  std::vector<nlohmann::json> reassembleMatches() {
+    std::vector<nlohmann::json> out;
+    for (const auto &kv : by_index) {
+      for (const auto &mf : kv.second["matches"]) {
+        out.push_back(mf);
+      }
+    }
+    return out;
+  }
+};
+
+static void capi_stream_cb(int batch_index, int total_batches, const char *batch_json,
+                           void *userdata) {
+  auto *c = static_cast<CApiStreamCollector *>(userdata);
+  // batch_json is valid only for the callback's duration — parse/copy before returning.
+  nlohmann::json parsed = nlohmann::json::parse(batch_json);
+  std::lock_guard<std::mutex> lock(c->mu);
+  c->total_batches = total_batches;
+  ++c->callback_count;
+  c->by_index[batch_index] = std::move(parsed);
+}
+
+// Streaming C-API delivers, across all chunks, the SAME matched-file set as the blob API.
+int test_streaming_capi_blob_parity() {
+  std::cout << "  Running test_streaming_capi_blob_parity..." << std::endl;
+  cleanup_test_dir(get_test_path("test_stream_parity"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_stream_parity").c_str(),
+                               "{\"name\":\"Test Stream Parity\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const char *names[] = {"a.md", "b.md", "c.md", "d.md", "e.md"};
+  for (const char *n : names) {
+    char *fid = nullptr;
+    err = vxcore_file_create(ctx, notebook_id, ".", n, &fid);
+    ASSERT_EQ(err, VXCORE_OK);
+    vxcore_string_free(fid);
+  }
+  // 3 of 5 files contain a match; b.md and d.md do not.
+  write_file(get_test_path("test_stream_parity") + "/a.md", "needle here\nplain\n");
+  write_file(get_test_path("test_stream_parity") + "/b.md", "nothing to see\n");
+  write_file(get_test_path("test_stream_parity") + "/c.md", "line\nneedle again\n");
+  write_file(get_test_path("test_stream_parity") + "/d.md", "still nothing\n");
+  write_file(get_test_path("test_stream_parity") + "/e.md", "needle\n");
+
+  const char *query_json = R"({
+    "pattern": "needle",
+    "caseSensitive": true,
+    "regex": false,
+    "maxResults": 100,
+    "scope": { "folderPath": ".", "recursive": false }
+  })";
+
+  // Blob baseline.
+  char *blob = nullptr;
+  err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &blob);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(blob);
+  auto blob_json = nlohmann::json::parse(blob);
+  vxcore_string_free(blob);
+  const int blob_match_files = blob_json["matchCount"].get<int>();
+  ASSERT_EQ(blob_match_files, 3);
+
+  // Streaming with batch_size=1 forces one chunk per file → multiple batches.
+  CApiStreamCollector c;
+  err = vxcore_search_content_streaming(ctx, notebook_id, query_json, nullptr, /*batch_size=*/1,
+                                        capi_stream_cb, &c, nullptr);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Exactly one callback per chunk, including zero-match chunks. 5 files, batch_size 1 → 5.
+  ASSERT_EQ(c.total_batches, 5);
+  ASSERT_EQ(c.callback_count, 5);
+  // Every streamed batch reports truncated=false (streaming owns no truncation).
+  for (const auto &kv : c.by_index) {
+    ASSERT_EQ(kv.second["truncated"].get<bool>(), false);
+  }
+  // Reassembled matched-file set must equal the blob's byte-for-byte, not just in count:
+  // same file order, same path/id, same per-occurrence line/column/text payload.
+  auto reassembled = c.reassembleMatches();
+  ASSERT_EQ(static_cast<int>(reassembled.size()), blob_match_files);
+  const auto &blob_matches = blob_json["matches"];
+  ASSERT_EQ(static_cast<int>(reassembled.size()), static_cast<int>(blob_matches.size()));
+  for (size_t i = 0; i < reassembled.size(); ++i) {
+    // nlohmann::json operator== is a deep structural compare of the whole matched-file object.
+    ASSERT_TRUE(reassembled[i] == blob_matches[i]);
+  }
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_stream_parity"));
+  std::cout << "  ✓ test_streaming_capi_blob_parity passed" << std::endl;
+  return 0;
+}
+
+// Preset cancel flag makes the streaming C-API return VXCORE_ERR_CANCELLED.
+int test_streaming_capi_cancel() {
+  std::cout << "  Running test_streaming_capi_cancel..." << std::endl;
+  cleanup_test_dir(get_test_path("test_stream_cancel"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_stream_cancel").c_str(),
+                               "{\"name\":\"Test Stream Cancel\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *fid = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "x.md", &fid);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(fid);
+  write_file(get_test_path("test_stream_cancel") + "/x.md", "needle\n");
+
+  const char *query_json = R"({
+    "pattern": "needle",
+    "caseSensitive": true,
+    "regex": false,
+    "maxResults": 100,
+    "scope": { "folderPath": ".", "recursive": false }
+  })";
+
+  CApiStreamCollector c;
+  volatile int cancel_flag = 1;  // preset: cancel before any work runs.
+  err = vxcore_search_content_streaming(ctx, notebook_id, query_json, nullptr, /*batch_size=*/1,
+                                        capi_stream_cb, &c, &cancel_flag);
+  ASSERT_EQ(err, VXCORE_ERR_CANCELLED);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_stream_cancel"));
+  std::cout << "  ✓ test_streaming_capi_cancel passed" << std::endl;
   return 0;
 }
 
@@ -4266,6 +4418,8 @@ int main() {
   RUN_TEST(test_search_file_and_exclude_patterns);
 
   RUN_TEST(test_search_content_exclude_patterns);
+  RUN_TEST(test_streaming_capi_blob_parity);
+  RUN_TEST(test_streaming_capi_cancel);
   RUN_TEST(test_search_by_tags_with_exclude_tags);
 
   RUN_TEST(test_tag_find_files_and);

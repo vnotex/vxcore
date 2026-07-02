@@ -164,6 +164,50 @@ VXCORE_API VxCoreError vxcore_search_content_ex(VxCoreContextHandle context,
   }
 }
 
+VXCORE_API VxCoreError vxcore_search_content_streaming(
+    VxCoreContextHandle context, const char *notebook_id, const char *query_json,
+    const char *input_files_json, int batch_size, VxCoreSearchBatchCallback batch_cb,
+    void *userdata, volatile int *cancel_flag) {
+  if (!context || !notebook_id || !query_json || !batch_cb) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    auto search_manager = CreateSearchManager(
+        ctx, notebook, ctx->work_queue_manager->GetOrCreate(vxcore::kSearchQueueName), cancel_flag);
+
+    std::string input_files_str = input_files_json ? input_files_json : "";
+
+    // Adapt the C++ std::function batch sink to the C callback. The batch_json c_str() is
+    // valid only for the duration of batch_cb (documented lifetime contract).
+    auto on_batch = [batch_cb, userdata](int batch_index, int total_batches,
+                                         const std::string &batch_json) {
+      batch_cb(batch_index, total_batches, batch_json.c_str(), userdata);
+    };
+
+    VxCoreError err = search_manager->SearchContentStreaming(query_json, input_files_str,
+                                                             batch_size, on_batch);
+    if (err != VXCORE_OK && err != VXCORE_ERR_CANCELLED) {
+      ctx->last_error = "Search content streaming failed";
+    }
+    return err;
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error streaming content search";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_search_by_tags(VxCoreContextHandle context, const char *notebook_id,
                                              const char *query_json, const char *input_files_json,
                                              char **out_results_json) {

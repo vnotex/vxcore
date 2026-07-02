@@ -83,6 +83,35 @@ VxCoreError RgSearchBackend::Search(const std::vector<SearchFileInfo> &files,
   return VXCORE_OK;
 }
 
+VxCoreError RgSearchBackend::SearchStreaming(
+    const std::vector<SearchFileInfo> &files, const std::string &pattern, SearchOption options,
+    const std::vector<std::string> &content_exclude_patterns, int batch_size,
+    const SearchBatchEmitFn &emit_batch) {
+  // rg is a single external-process shot: there is no true chunking. |batch_size| is
+  // therefore ignored — we run one unbounded scan and deliver the whole result as ONE batch.
+  (void)batch_size;
+
+  // Zero input files -> total_batches == 0, no callback (contract parity with
+  // SimpleSearchBackend). Emitting a lone empty batch would misreport progress as 1/1.
+  if (files.empty()) {
+    return VXCORE_OK;
+  }
+
+  // Unbounded scan: the streaming primitive owns NO truncation. The blob wrapper (Search)
+  // applies file-boundary max_results truncation after reassembly; streaming consumers cap
+  // themselves via the cancel flag.
+  ContentSearchResult result;
+  VxCoreError err =
+      Search(files, pattern, options, content_exclude_patterns, /*max_results=*/0, result);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  // Deliver everything as a single batch (batch_index == 0, total_batches == 1).
+  emit_batch(0, 1, result.matched_files);
+  return VXCORE_OK;
+}
+
 std::string RgSearchBackend::BuildCommand(const std::vector<SearchFileInfo> &files,
                                           const std::string &pattern, SearchOption options,
                                           const std::vector<std::string> &content_exclude_patterns,

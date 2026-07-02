@@ -477,6 +477,12 @@ VXCORE_API VxCoreError vxcore_search_content(VxCoreContextHandle context, const 
                                              const char *query_json, const char *input_files_json,
                                              char **out_results_json);
 
+// Per-chunk callback for streaming content search. See vxcore_search_content_streaming below
+// for the full contract (batch_index/total_batches semantics, batch_json shape and lifetime,
+// concurrency and re-entrancy rules).
+typedef void (*VxCoreSearchBatchCallback)(int batch_index, int total_batches,
+                                          const char *batch_json, void *userdata);
+
 // Extended content search with cooperative cancellation support.
 // cancel_flag: Pointer to a volatile int that the caller can set to non-zero from another thread
 //   to request early cancellation. If NULL, no cancellation support (behaves like
@@ -486,6 +492,41 @@ VXCORE_API VxCoreError vxcore_search_content_ex(VxCoreContextHandle context,
                                                 const char *notebook_id, const char *query_json,
                                                 const char *input_files_json,
                                                 volatile int *cancel_flag, char **out_results_json);
+
+// Streaming content search: delivers matches to the consumer in file-chunk batches via a
+// callback, instead of one monolithic aggregated blob. This is the underlying primitive;
+// vxcore_search_content / vxcore_search_content_ex are thin accumulating wrappers over it.
+//
+// Callback contract (mirrors VxCoreLogCallback lifetime rules):
+//   batch_index:   the chunk's position in input-file order (chunk 0 == files[0..batch_size)).
+//                  Carried explicitly because chunks may complete out of order across drain
+//                  threads; identity is the index, NOT arrival order.
+//   total_batches: ceil(fileCount / effectiveBatchSize), computed up front. Zero-file search
+//                  yields total_batches == 0 with no callbacks.
+//   batch_json:    a JSON object in the existing content-search shape, scoped to that chunk's
+//                  files: {"matchCount":N,"truncated":false,"matches":[{path,id,matchCount,
+//                  matches:[{lineNumber,columnStart,columnEnd,lineText}]}]}. "truncated" is
+//                  ALWAYS false — the streaming primitive owns no truncation; it emits every
+//                  match. The pointer is valid ONLY for the callback's duration; copy/parse
+//                  before returning.
+//   userdata:      opaque pointer supplied by the caller; valid for the call's duration.
+//
+// The callback is fired EXACTLY ONCE per chunk, including zero-match chunks (empty matches
+// array). It MAY fire concurrently from multiple drain threads; vxcore does NOT serialize
+// callbacks. The callback MUST be thread-safe and MUST NOT re-enter vxcore synchronously.
+//
+// batch_size: number of files per chunk. 0 selects an internal default
+//   (kDefaultSearchChunkSize). fileCount <= effectiveBatchSize runs as a single inline chunk.
+// cancel_flag: optional pointer to a volatile int; setting it non-zero from another thread
+//   requests early cancellation (drain halts, remaining chunks skipped). Returns
+//   VXCORE_ERR_CANCELLED if cancellation was observed. NULL disables cancellation.
+//
+// The call blocks on the invoking thread (help-draining the "vxcore.search" work queue) and
+// returns when the scan completes.
+VXCORE_API VxCoreError vxcore_search_content_streaming(
+    VxCoreContextHandle context, const char *notebook_id, const char *query_json,
+    const char *input_files_json, int batch_size, VxCoreSearchBatchCallback batch_cb,
+    void *userdata, volatile int *cancel_flag);
 
 VXCORE_API VxCoreError vxcore_search_by_tags(VxCoreContextHandle context, const char *notebook_id,
                                              const char *query_json, const char *input_files_json,

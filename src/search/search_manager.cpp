@@ -11,6 +11,33 @@
 
 namespace vxcore {
 
+namespace {
+
+// Encodes a single matched file into the per-file content-search JSON shape shared by the
+// blob (SearchContent) and streaming (SearchContentStreaming) paths. Kept as the SINGLE
+// source of truth so the two paths can never drift; key insertion order is fixed
+// (path, id, matchCount, matches; lineNumber, columnStart, columnEnd, lineText) to preserve
+// byte-identical blob output.
+nlohmann::json EncodeMatchedFileJson(const ContentSearchMatchedFile &matched_file) {
+  nlohmann::json item;
+  item["path"] = matched_file.path;
+  item["id"] = matched_file.id;
+  item["matchCount"] = matched_file.matches.size();
+  item["matches"] = nlohmann::json::array();
+  auto &matches = item["matches"];
+  for (const auto &match : matched_file.matches) {
+    nlohmann::json m;
+    m["lineNumber"] = match.line_number;
+    m["columnStart"] = match.column_start;
+    m["columnEnd"] = match.column_end;
+    m["lineText"] = match.line_text;
+    matches.push_back(std::move(m));
+  }
+  return item;
+}
+
+}  // namespace
+
 SearchManager::SearchManager(Notebook *notebook, const std::string &search_backend)
     : notebook_(notebook), search_backend_(nullptr) {
   if (search_backend == "rg") {
@@ -101,29 +128,30 @@ VxCoreError SearchManager::SearchContent(const std::string &query_json,
         simple->SetCancelFlag(cancel_flag_);
       }
 
+      // Cancellation must be honored for ALL backends on the blob path too (this backs the
+      // cancellable vxcore_search_content_ex C API). SimpleSearchBackend observes cancel_flag_
+      // internally, but RgSearchBackend's single-shot Search() does not, so guard the boundary
+      // here: bail before dispatch if already cancelled, and translate a backend VXCORE_OK into
+      // VXCORE_ERR_CANCELLED when the flag is set. This mirrors SearchContentStreaming and does
+      // NOT alter the successful (non-cancelled) blob output, preserving byte-identity.
+      auto is_cancelled = [this]() { return cancel_flag_ && *cancel_flag_ != 0; };
+      if (is_cancelled()) {
+        out_results_json = result.dump();
+        return VXCORE_ERR_CANCELLED;
+      }
+
       ContentSearchResult search_result;
 
       VxCoreError search_err =
           search_backend_->Search(filtered_files, query.pattern, query.options,
                                   query.exclude_patterns, query.max_results, search_result);
+      if (search_err == VXCORE_OK && is_cancelled()) {
+        out_results_json = result.dump();
+        return VXCORE_ERR_CANCELLED;
+      }
       if (search_err == VXCORE_OK) {
         for (const auto &matched_file : search_result.matched_files) {
-          nlohmann::json item;
-          item["path"] = matched_file.path;
-          item["id"] = matched_file.id;
-          item["matchCount"] = matched_file.matches.size();
-          item["matches"] = nlohmann::json::array();
-          auto &matches = item["matches"];
-          for (const auto &match : matched_file.matches) {
-            nlohmann::json m;
-            m["lineNumber"] = match.line_number;
-            m["columnStart"] = match.column_start;
-            m["columnEnd"] = match.column_end;
-            m["lineText"] = match.line_text;
-            matches.push_back(std::move(m));
-          }
-
-          total_matches.push_back(std::move(item));
+          total_matches.push_back(EncodeMatchedFileJson(matched_file));
         }
 
         result["matchCount"] = result["matches"].size();
@@ -143,6 +171,69 @@ VxCoreError SearchManager::SearchContent(const std::string &query_json,
     return VXCORE_ERR_JSON_PARSE;
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("SearchContent error: %s", e.what());
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VxCoreError SearchManager::SearchContentStreaming(const std::string &query_json,
+                                                  const std::string &input_files_json,
+                                                  int batch_size,
+                                                  const SearchContentBatchFn &on_batch) {
+  try {
+    auto query = SearchContentQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
+    auto filtered_files = FetchFilesToSearch(query.scope, input_files_json, false);
+    CalculateAbsolutePaths(filtered_files);
+
+    if (!search_backend_) {
+      return VXCORE_OK;
+    }
+
+    if (auto *simple = dynamic_cast<SimpleSearchBackend *>(search_backend_.get())) {
+      simple->SetWorkQueue(work_queue_);
+      simple->SetCancelFlag(cancel_flag_);
+    }
+
+    // Cancellation is part of the streaming contract for ALL backends, not just
+    // SimpleSearchBackend (which observes cancel_flag_ mid-drain via SetCancelFlag above).
+    // RgSearchBackend is a single external-process shot with no cancel hook, so guard the
+    // boundaries here: bail before dispatch if already cancelled, suppress any batch callback
+    // once cancellation is requested, and translate a backend VXCORE_OK into VXCORE_ERR_CANCELLED
+    // when the flag is set. This keeps the C API honest (no VXCORE_OK + late batch after cancel).
+    auto is_cancelled = [this]() { return cancel_flag_ && *cancel_flag_ != 0; };
+    if (is_cancelled()) {
+      return VXCORE_ERR_CANCELLED;
+    }
+
+    // Encode each completed chunk slice into the existing content-search shape and hand the
+    // serialized batch to the consumer. The lambda MAY run concurrently across drain threads;
+    // it only builds thread-local JSON and defers all shared-state policy to |on_batch|.
+    SearchBatchEmitFn emit = [&](int batch_index, int total_batches,
+                                 std::vector<ContentSearchMatchedFile> &batch_files) {
+      if (is_cancelled()) {
+        return;
+      }
+      nlohmann::json batch;
+      batch["matchCount"] = batch_files.size();
+      batch["truncated"] = false;
+      batch["matches"] = nlohmann::json::array();
+      auto &matches = batch["matches"];
+      for (const auto &matched_file : batch_files) {
+        matches.push_back(EncodeMatchedFileJson(matched_file));
+      }
+      on_batch(batch_index, total_batches, batch.dump());
+    };
+
+    VxCoreError err = search_backend_->SearchStreaming(filtered_files, query.pattern, query.options,
+                                                       query.exclude_patterns, batch_size, emit);
+    if (err == VXCORE_OK && is_cancelled()) {
+      return VXCORE_ERR_CANCELLED;
+    }
+    return err;
+  } catch (const nlohmann::json::exception &e) {
+    VXCORE_LOG_ERROR("SearchContentStreaming JSON error: %s", e.what());
+    return VXCORE_ERR_JSON_PARSE;
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("SearchContentStreaming error: %s", e.what());
     return VXCORE_ERR_UNKNOWN;
   }
 }

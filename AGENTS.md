@@ -409,7 +409,7 @@ vxcore/
    - **Bundled**: Config stored in `<root>/vx_notebook/config.json`, metadata in `<root>/vx_notebook/`
    - **Raw**: Config stored in session config only, metadata in local data folder
 5. **FolderManager abstraction**: `BundledFolderManager` and `RawFolderManager` implement different storage strategies
-6. **Search backends**: Pluggable via `ISearchBackend` interface (ripgrep, simple built-in). Content search owns NO thread pool. `vxcore_search_content` / `_content_ex` enqueue one work item per file onto the pre-created `"vxcore.search"` `WorkQueue`, and the caller's threads drain them (caller-helps-drain: the initiating thread self-drains its own items via `ProcessNext(5ms)` until the batch is done). Batches under 50 files run inline sequentially.
+6. **Search backends**: Pluggable via `ISearchBackend` interface (ripgrep, simple built-in). Content search owns NO thread pool. `vxcore_search_content` / `_content_ex` / `_content_streaming` enqueue one work item per FILE-CHUNK (default 64 files, tunable via the streaming `batch_size`) onto the pre-created `"vxcore.search"` `WorkQueue`, and the caller's threads drain them (caller-helps-drain: the initiating thread self-drains its own items via `ProcessNext(5ms)` until the batch is done). A search that fits in one chunk (≤ 64 files by default) runs inline sequentially; larger searches fan out one queued item per chunk. Chunking subsumes the former per-file fan-out and the 50-file inline threshold.
 7. **Sync backends**: Pluggable via `ISyncBackend` interface (Git, WebDAV, etc. — see `src/sync/AGENTS.md`)
 8. **Event system**: `EventManager` provides fire-and-forget notifications (not cancellable). Events are emitted by `FolderManager` and `NotebookManager` on mutations. `SyncManager` subscribes to mark notebooks dirty for auto-sync.
 9. **Work queues**: `WorkQueueManager` provides named thread-safe queues. vxcore does NOT create threads; the caller owns worker threads and calls `vxcore_work_queue_process_next()`. This now has ZERO exceptions. The former content-search thread pool (`BS::thread_pool`) was removed, so content search also runs entirely on caller threads via the `"vxcore.search"` queue, with the initiating thread's self-drain as the correctness floor.
@@ -446,7 +446,7 @@ VxCoreContext
                             └── ISearchBackend (rg/simple)
 ```
 
-Content search fans out one work item per file onto the pre-created `"vxcore.search"` `WorkQueue`; the caller's threads drain it (the initiating thread self-drains too), so `SearchManager` holds NO vxcore-owned thread pool. Batches under 50 files run inline sequentially.
+Content search fans out one work item per FILE-CHUNK (default 64 files) onto the pre-created `"vxcore.search"` `WorkQueue`; the caller's threads drain it (the initiating thread self-drains too), so `SearchManager` holds NO vxcore-owned thread pool. A search that fits in one chunk (≤ 64 files by default) runs inline sequentially.
 
 ## Important Implementation Details
 

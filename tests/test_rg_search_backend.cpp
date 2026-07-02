@@ -31,6 +31,25 @@ class RgSearchBackendTest {
   }
 };
 
+// Records the batches delivered by RgSearchBackend::SearchStreaming. rg degrades to a
+// single-shot scan, so callbacks are never concurrent here — no mutex needed.
+struct RgStreamCollector {
+  int total_batches = -1;
+  int callback_count = 0;
+  std::vector<ContentSearchMatchedFile> files;
+
+  SearchBatchEmitFn fn() {
+    return [this](int batch_index, int total, std::vector<ContentSearchMatchedFile> &batch_files) {
+      (void)batch_index;
+      total_batches = total;
+      ++callback_count;
+      for (auto &f : batch_files) {
+        files.push_back(std::move(f));
+      }
+    };
+  }
+};
+
 int test_is_available() {
   std::cout << "  Running test_is_available..." << std::endl;
 
@@ -574,6 +593,73 @@ int test_search_utf8_content() {
   return 0;
 }
 
+// Streaming contract: zero input files -> total_batches == 0, no callback. Needs no rg.
+int test_streaming_zero_files() {
+  std::cout << "  Running test_streaming_zero_files..." << std::endl;
+
+  RgSearchBackend backend;
+  std::vector<SearchFileInfo> files;
+  RgStreamCollector c;
+
+  auto err = backend.SearchStreaming(files, "anything", SearchOption::kCaseSensitive, {}, 0, c.fn());
+
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(c.callback_count, 0);
+  ASSERT_EQ(c.total_batches, -1);  // untouched: no callback fired.
+
+  std::cout << "  ✓ test_streaming_zero_files passed" << std::endl;
+  return 0;
+}
+
+// Streaming contract: rg degrades to ONE batch (batch_index=0, total_batches=1) carrying the
+// full unbounded result. Parity with the blob Search() path.
+int test_streaming_single_batch_degraded() {
+  std::cout << "  Running test_streaming_single_batch_degraded..." << std::endl;
+
+  RgSearchBackend backend;
+  if (!RgSearchBackendTest::IsAvailable(backend)) {
+    std::cout << "  ⊘ test_streaming_single_batch_degraded skipped (rg not available)" << std::endl;
+    return 0;
+  }
+
+  std::string test_dir = std::filesystem::temp_directory_path().string() + "/vxcore_test_rg_search";
+  cleanup_test_dir(test_dir);
+  create_directory(test_dir);
+
+  std::string f1 = CleanPath(test_dir + "/a.txt");
+  std::string f2 = CleanPath(test_dir + "/b.txt");
+  write_file(f1, "hello world\nno match here\nhello again");
+  write_file(f2, "another hello line");
+
+  std::vector<SearchFileInfo> files;
+  for (const auto &pr : {std::make_pair(std::string("a.txt"), f1),
+                         std::make_pair(std::string("b.txt"), f2)}) {
+    SearchFileInfo fi;
+    fi.path = pr.first;
+    fi.absolute_path = pr.second;
+    fi.is_folder = false;
+    files.push_back(fi);
+  }
+
+  RgStreamCollector c;
+  auto err = backend.SearchStreaming(files, "hello", SearchOption::kCaseSensitive, {}, 0, c.fn());
+
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(c.callback_count, 1);   // exactly one batch.
+  ASSERT_EQ(c.total_batches, 1);    // degraded single-batch.
+  ASSERT_EQ(c.files.size(), 2);     // both files matched.
+
+  // Parity with the blob path: same matched-file set and per-file match counts.
+  ContentSearchResult blob;
+  auto berr = backend.Search(files, "hello", SearchOption::kCaseSensitive, {}, 0, blob);
+  ASSERT_EQ(berr, VXCORE_OK);
+  ASSERT_EQ(c.files.size(), blob.matched_files.size());
+
+  cleanup_test_dir(test_dir);
+  std::cout << "  ✓ test_streaming_single_batch_degraded passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running rg_search_backend tests..." << std::endl;
 
@@ -598,6 +684,10 @@ int main() {
   RUN_TEST(test_search_max_results);
   RUN_TEST(test_search_no_matches);
   RUN_TEST(test_search_utf8_content);
+
+  // SearchStreaming (degraded single-batch) tests.
+  RUN_TEST(test_streaming_zero_files);
+  RUN_TEST(test_streaming_single_batch_degraded);
 
   std::cout << "✓ All rg_search_backend tests passed" << std::endl;
   return 0;

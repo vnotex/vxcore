@@ -18,9 +18,24 @@ class SimpleSearchBackend : public ISearchBackend {
   SimpleSearchBackend() = default;
   ~SimpleSearchBackend() override = default;
 
+  // Blob content search. Reimplemented as a thin accumulating wrapper over SearchStreaming:
+  // it collects the streamed chunk slices by batch_index, reassembles them in input-file
+  // order, then applies the deterministic file-boundary max_results truncation. Output is
+  // byte-identical to the pre-streaming implementation.
   VxCoreError Search(const std::vector<SearchFileInfo> &files, const std::string &pattern,
                      SearchOption options, const std::vector<std::string> &content_exclude_patterns,
                      int max_results, ContentSearchResult &out_result) override;
+
+  // Streaming content search primitive. Scans |files| in chunks of |batch_size| files (0 ->
+  // kDefaultSearchChunkSize) and fires |emit_batch| exactly once per chunk (including
+  // zero-match chunks). Applies NO truncation. When a work queue is configured and there is
+  // more than one chunk, chunks are enqueued to the "vxcore.search" queue and the initiating
+  // thread help-drains; otherwise chunks run inline on the calling thread. Honors the cancel
+  // flag (returns VXCORE_ERR_CANCELLED). May fire callbacks concurrently across drain threads.
+  VxCoreError SearchStreaming(const std::vector<SearchFileInfo> &files, const std::string &pattern,
+                              SearchOption options,
+                              const std::vector<std::string> &content_exclude_patterns,
+                              int batch_size, const SearchBatchEmitFn &emit_batch) override;
 
   void SetWorkQueue(WorkQueue *queue);
   void SetCancelFlag(const volatile int *flag);
@@ -52,20 +67,37 @@ class SimpleSearchBackend : public ISearchBackend {
  private:
   friend class ::SimpleSearchBackendTest;
 
-  VxCoreError SearchSequential(
-      const std::vector<SearchFileInfo> &files,
-      const std::function<bool(const std::string &, int, std::vector<SearchMatch> &)> &do_match,
-      const std::vector<std::string> &content_exclude_patterns,
-      const std::vector<std::string> &lowercased_exclude_patterns,
-      const std::vector<std::regex> &exclude_regexes, int max_results,
-      ContentSearchResult &out_result);
-  VxCoreError SearchParallel(
-      const std::vector<SearchFileInfo> &files,
-      const std::function<bool(const std::string &, int, std::vector<SearchMatch> &)> &do_match,
-      const std::vector<std::string> &content_exclude_patterns,
-      const std::vector<std::string> &lowercased_exclude_patterns,
-      const std::vector<std::regex> &exclude_regexes, int max_results,
-      ContentSearchResult &out_result);
+  // Compiled matcher + preprocessed exclude patterns shared (read-only) across every chunk
+  // scan of a single SearchStreaming call. Held on the SearchStreaming stack frame, which
+  // outlives all enqueued chunk work items (the initiator blocks until they complete), so
+  // references into it never dangle.
+  struct MatchContext {
+    bool regex = false;
+    bool case_sensitive = false;
+    bool whole_word = false;
+    std::regex pattern_regex;
+    std::string lowercased_pattern;  // used when !regex && !case_sensitive
+    std::string literal_pattern;     // used when !regex && case_sensitive
+    std::vector<std::string> content_exclude_patterns;
+    std::vector<std::string> lowercased_exclude_patterns;
+    std::vector<std::regex> exclude_regexes;
+  };
+
+  // Compiles |pattern| and preprocesses the exclude patterns into |out_ctx|. Returns
+  // VXCORE_ERR_INVALID_PARAM on an invalid pattern or exclude regex.
+  VxCoreError BuildMatchContext(const std::string &pattern, SearchOption options,
+                                const std::vector<std::string> &content_exclude_patterns,
+                                MatchContext &out_ctx);
+
+  // Applies the compiled matcher of |ctx| to a single line.
+  static bool RunMatch(const MatchContext &ctx, const std::string &line, int line_number,
+                       std::vector<SearchMatch> &out_matches);
+
+  // Scans files[begin, end) with NO truncation, appending matched files (in input order) to
+  // |out_files|. Fires the test probe hook once at entry, honors the cancel flag (returns
+  // early leaving |out_files| partial), and skips unreadable files.
+  void ScanChunk(const std::vector<SearchFileInfo> &files, size_t begin, size_t end,
+                 const MatchContext &ctx, std::vector<ContentSearchMatchedFile> &out_files);
 
   bool MatchesPattern(const std::string &line, const std::string &pattern, SearchOption options,
                       std::vector<SearchMatch> &out_matches);
