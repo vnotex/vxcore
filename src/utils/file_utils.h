@@ -80,6 +80,15 @@ VxCoreError ReadFileHead(const std::filesystem::path &path, size_t max_bytes,
 
 std::string ConcatenatePaths(const std::string &parent_path, const std::string &child_name);
 
+// Reads filesystem timestamps for the node at utf8_path (file or directory).
+// out_modified_ms = last-write time (milliseconds since the Unix epoch).
+// out_created_ms  = OS creation/birth time where the platform/filesystem
+//                   supports it, otherwise equal to the modified time.
+// Either out pointer may be null. Returns false on stat failure (outputs left
+// untouched), true on success.
+bool GetFilesystemTimes(const std::string &utf8_path, int64_t *out_created_ms,
+                        int64_t *out_modified_ms);
+
 std::pair<std::string, std::string> SplitPath(const std::string &path);
 
 std::vector<std::string> SplitPathComponents(const std::string &path);

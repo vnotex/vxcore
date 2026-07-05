@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -6974,6 +6976,163 @@ int test_raw_move_file_preserves_metadata() {
   return 0;
 }
 
+int test_raw_file_timestamps_from_filesystem() {
+  std::cout << "  Running test_raw_file_timestamps_from_filesystem..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_fs_ftime_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_fs_ftime_nb").c_str(),
+                               "{\"name\":\"Raw FsFTime\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // First read: created/modified should reflect the just-written file (~now).
+  char *json1 = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "note.md", &json1);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(json1);
+  auto j1 = nlohmann::json::parse(json1);
+  int64_t created_before = j1.value("createdUtc", static_cast<int64_t>(0));
+  int64_t modified_before = j1.value("modifiedUtc", static_cast<int64_t>(0));
+  vxcore_string_free(json1);
+  ASSERT_TRUE(created_before > 0);
+  ASSERT_TRUE(modified_before > 0);
+
+  // Backdate the real file's modified time by 48h on disk.
+  std::filesystem::path fpath =
+      std::filesystem::path(get_test_path("test_raw_fs_ftime_nb")) / "note.md";
+  auto ft = std::filesystem::last_write_time(fpath);
+  std::filesystem::last_write_time(fpath, ft - std::chrono::hours(48));
+
+  // Second read: modified must now track the filesystem, not the stored DB value.
+  char *json2 = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "note.md", &json2);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(json2);
+  auto j2 = nlohmann::json::parse(json2);
+  int64_t modified_after = j2.value("modifiedUtc", static_cast<int64_t>(0));
+  vxcore_string_free(json2);
+
+  ASSERT_TRUE(modified_after < modified_before);
+  ASSERT_TRUE((modified_before - modified_after) > static_cast<int64_t>(47) * 3600 * 1000);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_fs_ftime_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_file_timestamps_from_filesystem passed" << std::endl;
+  return 0;
+}
+
+int test_raw_folder_timestamps_from_filesystem() {
+  std::cout << "  Running test_raw_folder_timestamps_from_filesystem..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_fs_dtime_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_fs_dtime_nb").c_str(),
+                               "{\"name\":\"Raw FsDTime\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "sub", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  // First read of the folder's own config.
+  char *json1 = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "sub", &json1);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(json1);
+  auto j1 = nlohmann::json::parse(json1);
+  int64_t created_before = j1.value("createdUtc", static_cast<int64_t>(0));
+  int64_t modified_before = j1.value("modifiedUtc", static_cast<int64_t>(0));
+  vxcore_string_free(json1);
+  ASSERT_TRUE(created_before > 0);
+  ASSERT_TRUE(modified_before > 0);
+
+  // Backdate the real folder's modified time by 48h on disk.
+  std::filesystem::path dpath =
+      std::filesystem::path(get_test_path("test_raw_fs_dtime_nb")) / "sub";
+  auto ft = std::filesystem::last_write_time(dpath);
+  std::filesystem::last_write_time(dpath, ft - std::chrono::hours(48));
+
+  char *json2 = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "sub", &json2);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(json2);
+  auto j2 = nlohmann::json::parse(json2);
+  int64_t modified_after = j2.value("modifiedUtc", static_cast<int64_t>(0));
+  vxcore_string_free(json2);
+
+  ASSERT_TRUE(modified_after < modified_before);
+  ASSERT_TRUE((modified_before - modified_after) > static_cast<int64_t>(47) * 3600 * 1000);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_fs_dtime_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_folder_timestamps_from_filesystem passed" << std::endl;
+  return 0;
+}
+
+int test_raw_rename_keeps_filesystem_modified() {
+  std::cout << "  Running test_raw_rename_keeps_filesystem_modified..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_fs_rnmod_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_fs_rnmod_nb").c_str(),
+                               "{\"name\":\"Raw FsRnMod\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  char *json1 = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "note.md", &json1);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(json1);
+  auto j1 = nlohmann::json::parse(json1);
+  int64_t modified_before = j1.value("modifiedUtc", static_cast<int64_t>(0));
+  vxcore_string_free(json1);
+  ASSERT_TRUE(modified_before > 0);
+
+  // Rename does not modify file content, so the fs mtime (and thus modified) is unchanged.
+  err = vxcore_node_rename(ctx, notebook_id, "note.md", "renamed.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *json2 = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "renamed.md", &json2);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(json2);
+  auto j2 = nlohmann::json::parse(json2);
+  int64_t modified_after = j2.value("modifiedUtc", static_cast<int64_t>(0));
+  vxcore_string_free(json2);
+
+  ASSERT_EQ(modified_before, modified_after);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_fs_rnmod_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_rename_keeps_filesystem_modified passed" << std::endl;
+  return 0;
+}
+
 int test_raw_move_file() {
   std::cout << "  Running test_raw_move_file..." << std::endl;
   cleanup_test_dir(get_test_path("test_raw_move_file_nb"));
@@ -7870,19 +8029,30 @@ int test_raw_update_node_timestamps() {
   ASSERT_EQ(err, VXCORE_OK);
   vxcore_string_free(children_json);
 
-  // Update file timestamps
-  int64_t new_modified = 1705404600000;
-  err = vxcore_node_update_timestamps(ctx, notebook_id, "note.md", -1, new_modified);
+  // Raw notebooks read timestamps from the filesystem (source of truth), so a
+  // timestamp write must be a no-op: it returns OK but does not change the
+  // returned fs-derived modifiedUtc.
+  char *before_json = nullptr;
+  err = vxcore_node_get_config(ctx, notebook_id, "note.md", &before_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(before_json);
+  int64_t modified_before =
+      nlohmann::json::parse(before_json).value("modifiedUtc", static_cast<int64_t>(0));
+  vxcore_string_free(before_json);
+  ASSERT_TRUE(modified_before > 0);
+
+  int64_t bogus_modified = 1705404600000;
+  err = vxcore_node_update_timestamps(ctx, notebook_id, "note.md", -1, bogus_modified);
   ASSERT_EQ(err, VXCORE_OK);
 
-  // Verify via node_get_config
   char *config_json = nullptr;
   err = vxcore_node_get_config(ctx, notebook_id, "note.md", &config_json);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(config_json);
 
   nlohmann::json config = nlohmann::json::parse(config_json);
-  ASSERT_EQ(config["modifiedUtc"].get<int64_t>(), new_modified);
+  ASSERT_EQ(config["modifiedUtc"].get<int64_t>(), modified_before);
+  ASSERT_TRUE(config["modifiedUtc"].get<int64_t>() != bogus_modified);
 
   vxcore_string_free(config_json);
   vxcore_string_free(notebook_id);
@@ -9655,6 +9825,9 @@ int main() {
   RUN_TEST(test_raw_rename_file_preserves_metadata);
   RUN_TEST(test_raw_rename_folder_preserves_metadata);
   RUN_TEST(test_raw_move_file_preserves_metadata);
+  RUN_TEST(test_raw_file_timestamps_from_filesystem);
+  RUN_TEST(test_raw_folder_timestamps_from_filesystem);
+  RUN_TEST(test_raw_rename_keeps_filesystem_modified);
   RUN_TEST(test_raw_update_node_timestamps);
   RUN_TEST(test_raw_iterate_all_files);
   RUN_TEST(test_raw_iterate_empty_notebook);

@@ -1,3 +1,7 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #include "file_utils.h"
 
 #include <filesystem>
@@ -10,6 +14,11 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#endif
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/stat.h>
 #endif
 
 #ifndef VXCORE_LOG_DEBUG
@@ -92,6 +101,73 @@ std::string ConcatenatePaths(const std::string &parent_path, const std::string &
   } else {
     return parent_path + kPathSeparator + child_name;
   }
+}
+
+namespace {
+#ifdef _WIN32
+int64_t FileTimeToUnixMillis(const FILETIME &ft) {
+  ULARGE_INTEGER u;
+  u.LowPart = ft.dwLowDateTime;
+  u.HighPart = ft.dwHighDateTime;
+  if (u.QuadPart == 0) return 0;
+  // FILETIME counts 100-ns ticks since 1601-01-01; offset to the Unix epoch.
+  constexpr int64_t kEpochOffsetTicks = 116444736000000000LL;
+  return (static_cast<int64_t>(u.QuadPart) - kEpochOffsetTicks) / 10000LL;  // 100-ns -> ms
+}
+#endif
+}  // namespace
+
+bool GetFilesystemTimes(const std::string &utf8_path, int64_t *out_created_ms,
+                        int64_t *out_modified_ms) {
+#ifdef _WIN32
+  const std::wstring wpath = PathFromUtf8(utf8_path).wstring();
+  WIN32_FILE_ATTRIBUTE_DATA data;
+  if (!GetFileAttributesExW(wpath.c_str(), GetFileExInfoStandard, &data)) {
+    return false;
+  }
+  const int64_t modified = FileTimeToUnixMillis(data.ftLastWriteTime);
+  int64_t created = FileTimeToUnixMillis(data.ftCreationTime);
+  if (created <= 0) created = modified;
+  if (out_modified_ms) *out_modified_ms = modified;
+  if (out_created_ms) *out_created_ms = created;
+  return true;
+#elif defined(__APPLE__)
+  struct stat st;
+  if (::stat(utf8_path.c_str(), &st) != 0) return false;
+  const int64_t modified =
+      static_cast<int64_t>(st.st_mtimespec.tv_sec) * 1000 + st.st_mtimespec.tv_nsec / 1000000;
+  int64_t created = static_cast<int64_t>(st.st_birthtimespec.tv_sec) * 1000 +
+                    st.st_birthtimespec.tv_nsec / 1000000;
+  if (created <= 0) created = modified;
+  if (out_modified_ms) *out_modified_ms = modified;
+  if (out_created_ms) *out_created_ms = created;
+  return true;
+#else
+  // Linux / other POSIX: prefer statx for birth time; fall back to stat.
+#if defined(__linux__) && defined(STATX_BTIME)
+  struct statx stx;
+  if (::statx(AT_FDCWD, utf8_path.c_str(), AT_STATX_SYNC_AS_STAT, STATX_BTIME | STATX_MTIME,
+              &stx) == 0) {
+    const int64_t modified =
+        static_cast<int64_t>(stx.stx_mtime.tv_sec) * 1000 + stx.stx_mtime.tv_nsec / 1000000;
+    int64_t created = modified;
+    if (stx.stx_mask & STATX_BTIME) {
+      created =
+          static_cast<int64_t>(stx.stx_btime.tv_sec) * 1000 + stx.stx_btime.tv_nsec / 1000000;
+    }
+    if (created <= 0) created = modified;  // birth time absent/zero -> fall back to modified
+    if (out_modified_ms) *out_modified_ms = modified;
+    if (out_created_ms) *out_created_ms = created;
+    return true;
+  }
+#endif
+  struct stat st;
+  if (::stat(utf8_path.c_str(), &st) != 0) return false;
+  const int64_t modified = static_cast<int64_t>(st.st_mtime) * 1000;
+  if (out_modified_ms) *out_modified_ms = modified;
+  if (out_created_ms) *out_created_ms = modified;  // no portable birth time
+  return true;
+#endif
 }
 
 std::pair<std::string, std::string> SplitPath(const std::string &path) {

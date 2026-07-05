@@ -130,7 +130,8 @@ VxCoreError RawFolderManager::EnsureFolderAncestorChain(const std::string &folde
 }
 
 VxCoreError RawFolderManager::SyncFolderFromFilesystem(const std::string &folder_path,
-                                                       FolderContents &out_contents) {
+                                                       FolderContents &out_contents,
+                                                       bool populate_fs_times) {
   out_contents.files.clear();
   out_contents.folders.clear();
 
@@ -241,8 +242,13 @@ VxCoreError RawFolderManager::SyncFolderFromFilesystem(const std::string &folder
       FileRecord fr;
       fr.id = sf.id;
       fr.name = sf.name;
+      // Raw notebooks: timestamps come from the filesystem (source of truth).
       fr.created_utc = sf.created_utc;
       fr.modified_utc = sf.modified_utc;
+      if (populate_fs_times) {
+        GetFilesystemTimes(ConcatenatePaths(abs_path_str, file_name), &fr.created_utc,
+                           &fr.modified_utc);
+      }
       if (!sf.metadata.empty() && sf.metadata != "{}") {
         try {
           fr.metadata = nlohmann::json::parse(sf.metadata);
@@ -271,8 +277,13 @@ VxCoreError RawFolderManager::SyncFolderFromFilesystem(const std::string &folder
       FileRecord fr;
       fr.id = new_record.id;
       fr.name = file_name;
+      // Raw notebooks: timestamps come from the filesystem (source of truth).
       fr.created_utc = now;
       fr.modified_utc = now;
+      if (populate_fs_times) {
+        GetFilesystemTimes(ConcatenatePaths(abs_path_str, file_name), &fr.created_utc,
+                           &fr.modified_utc);
+      }
       fr.metadata = nlohmann::json::object();
       out_contents.files.push_back(std::move(fr));
     }
@@ -380,6 +391,7 @@ VxCoreError RawFolderManager::GetFolderConfig(const std::string &folder_path,
       config.name = root_rec->name;
       config.created_utc = root_rec->created_utc;
       config.modified_utc = root_rec->modified_utc;
+      GetFilesystemTimes(notebook_->GetRootFolder(), &config.created_utc, &config.modified_utc);
     }
   } else {
     std::string folder_id = FindFolderIdByPath(store, root_folder_id_, clean_path);
@@ -394,6 +406,8 @@ VxCoreError RawFolderManager::GetFolderConfig(const std::string &folder_path,
     config.name = folder_rec->name;
     config.created_utc = folder_rec->created_utc;
     config.modified_utc = folder_rec->modified_utc;
+    GetFilesystemTimes(ConcatenatePaths(notebook_->GetRootFolder(), clean_path),
+                       &config.created_utc, &config.modified_utc);
     if (!folder_rec->metadata.empty() && folder_rec->metadata != "{}") {
       try {
         config.metadata = nlohmann::json::parse(folder_rec->metadata);
@@ -587,94 +601,17 @@ VxCoreError RawFolderManager::UpdateFolderMetadata(const std::string &folder_pat
 
 VxCoreError RawFolderManager::UpdateNodeTimestamps(const std::string &node_path,
                                                    int64_t created_utc, int64_t modified_utc) {
+  // Raw notebooks read node timestamps directly from the filesystem, which is
+  // the source of truth; they are never stored in the metadata DB, so there is
+  // nothing to update. (The only in-tree caller of the public
+  // vxcore_node_update_timestamps, the VNote3 migration, always targets bundled
+  // notebooks.)
+  (void)node_path;
+  (void)created_utc;
+  (void)modified_utc;
   if (notebook_->IsReadOnly()) {
     return VXCORE_ERR_READ_ONLY;
   }
-  if (created_utc <= 0 && modified_utc <= 0) {
-    return VXCORE_OK;  // Nothing to update
-  }
-
-  VxCoreError err = InitRootFolder();
-  if (err != VXCORE_OK) {
-    return err;
-  }
-
-  const auto clean_path = GetCleanRelativePath(node_path);
-
-  auto *store = notebook_->GetMetadataStore();
-  if (!store) {
-    return VXCORE_ERR_INVALID_STATE;
-  }
-
-  // Try as file first (files are more common)
-  const auto [folder_path, file_name] = SplitPath(clean_path);
-
-  err = EnsureFolderAncestorChain(folder_path);
-  if (err != VXCORE_OK) {
-    return err;
-  }
-
-  FolderContents contents;
-  err = SyncFolderFromFilesystem(folder_path, contents);
-  if (err != VXCORE_OK) {
-    return err;
-  }
-
-  std::string file_id = FindFileIdByPath(store, root_folder_id_, clean_path);
-  if (!file_id.empty()) {
-    // It's a file
-    auto record = store->GetFile(file_id);
-    if (!record) {
-      return VXCORE_ERR_NOT_FOUND;
-    }
-
-    int64_t new_modified = (modified_utc > 0) ? modified_utc : record->modified_utc;
-
-    if (created_utc > 0) {
-      VXCORE_LOG_DEBUG("UpdateNodeTimestamps: created_utc update not supported via MetadataStore "
-                       "for file id=%s",
-                       file_id.c_str());
-    }
-
-    if (!store->UpdateFile(file_id, record->name, new_modified, record->metadata)) {
-      VXCORE_LOG_WARN("Failed to update file timestamps in MetadataStore: id=%s",
-                      file_id.c_str());
-      return VXCORE_ERR_IO;
-    }
-
-    return VXCORE_OK;
-  }
-
-  // Try as folder — clean_path itself is the folder
-  err = EnsureFolderAncestorChain(clean_path);
-  if (err != VXCORE_OK) {
-    return VXCORE_ERR_NOT_FOUND;
-  }
-
-  std::string folder_id = FindFolderIdByPath(store, root_folder_id_, clean_path);
-  if (folder_id.empty()) {
-    return VXCORE_ERR_NOT_FOUND;
-  }
-
-  auto folder_record = store->GetFolder(folder_id);
-  if (!folder_record) {
-    return VXCORE_ERR_NOT_FOUND;
-  }
-
-  int64_t new_modified = (modified_utc > 0) ? modified_utc : folder_record->modified_utc;
-
-  if (created_utc > 0) {
-    VXCORE_LOG_DEBUG("UpdateNodeTimestamps: created_utc update not supported via MetadataStore "
-                     "for folder id=%s",
-                     folder_id.c_str());
-  }
-
-  if (!store->UpdateFolder(folder_id, folder_record->name, new_modified, folder_record->metadata)) {
-    VXCORE_LOG_WARN("Failed to update folder timestamps in MetadataStore: id=%s",
-                    folder_id.c_str());
-    return VXCORE_ERR_IO;
-  }
-
   return VXCORE_OK;
 }
 
@@ -758,11 +695,13 @@ VxCoreError RawFolderManager::RenameFolder(const std::string &folder_path,
   if (store) {
     std::string folder_id = FindFolderIdByPath(store, root_folder_id_, clean_path);
     if (!folder_id.empty()) {
-      auto now = GetCurrentTimestampMillis();
-      // Preserve existing node metadata (e.g. Mark colors); only the name changes.
+      // Preserve existing node metadata (e.g. Mark colors) and the DB timestamp
+      // fallback; only the name changes. Raw reads timestamps from the filesystem,
+      // so rename must not bump modified.
       auto existing = store->GetFolder(folder_id);
       const std::string metadata = existing ? existing->metadata : std::string("{}");
-      if (!store->UpdateFolder(folder_id, new_name, now, metadata)) {
+      const int64_t modified = existing ? existing->modified_utc : GetCurrentTimestampMillis();
+      if (!store->UpdateFolder(folder_id, new_name, modified, metadata)) {
         VXCORE_LOG_WARN("Failed to rename folder in MetadataStore: id=%s", folder_id.c_str());
       }
     }
@@ -1281,9 +1220,11 @@ VxCoreError RawFolderManager::GetFileInfo(const std::string &file_path,
     return err;
   }
 
-  // Sync the parent folder to discover the file
+  // Sync the parent folder to discover the file. Skip per-file filesystem stats
+  // (populate_fs_times=false) so a single-file read does not stat every sibling;
+  // we stat only the target file below.
   FolderContents contents;
-  err = SyncFolderFromFilesystem(folder_path, contents);
+  err = SyncFolderFromFilesystem(folder_path, contents, /*populate_fs_times=*/false);
   if (err != VXCORE_OK) {
     return err;
   }
@@ -1292,6 +1233,10 @@ VxCoreError RawFolderManager::GetFileInfo(const std::string &file_path,
   for (const auto &f : contents.files) {
     if (f.name == file_name) {
       last_queried_file_ = f;
+      // Raw notebooks read timestamps from the filesystem (source of truth); stat
+      // only the target file (DB values remain the fallback on stat failure).
+      GetFilesystemTimes(ConcatenatePaths(notebook_->GetRootFolder(), clean_path),
+                         &last_queried_file_.created_utc, &last_queried_file_.modified_utc);
       *out_record = &last_queried_file_;
       return VXCORE_OK;
     }
@@ -1316,8 +1261,10 @@ VxCoreError RawFolderManager::GetFileMetadata(const std::string &file_path,
     return err;
   }
 
+  // Skip per-file filesystem stats: this path returns only metadata, so statting
+  // every sibling to read one file's metadata would be wasteful.
   FolderContents contents;
-  err = SyncFolderFromFilesystem(folder_path, contents);
+  err = SyncFolderFromFilesystem(folder_path, contents, /*populate_fs_times=*/false);
   if (err != VXCORE_OK) {
     return err;
   }
@@ -1384,11 +1331,13 @@ VxCoreError RawFolderManager::RenameFile(const std::string &file_path,
   if (store) {
     std::string file_id = FindFileIdByPath(store, root_folder_id_, clean_path);
     if (!file_id.empty()) {
-      auto now = GetCurrentTimestampMillis();
-      // Preserve existing node metadata (e.g. Mark colors); only the name changes.
+      // Preserve existing node metadata (e.g. Mark colors) and the DB timestamp
+      // fallback; only the name changes. Raw reads timestamps from the filesystem,
+      // so rename must not bump modified.
       auto existing = store->GetFile(file_id);
       const std::string metadata = existing ? existing->metadata : std::string("{}");
-      if (!store->UpdateFile(file_id, new_name, now, metadata)) {
+      const int64_t modified = existing ? existing->modified_utc : GetCurrentTimestampMillis();
+      if (!store->UpdateFile(file_id, new_name, modified, metadata)) {
         VXCORE_LOG_WARN("Failed to update file in MetadataStore: id=%s", file_id.c_str());
       }
     }
@@ -1995,6 +1944,10 @@ VxCoreError RawFolderManager::ListFolderContents(const std::string &folder_path,
   }
 
   const auto clean_path = GetCleanRelativePath(folder_path);
+  const bool is_root_list = clean_path.empty() || clean_path == ".";
+  const std::string parent_abs = is_root_list
+                                     ? notebook_->GetRootFolder()
+                                     : ConcatenatePaths(notebook_->GetRootFolder(), clean_path);
 
   // Ensure ancestor chain for this folder
   err = EnsureFolderAncestorChain(clean_path);
@@ -2033,7 +1986,10 @@ VxCoreError RawFolderManager::ListFolderContents(const std::string &folder_path,
         } catch (...) {
         }
       }
-      out_contents.folders.emplace_back(sf.id, sf.name, sf.created_utc, sf.modified_utc, meta);
+      int64_t created_ms = sf.created_utc;
+      int64_t modified_ms = sf.modified_utc;
+      GetFilesystemTimes(ConcatenatePaths(parent_abs, sf.name), &created_ms, &modified_ms);
+      out_contents.folders.emplace_back(sf.id, sf.name, created_ms, modified_ms, meta);
     }
   }
 
