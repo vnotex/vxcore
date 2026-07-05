@@ -126,7 +126,8 @@ class IBufferProvider {
 };
 
 // Factory function to create appropriate provider for a notebook file.
-// Returns nullptr for raw notebooks (unsupported).
+// Returns nullptr only if notebook is null. Both bundled and raw notebooks get
+// a StandardBufferProvider (attachment methods are internally gated to bundled).
 // notebook: the notebook containing the file
 // file_path: relative path within the notebook
 std::unique_ptr<IBufferProvider> CreateBufferProvider(Notebook *notebook,
