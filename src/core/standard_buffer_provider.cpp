@@ -204,6 +204,10 @@ VxCoreError StandardBufferProvider::DeleteAsset(const std::string &relative_path
 
 VxCoreError StandardBufferProvider::InsertAttachment(const std::string &source_path,
                                                      std::string &out_filename) {
+  if (!AttachmentsSupported()) {
+    return VXCORE_ERR_UNSUPPORTED;
+  }
+
   // First, insert the asset (copy file)
   std::string relative_path;
   VxCoreError err = InsertAsset(source_path, relative_path);
@@ -234,6 +238,10 @@ VxCoreError StandardBufferProvider::InsertAttachment(const std::string &source_p
 }
 
 VxCoreError StandardBufferProvider::DeleteAttachment(const std::string &filename) {
+  if (!AttachmentsSupported()) {
+    return VXCORE_ERR_UNSUPPORTED;
+  }
+
   if (filename.empty()) {
     VXCORE_LOG_ERROR("Filename cannot be empty");
     return VXCORE_ERR_INVALID_PARAM;
@@ -279,6 +287,10 @@ VxCoreError StandardBufferProvider::DeleteAttachment(const std::string &filename
 VxCoreError StandardBufferProvider::RenameAttachment(const std::string &old_filename,
                                                      const std::string &new_filename,
                                                      std::string &out_new_filename) {
+  if (!AttachmentsSupported()) {
+    return VXCORE_ERR_UNSUPPORTED;
+  }
+
   if (old_filename.empty() || new_filename.empty()) {
     VXCORE_LOG_ERROR("Old filename or new filename cannot be empty");
     return VXCORE_ERR_INVALID_PARAM;
@@ -339,6 +351,10 @@ VxCoreError StandardBufferProvider::RenameAttachment(const std::string &old_file
 }
 
 VxCoreError StandardBufferProvider::ListAttachments(std::vector<std::string> &out_filenames) {
+  if (!AttachmentsSupported()) {
+    return VXCORE_ERR_UNSUPPORTED;
+  }
+
   out_filenames.clear();
 
   auto folder_manager = notebook_->GetFolderManager();
@@ -381,6 +397,10 @@ std::string StandardBufferProvider::GetAssetsFolderPath() {
   return assets_folder;
 }
 
+bool StandardBufferProvider::AttachmentsSupported() const {
+  return notebook_ && notebook_->GetTypeStr() == "bundled";
+}
+
 VxCoreError StandardBufferProvider::GetAssetsFolder(std::string &out_path) {
   std::string path = GetAssetsFolderPath();
   if (path.empty()) {
@@ -398,6 +418,10 @@ VxCoreError StandardBufferProvider::GetAssetsFolder(std::string &out_path) {
 }
 
 VxCoreError StandardBufferProvider::GetAttachmentsFolder(std::string &out_path) {
+  if (!AttachmentsSupported()) {
+    return VXCORE_ERR_UNSUPPORTED;
+  }
+
   // Attachments and assets share the same folder
   return GetAssetsFolder(out_path);
 }

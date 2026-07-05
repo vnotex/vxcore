@@ -212,7 +212,18 @@ Raw notebooks do **not support** a recycle bin. `GetRecycleBinPath()` returns an
 
 ## Assets Folder
 
-The `assetsFolder` config field exists in `NotebookConfig` (default `"vx_assets"`), and the base `FolderManager` methods `GetPublicAssetsFolder()` and `GetAssetsFolder()` can resolve the path. However, since attachments are not tracked, the assets folder is not actively managed by the raw notebook. Users may manually place assets there, but vxcore does not track or index them.
+The `assetsFolder` config field exists in `NotebookConfig` (default `"vx_assets"`).
+Raw notebooks fully support **assets** — metadata-free file writes into
+`<parent>/<assetsFolder>/<file-uuid>/` — via the buffer provider
+(`vxcore_buffer_insert_asset_raw`, `vxcore_buffer_insert_asset`,
+`vxcore_buffer_get_assets_folder`, `vxcore_buffer_delete_asset`). This backs
+image paste and drag-drop into raw-notebook notes, and `RawFolderManager`
+relocates these `<assetsFolder>/<file-uuid>` subfolders on file move/copy.
+
+**Attachments** (metadata-tracked resources) remain unsupported — see the
+Attachments section — because they require per-file `vx.json` metadata that raw
+notebooks do not have. All five buffer attachment APIs return
+`VXCORE_ERR_UNSUPPORTED` for raw notebooks with no filesystem side effects.
 
 ## Comparison Summary
 

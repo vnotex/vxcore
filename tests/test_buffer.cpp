@@ -1341,6 +1341,171 @@ int test_buffer_insert_asset_raw() {
   return 0;
 }
 
+int test_buffer_insert_asset_raw_raw_notebook() {
+  std::cout << "  Running test_buffer_insert_asset_raw_raw_notebook..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buf_asset_raw_rawnb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buf_asset_raw_rawnb").c_str(),
+                               "{\"name\":\"Raw Asset Test\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "note.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const uint8_t image_data[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  char *relative_path = nullptr;
+  err = vxcore_buffer_insert_asset_raw(ctx, buffer_id, "screenshot.png", image_data,
+                                       sizeof(image_data), &relative_path);
+  ASSERT_EQ(err, VXCORE_OK);  // was VXCORE_ERR_UNSUPPORTED before the fix
+  ASSERT_NOT_NULL(relative_path);
+
+  std::string rel_path(relative_path);
+  ASSERT_TRUE(rel_path.find("vx_assets") != std::string::npos);
+  ASSERT_TRUE(rel_path.find("screenshot.png") != std::string::npos);
+  ASSERT_TRUE(path_exists(get_test_path("test_buf_asset_raw_rawnb") + "/" + rel_path));
+
+  vxcore_string_free(relative_path);
+  vxcore_string_free(file_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buf_asset_raw_rawnb"));
+  std::cout << "  ✓ test_buffer_insert_asset_raw_raw_notebook passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_attachments_raw_notebook_unsupported() {
+  std::cout << "  Running test_buffer_attachments_raw_notebook_unsupported..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buf_attach_rawnb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buf_attach_rawnb").c_str(),
+                               "{\"name\":\"Raw Attach Test\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "note.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // insert_attachment: rejected, no output.
+  std::string src = get_test_path("test_buf_attach_rawnb") + "/source.bin";
+  write_file(src, "data");
+  char *out_filename = nullptr;
+  err = vxcore_buffer_insert_attachment(ctx, buffer_id, src.c_str(), &out_filename);
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(out_filename);
+
+  // get_attachments_folder: rejected.
+  char *folder = nullptr;
+  err = vxcore_buffer_get_attachments_folder(ctx, buffer_id, &folder);
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(folder);
+
+  // list_attachments: rejected.
+  char *list_json = nullptr;
+  err = vxcore_buffer_list_attachments(ctx, buffer_id, &list_json);
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(list_json);
+
+  // Sentinel file: the guard rejects BEFORE any path computation, so delete/rename
+  // must not mutate ANY nearby filesystem state. (The real per-file target would be
+  // <notebook>/vx_assets/<file-uuid>/..., but the guard short-circuits first, so any
+  // sentinel location suffices to prove "no side effect after rejection".)
+  std::string assets_dir = get_test_path("test_buf_attach_rawnb") + "/vx_assets";
+  create_directory(assets_dir);
+  std::string staged = assets_dir + "/existing.png";
+  write_file(staged, "img");
+  ASSERT_TRUE(path_exists(staged));
+
+  // delete_attachment: rejected, file untouched.
+  err = vxcore_buffer_delete_attachment(ctx, buffer_id, "existing.png");
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+  ASSERT_TRUE(path_exists(staged));
+
+  // rename_attachment: rejected, original untouched, no renamed file created.
+  char *new_name = nullptr;
+  err = vxcore_buffer_rename_attachment(ctx, buffer_id, "existing.png", "renamed.png", &new_name);
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(new_name);
+  ASSERT_TRUE(path_exists(staged));
+  ASSERT_FALSE(path_exists(assets_dir + "/renamed.png"));
+
+  vxcore_string_free(file_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buf_attach_rawnb"));
+  std::cout << "  ✓ test_buffer_attachments_raw_notebook_unsupported passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_asset_surface_raw_notebook() {
+  std::cout << "  Running test_buffer_asset_surface_raw_notebook..." << std::endl;
+  cleanup_test_dir(get_test_path("test_buf_asset_surface_rawnb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_buf_asset_surface_rawnb").c_str(),
+                               "{\"name\":\"Raw Asset Surface\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, "note.md", &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // get_assets_folder resolves + creates the folder for raw.
+  char *assets_folder = nullptr;
+  err = vxcore_buffer_get_assets_folder(ctx, buffer_id, &assets_folder);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(assets_folder);
+  ASSERT_TRUE(std::string(assets_folder).find("vx_assets") != std::string::npos);
+
+  // insert_asset (copy an existing file) works for raw.
+  std::string src = get_test_path("test_buf_asset_surface_rawnb") + "/pic.png";
+  write_file(src, "imgbytes");
+  char *rel = nullptr;
+  err = vxcore_buffer_insert_asset(ctx, buffer_id, src.c_str(), &rel);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(rel);
+  ASSERT_TRUE(std::string(rel).find("vx_assets") != std::string::npos);
+  ASSERT_TRUE(path_exists(get_test_path("test_buf_asset_surface_rawnb") + "/" + std::string(rel)));
+
+  vxcore_string_free(rel);
+  vxcore_string_free(assets_folder);
+  vxcore_string_free(file_id);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_buf_asset_surface_rawnb"));
+  std::cout << "  ✓ test_buffer_asset_surface_raw_notebook passed" << std::endl;
+  return 0;
+}
+
 int test_buffer_insert_asset() {
   std::cout << "  Running test_buffer_insert_asset..." << std::endl;
   cleanup_test_dir(get_test_path("test_buffer_insert_asset"));
@@ -3678,6 +3843,9 @@ int main() {
 
   // Buffer Asset Tests (Filesystem Only)
   RUN_TEST(test_buffer_insert_asset_raw);
+  RUN_TEST(test_buffer_insert_asset_raw_raw_notebook);
+  RUN_TEST(test_buffer_attachments_raw_notebook_unsupported);
+  RUN_TEST(test_buffer_asset_surface_raw_notebook);
   RUN_TEST(test_buffer_insert_asset);
   RUN_TEST(test_buffer_delete_asset);
   RUN_TEST(test_buffer_get_assets_folder);

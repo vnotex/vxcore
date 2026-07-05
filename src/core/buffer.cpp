@@ -254,13 +254,9 @@ void Buffer::CreateProvider() {
     return;
   }
 
-  // Notebook file - only bundled notebooks support provider
-  if (notebook_->GetTypeStr() != "bundled") {
-    VXCORE_LOG_DEBUG("Notebook type '%s' does not support buffer provider",
-                     notebook_->GetTypeStr().c_str());
-    return;
-  }
-
+  // Notebook file. Both bundled and raw notebooks support assets via the
+  // StandardBufferProvider (generic FolderManager capabilities). Attachment
+  // methods internally gate to bundled notebooks; raw stays UNSUPPORTED.
   try {
     provider_ = std::make_unique<StandardBufferProvider>(notebook_, file_path_);
     VXCORE_LOG_DEBUG("Created StandardBufferProvider for: %s", file_path_.c_str());

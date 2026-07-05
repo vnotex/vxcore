@@ -16,13 +16,6 @@ std::unique_ptr<IBufferProvider> CreateBufferProvider(Notebook *notebook,
     return nullptr;
   }
 
-  // Only bundled notebooks support buffer providers
-  if (notebook->GetTypeStr() != "bundled") {
-    VXCORE_LOG_DEBUG("Notebook type '%s' does not support buffer provider",
-                     notebook->GetTypeStr().c_str());
-    return nullptr;
-  }
-
   try {
     return std::make_unique<StandardBufferProvider>(notebook, file_path);
   } catch (const std::exception &e) {

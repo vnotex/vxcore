@@ -13,8 +13,10 @@ namespace vxcore {
 
 class Notebook;
 
-// StandardBufferProvider implements IBufferProvider for bundled notebook files.
-// Assets are stored in <notebook_root>/<assets_folder>/<file_uuid>/ directories.
+// StandardBufferProvider implements IBufferProvider for notebook-backed files
+// (bundled and raw). Assets are stored in <notebook_root>/<assets_folder>/<file_uuid>/.
+// Attachment operations require per-file vx.json metadata and are therefore
+// supported for bundled notebooks only; they return VXCORE_ERR_UNSUPPORTED for raw.
 class StandardBufferProvider : public IBufferProvider {
  public:
   // Constructor.
@@ -60,6 +62,9 @@ class StandardBufferProvider : public IBufferProvider {
   void SetFilePath(const std::string &path) override { file_path_ = path; }
 
  private:
+  // True only for notebooks that persist per-file attachment metadata (bundled).
+  bool AttachmentsSupported() const;
+
   // Ensures the assets folder exists, creating it if necessary.
   VxCoreError EnsureAssetsFolderExists();
 

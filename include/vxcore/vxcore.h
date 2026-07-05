@@ -757,7 +757,9 @@ VXCORE_API VxCoreError vxcore_buffer_get_backup_path(VxCoreContextHandle context
 //                     or "<filename>_assets/screenshot.png" for external files)
 //                    Caller must free with vxcore_string_free.
 // Returns VXCORE_ERR_BUFFER_NOT_FOUND if buffer doesn't exist.
-// Returns VXCORE_ERR_UNSUPPORTED for raw notebooks.
+// Supported for bundled AND raw notebooks (assets are metadata-free file writes
+// into the notebook's assets folder). Attachment/tag operations remain
+// unsupported for raw notebooks.
 // Returns VXCORE_ERR_IO on filesystem error.
 VXCORE_API VxCoreError vxcore_buffer_insert_asset_raw(VxCoreContextHandle context,
                                                       const char *buffer_id, const char *asset_name,
@@ -810,6 +812,8 @@ VXCORE_API VxCoreError vxcore_buffer_get_resource_base_path(VxCoreContextHandle 
 // source_path: Absolute path to source file
 // out_filename: Receives just the filename (not full path)
 //               Caller must free with vxcore_string_free.
+// Returns VXCORE_ERR_UNSUPPORTED for raw notebooks (attachments require vx.json
+// metadata); no filesystem side effects occur on rejection.
 VXCORE_API VxCoreError vxcore_buffer_insert_attachment(VxCoreContextHandle context,
                                                        const char *buffer_id,
                                                        const char *source_path,
@@ -819,6 +823,8 @@ VXCORE_API VxCoreError vxcore_buffer_insert_attachment(VxCoreContextHandle conte
 //
 // filename: Just the filename (not full path)
 // Returns VXCORE_ERR_NOT_FOUND if attachment doesn't exist.
+// Returns VXCORE_ERR_UNSUPPORTED for raw notebooks (attachments require vx.json
+// metadata); no filesystem side effects occur on rejection.
 VXCORE_API VxCoreError vxcore_buffer_delete_attachment(VxCoreContextHandle context,
                                                        const char *buffer_id, const char *filename);
 
@@ -829,6 +835,8 @@ VXCORE_API VxCoreError vxcore_buffer_delete_attachment(VxCoreContextHandle conte
 // new_filename: New filename
 // out_new_filename: Receives the actual new filename (may differ if collision)
 //                   Caller must free with vxcore_string_free.
+// Returns VXCORE_ERR_UNSUPPORTED for raw notebooks (attachments require vx.json
+// metadata); no filesystem side effects occur on rejection.
 VXCORE_API VxCoreError vxcore_buffer_rename_attachment(VxCoreContextHandle context,
                                                        const char *buffer_id,
                                                        const char *old_filename,
@@ -842,6 +850,8 @@ VXCORE_API VxCoreError vxcore_buffer_rename_attachment(VxCoreContextHandle conte
 //
 // out_attachments_json: Receives JSON array (e.g., ["doc.pdf", "data.zip", ...])
 //                       Caller must free with vxcore_string_free.
+// Returns VXCORE_ERR_UNSUPPORTED for raw notebooks (attachments require vx.json
+// metadata); no filesystem side effects occur on rejection.
 VXCORE_API VxCoreError vxcore_buffer_list_attachments(VxCoreContextHandle context,
                                                       const char *buffer_id,
                                                       char **out_attachments_json);
@@ -852,6 +862,8 @@ VXCORE_API VxCoreError vxcore_buffer_list_attachments(VxCoreContextHandle contex
 //
 // out_path: Receives absolute filesystem path.
 //           Caller must free with vxcore_string_free.
+// Returns VXCORE_ERR_UNSUPPORTED for raw notebooks (attachments require vx.json
+// metadata); no filesystem side effects occur on rejection.
 VXCORE_API VxCoreError vxcore_buffer_get_attachments_folder(VxCoreContextHandle context,
                                                             const char *buffer_id, char **out_path);
 
