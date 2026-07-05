@@ -759,7 +759,10 @@ VxCoreError RawFolderManager::RenameFolder(const std::string &folder_path,
     std::string folder_id = FindFolderIdByPath(store, root_folder_id_, clean_path);
     if (!folder_id.empty()) {
       auto now = GetCurrentTimestampMillis();
-      if (!store->UpdateFolder(folder_id, new_name, now, "{}")) {
+      // Preserve existing node metadata (e.g. Mark colors); only the name changes.
+      auto existing = store->GetFolder(folder_id);
+      const std::string metadata = existing ? existing->metadata : std::string("{}");
+      if (!store->UpdateFolder(folder_id, new_name, now, metadata)) {
         VXCORE_LOG_WARN("Failed to rename folder in MetadataStore: id=%s", folder_id.c_str());
       }
     }
@@ -1382,7 +1385,10 @@ VxCoreError RawFolderManager::RenameFile(const std::string &file_path,
     std::string file_id = FindFileIdByPath(store, root_folder_id_, clean_path);
     if (!file_id.empty()) {
       auto now = GetCurrentTimestampMillis();
-      if (!store->UpdateFile(file_id, new_name, now, "{}")) {
+      // Preserve existing node metadata (e.g. Mark colors); only the name changes.
+      auto existing = store->GetFile(file_id);
+      const std::string metadata = existing ? existing->metadata : std::string("{}");
+      if (!store->UpdateFile(file_id, new_name, now, metadata)) {
         VXCORE_LOG_WARN("Failed to update file in MetadataStore: id=%s", file_id.c_str());
       }
     }

@@ -6841,6 +6841,139 @@ int test_raw_rename_file_preserves_uuid() {
   return 0;
 }
 
+int test_raw_rename_file_preserves_metadata() {
+  std::cout << "  Running test_raw_rename_file_preserves_metadata..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_rename_fmeta_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_rename_fmeta_nb").c_str(),
+                               "{\"name\":\"Raw RenameFMeta\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Set node metadata (the "Mark" text/background color) on the raw file.
+  err = vxcore_node_update_metadata(ctx, notebook_id, "note.md",
+                                    R"({"textColor":"#ff0000","backgroundColor":"#00ff00"})");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Rename the file.
+  err = vxcore_node_rename(ctx, notebook_id, "note.md", "renamed.md");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Metadata must survive the rename (was silently wiped to "{}" before the fix).
+  char *metadata_json = nullptr;
+  err = vxcore_node_get_metadata(ctx, notebook_id, "renamed.md", &metadata_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(metadata_json);
+
+  nlohmann::json meta = nlohmann::json::parse(metadata_json);
+  ASSERT_EQ(meta.value("textColor", std::string("")), std::string("#ff0000"));
+  ASSERT_EQ(meta.value("backgroundColor", std::string("")), std::string("#00ff00"));
+
+  vxcore_string_free(metadata_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_rename_fmeta_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_rename_file_preserves_metadata passed" << std::endl;
+  return 0;
+}
+
+int test_raw_rename_folder_preserves_metadata() {
+  std::cout << "  Running test_raw_rename_folder_preserves_metadata..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_rename_dmeta_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_rename_dmeta_nb").c_str(),
+                               "{\"name\":\"Raw RenameDMeta\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "myfolder", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  err = vxcore_node_update_metadata(ctx, notebook_id, "myfolder", R"({"color":"blue"})");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_node_rename(ctx, notebook_id, "myfolder", "renamed_folder");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *metadata_json = nullptr;
+  err = vxcore_node_get_metadata(ctx, notebook_id, "renamed_folder", &metadata_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(metadata_json);
+
+  nlohmann::json meta = nlohmann::json::parse(metadata_json);
+  ASSERT_EQ(meta.value("color", std::string("")), std::string("blue"));
+
+  vxcore_string_free(metadata_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_rename_dmeta_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_rename_folder_preserves_metadata passed" << std::endl;
+  return 0;
+}
+
+// Regression guard: move (unlike rename) already preserves metadata because the
+// store MoveFile/MoveFolder only reparents. Lock that in so a future change to
+// the move path cannot silently regress it.
+int test_raw_move_file_preserves_metadata() {
+  std::cout << "  Running test_raw_move_file_preserves_metadata..." << std::endl;
+  cleanup_test_dir(get_test_path("test_raw_move_fmeta_nb"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_raw_move_fmeta_nb").c_str(),
+                               "{\"name\":\"Raw MoveFMeta\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "dest", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  err = vxcore_node_update_metadata(ctx, notebook_id, "note.md", R"({"textColor":"#abcdef"})");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  err = vxcore_node_move(ctx, notebook_id, "note.md", "dest");
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *metadata_json = nullptr;
+  err = vxcore_node_get_metadata(ctx, notebook_id, "dest/note.md", &metadata_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(metadata_json);
+
+  nlohmann::json meta = nlohmann::json::parse(metadata_json);
+  ASSERT_EQ(meta.value("textColor", std::string("")), std::string("#abcdef"));
+
+  vxcore_string_free(metadata_json);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_raw_move_fmeta_nb"));
+  std::cout << "  \xe2\x9c\x93 test_raw_move_file_preserves_metadata passed" << std::endl;
+  return 0;
+}
+
 int test_raw_move_file() {
   std::cout << "  Running test_raw_move_file..." << std::endl;
   cleanup_test_dir(get_test_path("test_raw_move_file_nb"));
@@ -9519,6 +9652,9 @@ int main() {
   RUN_TEST(test_raw_update_file_metadata);
   RUN_TEST(test_raw_get_folder_metadata);
   RUN_TEST(test_raw_update_folder_metadata);
+  RUN_TEST(test_raw_rename_file_preserves_metadata);
+  RUN_TEST(test_raw_rename_folder_preserves_metadata);
+  RUN_TEST(test_raw_move_file_preserves_metadata);
   RUN_TEST(test_raw_update_node_timestamps);
   RUN_TEST(test_raw_iterate_all_files);
   RUN_TEST(test_raw_iterate_empty_notebook);
