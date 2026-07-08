@@ -158,7 +158,7 @@ int test_update_config_merges_all_fields() {
       "\"search\":{\"backends\":[\"only-rg\"]},"
       "\"fileTypes\":{\"types\":[]},"
       "\"recoverLastSession\":false,"
-      "\"autoSyncDebounceSeconds\":120,"
+      "\"autoSyncDebounceSeconds\":300,"
       "\"someUnknownKey\":\"should-be-dropped\""
       "}";
   ASSERT_EQ(vxcore_context_update_config(ctx, bulk), VXCORE_OK);
@@ -170,7 +170,7 @@ int test_update_config_merges_all_fields() {
 
   ASSERT_EQ(j["version"].get<std::string>(), std::string("9.9.9"));
   ASSERT_EQ(j["recoverLastSession"].get<bool>(), false);
-  ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 120);
+  ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 300);
   ASSERT_TRUE(j["search"]["backends"].is_array());
   ASSERT_EQ(j["search"]["backends"].size(), static_cast<size_t>(1));
   ASSERT_EQ(j["search"]["backends"][0].get<std::string>(), std::string("only-rg"));
@@ -188,7 +188,7 @@ int test_update_config_merges_all_fields() {
 
   ASSERT_EQ(j["recoverLastSession"].get<bool>(), true);
   ASSERT_EQ(j["version"].get<std::string>(), std::string("9.9.9"));
-  ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 120);
+  ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 300);
   ASSERT_EQ(j["search"]["backends"][0].get<std::string>(), std::string("only-rg"));
 
   // 3. Invalid input: non-object JSON must be rejected, leaving state intact.
@@ -197,10 +197,10 @@ int test_update_config_merges_all_fields() {
   j = nlohmann::json::parse(json_str);
   vxcore_string_free(json_str);
   ASSERT_EQ(j["version"].get<std::string>(), std::string("9.9.9"));
-  ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 120);
+  ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 300);
 
   // 4. Default value: when autoSyncDebounceSeconds is never set, the default
-  //    is 60 (from the C++ ctor initializer list). Destroy ctx first and clear
+  //    is 120 (from the C++ ctor initializer list). Destroy ctx first and clear
   //    test data to ensure ctx2 starts fresh.
   vxcore_context_destroy(ctx);
   vxcore_clear_test_directory();
@@ -210,7 +210,7 @@ int test_update_config_merges_all_fields() {
   ASSERT_EQ(vxcore_context_get_config(ctx2, &json_str), VXCORE_OK);
   j = nlohmann::json::parse(json_str);
   vxcore_string_free(json_str);
-  ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 60);
+  ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 120);
   vxcore_context_destroy(ctx2);
 
   std::cout << "  ✓ test_update_config_merges_all_fields passed" << std::endl;
