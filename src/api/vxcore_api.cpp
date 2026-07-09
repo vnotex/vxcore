@@ -1,6 +1,7 @@
 #include <stdlib.h>
 
 #include "api_utils.h"
+#include "core/activity_manager.h"
 #include "core/buffer_manager.h"
 #include "core/config_manager.h"
 #include "core/context.h"
@@ -169,6 +170,19 @@ VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
     ctx->buffer_manager->SetEventManager(ctx->event_manager.get());
     ctx->sync_manager->SetEventManager(ctx->event_manager.get());
     ctx->sync_manager->SetWorkQueueManager(ctx->work_queue_manager.get());
+
+    // Activity tracking: app-global, standalone activity.db under LocalData.
+    // Mirror the SyncManager wiring pattern (subscribe to EventManager). A
+    // failed Initialize is non-fatal -- activity is a best-effort side feature,
+    // so the context is still returned; record/query C API calls will report
+    // VXCORE_ERR_INVALID_STATE until a later successful init.
+    ctx->activity_manager = std::make_unique<vxcore::ActivityManager>(
+        ctx->config_manager.get(), ctx->notebook_manager.get());
+    if (ctx->activity_manager->Initialize() == VXCORE_OK) {
+      ctx->activity_manager->SetEventManager(ctx->event_manager.get());
+    } else {
+      VXCORE_LOG_WARN("Activity tracking disabled: failed to initialize activity.db");
+    }
 
     *out_context = reinterpret_cast<VxCoreContextHandle>(ctx);
     return VXCORE_OK;

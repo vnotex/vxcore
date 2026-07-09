@@ -15,6 +15,7 @@ class SnippetManager;
 class SyncManager;
 class WorkQueueManager;
 class EventManager;
+class ActivityManager;
 
 struct VxCoreContext {
   // IMPORTANT: Member order determines destruction order (reverse of declaration).
@@ -31,6 +32,10 @@ struct VxCoreContext {
   std::unique_ptr<TemplateManager> template_manager;
   std::unique_ptr<SnippetManager> snippet_manager;
   std::unique_ptr<SyncManager> sync_manager;
+  // Declared AFTER event_manager so it is destroyed FIRST (reverse-order
+  // destruction): its dtor unsubscribes from event_manager, which must still
+  // be alive at that point.
+  std::unique_ptr<ActivityManager> activity_manager;
   std::string last_error;
   bool shutdown_called = false;
 };

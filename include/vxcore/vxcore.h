@@ -1369,6 +1369,61 @@ VXCORE_API void vxcore_work_queue_shutdown(VxCoreContextHandle context, const ch
 // Shut down all work queues. Idempotent.
 VXCORE_API void vxcore_work_queue_shutdown_all(VxCoreContextHandle context);
 
+// ============ Activity Tracking Operations ============
+//
+// Activity data is collected into a standalone per-device SQLite database
+// (activity.db under LocalData). It is NOT synced/roamed. Global metrics are
+// bucketed by local calendar day; week/month/year totals are summed on read.
+// Dates passed to query functions are local 'YYYY-MM-DD' strings; ranges are
+// inclusive.
+
+// Add focused milliseconds to today's global active-time bucket. delta_ms <= 0
+// is a no-op success. Cheap single-row UPSERT.
+VXCORE_API VxCoreError vxcore_activity_add_focus_time(VxCoreContextHandle context,
+                                                      int64_t delta_ms);
+
+// Record a note "read" for today: +1 global notes_read plus a per-file row.
+// The file id is resolved internally from {notebook_id, rel_path}; if it cannot
+// be resolved the global metric is still incremented.
+VXCORE_API VxCoreError vxcore_activity_record_read(VxCoreContextHandle context,
+                                                   const char *notebook_id, const char *rel_path);
+
+// Record a note "edit" for today: +1 global notes_edited plus a per-file row.
+// Normally edits are captured via the file.saved event; this is for consumers
+// that need to record an edit explicitly (e.g. auto-save paths that bypass the
+// event).
+VXCORE_API VxCoreError vxcore_activity_record_edit(VxCoreContextHandle context,
+                                                   const char *notebook_id, const char *rel_path);
+
+// Persist all pending in-memory activity deltas to activity.db in a single
+// batched transaction. Recording (focus/read/edit/events) is accumulated in
+// memory and only written to disk by this call, so consumers should invoke it
+// periodically (e.g. every ~60s) and on shutdown. Query functions flush
+// implicitly, so an explicit flush before querying is not required.
+VXCORE_API VxCoreError vxcore_activity_flush(VxCoreContextHandle context);
+
+// Summed totals plus a per-day series over [from_date, to_date].
+// Output JSON (caller frees with vxcore_string_free):
+//   {"from","to","activeMs","notesCreated","notesRead","notesEdited",
+//    "daily":[{"date","activeMs","notesCreated","notesRead","notesEdited"}]}
+VXCORE_API VxCoreError vxcore_activity_get_range(VxCoreContextHandle context, const char *from_date,
+                                                 const char *to_date, char **out_json);
+
+// Top files by (reads + edits) over [from_date, to_date], up to |limit| rows.
+// Output JSON (caller frees with vxcore_string_free):
+//   {"files":[{"notebookId","fileId","path","reads","edits","score"}]}
+VXCORE_API VxCoreError vxcore_activity_get_hot_files(VxCoreContextHandle context,
+                                                     const char *from_date, const char *to_date,
+                                                     int limit, char **out_json);
+
+// Full per-day history for one file (all dates).
+// Output JSON (caller frees with vxcore_string_free):
+//   {"notebookId","fileId","totalReads","totalEdits",
+//    "daily":[{"date","reads","edits","path"}]}
+VXCORE_API VxCoreError vxcore_activity_get_file_history(VxCoreContextHandle context,
+                                                        const char *notebook_id,
+                                                        const char *file_id, char **out_json);
+
 VXCORE_API void vxcore_string_free(char *str);
 
 #ifdef __cplusplus

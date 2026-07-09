@@ -100,6 +100,7 @@ add_vxcore_test(test_sync_unregister INTERNALS)
 add_vxcore_test(test_work_queue)
 add_vxcore_test(test_event_manager INTERNALS)
 add_vxcore_test(test_metadata_events)
+add_vxcore_test(test_activity)
 add_vxcore_test(test_mock_sync_backend INTERNALS)
 
 # test_dirty_tracker: Task 9.1 (F2.4) of sync-backend-phase4. Standalone
@@ -385,6 +386,17 @@ add_executable(test_db test_db.cpp
 target_include_directories(test_db PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
 target_link_libraries(test_db PRIVATE sqlite3 nlohmann_json)
 add_test(NAME test_db COMMAND test_db)
+
+# test_activity_db: DB-internal tests for ActivityDb (Pattern B, direct-compile).
+add_executable(test_activity_db test_activity_db.cpp
+    ${CMAKE_SOURCE_DIR}/src/db/activity_db.cpp
+    ${CMAKE_SOURCE_DIR}/src/db/db_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp
+    ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
+target_include_directories(test_activity_db PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_activity_db PRIVATE sqlite3 nlohmann_json)
+add_test(NAME test_activity_db COMMAND test_activity_db)
 
 add_executable(test_metadata_store test_metadata_store.cpp
     ${CMAKE_SOURCE_DIR}/src/db/db_manager.cpp

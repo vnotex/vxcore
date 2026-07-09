@@ -20,6 +20,7 @@ set(VXCORE_SOURCES
     api/vxcore_template_api.cpp
     api/vxcore_snippet_api.cpp
     api/vxcore_sync_api.cpp
+    api/vxcore_activity_api.cpp
     api/vxcore_work_queue_api.cpp
     api/vxcore_event_api.cpp
     api/handle_manager.cpp
@@ -48,11 +49,13 @@ set(VXCORE_SOURCES
     core/snippet_manager.cpp
     core/work_queue.cpp
     core/event_manager.cpp
+    core/activity_manager.cpp
     db/db_manager.cpp
     db/file_db.cpp
     db/tag_db.cpp
     db/notebook_db.cpp
     db/sqlite_metadata_store.cpp
+    db/activity_db.cpp
     search/search_manager.cpp
     search/search_query.cpp
     search/search_file_info.cpp
