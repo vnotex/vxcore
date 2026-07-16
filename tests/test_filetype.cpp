@@ -373,10 +373,11 @@ int test_filetype_set_add_type() {
   vxcore_string_free(list_json);
   ASSERT_EQ(types.size(), 5);  // Default 5 types
 
-  // Add new type
+  // Add new type. Use suffixes that no built-in type claims so the lookup
+  // below unambiguously resolves to this newly added type.
   nlohmann::json new_type;
   new_type["name"] = "CustomCode";
-  new_type["suffixes"] = nlohmann::json::array({"cc", "cpp", "cxx"});
+  new_type["suffixes"] = nlohmann::json::array({"cc1", "cc2", "cc3"});
   new_type["isNewable"] = true;
   new_type["displayName"] = "Custom Code Files";
   types.push_back(new_type);
@@ -399,7 +400,7 @@ int test_filetype_set_add_type() {
 
   // Verify lookup works
   char *lookup_json = nullptr;
-  err = vxcore_filetype_get_by_suffix(ctx, "cpp", &lookup_json);
+  err = vxcore_filetype_get_by_suffix(ctx, "cc2", &lookup_json);
   ASSERT_EQ(err, VXCORE_OK);
 
   nlohmann::json lookup = nlohmann::json::parse(lookup_json);

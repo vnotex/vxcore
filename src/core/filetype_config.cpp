@@ -79,7 +79,29 @@ nlohmann::json FileTypeEntry::ToJson() const {
 
 FileTypesConfig::FileTypesConfig() {
   types.push_back(FileTypeEntry("Markdown", {"md", "mkd", "rmd", "markdown"}, true, "Markdown"));
-  types.push_back(FileTypeEntry("Text", {"txt", "text", "log"}, true, "Text"));
+  types.push_back(FileTypeEntry(
+      "Text",
+      {// Plain text / logs.
+       "txt", "text", "log",
+       // C / C++.
+       "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx", "inl",
+       // Other compiled languages.
+       "cs", "java", "kt", "kts", "go", "rs", "swift", "scala", "groovy", "gradle", "dart", "m",
+       "mm", "vb", "asm", "s",
+       // Scripting languages.
+       "py", "pyw", "rb", "php", "pl", "pm", "lua", "r", "jl", "tcl",
+       // Shell / batch.
+       "sh", "bash", "zsh", "fish", "bat", "cmd", "ps1", "psm1",
+       // Web / markup.
+       "html", "htm", "xml", "xhtml", "svg", "css", "scss", "sass", "less", "js", "mjs", "cjs",
+       "jsx", "ts", "tsx", "vue", "svelte",
+       // Data / config.
+       "json", "json5", "yaml", "yml", "toml", "ini", "cfg", "conf", "properties", "env", "csv",
+       "tsv",
+       // Docs / other text.
+       "rst", "tex", "bib", "org", "sql", "diff", "patch", "cmake", "mk", "makefile", "dockerfile",
+       "gitignore", "gitattributes", "editorconfig"},
+      true, "Text"));
   types.push_back(FileTypeEntry("PDF", {"pdf"}, false, "Portable Document Format"));
   types.push_back(FileTypeEntry("MindMap", {"emind"}, true, "Mind Map"));
   types.push_back(FileTypeEntry("Others", {}, true, "Others"));
