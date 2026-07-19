@@ -1051,6 +1051,10 @@ int test_snippet_api_null_checks() {
   err = vxcore_snippet_apply(nullptr, "x", "", "", "{}", &out);
   ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
 
+  // vxcore_snippet_expand
+  err = vxcore_snippet_expand(nullptr, "x", "", "", "{}", &out);
+  ASSERT_EQ(err, VXCORE_ERR_NULL_POINTER);
+
   std::cout << "  \xe2\x9c\x93 test_snippet_api_null_checks passed" << std::endl;
   return 0;
 }
@@ -1214,6 +1218,128 @@ int test_snippet_api_apply_with_overrides() {
   return 0;
 }
 
+int test_snippet_api_expand() {
+  std::cout << "  Running test_snippet_api_expand..." << std::endl;
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+  clean_snippets_folder(ctx);
+
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  auto *mgr = vctx->snippet_manager.get();
+
+  // 1. Top-level @@ cursor mark → correct cursorOffset, mark stripped.
+  {
+    char *out = nullptr;
+    err = vxcore_snippet_expand(ctx, "hello @@world", "", "", "{}", &out);
+    ASSERT_EQ(err, VXCORE_OK);
+    ASSERT_NOT_NULL(out);
+    auto j = nlohmann::json::parse(out);
+    ASSERT_EQ(j["text"].get<std::string>(), std::string("hello world"));
+    ASSERT_EQ(j["cursorOffset"].get<int>(), 6);
+    vxcore_string_free(out);
+  }
+
+  // 2. Symbol before cursor: %date%@@tail → offset adjusted after replacement.
+  {
+    char *out = nullptr;
+    err = vxcore_snippet_expand(ctx, "%date%@@tail", "", "", "{}", &out);
+    ASSERT_EQ(err, VXCORE_OK);
+    auto j = nlohmann::json::parse(out);
+    std::string text = j["text"].get<std::string>();
+    int offset = j["cursorOffset"].get<int>();
+    // "date" produces YYYY-MM-DD (length 10); cursor lands right after it.
+    ASSERT_EQ(offset, 10);
+    ASSERT_EQ(text.substr(10), std::string("tail"));
+    ASSERT_EQ(static_cast<int>(text.size()), 14);
+    vxcore_string_free(out);
+  }
+
+  // 3. User snippet %name% expanded.
+  {
+    const char *json =
+        R"({"type":"text","description":"","content":"XYZ","cursorMark":"@@","selectionMark":"$$","indentAsFirstLine":false})";
+    err = mgr->CreateSnippet("expand_user", json);
+    ASSERT_EQ(err, VXCORE_OK);
+    char *out = nullptr;
+    err = vxcore_snippet_expand(ctx, "a %expand_user% b@@", "", "", "{}", &out);
+    ASSERT_EQ(err, VXCORE_OK);
+    auto j = nlohmann::json::parse(out);
+    ASSERT_EQ(j["text"].get<std::string>(), std::string("a XYZ b"));
+    ASSERT_EQ(j["cursorOffset"].get<int>(), 7);
+    vxcore_string_free(out);
+  }
+
+  // 4. Custom-mark named snippet stays correct (guards shared-helper refactor).
+  {
+    const char *json =
+        R"({"type":"text","description":"","content":"A [[]]<<>>B [[]]","cursorMark":"<<>>","selectionMark":"[[]]","indentAsFirstLine":false})";
+    err = mgr->CreateSnippet("expand_custom", json);
+    ASSERT_EQ(err, VXCORE_OK);
+    auto result = mgr->ApplySnippet("expand_custom", "X", "", vxcore::OverrideMap{});
+    ASSERT_EQ(result.text, std::string("A XB X"));
+    ASSERT_EQ(result.cursor_offset, 3);
+  }
+
+  // 5. Built-in %date% expanded (non-empty).
+  {
+    char *out = nullptr;
+    err = vxcore_snippet_expand(ctx, "%date%", "", "", "{}", &out);
+    ASSERT_EQ(err, VXCORE_OK);
+    auto j = nlohmann::json::parse(out);
+    ASSERT_EQ(static_cast<int>(j["text"].get<std::string>().size()), 10);
+    ASSERT_EQ(j["cursorOffset"].get<int>(), -1);  // no @@
+    vxcore_string_free(out);
+  }
+
+  // 6. %note% / %no% via overrides.
+  {
+    char *out = nullptr;
+    err = vxcore_snippet_expand(ctx, "F: %note% (%no%)@@", "", "",
+                                R"({"note":"foo.md","no":"foo"})", &out);
+    ASSERT_EQ(err, VXCORE_OK);
+    auto j = nlohmann::json::parse(out);
+    ASSERT_EQ(j["text"].get<std::string>(), std::string("F: foo.md (foo)"));
+    vxcore_string_free(out);
+  }
+
+  // 7. Unknown %xyz% around cursor left intact.
+  {
+    char *out = nullptr;
+    err = vxcore_snippet_expand(ctx, "a %unknown_zzz%@@b", "", "", "{}", &out);
+    ASSERT_EQ(err, VXCORE_OK);
+    auto j = nlohmann::json::parse(out);
+    ASSERT_EQ(j["text"].get<std::string>(), std::string("a %unknown_zzz%b"));
+    ASSERT_EQ(j["cursorOffset"].get<int>(), 15);
+    vxcore_string_free(out);
+  }
+
+  // 8. $$ with no selection → empty substitution.
+  {
+    char *out = nullptr;
+    err = vxcore_snippet_expand(ctx, "x$$y@@", "", "", "{}", &out);
+    ASSERT_EQ(err, VXCORE_OK);
+    auto j = nlohmann::json::parse(out);
+    ASSERT_EQ(j["text"].get<std::string>(), std::string("xy"));
+    vxcore_string_free(out);
+  }
+
+  // 9. No @@ → cursorOffset == -1.
+  {
+    char *out = nullptr;
+    err = vxcore_snippet_expand(ctx, "plain text no mark", "", "", "{}", &out);
+    ASSERT_EQ(err, VXCORE_OK);
+    auto j = nlohmann::json::parse(out);
+    ASSERT_EQ(j["text"].get<std::string>(), std::string("plain text no mark"));
+    ASSERT_EQ(j["cursorOffset"].get<int>(), -1);
+    vxcore_string_free(out);
+  }
+
+  vxcore_context_destroy(ctx);
+  std::cout << "  \xe2\x9c\x93 test_snippet_api_expand passed" << std::endl;
+  return 0;
+}
+
 int main() {
   vxcore_set_test_mode(1);
   vxcore_clear_test_directory();
@@ -1258,7 +1384,7 @@ int main() {
   RUN_TEST(test_snippet_api_crud_cycle);
   RUN_TEST(test_snippet_api_apply);
   RUN_TEST(test_snippet_api_apply_with_overrides);
-
+  RUN_TEST(test_snippet_api_expand);
   std::cout << "\nAll snippet tests passed!" << std::endl;
   vxcore_clear_test_directory();
   return 0;

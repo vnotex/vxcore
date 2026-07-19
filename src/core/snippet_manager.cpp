@@ -564,14 +564,42 @@ ApplyResult SnippetManager::ApplySnippet(const std::string &name, const std::str
     return ApplyResult{content, static_cast<int>(content.size())};
   }
 
-  // Apply raw logic (indent, cursor mark, selection mark).
+  // Apply raw logic (indent, cursor mark, selection mark) then chain ExpandSymbols.
+  // Named snippets keep the end-of-text cursor default when unmarked, so
+  // detect_cursor_mark is false here.
+  return ApplyMarksAndExpand(content, selected_text, indentation, cursor_mark, selection_mark,
+                             indent_first, overrides, /*detect_cursor_mark=*/false);
+}
+
+ApplyResult SnippetManager::ApplyMarksAndExpand(const std::string &content,
+                                                const std::string &selected_text,
+                                                const std::string &indentation,
+                                                const std::string &cursor_mark,
+                                                const std::string &selection_mark, bool indent_first,
+                                                const OverrideMap &overrides,
+                                                bool detect_cursor_mark) {
+  // Whether the (top-level) content carries an actual cursor mark. Used to decide
+  // if the caret should be placed at all (templates) or default to end-of-text
+  // (named snippets).
+  bool has_cursor_mark = !cursor_mark.empty() && content.find(cursor_mark) != std::string::npos;
+
   auto raw_result = ApplySnippetRaw(content, selected_text, indentation, cursor_mark,
                                     selection_mark, indent_first);
 
-  // Chain ExpandSymbols on the result.
-  int cursor_offset = raw_result.cursor_offset;
+  int cursor_offset =
+      (detect_cursor_mark && !has_cursor_mark) ? -1 : raw_result.cursor_offset;
   std::string expanded = ExpandSymbols(raw_result.text, selected_text, cursor_offset, overrides);
   return ApplyResult{expanded, cursor_offset};
+}
+
+ApplyResult SnippetManager::ExpandContent(const std::string &content,
+                                          const std::string &selected_text,
+                                          const std::string &indentation,
+                                          const OverrideMap &overrides) {
+  // Anonymous-template defaults: "@@" cursor mark, "$$" selection mark, no
+  // first-line indentation. When "@@" is absent the caret offset stays -1.
+  return ApplyMarksAndExpand(content, selected_text, indentation, "@@", "$$",
+                             /*indent_first=*/false, overrides, /*detect_cursor_mark=*/true);
 }
 
 // Extract indentation (leading spaces/tabs) of the line containing position |pos| in |text|.

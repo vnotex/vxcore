@@ -50,10 +50,24 @@ class SnippetManager {
 
   ApplyResult ApplySnippet(const std::string &name, const std::string &selected_text,
                            const std::string &indentation, const OverrideMap &overrides);
+  // Expand arbitrary inline content (e.g. a template body): processes a top-level
+  // "@@" cursor mark, "$$" selection mark, and nested %name% symbols. Unlike
+  // ApplySnippet, when no "@@" cursor mark is present in |content| the returned
+  // cursor_offset is -1 (NOT end-of-text).
+  ApplyResult ExpandContent(const std::string &content, const std::string &selected_text,
+                            const std::string &indentation, const OverrideMap &overrides);
   std::string ExpandSymbols(const std::string &content, const std::string &selected_text,
                             int &cursor_offset, const OverrideMap &overrides);
 
  private:
+  // Shared tail used by ApplySnippet and ExpandContent: applies raw marks then
+  // chains ExpandSymbols. When |detect_cursor_mark| is true and |content| does
+  // not contain |cursor_mark|, the returned cursor_offset is -1.
+  ApplyResult ApplyMarksAndExpand(const std::string &content, const std::string &selected_text,
+                                  const std::string &indentation, const std::string &cursor_mark,
+                                  const std::string &selection_mark, bool indent_first,
+                                  const OverrideMap &overrides, bool detect_cursor_mark);
+
   VxCoreError EnsureSnippetFolderExists() const;
   bool IsValidSnippetName(const std::string &name) const;
   void LoadBuiltInSnippets();

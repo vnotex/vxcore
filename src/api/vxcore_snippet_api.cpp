@@ -189,6 +189,55 @@ VXCORE_API VxCoreError vxcore_snippet_update(VxCoreContextHandle context, const 
   }
 }
 
+VXCORE_API VxCoreError vxcore_snippet_expand(VxCoreContextHandle context, const char *content,
+                                             const char *selected_text, const char *indentation,
+                                             const char *overrides_json, char **out_json) {
+  if (!context || !content || !out_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  *out_json = nullptr;
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->snippet_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    // Parse overrides JSON (optional — null or empty string → empty map).
+    vxcore::OverrideMap overrides;
+    if (overrides_json && overrides_json[0] != '\0') {
+      auto j = nlohmann::json::parse(overrides_json);
+      if (j.is_object()) {
+        for (auto it = j.begin(); it != j.end(); ++it) {
+          overrides[it.key()] = it.value().get<std::string>();
+        }
+      }
+    }
+
+    std::string sel = selected_text ? selected_text : "";
+    std::string indent = indentation ? indentation : "";
+
+    vxcore::ApplyResult result =
+        ctx->snippet_manager->ExpandContent(content, sel, indent, overrides);
+
+    nlohmann::json obj;
+    obj["text"] = result.text;
+    obj["cursorOffset"] = result.cursor_offset;
+
+    std::string json_str = obj.dump();
+    *out_json = vxcore_strdup(json_str.c_str());
+    if (!*out_json) return VXCORE_ERR_OUT_OF_MEMORY;
+    return VXCORE_OK;
+  } catch (const nlohmann::json::exception &e) {
+    ctx->last_error = std::string("JSON error: ") + e.what();
+    return VXCORE_ERR_JSON_SERIALIZE;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_snippet_apply(VxCoreContextHandle context, const char *name,
                                             const char *selected_text, const char *indentation,
                                             const char *overrides_json, char **out_json) {

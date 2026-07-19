@@ -989,6 +989,21 @@ VXCORE_API VxCoreError vxcore_snippet_apply(VxCoreContextHandle context, const c
                                             const char *selected_text, const char *indentation,
                                             const char *overrides_json, char **out_json);
 
+// Expand arbitrary inline content (e.g. a note template body): process a top-level
+// "@@" cursor mark, "$$" selection mark, and nested %name% symbols (user snippets
+// and built-in dynamic variables). Unlike vxcore_snippet_apply, when no "@@" mark
+// is present the returned cursorOffset is -1 (the caret is not repositioned).
+// content: The raw content to expand. Must NOT be NULL.
+// selected_text: Currently selected text (replaces selection marks). May be NULL.
+// indentation: Indentation string to prepend to lines 2+. May be NULL.
+// overrides_json: JSON object {"key":"value",...} for symbol overrides. May be NULL or "{}".
+// out_json: Result JSON: {"text":"...","cursorOffset":N}. cursorOffset is a UTF-8 byte
+//           offset into "text", or -1 when no "@@" mark was present. Caller must free
+//           with vxcore_string_free.
+VXCORE_API VxCoreError vxcore_snippet_expand(VxCoreContextHandle context, const char *content,
+                                             const char *selected_text, const char *indentation,
+                                             const char *overrides_json, char **out_json);
+
 // ============ Sync Operations ============
 
 // Enable sync for a notebook.
