@@ -109,7 +109,15 @@ std::string Buffer::GetBackupFilePath() {
   }
 
   if (backup_file_path_.empty()) {
-    backup_file_path_ = CleanFsPath(ResolveFullPath() + ".vswp");
+    // Use the UTF-8-safe CleanPath(std::string) rather than
+    // CleanFsPath(std::string): the latter implicitly converts the narrow
+    // std::string to std::filesystem::path using the active ANSI code page,
+    // which throws "No mapping for the Unicode character exists in the target
+    // multi-byte code page" on non-ASCII paths (CJK, full-width（）, etc.) on
+    // Windows. That throw propagated out of the save/move path and surfaced as
+    // a spurious "Failed to move" error while leaving assets behind (issue
+    // #2721).
+    backup_file_path_ = CleanPath(ResolveFullPath() + ".vswp");
   }
   return backup_file_path_;
 }

@@ -904,6 +904,72 @@ int test_buffer_get_backup_path() {
   return 0;
 }
 
+// Regression for issue #2721: a note whose path contains non-ASCII characters
+// (CJK + full-width parentheses（）) must resolve/write its .vswp backup path
+// without throwing "No mapping for the Unicode character exists in the target
+// multi-byte code page". The bug was CleanFsPath(std::string) in
+// Buffer::GetBackupFilePath, which does an ANSI-codepage narrow->path
+// conversion; the throw propagated out of the save/move path and surfaced as a
+// spurious "Failed to move" error that also left assets behind.
+int test_buffer_backup_path_non_ascii() {
+  std::cout << "  Running test_buffer_backup_path_non_ascii..." << std::endl;
+  // Notebook root under a CJK + full-width（）subfolder.
+  std::string base = get_test_path("test_buffer_backup_non_ascii");
+  cleanup_test_dir(base);
+  // "3个月临时（自动清空）" as UTF-8.
+  std::string notebook_path =
+      base + "/3\xe4\xb8\xaa\xe6\x9c\x88\xe4\xb8\xb4\xe6\x97\xb6\xef\xbc\x88\xe8\x87\xaa\xe5\x8a\xa8\xe6\xb8\x85\xe7\xa9\xba\xef\xbc\x89";
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"cn\"}",
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *file_id = nullptr;
+  // Note name "笔记.md".
+  const char *note = "\xe7\xac\x94\xe8\xae\xb0.md";
+  err = vxcore_file_create(ctx, notebook_id, ".", note, &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, note, &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Must NOT throw / error out on the non-ASCII path.
+  char *backup_path = nullptr;
+  err = vxcore_buffer_get_backup_path(ctx, buffer_id, &backup_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(backup_path);
+  std::string bp = normalize_path(backup_path);
+  ASSERT_TRUE(bp.size() >= 5 && bp.substr(bp.size() - 5) == ".vswp");
+  // Exact expected path (locale-independent value check): <root>/<note>.vswp.
+  std::string expected = normalize_path(notebook_path + "/" + note + ".vswp");
+  ASSERT_TRUE(bp == expected);
+  std::string backup_path_str = backup_path;
+  vxcore_string_free(backup_path);
+
+  // Set content then write the backup: exercises WriteBackup -> GetBackupFilePath
+  // on the non-ASCII path too, and confirm the file physically lands at the
+  // returned path.
+  err = vxcore_buffer_set_content_raw(ctx, buffer_id, "# hi\n", 5);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_write_backup(ctx, buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_TRUE(path_exists(backup_path_str));
+
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(base);
+  std::cout << "  ✓ test_buffer_backup_path_non_ascii passed" << std::endl;
+  return 0;
+}
+
 int test_buffer_backup_no_content() {
   std::cout << "  Running test_buffer_backup_no_content..." << std::endl;
   cleanup_test_dir(get_test_path("test_buffer_backup_no_content"));
@@ -3829,6 +3895,7 @@ int main() {
   RUN_TEST(test_buffer_recover_backup);
   RUN_TEST(test_buffer_discard_backup);
   RUN_TEST(test_buffer_get_backup_path);
+  RUN_TEST(test_buffer_backup_path_non_ascii);
   RUN_TEST(test_buffer_backup_no_content);
   RUN_TEST(test_buffer_recover_no_backup);
   RUN_TEST(test_buffer_discard_no_backup);
