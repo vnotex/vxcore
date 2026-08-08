@@ -50,6 +50,16 @@ add_vxcore_test(test_bundled_folder_manager_read_only)
 
 add_vxcore_test(test_node)
 
+# test_folder_share_paths: Step 1 of the share-bundled-folder plan. Covers
+# vxcore_folder_get_share_paths — the synchronous, path-only resolution of a
+# bundled folder's notebook root / physical content root / parallel metadata
+# root, plus its full root-to-selected index-reachability proof (orphan
+# ancestors, name mismatches, missing content, malformed vx.json, raw
+# notebooks, and root/escaping paths are all rejected). Public C API only, so
+# links via add_vxcore_test(); nlohmann_json for the on-disk vx.json edits.
+add_vxcore_test(test_folder_share_paths)
+target_link_libraries(test_folder_share_paths PRIVATE nlohmann_json)
+
 # test_missing_nodes: T4 of the missing-files-on-disk plan. Verifies the
 # reactive missing-content gate on the bundled read/access C-APIs
 # (vxcore_node_get_config / vxcore_node_get_metadata / vxcore_buffer_open)

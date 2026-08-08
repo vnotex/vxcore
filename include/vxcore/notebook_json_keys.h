@@ -100,6 +100,18 @@ inline constexpr const char *kJsonKeyCloneTargetDir = "targetDir";  // alias
 inline constexpr const char *kJsonKeyCloneOptions = "options";
 inline constexpr const char *kJsonKeyIsReadOnly = "isReadOnly";
 
+// ---------- FolderConfig / FileRecord keys (vx.json) ------------------------
+// Stored per-folder in `vx_notebook/contents/<path>/vx.json`. Written by
+// vxcore's FolderConfig/FileRecord serializers and read by consumers that
+// validate or transplant a metadata subtree (e.g. VNote's folder-share
+// bundle validator). `kJsonKeyId`, `kJsonKeyName`, `kJsonKeyMetadata` and
+// `kJsonKeyTags` (above) are also part of this schema.
+inline constexpr const char *kJsonKeyCreatedUtc = "createdUtc";
+inline constexpr const char *kJsonKeyModifiedUtc = "modifiedUtc";
+inline constexpr const char *kJsonKeyFiles = "files";
+inline constexpr const char *kJsonKeyFolders = "folders";
+inline constexpr const char *kJsonKeyAttachments = "attachments";
+
 // ---------- Folder listing keys (vxcore_folder_list_children) ---------------
 // Transient per-child metadata emitted in folder listing JSON. These keys are
 // OUTPUT-ONLY and MUST NOT be persisted to vx.json or any config file.

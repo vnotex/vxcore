@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <filesystem>
 #include <nlohmann/json.hpp>
 
@@ -6,6 +7,7 @@
 #include "core/folder.h"
 #include "core/folder_manager.h"
 #include "core/metadata_store.h"
+#include "core/notebook.h"
 #include "core/notebook_manager.h"
 #include "utils/file_utils.h"
 #include "vxcore/notebook_json_keys.h"
@@ -745,6 +747,239 @@ VXCORE_API VxCoreError vxcore_folder_set_children_order(VxCoreContextHandle cont
     // convention at line 307 above.
     std::string path = std::string(folder_path).empty() ? "." : folder_path;
     return folder_manager->SetChildrenOrder(path, ordered_json);
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+namespace {
+
+// A path component is safe iff it is a single, non-traversing name.
+bool IsSafePathComponent(const std::string &component) {
+  if (component.empty() || component == "." || component == "..") {
+    return false;
+  }
+  return component.find('/') == std::string::npos && component.find('\\') == std::string::npos;
+}
+
+// Load and parse a folder's vx.json. Returns VXCORE_ERR_NOT_FOUND when the
+// file is absent, VXCORE_ERR_JSON_PARSE when it does not parse into an object.
+VxCoreError LoadFolderConfigJson(const std::filesystem::path &config_dir,
+                                 nlohmann::json &out_json) {
+  const std::filesystem::path config_file = config_dir / "vx.json";
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(config_file, ec) || ec) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+  VxCoreError err = vxcore::LoadJsonFile(config_file, out_json);
+  if (err != VXCORE_OK) {
+    return VXCORE_ERR_JSON_PARSE;
+  }
+  if (!out_json.is_object()) {
+    return VXCORE_ERR_JSON_PARSE;
+  }
+  return VXCORE_OK;
+}
+
+// Count how many times @name appears in a folder config's "folders" array.
+size_t CountFolderChild(const nlohmann::json &config, const std::string &name) {
+  if (!config.contains(vxcore::kJsonKeyFolders) ||
+      !config[vxcore::kJsonKeyFolders].is_array()) {
+    return 0;
+  }
+  size_t count = 0;
+  for (const auto &entry : config[vxcore::kJsonKeyFolders]) {
+    if (entry.is_string() && entry.get<std::string>() == name) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+}  // namespace
+
+VXCORE_API VxCoreError vxcore_folder_get_share_paths(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     const char *folder_path,
+                                                     char **out_notebook_root,
+                                                     char **out_content_root,
+                                                     char **out_metadata_root) {
+  // Initialize every output before any validation so a failing caller never
+  // frees an uninitialized pointer.
+  if (out_notebook_root) {
+    *out_notebook_root = nullptr;
+  }
+  if (out_content_root) {
+    *out_content_root = nullptr;
+  }
+  if (out_metadata_root) {
+    *out_metadata_root = nullptr;
+  }
+
+  if (!context || !notebook_id || !folder_path || !out_notebook_root || !out_content_root ||
+      !out_metadata_root) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
+      ctx->last_error = "Folder sharing requires a bundled notebook";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    const std::string raw_path(folder_path);
+    if (raw_path.empty()) {
+      ctx->last_error = "Cannot share the notebook root";
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+    // Reject anything rooted: drive letters / UNC roots (has_root_name) AND
+    // leading separators (has_root_directory). On Windows "/Alpha" is
+    // technically "relative" to std::filesystem because it lacks a root NAME,
+    // so is_relative() alone is not a sufficient guard.
+    {
+      const std::filesystem::path requested = vxcore::PathFromUtf8(raw_path);
+      if (requested.has_root_name() || requested.has_root_directory() ||
+          !requested.is_relative()) {
+        ctx->last_error = "Folder path must be relative to the notebook root";
+        return VXCORE_ERR_INVALID_PARAM;
+      }
+    }
+
+    const std::string clean_path = vxcore::CleanPath(raw_path);
+    if (clean_path == "." || clean_path.empty()) {
+      ctx->last_error = "Cannot share the notebook root";
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+
+    // Reject "." / ".." as WRITTEN, before normalization. CleanPath() would
+    // otherwise collapse "Projects/../Alpha" to "Alpha" and silently accept a
+    // request the contract declares invalid.
+    {
+      std::string normalized_separators = raw_path;
+      for (char &ch : normalized_separators) {
+        if (ch == '\\') {
+          ch = '/';
+        }
+      }
+      for (const auto &component : vxcore::SplitPathComponents(normalized_separators)) {
+        if (component == "." || component == "..") {
+          ctx->last_error = "Folder path must not contain \".\" or \"..\" components";
+          return VXCORE_ERR_INVALID_PARAM;
+        }
+      }
+    }
+
+    const std::vector<std::string> components = vxcore::SplitPathComponents(clean_path);
+    if (components.empty()) {
+      ctx->last_error = "Cannot share the notebook root";
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+    for (const auto &component : components) {
+      if (!IsSafePathComponent(component)) {
+        ctx->last_error = "Folder path contains an unsafe component: " + component;
+        return VXCORE_ERR_INVALID_PARAM;
+      }
+    }
+
+    const std::filesystem::path notebook_root =
+        vxcore::PathFromUtf8(notebook->GetRootFolder());
+    const std::filesystem::path metadata_contents =
+        vxcore::PathFromUtf8(notebook->GetMetadataFolder()) / "contents";
+
+    // Walk every component from the notebook root, proving full index
+    // reachability. An orphan subtree (physical + metadata present, but an
+    // ancestor edge missing) must be rejected.
+    nlohmann::json parent_config;
+    VxCoreError err = LoadFolderConfigJson(metadata_contents, parent_config);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Notebook root folder metadata is missing or malformed";
+      return err;
+    }
+
+    std::filesystem::path config_dir = metadata_contents;
+    std::filesystem::path content_dir = notebook_root;
+    for (const auto &component : components) {
+      const size_t occurrences = CountFolderChild(parent_config, component);
+      if (occurrences != 1) {
+        ctx->last_error = occurrences == 0
+                              ? ("Folder is not indexed by its parent: " + component)
+                              : ("Folder is listed more than once by its parent: " + component);
+        return VXCORE_ERR_NOT_FOUND;
+      }
+
+      config_dir /= vxcore::PathFromUtf8(component);
+      content_dir /= vxcore::PathFromUtf8(component);
+
+      nlohmann::json child_config;
+      err = LoadFolderConfigJson(config_dir, child_config);
+      if (err != VXCORE_OK) {
+        ctx->last_error = "Folder metadata is missing or malformed: " + component;
+        return err;
+      }
+
+      if (!child_config.contains(vxcore::kJsonKeyName) ||
+          !child_config[vxcore::kJsonKeyName].is_string() ||
+          child_config[vxcore::kJsonKeyName].get<std::string>() != component) {
+        ctx->last_error = "Folder metadata name does not match its path component: " + component;
+        return VXCORE_ERR_INVALID_STATE;
+      }
+
+      std::error_code ec;
+      // symlink_status does NOT follow the link, so a directory symlink (and,
+      // on Windows/MSVC, a junction) is reported as a symlink here rather than
+      // as the directory it points at. Following one would let the share walk
+      // out of the notebook entirely.
+      const auto sym = std::filesystem::symlink_status(content_dir, ec);
+      if (ec) {
+        ctx->last_error = "Folder content is missing on disk: " + component;
+        return VXCORE_ERR_NODE_NOT_EXISTS;
+      }
+      if (std::filesystem::is_symlink(sym)) {
+        ctx->last_error = "Folder content is a symbolic link or reparse point: " + component;
+        return VXCORE_ERR_UNSUPPORTED;
+      }
+      if (!std::filesystem::is_directory(content_dir, ec) || ec) {
+        ctx->last_error = "Folder content is missing on disk: " + component;
+        return VXCORE_ERR_NODE_NOT_EXISTS;
+      }
+
+      parent_config = std::move(child_config);
+    }
+
+    // All validation passed; allocate the outputs, unwinding on OOM.
+    const std::string notebook_root_utf8 = vxcore::PathToUtf8(notebook_root);
+    const std::string content_root_utf8 = vxcore::PathToUtf8(content_dir);
+    const std::string metadata_root_utf8 = vxcore::PathToUtf8(config_dir);
+
+    char *notebook_root_out = vxcore_strdup(notebook_root_utf8.c_str());
+    if (!notebook_root_out) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+    char *content_root_out = vxcore_strdup(content_root_utf8.c_str());
+    if (!content_root_out) {
+      free(notebook_root_out);
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+    char *metadata_root_out = vxcore_strdup(metadata_root_utf8.c_str());
+    if (!metadata_root_out) {
+      free(notebook_root_out);
+      free(content_root_out);
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+
+    *out_notebook_root = notebook_root_out;
+    *out_content_root = content_root_out;
+    *out_metadata_root = metadata_root_out;
+    return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;

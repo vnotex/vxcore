@@ -255,6 +255,51 @@ VXCORE_API VxCoreError vxcore_folder_set_children_order(VxCoreContextHandle cont
                                                         const char *notebook_id,
                                                         const char *folder_path,
                                                         const char *ordered_json);
+
+// Resolve the storage roots needed to transplant a bundled folder's content
+// plus its parallel metadata subtree (VNote's "Share Folder" bundle).
+//
+// This is a SYNCHRONOUS, PATH-ONLY query: it performs no filesystem copy and
+// no mutation. It exists so consumers never have to reconstruct vxcore's
+// internal `vx_notebook/contents/...` layout themselves.
+//
+// folder_path: path relative to the notebook root, e.g. "Projects/Alpha".
+//              Must denote a REAL, INDEXED, NON-ROOT folder.
+//
+// Outputs (all UTF-8, allocated by vxcore, freed with vxcore_string_free()):
+//   out_notebook_root  absolute notebook root folder
+//   out_content_root   absolute physical directory of the selected folder
+//   out_metadata_root  absolute directory CONTAINING the selected folder's
+//                      vx.json and its descendant metadata directories
+//                      (i.e. <root>/vx_notebook/contents/<folder_path>),
+//                      NOT the vx.json file itself
+//
+// All three outputs are initialized to NULL before any validation and are
+// assigned only after every check succeeds.
+//
+// Indexing is proven by walking EVERY path component from the notebook root:
+// each parent's vx.json must list the next component exactly once in
+// "folders", the child's own vx.json must exist, parse, and carry a matching
+// "name", and the child's physical directory must exist. An orphan
+// physical/metadata subtree whose ancestor edges are missing is REJECTED.
+//
+// Errors:
+//   VXCORE_ERR_INVALID_PARAM   null argument, or a root / absolute / empty /
+//                              "." / ".." / escaping folder_path
+//   VXCORE_ERR_UNSUPPORTED     raw (non-bundled) notebook
+//   VXCORE_ERR_NOT_FOUND       notebook not found, or a path component is not
+//                              indexed by its parent, or its vx.json is absent
+//   VXCORE_ERR_JSON_PARSE      a vx.json along the path is malformed
+//   VXCORE_ERR_INVALID_STATE   a vx.json's "name" does not match its path
+//                              component (corrupt metadata)
+//   VXCORE_ERR_NODE_NOT_EXISTS the physical directory is missing on disk
+VXCORE_API VxCoreError vxcore_folder_get_share_paths(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     const char *folder_path,
+                                                     char **out_notebook_root,
+                                                     char **out_content_root,
+                                                     char **out_metadata_root);
+
 // ============ File Operations ============
 VXCORE_API VxCoreError vxcore_file_create(VxCoreContextHandle context, const char *notebook_id,
                                           const char *folder_path, const char *file_name,
