@@ -854,7 +854,8 @@ VxCoreError BundledFolderManager::ProcessCopiedFolderTree(const std::string &des
     std::string new_assets_abs =
         ConcatenatePaths(ConcatenatePaths(content_path, assets_folder_name), file.id);
     fs::path old_assets_fs = PathFromUtf8(old_assets_abs);
-    if (fs::exists(old_assets_fs) && fs::is_directory(old_assets_fs)) {
+    std::error_code assets_ec;
+    if (fs::exists(old_assets_fs, assets_ec) && fs::is_directory(old_assets_fs, assets_ec)) {
       try {
         fs::rename(old_assets_fs, PathFromUtf8(new_assets_abs));
       } catch (const std::exception &e) {
@@ -1532,14 +1533,24 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
     return VXCORE_ERR_IO;
   }
 
-  // Move assets directory (no-op if source has no assets)
+  // Move assets directory (no-op if source has no assets).
+  // NOTE: a failure here is deliberately NOT fatal — the note itself has
+  // already been renamed, and aborting now would leave the file moved but its
+  // metadata pointing at the old folder (this is exactly the divergence that
+  // caused issue #2729). Log loudly instead so an orphaned assets dir is
+  // diagnosable.
   {
     const std::string &assets_folder_name = notebook_->GetConfig().assets_folder;
     std::string old_assets_abs =
         ConcatenatePaths(ConcatenatePaths(src_content_path, assets_folder_name), file->id);
     std::string new_assets_abs =
         ConcatenatePaths(ConcatenatePaths(dest_content_path, assets_folder_name), file->id);
-    MoveAssetsDirectory(old_assets_abs, new_assets_abs);
+    VxCoreError assets_err = MoveAssetsDirectory(old_assets_abs, new_assets_abs);
+    if (assets_err != VXCORE_OK) {
+      VXCORE_LOG_ERROR("MoveFile: failed to move assets dir for %s (error=%d); the note was "
+                       "moved but its assets remain at %s",
+                       clean_src_file_path.c_str(), assets_err, old_assets_abs.c_str());
+    }
   }
 
   // Move relative-path linked files for supported file types
@@ -1674,7 +1685,14 @@ VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
         ConcatenatePaths(ConcatenatePaths(src_content_path, assets_folder_name), file->id);
     std::string dest_assets_abs =
         ConcatenatePaths(ConcatenatePaths(dest_content_path, assets_folder_name), new_file.id);
-    CopyAssetsDirectory(src_assets_abs, dest_assets_abs);
+    // A copy has no prior irreversible rename, but the copied note's asset
+    // links would dangle. Log so a broken copy is diagnosable.
+    VxCoreError assets_err = CopyAssetsDirectory(src_assets_abs, dest_assets_abs);
+    if (assets_err != VXCORE_OK) {
+      VXCORE_LOG_ERROR("CopyFile: failed to copy assets dir for %s (error=%d); the copied "
+                       "note's asset links will be broken",
+                       clean_src_file_path.c_str(), assets_err);
+    }
   }
 
   // Rewrite asset links and copy legacy images for supported file types
@@ -1981,7 +1999,8 @@ std::string BundledFolderManager::GenerateUniqueRecycleBinName(const std::string
   fs::path recycle_bin_path = PathFromUtf8(GetRecycleBinPath());
   fs::path dest_path = recycle_bin_path / PathFromUtf8(name);
 
-  if (!fs::exists(dest_path)) {
+  std::error_code ec;
+  if (!fs::exists(dest_path, ec) && !ec) {
     return name;
   }
 
@@ -1999,7 +2018,9 @@ std::string BundledFolderManager::GenerateUniqueRecycleBinName(const std::string
   while (true) {
     std::string new_name = base_name + "_" + std::to_string(suffix) + extension;
     dest_path = recycle_bin_path / PathFromUtf8(new_name);
-    if (!fs::exists(dest_path)) {
+    // Treat a failed probe as "occupied" so a query error can never hand back a
+    // colliding name that would overwrite an existing recycle-bin entry.
+    if (!fs::exists(dest_path, ec) && !ec) {
       return new_name;
     }
     ++suffix;
@@ -2012,7 +2033,13 @@ std::string BundledFolderManager::GenerateUniqueRecycleBinName(const std::string
 }
 
 VxCoreError BundledFolderManager::MoveToRecycleBin(const std::filesystem::path &source_path) {
-  if (!fs::exists(source_path)) {
+  std::error_code src_ec;
+  if (!fs::exists(source_path, src_ec)) {
+    if (src_ec) {
+      VXCORE_LOG_ERROR("MoveToRecycleBin: Cannot stat source %s: %s",
+                       PathToUtf8(source_path).c_str(), src_ec.message().c_str());
+      return VXCORE_ERR_IO;
+    }
     VXCORE_LOG_WARN("MoveToRecycleBin: Source does not exist: %s", PathToUtf8(source_path).c_str());
     return VXCORE_ERR_NOT_FOUND;
   }

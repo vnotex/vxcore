@@ -255,6 +255,112 @@ static int test_copy_relative_skip_existing() {
   return 0;
 }
 
+// Sanity check that the CJK literals below were compiled as UTF-8 (see the
+// directory-wide /utf-8 in tests/CMakeLists.txt). A bare "has a byte >= 0x80"
+// check would be useless because mojibake is also non-ASCII, so pin the exact
+// UTF-8 encoding of a known literal: U+4E34 U+65F6 ("临时") is E4 B8 B4 E6 97 B6.
+// NOTE: this is a sanity check, NOT a reliable detector of a missing /utf-8 —
+// a single-byte ACP can decode these bytes to mojibake and re-encode them back
+// to the same bytes. The build-system flag is the actual guarantee.
+static int test_cjk_fixtures_are_utf8() {
+  const std::string literal = "临时";
+  const std::string expected = "\xE4\xB8\xB4\xE6\x97\xB6";
+  ASSERT_EQ(literal, expected);
+  return 0;
+}
+
+// Regression: issue #2729. Every std::filesystem boundary in asset_utils must
+// go through PathFromUtf8(). Passing a UTF-8 std::string straight to
+// std::filesystem makes MSVC convert it with the active ANSI code page, which
+// THROWS std::system_error when the path holds characters the ACP cannot
+// encode (CJK on a Western-ACP machine). The escaping exception aborted
+// BundledFolderManager::MoveFile after the file had already been renamed but
+// before the folder metadata was updated, leaving disk and vx.json divergent.
+static int test_move_assets_directory_non_ascii_path() {
+  std::string base = get_test_path("asset_utils_move_非ASCII");
+  cleanup_test_dir(base);
+
+  std::string src = base + "/临时文件夹（自动清空）/vx_assets/笔记";
+  std::string dest = base + "/02_精品收集/vx_assets/笔记";
+
+  create_directory(src);
+  write_file(src + "/图片.png", "png_data");
+
+  // Must not throw, and must report success.
+  VxCoreError err = vxcore::MoveAssetsDirectory(src, dest);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  ASSERT_TRUE(path_exists(dest + "/图片.png"));
+  ASSERT_FALSE(path_exists(src));
+
+  cleanup_test_dir(base);
+  return 0;
+}
+
+// Same bug class on the copy path.
+static int test_copy_assets_directory_non_ascii_path() {
+  std::string base = get_test_path("asset_utils_copy_非ASCII");
+  cleanup_test_dir(base);
+
+  std::string src = base + "/个人记事/vx_assets/笔记";
+  std::string dest = base + "/日常记事/vx_assets/笔记";
+
+  create_directory(src);
+  write_file(src + "/附件.txt", "data");
+
+  VxCoreError err = vxcore::CopyAssetsDirectory(src, dest);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  ASSERT_TRUE(path_exists(dest + "/附件.txt"));
+  ASSERT_TRUE(path_exists(src + "/附件.txt"));
+
+  cleanup_test_dir(base);
+  return 0;
+}
+
+// A non-ASCII source that does NOT exist must still return OK (the no-assets
+// case that runs on every single file move) rather than throwing.
+static int test_move_assets_non_ascii_nonexistent_source() {
+  std::string base = get_test_path("asset_utils_move_noexist_非ASCII");
+  cleanup_test_dir(base);
+
+  std::string src = base + "/临时文件夹（自动清空）/vx_assets/不存在";
+  std::string dest = base + "/02_精品收集/vx_assets/不存在";
+
+  VxCoreError err = vxcore::MoveAssetsDirectory(src, dest);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_FALSE(path_exists(dest));
+
+  cleanup_test_dir(base);
+  return 0;
+}
+
+// MoveRelativeLinkedFiles walks the same boundaries.
+static int test_move_relative_linked_non_ascii_path() {
+  std::string base = get_test_path("asset_utils_rel_非ASCII");
+  cleanup_test_dir(base);
+
+  std::string notebook_root = base + "/个人记事-v4";
+  std::string src_dir = notebook_root + "/02_精品收集";
+  std::string dest_dir = notebook_root + "/01_日常记事";
+
+  create_directory(src_dir);
+  create_directory(dest_dir);
+  write_file(src_dir + "/图片.png", "png_data");
+
+  std::vector<std::string> paths = {"图片.png"};
+  int count = vxcore::MoveRelativeLinkedFiles(
+      paths, src_dir, dest_dir, vxcore::CleanPath(notebook_root),
+      vxcore::CleanPath(src_dir + "/面试与离职.md"));
+  ASSERT_EQ(count, 1);
+
+  ASSERT_TRUE(path_exists(dest_dir + "/图片.png"));
+  ASSERT_FALSE(path_exists(src_dir + "/图片.png"));
+
+  cleanup_test_dir(base);
+  return 0;
+}
+
 int main() {
   vxcore_set_test_mode(1);
 
@@ -269,6 +375,11 @@ int main() {
   RUN_TEST(test_copy_relative_skip_outside_notebook);
   RUN_TEST(test_copy_relative_skip_self_link);
   RUN_TEST(test_copy_relative_skip_existing);
+  RUN_TEST(test_cjk_fixtures_are_utf8);
+  RUN_TEST(test_move_assets_directory_non_ascii_path);
+  RUN_TEST(test_copy_assets_directory_non_ascii_path);
+  RUN_TEST(test_move_assets_non_ascii_nonexistent_source);
+  RUN_TEST(test_move_relative_linked_non_ascii_path);
 
   std::cout << "All asset_utils tests passed!" << std::endl;
   return 0;

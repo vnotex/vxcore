@@ -1,5 +1,17 @@
 include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/git_sync_sources.cmake)
 
+# Test sources are UTF-8 without a BOM. Without /utf-8 MSVC decodes them using
+# the active ANSI code page, silently mangling every non-ASCII string literal —
+# including the CJK path fixtures guarding issue #2729 and the existing
+# non-ASCII fixtures in test_file_utils, test_process_utils and the two search
+# backend tests. Applied DIRECTORY-WIDE (add_compile_options, not
+# target_compile_options) because most test targets here are declared with a
+# manual add_executable() rather than the add_vxcore_test() helper, and a
+# per-target flag is silently forgotten by the next one added.
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 # Shared static-library test helpers (Task 0.1 of sync-backend-phase4 plan).
 # Must be added BEFORE add_vxcore_test() invocations so the target exists
 # when INTERNALS-flagged tests reference it.

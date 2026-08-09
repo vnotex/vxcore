@@ -494,6 +494,48 @@ std::filesystem::remove(PathFromUtf8(utf8_path));
 std::filesystem::rename(PathFromUtf8(old_path), PathFromUtf8(new_path));
 ```
 
+**Why this is a CRASH, not a silent wrong answer (issues #2721, #2729).** On MSVC the
+narrow→wide conversion inside the `fs::path` constructor **throws** `std::system_error`
+(`ERROR_NO_UNICODE_TRANSLATION`, "No mapping for the Unicode character exists in the target
+multi-byte code page") when the UTF-8 bytes cannot be encoded in the active ANSI code page.
+It does not merely produce a mangled path. Two consequences:
+
+1. **A violation inside a multi-step mutation corrupts notebook state.** In #2729 the raw
+   `fs::exists(std::string)` at the top of `MoveAssetsDirectory` threw *after*
+   `BundledFolderManager::MoveFile` had already run `fs::rename`, but *before* it saved the
+   folder configs. The note was moved on disk while `vx.json` still listed it in the old
+   folder; a later reconcile re-indexed it under a NEW file id, losing its tags and history.
+   The C API's `catch` turned this into a bare `VXCORE_ERR_UNKNOWN` ("Unknown error").
+   **Therefore: any `std::filesystem` call inside a mutation must be either
+   `PathFromUtf8`-wrapped AND `std::error_code`-based, or enclosed in a `try` that covers the
+   whole transaction.**
+2. **Fix the whole call site class, not one function.** #2721 patched only
+   `Buffer::GetBackupFilePath`; the identical pattern survived in
+   `core/content_processor/asset_utils.cpp` and resurfaced as #2729. When you fix one of
+   these, grep the tree for the pattern.
+
+Note also that `PathToUtf8()` / `PathToGenericUtf8()` are mandatory for the REVERSE
+direction — `path.string()` / `.generic_string()` / `.u8string()` throw the same way.
+
+**Non-ASCII string literals in tests.** vxcore sources are UTF-8 without a BOM, so MSVC
+decodes them with the ANSI code page unless `/utf-8` is passed. `tests/CMakeLists.txt`
+therefore applies `/utf-8` **directory-wide** via `add_compile_options`, not per target:
+most test targets there are declared with a manual `add_executable()` rather than the
+`add_vxcore_test()` helper, and a per-target flag is silently forgotten by the next target
+added. Several tests already depend on this (`test_file_utils`, `test_process_utils`,
+`test_rg_search_backend`, `test_simple_search_backend` all carry CJK fixtures).
+`test_asset_utils.cpp` additionally pins one literal against its exact expected UTF-8 bytes
+(`test_cjk_fixtures_are_utf8`) as a cheap sanity check — note this is NOT a reliable detector
+of a lost `/utf-8`, since a single-byte ACP can round-trip those particular bytes unchanged.
+The build-system invariant is the real guarantee.
+
+> **Caveat on regression coverage:** the CJK tests can only *fail* on a Windows host whose
+> ANSI code page cannot represent the fixture. On Linux/macOS (native UTF-8) and on Windows
+> with ACP 65001 the buggy code passes too, and because they are behavioral tests they do not
+> inspect whether `PathFromUtf8()` was used. They are not a code-shape gate — a static
+> grep/lint rule would be needed for that. Do not treat a green run on a UTF-8 machine as
+> proof the bug class is gone.
+
 ### Utility Functions (check before implementing)
 
 - `src/utils/utils.h`: `GenerateUUID()`, `GetCurrentTimestampMillis()`, `HasFlag()`

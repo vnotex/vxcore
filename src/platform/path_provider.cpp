@@ -2,6 +2,8 @@
 
 #include <cstdlib>
 
+#include "utils/file_utils.h"
+
 #ifdef _WIN32
 #include <shlobj.h>
 #include <windows.h>
@@ -20,7 +22,9 @@ std::filesystem::path PathProvider::GetAppDataPath(const std::string &app_name) 
 #ifdef _WIN32
   wchar_t *path = nullptr;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &path))) {
-    std::filesystem::path result = std::filesystem::path(path) / app_name;
+    // app_name is UTF-8; appending it as a narrow string would convert via the
+    // active ANSI code page and throw on unrepresentable characters.
+    std::filesystem::path result = std::filesystem::path(path) / PathFromUtf8(app_name);
     CoTaskMemFree(path);
     return result;
   }
@@ -60,7 +64,8 @@ std::filesystem::path PathProvider::GetLocalDataPath(const std::string &app_name
 #ifdef _WIN32
   wchar_t *path = nullptr;
   if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &path))) {
-    std::filesystem::path result = std::filesystem::path(path) / app_name;
+    // See GetAppDataPath: app_name is UTF-8, so it must not be appended narrow.
+    std::filesystem::path result = std::filesystem::path(path) / PathFromUtf8(app_name);
     CoTaskMemFree(path);
     return result;
   }

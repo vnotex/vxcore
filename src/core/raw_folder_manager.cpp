@@ -1406,7 +1406,16 @@ VxCoreError RawFolderManager::MoveFile(const std::string &file_path,
           ConcatenatePaths(ConcatenatePaths(src_folder_abs, assets_folder_name), file_uuid);
       std::string new_assets_abs =
           ConcatenatePaths(ConcatenatePaths(dest_folder_abs, assets_folder_name), file_uuid);
-      MoveAssetsDirectory(old_assets_abs, new_assets_abs);
+      // Non-fatal by design: the note file has already been renamed above, so
+      // aborting here would leave the file moved but its metadata pointing at
+      // the old folder (the disk/metadata divergence behind issue #2729).
+      // Log loudly instead so an orphaned assets dir is diagnosable.
+      VxCoreError assets_err = MoveAssetsDirectory(old_assets_abs, new_assets_abs);
+      if (assets_err != VXCORE_OK) {
+        VXCORE_LOG_ERROR("MoveFile: failed to move assets dir for %s (error=%d); the note was "
+                         "moved but its assets remain at %s",
+                         clean_src.c_str(), assets_err, old_assets_abs.c_str());
+      }
     }
   }
 
@@ -1520,7 +1529,14 @@ VxCoreError RawFolderManager::CopyFile(const std::string &file_path,
           ConcatenatePaths(ConcatenatePaths(src_folder_abs, assets_folder_name), old_file_uuid);
       std::string dest_assets_abs =
           ConcatenatePaths(ConcatenatePaths(dest_folder_abs, assets_folder_name), out_file_id);
-      CopyAssetsDirectory(src_assets_abs, dest_assets_abs);
+      // A copy has no prior irreversible rename, but the copied note's asset
+      // links would dangle. Log so a broken copy is diagnosable.
+      VxCoreError assets_err = CopyAssetsDirectory(src_assets_abs, dest_assets_abs);
+      if (assets_err != VXCORE_OK) {
+        VXCORE_LOG_ERROR("CopyFile: failed to copy assets dir for %s (error=%d); the copied "
+                         "note's asset links will be broken",
+                         clean_src.c_str(), assets_err);
+      }
     }
   }
 
@@ -1828,67 +1844,128 @@ VxCoreError RawFolderManager::ImportFolder(const std::string &dest_folder_path,
       VXCORE_LOG_WARN("ImportFolder: Could not find dest folder in DB");
     }
 
-    store->BeginTransaction();
-
-    // Create root imported folder record
-    auto now = GetCurrentTimestampMillis();
-    StoreFolderRecord root_record;
-    root_record.id = out_folder_id;
-    root_record.parent_id = dest_folder_id;
-    root_record.name = target_name;
-    root_record.created_utc = now;
-    root_record.modified_utc = now;
-    root_record.metadata = "{}";
-    if (!store->CreateFolder(root_record)) {
-      VXCORE_LOG_WARN("ImportFolder: Failed to create root folder in DB: id=%s",
-                      out_folder_id.c_str());
+    if (!store->BeginTransaction()) {
+      VXCORE_LOG_ERROR("ImportFolder: Failed to begin transaction");
+      return VXCORE_ERR_DATABASE;
     }
 
-    // Recursively create DB records for all contents
-    std::function<void(const fs::path &, const std::string &)> index_db =
-        [&](const fs::path &dir, const std::string &parent_id) {
-          if (!fs::is_directory(dir)) return;
-          for (const auto &entry : fs::directory_iterator(dir)) {
-            const std::string entry_name = PathToUtf8(entry.path().filename());
-            if (entry_name.empty() || entry_name[0] == '.') {
-              continue;
+    // Everything from here to the commit runs under the guard: an exception
+    // escaping with the transaction still open would strand the imported tree
+    // on disk AND leave a dangling SQLite transaction that poisons the next
+    // writer on this notebook.
+    try {
+      // Create root imported folder record
+      auto now = GetCurrentTimestampMillis();
+      StoreFolderRecord root_record;
+      root_record.id = out_folder_id;
+      root_record.parent_id = dest_folder_id;
+      root_record.name = target_name;
+      root_record.created_utc = now;
+      root_record.modified_utc = now;
+      root_record.metadata = "{}";
+      if (!store->CreateFolder(root_record)) {
+        VXCORE_LOG_ERROR("ImportFolder: Failed to create root folder in DB: id=%s",
+                         out_folder_id.c_str());
+        store->RollbackTransaction();
+        return VXCORE_ERR_DATABASE;
+      }
+
+      // Recursively create DB records for all contents. Returns false on the
+      // first failure so a partial index is never committed: the caller would
+      // otherwise report success for a notebook whose metadata does not
+      // describe the tree that was just written to disk.
+      std::function<bool(const fs::path &, const std::string &)> index_db =
+          [&](const fs::path &dir, const std::string &parent_id) -> bool {
+        std::error_code walk_ec;
+        const bool is_dir = fs::is_directory(dir, walk_ec);
+        if (walk_ec) {
+          VXCORE_LOG_ERROR("ImportFolder: cannot stat %s: %s", PathToUtf8(dir).c_str(),
+                           walk_ec.message().c_str());
+          return false;
+        }
+        if (!is_dir) return true;
+
+        fs::directory_iterator it(dir, walk_ec);
+        if (walk_ec) {
+          VXCORE_LOG_ERROR("ImportFolder: cannot list %s: %s", PathToUtf8(dir).c_str(),
+                           walk_ec.message().c_str());
+          return false;
+        }
+        // Advance explicitly at the TOP of each iteration and check the error
+        // immediately: a failed increment turns `it` into the end iterator, so
+        // a check placed after the body (or in a for-loop's increment clause)
+        // would never run and a truncated walk would be committed as a
+        // complete index. Snapshotting the entry first also keeps `continue`
+        // safe.
+        while (it != fs::directory_iterator()) {
+          const fs::directory_entry entry = *it;
+          it.increment(walk_ec);
+          if (walk_ec) {
+            VXCORE_LOG_ERROR("ImportFolder: directory walk error in %s: %s",
+                             PathToUtf8(dir).c_str(), walk_ec.message().c_str());
+            return false;
+          }
+
+          const std::string entry_name = PathToUtf8(entry.path().filename());
+          if (entry_name.empty() || entry_name[0] == '.') {
+            continue;
+          }
+          if (entry.is_directory()) {
+            std::string sub_id = GenerateUUID();
+            auto ts = GetCurrentTimestampMillis();
+            StoreFolderRecord sub_record;
+            sub_record.id = sub_id;
+            sub_record.parent_id = parent_id;
+            sub_record.name = entry_name;
+            sub_record.created_utc = ts;
+            sub_record.modified_utc = ts;
+            sub_record.metadata = "{}";
+            if (!store->CreateFolder(sub_record)) {
+              VXCORE_LOG_ERROR("ImportFolder: Failed to create subfolder in DB: %s",
+                               entry_name.c_str());
+              return false;
             }
-            if (entry.is_directory()) {
-              std::string sub_id = GenerateUUID();
-              auto ts = GetCurrentTimestampMillis();
-              StoreFolderRecord sub_record;
-              sub_record.id = sub_id;
-              sub_record.parent_id = parent_id;
-              sub_record.name = entry_name;
-              sub_record.created_utc = ts;
-              sub_record.modified_utc = ts;
-              sub_record.metadata = "{}";
-              if (!store->CreateFolder(sub_record)) {
-                VXCORE_LOG_WARN("ImportFolder: Failed to create subfolder in DB: %s",
-                                entry_name.c_str());
-              }
-              index_db(entry.path(), sub_id);
-            } else if (entry.is_regular_file()) {
-              std::string file_id = GenerateUUID();
-              auto ts = GetCurrentTimestampMillis();
-              StoreFileRecord file_record;
-              file_record.id = file_id;
-              file_record.folder_id = parent_id;
-              file_record.name = entry_name;
-              file_record.created_utc = ts;
-              file_record.modified_utc = ts;
-              file_record.metadata = "{}";
-              if (!store->CreateFile(file_record)) {
-                VXCORE_LOG_WARN("ImportFolder: Failed to create file in DB: %s",
-                                entry_name.c_str());
-              }
+            // Only recurse once the parent row exists, otherwise the children
+            // would be attached to a folder id that was never created.
+            if (!index_db(entry.path(), sub_id)) {
+              return false;
+            }
+          } else if (entry.is_regular_file()) {
+            std::string file_id = GenerateUUID();
+            auto ts = GetCurrentTimestampMillis();
+            StoreFileRecord file_record;
+            file_record.id = file_id;
+            file_record.folder_id = parent_id;
+            file_record.name = entry_name;
+            file_record.created_utc = ts;
+            file_record.modified_utc = ts;
+            file_record.metadata = "{}";
+            if (!store->CreateFile(file_record)) {
+              VXCORE_LOG_ERROR("ImportFolder: Failed to create file in DB: %s",
+                               entry_name.c_str());
+              return false;
             }
           }
-        };
+        }
+        return true;
+      };
 
-    index_db(target_path, out_folder_id);
+      if (!index_db(target_path, out_folder_id)) {
+        VXCORE_LOG_ERROR("ImportFolder: indexing failed, rolling back");
+        store->RollbackTransaction();
+        return VXCORE_ERR_DATABASE;
+      }
 
-    store->CommitTransaction();
+      if (!store->CommitTransaction()) {
+        VXCORE_LOG_ERROR("ImportFolder: Failed to commit transaction");
+        store->RollbackTransaction();
+        return VXCORE_ERR_DATABASE;
+      }
+    } catch (const std::exception &e) {
+      VXCORE_LOG_ERROR("ImportFolder: indexing failed, rolling back: %s", e.what());
+      store->RollbackTransaction();
+      return VXCORE_ERR_IO;
+    }
   }
 
   VXCORE_LOG_INFO("ImportFolder: Successfully imported folder: id=%s, name=%s",

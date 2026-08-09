@@ -222,9 +222,17 @@ VxCoreError ConfigManager::LoadConfigByName(VxCoreDataLocation location,
 
   std::filesystem::path base_path =
       (location == VXCORE_DATA_APP) ? app_data_path_ : local_data_path_;
-  std::filesystem::path config_path = base_path / (base_name + ".json");
+  std::filesystem::path config_path = base_path / PathFromUtf8(base_name + ".json");
 
-  if (!std::filesystem::exists(config_path)) {
+  std::error_code exists_ec;
+  if (!std::filesystem::exists(config_path, exists_ec)) {
+    if (exists_ec) {
+      // Do NOT report an unreadable config as "absent": callers would silently
+      // fall back to defaults and then overwrite the user's real config.
+      VXCORE_LOG_ERROR("Cannot stat config file %s: %s", PathToUtf8(config_path).c_str(),
+                       exists_ec.message().c_str());
+      return VXCORE_ERR_IO;
+    }
     VXCORE_LOG_DEBUG("Config file not found: %s", PathToUtf8(config_path).c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
@@ -255,7 +263,7 @@ VxCoreError ConfigManager::SaveConfigByName(VxCoreDataLocation location,
     return VXCORE_ERR_IO;
   }
 
-  std::filesystem::path config_path = base_path / (base_name + ".json");
+  std::filesystem::path config_path = base_path / PathFromUtf8(base_name + ".json");
   VXCORE_LOG_DEBUG("Saving config by name: %s", PathToUtf8(config_path).c_str());
 
   VxCoreError err = WriteFile(config_path, content);
@@ -271,12 +279,20 @@ VxCoreError ConfigManager::LoadConfigByNameWithDefaults(VxCoreDataLocation locat
                                                         std::string &out_merged) {
   std::string content;
   VxCoreError err = LoadConfigByName(location, base_name, content);
-  if (err == VXCORE_ERR_NOT_FOUND || content.empty()) {
-    // File not found, use defaults
+  // Order matters: a real I/O failure must NOT be mistaken for "absent" and
+  // fall through to defaults, or a caller would happily overwrite a config it
+  // simply could not read. Only NOT_FOUND (and a genuinely empty file) is a
+  // defaults case.
+  if (err == VXCORE_ERR_NOT_FOUND) {
     out_merged = defaults_json;
     return VXCORE_OK;
-  } else if (err != VXCORE_OK) {
+  }
+  if (err != VXCORE_OK) {
     return err;
+  }
+  if (content.empty()) {
+    out_merged = defaults_json;
+    return VXCORE_OK;
   }
 
   try {

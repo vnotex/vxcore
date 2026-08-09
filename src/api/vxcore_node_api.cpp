@@ -5,6 +5,7 @@
 #include "core/context.h"
 #include "core/folder_manager.h"
 #include "core/notebook_manager.h"
+#include "utils/logger.h"
 #include "vxcore/vxcore.h"
 #include "vxcore/vxcore_types.h"
 
@@ -98,6 +99,7 @@ VXCORE_API VxCoreError vxcore_node_get_config(VxCoreContextHandle context, const
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
+    VXCORE_LOG_ERROR("Node API exception: %s", e.what());
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -138,6 +140,7 @@ VXCORE_API VxCoreError vxcore_node_delete(VxCoreContextHandle context, const cha
     }
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
+    VXCORE_LOG_ERROR("Node API exception: %s", e.what());
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -189,6 +192,7 @@ VXCORE_API VxCoreError vxcore_node_rename(VxCoreContextHandle context, const cha
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
+    VXCORE_LOG_ERROR("Node API exception: %s", e.what());
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -247,6 +251,7 @@ VXCORE_API VxCoreError vxcore_node_move(VxCoreContextHandle context, const char 
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
+    VXCORE_LOG_ERROR("Node API exception: %s", e.what());
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -304,6 +309,7 @@ VXCORE_API VxCoreError vxcore_node_copy(VxCoreContextHandle context, const char 
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
+    VXCORE_LOG_ERROR("Node API exception: %s", e.what());
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -363,6 +369,7 @@ VXCORE_API VxCoreError vxcore_node_get_metadata(VxCoreContextHandle context,
     return VXCORE_OK;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
+    VXCORE_LOG_ERROR("Node API exception: %s", e.what());
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -404,6 +411,7 @@ VXCORE_API VxCoreError vxcore_node_update_metadata(VxCoreContextHandle context,
     }
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
+    VXCORE_LOG_ERROR("Node API exception: %s", e.what());
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -432,6 +440,7 @@ VXCORE_API VxCoreError vxcore_node_index(VxCoreContextHandle context, const char
     return folder_manager->IndexNode(node_path);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
+    VXCORE_LOG_ERROR("Node API exception: %s", e.what());
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -460,6 +469,7 @@ VXCORE_API VxCoreError vxcore_node_unindex(VxCoreContextHandle context, const ch
     return folder_manager->UnindexNode(node_path);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
+    VXCORE_LOG_ERROR("Node API exception: %s", e.what());
     return VXCORE_ERR_UNKNOWN;
   }
 }
