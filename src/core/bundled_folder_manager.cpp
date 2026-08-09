@@ -249,16 +249,22 @@ VxCoreError BundledFolderManager::SaveFolderConfig(const std::string &folder_pat
 
     std::ofstream file(config_file_path);
     if (!file.is_open()) {
+      VXCORE_LOG_ERROR("SaveFolderConfig: cannot open %s for writing", config_path.c_str());
       return VXCORE_ERR_IO;
     }
 
     nlohmann::json json = config.ToJson();
     file << json.dump(2);
     file.close();
+    if (file.fail()) {
+      VXCORE_LOG_ERROR("SaveFolderConfig: write failed for %s", config_path.c_str());
+      return VXCORE_ERR_IO;
+    }
     EmitEvent(events::kFolderConfigChanged,
               {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", folder_path}});
     return VXCORE_OK;
-  } catch (const std::exception &) {
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("SaveFolderConfig: failed to write %s: %s", config_path.c_str(), e.what());
     return VXCORE_ERR_IO;
   }
 }
@@ -1495,22 +1501,35 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
   FolderConfig *src_config = nullptr;
   VxCoreError error = GetFolderConfig(src_folder_path, &src_config);
   if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("MoveFile: cannot load source folder config: path=%s, error=%d",
+                     src_folder_path.c_str(), error);
     return error;
   }
 
   FileRecord *file = FindFileRecord(*src_config, file_name);
   if (!file) {
+    VXCORE_LOG_ERROR("MoveFile: no metadata record for '%s' in source folder '%s' "
+                     "(vx.json and disk may have drifted)",
+                     file_name.c_str(), src_folder_path.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
 
   FolderConfig *dest_config = nullptr;
   error = GetFolderConfig(clean_dest_folder_path, &dest_config);
   if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("MoveFile: cannot load destination folder config: path=%s, error=%d",
+                     clean_dest_folder_path.c_str(), error);
     return error;
   }
 
   FileRecord *existing_file = FindFileRecord(*dest_config, file_name);
   if (existing_file) {
+    // NOTE: distinct from the on-disk collision below — this one means the
+    // destination vx.json ALREADY lists the name, which can happen without a
+    // corresponding file on disk. Keep the two messages distinguishable.
+    VXCORE_LOG_ERROR("MoveFile: destination folder '%s' already has a metadata record named "
+                     "'%s'",
+                     clean_dest_folder_path.c_str(), file_name.c_str());
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
@@ -1519,17 +1538,36 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
   fs::path src_fs_path = PathFromUtf8(src_content_path) / PathFromUtf8(file_name);
   fs::path dest_fs_path = PathFromUtf8(dest_content_path) / PathFromUtf8(file_name);
 
-  if (!fs::exists(src_fs_path)) {
+  std::error_code stat_ec;
+  const bool src_on_disk = fs::exists(src_fs_path, stat_ec);
+  if (stat_ec) {
+    VXCORE_LOG_ERROR("MoveFile: cannot stat source %s: %s", PathToUtf8(src_fs_path).c_str(),
+                     stat_ec.message().c_str());
+    return VXCORE_ERR_IO;
+  }
+  if (!src_on_disk) {
+    VXCORE_LOG_ERROR("MoveFile: source file listed in vx.json but missing on disk: %s",
+                     PathToUtf8(src_fs_path).c_str());
     return VXCORE_ERR_NODE_NOT_EXISTS;
   }
 
-  if (fs::exists(dest_fs_path)) {
+  const bool dest_on_disk = fs::exists(dest_fs_path, stat_ec);
+  if (stat_ec) {
+    VXCORE_LOG_ERROR("MoveFile: cannot stat destination %s: %s", PathToUtf8(dest_fs_path).c_str(),
+                     stat_ec.message().c_str());
+    return VXCORE_ERR_IO;
+  }
+  if (dest_on_disk) {
+    VXCORE_LOG_ERROR("MoveFile: a file already exists on disk at %s",
+                     PathToUtf8(dest_fs_path).c_str());
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
   try {
     fs::rename(src_fs_path, dest_fs_path);
-  } catch (const std::exception &) {
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("MoveFile: rename %s -> %s failed: %s", PathToUtf8(src_fs_path).c_str(),
+                     PathToUtf8(dest_fs_path).c_str(), e.what());
     return VXCORE_ERR_IO;
   }
 
@@ -1585,10 +1623,23 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
 
   auto it = std::find_if(src_config->files.begin(), src_config->files.end(),
                          [&file_name](const FileRecord &f) { return f.name == file_name; });
+  if (it == src_config->files.end()) {
+    // Defensive: FindFileRecord matched above, so this should be unreachable.
+    // erase(end()) would be undefined behaviour, so bail loudly instead.
+    VXCORE_LOG_ERROR("MoveFile: record for '%s' vanished from source config after the file was "
+                     "already renamed to %s; metadata is now out of sync with disk",
+                     file_name.c_str(), PathToUtf8(dest_fs_path).c_str());
+    return VXCORE_ERR_INVALID_STATE;
+  }
   src_config->files.erase(it);
   src_config->modified_utc = file_copy.modified_utc;
   error = SaveFolderConfig(src_folder_path, *src_config);
   if (error != VXCORE_OK) {
+    // The file is ALREADY renamed on disk at this point, so a failure here is
+    // exactly the disk/metadata divergence behind issue #2729. Log it loudly.
+    VXCORE_LOG_ERROR("MoveFile: failed to save source folder config '%s' (error=%d) AFTER the "
+                     "file was moved to %s; vx.json still lists it in the old folder",
+                     src_folder_path.c_str(), error, PathToUtf8(dest_fs_path).c_str());
     return error;
   }
 
@@ -1596,6 +1647,9 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
   dest_config->modified_utc = file_copy.modified_utc;
   error = SaveFolderConfig(clean_dest_folder_path, *dest_config);
   if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("MoveFile: failed to save destination folder config '%s' (error=%d) AFTER "
+                     "the file was moved to %s; the note is now listed in neither folder",
+                     clean_dest_folder_path.c_str(), error, PathToUtf8(dest_fs_path).c_str());
     return error;
   }
 
