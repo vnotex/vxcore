@@ -10,6 +10,7 @@
 #include <windows.h>
 #endif
 
+#include "test_reparse_utils.h"
 #include "test_utils.h"
 #include "utils/file_utils.h"
 #include "vxcore/vxcore.h"
@@ -9602,6 +9603,322 @@ int test_bundled_folder_manager_read_only() {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Reparse-point (symlink / junction) containment tests.
+//
+// Each case runs against BOTH BundledFolderManager and RawFolderManager, whose
+// ImportFolder / CopyFolder implementations are near-verbatim duplicates. A
+// real directory junction is used (not fs::create_directory_symlink) because
+// MSVC maps IO_REPARSE_TAG_MOUNT_POINT to file_type::junction, which
+// fs::is_symlink() does NOT report — a symlink-only fixture cannot detect the
+// junction defect. Junction creation needs no privilege, so these never skip.
+// ---------------------------------------------------------------------------
+
+int import_skips_nested_junction_into_notebook(VxCoreNotebookType nb_type, const char *tag) {
+  const std::string nb = get_test_path(std::string("test_rp_into_nb_") + tag);
+  const std::string src_root = get_test_path(std::string("test_rp_into_src_") + tag);
+  cleanup_test_dir(nb);
+  cleanup_test_dir(src_root);
+
+  create_directory(src_root);
+  const std::string source_folder = src_root + "/external_folder";
+  create_directory(source_folder);
+  write_file(source_folder + "/normal.md", "# Normal");
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, nb.c_str(), "{\"name\":\"Test Notebook\"}", nb_type,
+                                   &notebook_id),
+            VXCORE_OK);
+
+  // Junction inside the external tree pointing back at the notebook root.
+  // Following it would produce a circular / unbounded copy.
+  const std::string loop_link = source_folder + "/loop";
+  ASSERT_TRUE(vxcore_test::create_junction(nb, loop_link));
+
+  char *folder_id = nullptr;
+  ASSERT_EQ(vxcore_folder_import(ctx, notebook_id, ".", source_folder.c_str(), nullptr, &folder_id),
+            VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id);
+
+  const std::string imported = nb + "/external_folder";
+  // Normal siblings are still copied.
+  ASSERT(path_exists(imported + "/normal.md"));
+  // The junction is neither copied nor followed.
+  ASSERT_FALSE(path_exists(imported + "/loop"));
+
+  vxcore_test::remove_reparse_dir(loop_link);
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb);
+  cleanup_test_dir(src_root);
+  return 0;
+}
+
+int test_import_folder_skips_nested_junction_into_notebook() {
+  std::cout << "  Running test_import_folder_skips_nested_junction_into_notebook..." << std::endl;
+  if (import_skips_nested_junction_into_notebook(VXCORE_NOTEBOOK_BUNDLED, "bundled") != 0) {
+    return 1;
+  }
+  if (import_skips_nested_junction_into_notebook(VXCORE_NOTEBOOK_RAW, "raw") != 0) {
+    return 1;
+  }
+  std::cout << "  \xe2\x9c\x93 test_import_folder_skips_nested_junction_into_notebook passed"
+            << std::endl;
+  return 0;
+}
+
+int import_skips_nested_junction_to_outside_dir(VxCoreNotebookType nb_type, const char *tag) {
+  const std::string nb = get_test_path(std::string("test_rp_out_nb_") + tag);
+  const std::string src_root = get_test_path(std::string("test_rp_out_src_") + tag);
+  const std::string secret_root = get_test_path(std::string("test_rp_out_secret_") + tag);
+  cleanup_test_dir(nb);
+  cleanup_test_dir(src_root);
+  cleanup_test_dir(secret_root);
+
+  create_directory(secret_root);
+  write_file(secret_root + "/secret.md", "# Secret");
+
+  create_directory(src_root);
+  const std::string source_folder = src_root + "/external_folder";
+  create_directory(source_folder);
+  create_directory(source_folder + "/sub");
+  write_file(source_folder + "/normal.md", "# Normal");
+  write_file(source_folder + "/sub/nested.md", "# Nested");
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, nb.c_str(), "{\"name\":\"Test Notebook\"}", nb_type,
+                                   &notebook_id),
+            VXCORE_OK);
+
+  // Junction to arbitrary out-of-tree data (exfiltration into the notebook).
+  const std::string escape_link = source_folder + "/escape";
+  ASSERT_TRUE(vxcore_test::create_junction(secret_root, escape_link));
+
+  char *folder_id = nullptr;
+  ASSERT_EQ(vxcore_folder_import(ctx, notebook_id, ".", source_folder.c_str(), nullptr, &folder_id),
+            VXCORE_OK);
+  ASSERT_NOT_NULL(folder_id);
+
+  const std::string imported = nb + "/external_folder";
+  // Normal siblings ARE copied.
+  ASSERT(path_exists(imported + "/normal.md"));
+  ASSERT(path_exists(imported + "/sub/nested.md"));
+  // Outside content is absent from the target.
+  ASSERT_FALSE(path_exists(imported + "/escape"));
+  ASSERT_FALSE(path_exists(imported + "/escape/secret.md"));
+
+  vxcore_test::remove_reparse_dir(escape_link);
+  vxcore_string_free(folder_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb);
+  cleanup_test_dir(src_root);
+  cleanup_test_dir(secret_root);
+  return 0;
+}
+
+int test_import_folder_skips_nested_junction_to_outside_dir() {
+  std::cout << "  Running test_import_folder_skips_nested_junction_to_outside_dir..." << std::endl;
+  if (import_skips_nested_junction_to_outside_dir(VXCORE_NOTEBOOK_BUNDLED, "bundled") != 0) {
+    return 1;
+  }
+  if (import_skips_nested_junction_to_outside_dir(VXCORE_NOTEBOOK_RAW, "raw") != 0) {
+    return 1;
+  }
+  std::cout << "  \xe2\x9c\x93 test_import_folder_skips_nested_junction_to_outside_dir passed"
+            << std::endl;
+  return 0;
+}
+
+int import_rejects_external_inside_root_via_link(VxCoreNotebookType nb_type, const char *tag) {
+  const std::string nb = get_test_path(std::string("test_rp_link_nb_") + tag);
+  const std::string src_root = get_test_path(std::string("test_rp_link_src_") + tag);
+  cleanup_test_dir(nb);
+  cleanup_test_dir(src_root);
+  create_directory(src_root);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, nb.c_str(), "{\"name\":\"Test Notebook\"}", nb_type,
+                                   &notebook_id),
+            VXCORE_OK);
+
+  char *internal_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "internal", &internal_id), VXCORE_OK);
+  vxcore_string_free(internal_id);
+
+  // The external path looks outside the notebook, but resolves into it. The
+  // containment guard canonicalizes BOTH sides, so it must still be rejected.
+  const std::string disguised = src_root + "/disguised";
+  ASSERT_TRUE(vxcore_test::create_junction(nb + "/internal", disguised));
+
+  char *folder_id = nullptr;
+  ASSERT_EQ(vxcore_folder_import(ctx, notebook_id, ".", disguised.c_str(), nullptr, &folder_id),
+            VXCORE_ERR_INVALID_PARAM);
+  ASSERT_NULL(folder_id);
+
+  vxcore_test::remove_reparse_dir(disguised);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb);
+  cleanup_test_dir(src_root);
+  return 0;
+}
+
+int test_import_folder_rejects_external_inside_root_via_link() {
+  std::cout << "  Running test_import_folder_rejects_external_inside_root_via_link..." << std::endl;
+  if (import_rejects_external_inside_root_via_link(VXCORE_NOTEBOOK_BUNDLED, "bundled") != 0) {
+    return 1;
+  }
+  if (import_rejects_external_inside_root_via_link(VXCORE_NOTEBOOK_RAW, "raw") != 0) {
+    return 1;
+  }
+  std::cout << "  \xe2\x9c\x93 test_import_folder_rejects_external_inside_root_via_link passed"
+            << std::endl;
+  return 0;
+}
+
+int copy_folder_skips_nested_reparse_point(VxCoreNotebookType nb_type, const char *tag) {
+  const std::string nb = get_test_path(std::string("test_rp_copy_nb_") + tag);
+  const std::string secret_root = get_test_path(std::string("test_rp_copy_secret_") + tag);
+  cleanup_test_dir(nb);
+  cleanup_test_dir(secret_root);
+
+  create_directory(secret_root);
+  write_file(secret_root + "/secret.md", "# Secret");
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, nb.c_str(), "{\"name\":\"Test Notebook\"}", nb_type,
+                                   &notebook_id),
+            VXCORE_OK);
+
+  char *src_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "src", &src_id), VXCORE_OK);
+  vxcore_string_free(src_id);
+
+  char *dest_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "dest", &dest_id), VXCORE_OK);
+  vxcore_string_free(dest_id);
+
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, "src", "note.md", &file_id), VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  // Plant a junction inside the source folder on disk (outside vxcore's index).
+  const std::string escape_link = nb + "/src/escape";
+  ASSERT_TRUE(vxcore_test::create_junction(secret_root, escape_link));
+
+  char *copied_id = nullptr;
+  ASSERT_EQ(vxcore_node_copy(ctx, notebook_id, "src", "dest", nullptr, &copied_id), VXCORE_OK);
+  vxcore_string_free(copied_id);
+
+  const std::string copied = nb + "/dest/src";
+  // Indexed content is copied.
+  ASSERT(path_exists(copied + "/note.md"));
+  // The reparse point is neither copied nor followed.
+  ASSERT_FALSE(path_exists(copied + "/escape"));
+  ASSERT_FALSE(path_exists(copied + "/escape/secret.md"));
+
+  vxcore_test::remove_reparse_dir(escape_link);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb);
+  cleanup_test_dir(secret_root);
+  return 0;
+}
+
+int test_copy_folder_skips_nested_reparse_point() {
+  std::cout << "  Running test_copy_folder_skips_nested_reparse_point..." << std::endl;
+  if (copy_folder_skips_nested_reparse_point(VXCORE_NOTEBOOK_BUNDLED, "bundled") != 0) {
+    return 1;
+  }
+  if (copy_folder_skips_nested_reparse_point(VXCORE_NOTEBOOK_RAW, "raw") != 0) {
+    return 1;
+  }
+  std::cout << "  \xe2\x9c\x93 test_copy_folder_skips_nested_reparse_point passed" << std::endl;
+  return 0;
+}
+
+// A bundled copy copies the content tree with the reparse-skipping walker but
+// the config subtree verbatim. If an INDEXED subfolder is a junction, its
+// content is skipped, so the copied vx.json must not keep referencing it -
+// otherwise the destination index points at a path that does not exist.
+int test_copy_folder_prunes_index_for_skipped_content() {
+  std::cout << "  Running test_copy_folder_prunes_index_for_skipped_content..." << std::endl;
+  const std::string nb = get_test_path("test_rp_prune_nb");
+  const std::string secret_root = get_test_path("test_rp_prune_secret");
+  cleanup_test_dir(nb);
+  cleanup_test_dir(secret_root);
+
+  create_directory(secret_root);
+  write_file(secret_root + "/secret.md", "# Secret");
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, nb.c_str(), "{\"name\":\"Test Notebook\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  char *src_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "src", &src_id), VXCORE_OK);
+  vxcore_string_free(src_id);
+
+  char *sub_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, "src", "sub", &sub_id), VXCORE_OK);
+  vxcore_string_free(sub_id);
+
+  char *dest_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "dest", &dest_id), VXCORE_OK);
+  vxcore_string_free(dest_id);
+
+  // Replace the indexed subfolder on disk with a junction. It stays listed in
+  // the source vx.json but its content can no longer be copied.
+  const std::string sub_path = nb + "/src/sub";
+  std::error_code sub_ec;
+  std::filesystem::remove_all(PathFromUtf8ForTest(sub_path), sub_ec);
+  ASSERT_TRUE(vxcore_test::create_junction(secret_root, sub_path));
+
+  char *copied_id = nullptr;
+  ASSERT_EQ(vxcore_node_copy(ctx, notebook_id, "src", "dest", nullptr, &copied_id), VXCORE_OK);
+  vxcore_string_free(copied_id);
+
+  // Content was skipped, not followed.
+  ASSERT_FALSE(path_exists(nb + "/dest/src/sub"));
+  ASSERT_FALSE(path_exists(nb + "/dest/src/sub/secret.md"));
+
+  // ...and the copied index no longer references the missing subfolder.
+  char *config_json = nullptr;
+  ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, "dest/src", &config_json), VXCORE_OK);
+  nlohmann::json config = nlohmann::json::parse(config_json);
+  for (const auto &folder : config["folders"]) {
+    ASSERT(folder != "sub");
+  }
+  vxcore_string_free(config_json);
+
+  vxcore_test::remove_reparse_dir(sub_path);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb);
+  cleanup_test_dir(secret_root);
+  std::cout << "  \xe2\x9c\x93 test_copy_folder_prunes_index_for_skipped_content passed"
+            << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
@@ -9719,6 +10036,11 @@ int main() {
   RUN_TEST(test_folder_import_to_subfolder);
   RUN_TEST(test_folder_import_within_notebook);
   RUN_TEST(test_folder_import_suffix_filter);
+  RUN_TEST(test_import_folder_skips_nested_junction_into_notebook);
+  RUN_TEST(test_import_folder_skips_nested_junction_to_outside_dir);
+  RUN_TEST(test_import_folder_rejects_external_inside_root_via_link);
+  RUN_TEST(test_copy_folder_skips_nested_reparse_point);
+  RUN_TEST(test_copy_folder_prunes_index_for_skipped_content);
 
   // External nodes (list unindexed) tests
   RUN_TEST(test_folder_list_external_basic);

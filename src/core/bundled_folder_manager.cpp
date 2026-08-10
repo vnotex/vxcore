@@ -847,6 +847,40 @@ VxCoreError BundledFolderManager::ProcessCopiedFolderTree(const std::string &des
   const std::string &assets_folder_name = notebook_->GetConfig().assets_folder;
   ContentProcessor processor;
 
+  // Drop index entries whose content did not make it to the destination. The
+  // content tree is copied by CopyTreeSkipReparsePoints, which SKIPS symlinks /
+  // junctions; the config subtree is copied verbatim, so without this pruning a
+  // symlinked-but-indexed entry would leave the copied vx.json referencing a
+  // path that does not exist on disk (the phantom state CopyFolder reports
+  // elsewhere as VXCORE_ERR_NODE_NOT_EXISTS) while still returning VXCORE_OK.
+  config->files.erase(
+      std::remove_if(config->files.begin(), config->files.end(),
+                     [&](const FileRecord &file) {
+                       if (PathExists(ConcatenatePaths(content_path, file.name))) {
+                         return false;
+                       }
+                       VXCORE_LOG_WARN(
+                           "ProcessCopiedFolderTree: dropping index entry with no copied "
+                           "content: %s/%s",
+                           dest_path.c_str(), file.name.c_str());
+                       return true;
+                     }),
+      config->files.end());
+
+  config->folders.erase(
+      std::remove_if(config->folders.begin(), config->folders.end(),
+                     [&](const std::string &subfolder_name) {
+                       if (IsDirectory(ConcatenatePaths(content_path, subfolder_name))) {
+                         return false;
+                       }
+                       VXCORE_LOG_WARN(
+                           "ProcessCopiedFolderTree: dropping subfolder entry with no copied "
+                           "content: %s/%s",
+                           dest_path.c_str(), subfolder_name.c_str());
+                       return true;
+                     }),
+      config->folders.end());
+
   // Process each file: regenerate UUID, rename assets dir, rewrite content
   for (auto &file : config->files) {
     std::string old_uuid = file.id;
@@ -987,9 +1021,11 @@ VxCoreError BundledFolderManager::CopyFolder(const std::string &src_path,
     return error;
   }
 
-  try {
-    fs::copy(src_content_path_fs, dest_content_path_fs, fs::copy_options::recursive);
-  } catch (const std::exception &) {
+  // Recursive copy that never follows symlinks/junctions and never escapes the
+  // source tree. fs::copy(recursive) follows reparse points; copy_options::
+  // skip_symlinks is also insufficient on MSVC, which classifies junctions as
+  // file_type::junction rather than file_type::symlink.
+  if (!CopyTreeSkipReparsePoints(src_content_path_fs, dest_content_path_fs)) {
     return VXCORE_ERR_IO;
   }
 
@@ -998,7 +1034,9 @@ VxCoreError BundledFolderManager::CopyFolder(const std::string &src_path,
   try {
     fs::path src_config_dir = PathFromUtf8(GetConfigPath(clean_src_path)).parent_path();
     fs::path dest_config_dir = PathFromUtf8(GetConfigPath(dest_path)).parent_path();
-    fs::copy(src_config_dir, dest_config_dir, fs::copy_options::recursive);
+    if (!CopyTreeSkipReparsePoints(src_config_dir, dest_config_dir)) {
+      return VXCORE_ERR_IO;
+    }
   } catch (const std::exception &) {
     return VXCORE_ERR_IO;
   }
@@ -2282,28 +2320,24 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
     return VXCORE_ERR_INVALID_PARAM;
   }
 
-  // Reject importing a folder from within the notebook root to prevent circular copies
-  try {
-    // BOTH sides must be canonicalized before comparing. Canonicalizing only
-    // the external path made the check silently pass whenever the two spellings
-    // of the same location differ — e.g. on Windows where the notebook root was
-    // opened through an 8.3 short path (C:/Users/RUNNER~1/...) while
-    // fs::canonical resolves the external path to the long form
-    // (C:/Users/runneradmin/...), or anywhere a symlink is in play.
-    fs::path canonical_external = fs::weakly_canonical(external_path);
-    fs::path canonical_root = fs::weakly_canonical(PathFromUtf8(notebook_->GetRootFolder()));
-    // Check if external path starts with (is under) notebook root
-    auto mismatch_pair = std::mismatch(canonical_root.begin(), canonical_root.end(),
-                                       canonical_external.begin(), canonical_external.end());
-    if (mismatch_pair.first == canonical_root.end()) {
-      // root_path is a prefix of canonical_external (external is inside notebook)
-      VXCORE_LOG_ERROR("ImportFolder: Cannot import folder from within notebook root: %s",
-                       external_folder_path.c_str());
-      return VXCORE_ERR_INVALID_PARAM;
-    }
-  } catch (const std::exception &e) {
-    // If canonical fails, the path may not exist or be inaccessible
-    VXCORE_LOG_WARN("ImportFolder: Failed to canonicalize paths: %s", e.what());
+  // Reject importing a folder from within the notebook root to prevent circular
+  // copies. This fails CLOSED: if containment cannot be verified (permission
+  // denied, cyclic link, device error) the import is rejected rather than
+  // silently proceeding without a guard.
+  if (IsPathWithin(notebook_->GetRootFolder(), external_folder_path, /*on_error=*/true)) {
+    VXCORE_LOG_ERROR("ImportFolder: Cannot import folder from within notebook root "
+                     "(or containment could not be verified): %s",
+                     external_folder_path.c_str());
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  // Canonical source root, captured once, for the per-entry containment check.
+  std::error_code src_ec;
+  const fs::path canonical_source_root = fs::weakly_canonical(external_path, src_ec);
+  if (src_ec) {
+    VXCORE_LOG_ERROR("ImportFolder: Failed to canonicalize external folder: %s (%s)",
+                     external_folder_path.c_str(), src_ec.message().c_str());
+    return VXCORE_ERR_INVALID_PARAM;
   }
 
   // Parse suffix allowlist into a set of lowercase extensions
@@ -2367,9 +2401,17 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
-  // Copy the external folder to notebook folder recursively (with suffix filtering)
-  std::function<void(const fs::path &, const fs::path &)> copy_filtered =
-      [&](const fs::path &src, const fs::path &dest) {
+  // Copy the external folder to notebook folder recursively (with suffix filtering).
+  // Returns false on a hard IO error so the caller can report VXCORE_ERR_IO: an
+  // entry that cannot be stat'ed is NOT silently dropped, which would turn a
+  // truncated import into a VXCORE_OK.
+  //
+  // TOCTOU: these are path-based check-then-recurse guards. A source tree
+  // mutated concurrently by an attacker can still race between the check and
+  // the copy; closing that would need handle-relative / no-follow traversal,
+  // which is not attempted here.
+  std::function<bool(const fs::path &, const fs::path &)> copy_filtered =
+      [&](const fs::path &src, const fs::path &dest) -> bool {
         fs::create_directories(dest);
         for (const auto &entry : fs::directory_iterator(src)) {
           const std::string entry_name = PathToUtf8(entry.path().filename());
@@ -2377,8 +2419,29 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
           if (entry_name.empty() || entry_name[0] == '.') {
             continue;
           }
+          const std::string entry_utf8 = PathToUtf8(entry.path());
+          // Primary defense: never follow symlinks/junctions/other reparse
+          // points, for files as well as directories.
+          const ReparseState reparse_state = CheckReparsePoint(entry_utf8);
+          if (reparse_state == ReparseState::kError) {
+            VXCORE_LOG_ERROR("ImportFolder: Failed to stat entry: %s", entry_utf8.c_str());
+            return false;
+          }
+          if (reparse_state == ReparseState::kYes) {
+            VXCORE_LOG_WARN("ImportFolder: Skipping symlink/junction/reparse point: %s",
+                            entry_utf8.c_str());
+            continue;
+          }
           if (entry.is_directory()) {
-            copy_filtered(entry.path(), dest / PathFromUtf8(entry_name));
+            // Defense in depth: cannot verify containment -> outside -> skip.
+            if (!IsPathWithinCanonical(canonical_source_root, entry_utf8, /*on_error=*/false)) {
+              VXCORE_LOG_WARN("ImportFolder: Skipping subdirectory outside source root: %s",
+                              entry_utf8.c_str());
+              continue;
+            }
+            if (!copy_filtered(entry.path(), dest / PathFromUtf8(entry_name))) {
+              return false;
+            }
           } else if (entry.is_regular_file()) {
             // Apply suffix filter if allowlist is specified
             if (!allowed_suffixes.empty()) {
@@ -2396,10 +2459,16 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
                           fs::copy_options::overwrite_existing);
           }
         }
+        return true;
       };
 
   try {
-    copy_filtered(external_path, target_path);
+    if (!copy_filtered(external_path, target_path)) {
+      VXCORE_LOG_ERROR("ImportFolder: Failed to copy folder: source entry unreadable");
+      std::error_code rollback_ec;
+      fs::remove_all(target_path, rollback_ec);
+      return VXCORE_ERR_IO;
+    }
     VXCORE_LOG_DEBUG("ImportFolder: Copied folder to: %s", PathToUtf8(target_path).c_str());
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("ImportFolder: Failed to copy folder: %s", e.what());
