@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include "api/api_utils.h"
+#include "core/bundled_folder_manager.h"
 #include "core/context.h"
 #include "core/folder.h"
 #include "core/folder_manager.h"
@@ -980,6 +981,310 @@ VXCORE_API VxCoreError vxcore_folder_get_share_paths(VxCoreContextHandle context
     *out_content_root = content_root_out;
     *out_metadata_root = metadata_root_out;
     return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_folder_get_import_paths(VxCoreContextHandle context,
+                                                      const char *notebook_id,
+                                                      const char *dest_folder_path,
+                                                      char **out_notebook_root,
+                                                      char **out_content_root,
+                                                      char **out_metadata_root) {
+  // Initialize every output before any validation so a failing caller never
+  // frees an uninitialized pointer.
+  if (out_notebook_root) {
+    *out_notebook_root = nullptr;
+  }
+  if (out_content_root) {
+    *out_content_root = nullptr;
+  }
+  if (out_metadata_root) {
+    *out_metadata_root = nullptr;
+  }
+
+  if (!context || !notebook_id || !dest_folder_path || !out_notebook_root || !out_content_root ||
+      !out_metadata_root) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
+      ctx->last_error = "Folder import requires a bundled notebook";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+    if (notebook->IsReadOnly()) {
+      ctx->last_error = "Notebook is read-only";
+      return VXCORE_ERR_READ_ONLY;
+    }
+
+    const std::string raw_path(dest_folder_path);
+    // Unlike the share variant, the notebook ROOT is a legal destination.
+    {
+      const std::filesystem::path requested = vxcore::PathFromUtf8(raw_path);
+      if (requested.has_root_name() || requested.has_root_directory() ||
+          (!raw_path.empty() && !requested.is_relative())) {
+        ctx->last_error = "Destination path must be relative to the notebook root";
+        return VXCORE_ERR_INVALID_PARAM;
+      }
+    }
+
+    // Reject "." / ".." as WRITTEN, before normalization, so CleanPath() cannot
+    // collapse "Projects/../Alpha" into a request the contract forbids. A bare
+    // "." is the documented spelling of the root and is allowed.
+    if (raw_path != ".") {
+      std::string normalized_separators = raw_path;
+      for (char &ch : normalized_separators) {
+        if (ch == '\\') {
+          ch = '/';
+        }
+      }
+      for (const auto &component : vxcore::SplitPathComponents(normalized_separators)) {
+        if (component == "." || component == "..") {
+          ctx->last_error = "Destination path must not contain \".\" or \"..\" components";
+          return VXCORE_ERR_INVALID_PARAM;
+        }
+      }
+    }
+
+    const std::string clean_path = vxcore::CleanPath(raw_path);
+    std::vector<std::string> components;
+    if (clean_path != "." && !clean_path.empty()) {
+      components = vxcore::SplitPathComponents(clean_path);
+    }
+    for (const auto &component : components) {
+      if (!IsSafePathComponent(component)) {
+        ctx->last_error = "Destination path contains an unsafe component: " + component;
+        return VXCORE_ERR_INVALID_PARAM;
+      }
+    }
+
+    const std::filesystem::path notebook_root = vxcore::PathFromUtf8(notebook->GetRootFolder());
+    const std::filesystem::path metadata_contents =
+        vxcore::PathFromUtf8(notebook->GetMetadataFolder()) / "contents";
+
+    // Walk every component from the notebook root, proving full index
+    // reachability exactly as vxcore_folder_get_share_paths does.
+    nlohmann::json parent_config;
+    VxCoreError err = LoadFolderConfigJson(metadata_contents, parent_config);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Notebook root folder metadata is missing or malformed";
+      return err;
+    }
+
+    std::filesystem::path config_dir = metadata_contents;
+    std::filesystem::path content_dir = notebook_root;
+    for (const auto &component : components) {
+      const size_t occurrences = CountFolderChild(parent_config, component);
+      if (occurrences != 1) {
+        ctx->last_error = occurrences == 0
+                              ? ("Folder is not indexed by its parent: " + component)
+                              : ("Folder is listed more than once by its parent: " + component);
+        return VXCORE_ERR_NOT_FOUND;
+      }
+
+      config_dir /= vxcore::PathFromUtf8(component);
+      content_dir /= vxcore::PathFromUtf8(component);
+
+      nlohmann::json child_config;
+      err = LoadFolderConfigJson(config_dir, child_config);
+      if (err != VXCORE_OK) {
+        ctx->last_error = "Folder metadata is missing or malformed: " + component;
+        return err;
+      }
+
+      if (!child_config.contains(vxcore::kJsonKeyName) ||
+          !child_config[vxcore::kJsonKeyName].is_string() ||
+          child_config[vxcore::kJsonKeyName].get<std::string>() != component) {
+        ctx->last_error = "Folder metadata name does not match its path component: " + component;
+        return VXCORE_ERR_INVALID_STATE;
+      }
+
+      std::error_code ec;
+      // symlink_status does NOT follow the link, so a directory symlink (and,
+      // on Windows/MSVC, a junction) is reported as a symlink rather than as
+      // the directory it points at. Following one would let the import land
+      // outside the notebook entirely.
+      const auto sym = std::filesystem::symlink_status(content_dir, ec);
+      if (ec) {
+        ctx->last_error = "Folder content is missing on disk: " + component;
+        return VXCORE_ERR_NODE_NOT_EXISTS;
+      }
+      if (std::filesystem::is_symlink(sym)) {
+        ctx->last_error = "Folder content is a symbolic link or reparse point: " + component;
+        return VXCORE_ERR_UNSUPPORTED;
+      }
+      if (!std::filesystem::is_directory(content_dir, ec) || ec) {
+        ctx->last_error = "Folder content is missing on disk: " + component;
+        return VXCORE_ERR_NODE_NOT_EXISTS;
+      }
+
+      parent_config = std::move(child_config);
+    }
+
+    const std::string notebook_root_utf8 = vxcore::PathToUtf8(notebook_root);
+    const std::string content_root_utf8 = vxcore::PathToUtf8(content_dir);
+    const std::string metadata_root_utf8 = vxcore::PathToUtf8(config_dir);
+
+    char *notebook_root_out = vxcore_strdup(notebook_root_utf8.c_str());
+    if (!notebook_root_out) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+    char *content_root_out = vxcore_strdup(content_root_utf8.c_str());
+    if (!content_root_out) {
+      free(notebook_root_out);
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+    char *metadata_root_out = vxcore_strdup(metadata_root_utf8.c_str());
+    if (!metadata_root_out) {
+      free(notebook_root_out);
+      free(content_root_out);
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+
+    *out_notebook_root = notebook_root_out;
+    *out_content_root = content_root_out;
+    *out_metadata_root = metadata_root_out;
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_notebook_collect_node_ids(VxCoreContextHandle context,
+                                                        const char *notebook_id,
+                                                        char **out_ids_json) {
+  if (out_ids_json) {
+    *out_ids_json = nullptr;
+  }
+  if (!context || !notebook_id || !out_ids_json) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
+      ctx->last_error = "Node id collection requires a bundled notebook";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    auto *manager =
+        dynamic_cast<vxcore::BundledFolderManager *>(notebook->GetFolderManager());
+    if (!manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    std::vector<std::string> ids;
+    const VxCoreError err = manager->CollectAllNodeIds(ids);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to walk the notebook metadata tree";
+      return err;
+    }
+
+    *out_ids_json = vxcore_strdup(nlohmann::json(ids).dump().c_str());
+    return *out_ids_json ? VXCORE_OK : VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_folder_attach_imported(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     const char *dest_folder_path, const char *name,
+                                                     const char *staging_dir,
+                                                     char **out_folder_id) {
+  if (out_folder_id) {
+    *out_folder_id = nullptr;
+  }
+  if (!context || !notebook_id || !dest_folder_path || !name || !staging_dir || !out_folder_id) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
+      ctx->last_error = "Folder import requires a bundled notebook";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    auto *manager =
+        dynamic_cast<vxcore::BundledFolderManager *>(notebook->GetFolderManager());
+    if (!manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    std::string folder_id;
+    const VxCoreError err =
+        manager->AttachImportedFolder(dest_folder_path, name, staging_dir, folder_id);
+    if (err != VXCORE_OK) {
+      return err;
+    }
+
+    *out_folder_id = vxcore_strdup(folder_id.c_str());
+    return *out_folder_id ? VXCORE_OK : VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_notebook_recover_imports(VxCoreContextHandle context,
+                                                       const char *notebook_id,
+                                                       int *out_recovered_count) {
+  if (out_recovered_count) {
+    *out_recovered_count = 0;
+  }
+  if (!context || !notebook_id) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+
+  try {
+    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
+      ctx->last_error = "Import recovery requires a bundled notebook";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    auto *manager =
+        dynamic_cast<vxcore::BundledFolderManager *>(notebook->GetFolderManager());
+    if (!manager) {
+      ctx->last_error = "FolderManager not available";
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    return manager->RecoverImports(out_recovered_count);
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;

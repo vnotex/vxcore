@@ -119,6 +119,22 @@ class BundledFolderManager : public FolderManager {
   // Returns VXCORE_OK on success
   VxCoreError SyncMetadataStoreFromConfigs();
 
+  // Collects EVERY node id (folder AND file, root folder included) by walking
+  // the on-disk vx.json tree. NEVER consults the MetadataStore: bundled
+  // notebooks populate it lazily, so the store cannot prove an id's absence.
+  // This is the authoritative id oracle used to reject import collisions.
+  VxCoreError CollectAllNodeIds(std::vector<std::string> &out_ids);
+
+  // Attaches a STAGED imported folder bundle to @dest_folder_path under @name.
+  // See vxcore_folder_attach_imported() in the public header for the full
+  // contract; this implements the journaled commit protocol.
+  VxCoreError AttachImportedFolder(const std::string &dest_folder_path, const std::string &name,
+                                   const std::string &staging_dir, std::string &out_folder_id);
+
+  // Replays or rolls back incomplete import journals left by a crash.
+  // Called on notebook open BEFORE SyncMetadataStoreFromConfigs().
+  VxCoreError RecoverImports(int *out_recovered_count);
+
   // Returns the path to the recycle bin folder
   std::string GetRecycleBinPath() const;
 
@@ -134,6 +150,13 @@ class BundledFolderManager : public FolderManager {
   VxCoreError LoadFolderConfig(const std::string &folder_path,
                                std::unique_ptr<FolderConfig> &out_config);
   VxCoreError SaveFolderConfig(const std::string &folder_path, const FolderConfig &config);
+
+  // Crash-safe variant of SaveFolderConfig: writes <vx.json>.tmp, flushes it to
+  // stable storage, then renames it over the live file. Used by the import
+  // commit point, where a truncated-then-interrupted in-place rewrite (what
+  // SaveFolderConfig does) would destroy the destination parent's index.
+  VxCoreError SaveFolderConfigAtomic(const std::string &folder_path, const FolderConfig &config);
+
 
   std::string GetConfigPath(const std::string &folder_path) const;
   std::string GetContentPath(const std::string &folder_path) const;

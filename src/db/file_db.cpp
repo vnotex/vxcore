@@ -126,8 +126,49 @@ int64_t FileDb::CreateOrUpdateFolder(const std::string& uuid, int64_t parent_id,
   return folder_id;
 }
 
-std::optional<DbFolderRecord> FileDb::GetFolder(int64_t folder_id) {
+int64_t FileDb::InsertFolder(const std::string& uuid, int64_t parent_id, const std::string& name,
+                             int64_t created_utc, int64_t modified_utc,
+                             const std::string& metadata, bool* out_conflict) {
+  if (out_conflict) {
+    *out_conflict = false;
+  }
+
+  // Plain INSERT: a uuid collision must surface as an error, never replace an existing row.
   const char* sql =
+      "INSERT INTO folders (uuid, parent_id, name, created_utc, modified_utc, metadata) "
+      "VALUES (?, ?, ?, ?, ?, ?);";
+
+  sqlite3_stmt* stmt = nullptr;
+  int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+  if (rc != SQLITE_OK) {
+    return -1;
+  }
+
+  sqlite3_bind_text(stmt, 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
+  if (parent_id == -1) {
+    sqlite3_bind_null(stmt, 2);
+  } else {
+    sqlite3_bind_int64(stmt, 2, parent_id);
+  }
+  sqlite3_bind_text(stmt, 3, name.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt, 4, created_utc);
+  sqlite3_bind_int64(stmt, 5, modified_utc);
+  sqlite3_bind_text(stmt, 6, metadata.c_str(), -1, SQLITE_TRANSIENT);
+
+  rc = sqlite3_step(stmt);
+  int64_t folder_id = -1;
+  if (rc == SQLITE_DONE) {
+    folder_id = sqlite3_last_insert_rowid(db_);
+  } else if (out_conflict && (rc == SQLITE_CONSTRAINT ||
+                              sqlite3_extended_errcode(db_) == SQLITE_CONSTRAINT_UNIQUE)) {
+    *out_conflict = true;
+  }
+
+  sqlite3_finalize(stmt);
+  return folder_id;
+}
+
+std::optional<DbFolderRecord> FileDb::GetFolder(int64_t folder_id) {  const char* sql =
       "SELECT id, uuid, parent_id, name, created_utc, modified_utc, metadata FROM folders "
       "WHERE id = ?;";
 
@@ -526,6 +567,47 @@ int64_t FileDb::CreateOrUpdateFile(const std::string& uuid, int64_t folder_id,
   int64_t file_id = -1;
   if (rc == SQLITE_DONE) {
     file_id = sqlite3_last_insert_rowid(db_);
+  }
+
+  sqlite3_finalize(stmt);
+  return file_id;
+}
+
+int64_t FileDb::InsertFile(const std::string& uuid, int64_t folder_id, const std::string& name,
+                           int64_t created_utc, int64_t modified_utc, const std::string& metadata,
+                           bool* out_conflict) {
+  if (out_conflict) {
+    *out_conflict = false;
+  }
+
+  // Plain INSERT: a uuid collision must surface as an error, never replace an existing row.
+  // Attachments are persisted separately via SetFileAttachments().
+  const char* sql =
+      "INSERT INTO files (uuid, folder_id, name, created_utc, modified_utc, metadata, "
+      "attachments) "
+      "VALUES (?, ?, ?, ?, ?, ?, ?);";
+
+  sqlite3_stmt* stmt = nullptr;
+  int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+  if (rc != SQLITE_OK) {
+    return -1;
+  }
+
+  sqlite3_bind_text(stmt, 1, uuid.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt, 2, folder_id);
+  sqlite3_bind_text(stmt, 3, name.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt, 4, created_utc);
+  sqlite3_bind_int64(stmt, 5, modified_utc);
+  sqlite3_bind_text(stmt, 6, metadata.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt, 7, "[]", -1, SQLITE_TRANSIENT);
+
+  rc = sqlite3_step(stmt);
+  int64_t file_id = -1;
+  if (rc == SQLITE_DONE) {
+    file_id = sqlite3_last_insert_rowid(db_);
+  } else if (out_conflict && (rc == SQLITE_CONSTRAINT ||
+                              sqlite3_extended_errcode(db_) == SQLITE_CONSTRAINT_UNIQUE)) {
+    *out_conflict = true;
   }
 
   sqlite3_finalize(stmt);

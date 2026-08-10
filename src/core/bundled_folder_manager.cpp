@@ -1,12 +1,21 @@
 #include "bundled_folder_manager.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
+
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 #include <vxcore/notebook_json_keys.h>
 
@@ -2005,6 +2014,589 @@ VxCoreError BundledFolderManager::SyncMetadataStoreFromConfigs() {
     VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Sync completed with warnings");
     return VXCORE_OK;  // Return OK since we did best-effort sync
   }
+}
+
+// ---------------------------------------------------------------------------
+// Folder-bundle import: authoritative id oracle + journaled attach + recovery.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Name of the reserved staging/journal directory under vx_notebook/.
+constexpr const char *kImportStagingDirName = "vx_import";
+constexpr const char *kImportJournalFileName = "journal.json";
+constexpr const char *kImportStagedContentDirName = "content";
+constexpr const char *kImportStagedMetadataDirName = "metadata";
+
+// Journal phases, in the order the commit protocol reaches them. Everything
+// before kPhaseCommitted rolls BACK on recovery; kPhaseCommitted rolls FORWARD.
+constexpr const char *kPhaseInit = "init";
+constexpr const char *kPhaseContent = "content";
+constexpr const char *kPhaseMetadata = "metadata";
+constexpr const char *kPhaseDb = "db";
+constexpr const char *kPhaseCommitted = "committed";
+
+// Journal JSON keys. These never cross the vxcore/consumer boundary — the
+// journal is an internal crash-recovery artifact — so they are deliberately
+// NOT in notebook_json_keys.h.
+constexpr const char *kJournalKeyPhase = "phase";
+constexpr const char *kJournalKeyDestPath = "destPath";
+constexpr const char *kJournalKeyFinalName = "finalName";
+constexpr const char *kJournalKeyContentTarget = "contentTarget";
+constexpr const char *kJournalKeyMetadataTarget = "metadataTarget";
+constexpr const char *kJournalKeyRootFolderId = "rootFolderId";
+constexpr const char *kJournalKeyIds = "ids";
+constexpr const char *kJournalKeyParentBytes = "parentConfigBytes";
+
+// Number of rename attempts before giving up, and the delay between them.
+// Windows hands out transient sharing violations when an indexer, antivirus
+// scanner or cloud-sync agent happens to hold a handle on a just-written tree.
+constexpr int kRenameRetries = 5;
+constexpr int kRenameRetryDelayMs = 40;
+
+// Writes @data to @path and flushes it all the way to stable storage, so a
+// power loss cannot leave the journal (or a config) half-written.
+bool WriteFileDurable(const fs::path &path, const std::string &data) {
+#ifdef _WIN32
+  FILE *fp = _wfopen(path.c_str(), L"wb");
+#else
+  FILE *fp = std::fopen(path.c_str(), "wb");
+#endif
+  if (!fp) {
+    return false;
+  }
+
+  bool ok = data.empty() || std::fwrite(data.data(), 1, data.size(), fp) == data.size();
+  if (ok) {
+    ok = std::fflush(fp) == 0;
+  }
+  if (ok) {
+#ifdef _WIN32
+    ok = _commit(_fileno(fp)) == 0;
+#else
+    ok = ::fsync(fileno(fp)) == 0;
+#endif
+  }
+  std::fclose(fp);
+  return ok;
+}
+
+// fs::rename with a short retry loop (see kRenameRetries).
+bool RenameWithRetries(const fs::path &from, const fs::path &to) {
+  for (int attempt = 0; attempt < kRenameRetries; ++attempt) {
+    std::error_code ec;
+    fs::rename(from, to, ec);
+    if (!ec) {
+      return true;
+    }
+    if (attempt + 1 < kRenameRetries) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(kRenameRetryDelayMs));
+    }
+  }
+  return false;
+}
+
+// Best-effort recursive delete; failures are logged, never propagated, because
+// every caller is already on an error/cleanup path.
+void RemoveTreeQuietly(const fs::path &path) {
+  if (path.empty()) {
+    return;
+  }
+  std::error_code ec;
+  fs::remove_all(path, ec);
+  if (ec) {
+    VXCORE_LOG_WARN("Import: failed to remove %s: %s", PathToUtf8(path).c_str(),
+                    ec.message().c_str());
+  }
+}
+
+}  // namespace
+
+VxCoreError BundledFolderManager::SaveFolderConfigAtomic(const std::string &folder_path,
+                                                         const FolderConfig &config) {
+  const std::string config_path = GetConfigPath(folder_path);
+  const fs::path config_file_path = PathFromUtf8(config_path);
+  const fs::path config_dir = config_file_path.parent_path();
+
+  try {
+    std::error_code ec;
+    if (!fs::exists(config_dir, ec)) {
+      fs::create_directories(config_dir, ec);
+      if (ec) {
+        VXCORE_LOG_ERROR("SaveFolderConfigAtomic: cannot create %s: %s",
+                         PathToUtf8(config_dir).c_str(), ec.message().c_str());
+        return VXCORE_ERR_IO;
+      }
+    }
+
+    fs::path tmp_path = config_file_path;
+    tmp_path += PathFromUtf8(".tmp");
+
+    const std::string payload = config.ToJson().dump(2);
+    if (!WriteFileDurable(tmp_path, payload)) {
+      VXCORE_LOG_ERROR("SaveFolderConfigAtomic: failed to write %s",
+                       PathToUtf8(tmp_path).c_str());
+      RemoveTreeQuietly(tmp_path);
+      return VXCORE_ERR_IO;
+    }
+
+    // fs::rename over an existing file is atomic-replace on both POSIX and
+    // Win32 (MoveFileEx with REPLACE_EXISTING), so a reader sees either the
+    // whole old file or the whole new one — never a truncated one.
+    if (!RenameWithRetries(tmp_path, config_file_path)) {
+      VXCORE_LOG_ERROR("SaveFolderConfigAtomic: failed to publish %s", config_path.c_str());
+      RemoveTreeQuietly(tmp_path);
+      return VXCORE_ERR_IO;
+    }
+
+    EmitEvent(events::kFolderConfigChanged,
+              {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", folder_path}});
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("SaveFolderConfigAtomic: failed for %s: %s", config_path.c_str(), e.what());
+    return VXCORE_ERR_IO;
+  }
+}
+
+VxCoreError BundledFolderManager::CollectAllNodeIds(std::vector<std::string> &out_ids) {
+  out_ids.clear();
+
+  // Ground truth is the on-disk metadata tree, NOT the store: bundled
+  // notebooks index lazily, so a store miss proves nothing.
+  const fs::path contents_root = PathFromUtf8(notebook_->GetMetadataFolder()) / "contents";
+
+  std::function<VxCoreError(const fs::path &)> walk = [&](const fs::path &dir) -> VxCoreError {
+    const fs::path config_file = dir / "vx.json";
+    std::error_code ec;
+    if (!fs::is_regular_file(config_file, ec) || ec) {
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    nlohmann::json json;
+    if (LoadJsonFile(config_file, json) != VXCORE_OK || !json.is_object()) {
+      return VXCORE_ERR_JSON_PARSE;
+    }
+
+    const FolderConfig config = FolderConfig::FromJson(json);
+    if (!config.id.empty()) {
+      out_ids.push_back(config.id);
+    }
+    // Folder ids and file ids share ONE namespace: a cross-kind collision is
+    // just as destructive as a same-kind one.
+    for (const auto &file : config.files) {
+      if (!file.id.empty()) {
+        out_ids.push_back(file.id);
+      }
+    }
+
+    for (const auto &child : config.folders) {
+      if (!IsSingleName(child) || child == "." || child == "..") {
+        VXCORE_LOG_WARN("CollectAllNodeIds: skipping unsafe child name: %s", child.c_str());
+        continue;
+      }
+      const VxCoreError err = walk(dir / PathFromUtf8(child));
+      if (err == VXCORE_ERR_NOT_FOUND) {
+        // A dangling index entry is a pre-existing inconsistency, not an id
+        // source. Log and continue so import is not blocked by it.
+        VXCORE_LOG_WARN("CollectAllNodeIds: child metadata missing: %s", child.c_str());
+        continue;
+      }
+      if (err != VXCORE_OK) {
+        return err;
+      }
+    }
+    return VXCORE_OK;
+  };
+
+  return walk(contents_root);
+}
+
+VxCoreError BundledFolderManager::AttachImportedFolder(const std::string &dest_folder_path,
+                                                       const std::string &name,
+                                                       const std::string &staging_dir,
+                                                       std::string &out_folder_id) {
+  out_folder_id.clear();
+
+  if (notebook_ && notebook_->IsReadOnly()) {
+    return VXCORE_ERR_READ_ONLY;
+  }
+  if (name.empty() || name == "." || name == ".." || !IsSingleName(name)) {
+    VXCORE_LOG_ERROR("AttachImportedFolder: unsafe name: %s", name.c_str());
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  const std::string clean_dest = GetCleanRelativePath(dest_folder_path);
+
+  const fs::path staging = PathFromUtf8(staging_dir);
+  const fs::path staged_content = staging / kImportStagedContentDirName;
+  const fs::path staged_metadata = staging / kImportStagedMetadataDirName;
+
+  std::error_code ec;
+  if (!fs::is_directory(staged_content, ec) || ec || !fs::is_directory(staged_metadata, ec) || ec) {
+    VXCORE_LOG_ERROR("AttachImportedFolder: staging dir is incomplete: %s", staging_dir.c_str());
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  // --- Read the staged root config; it carries the final id and name. -------
+  nlohmann::json root_json;
+  {
+    const fs::path root_config = staged_metadata / "vx.json";
+    if (!fs::is_regular_file(root_config, ec) || ec) {
+      return VXCORE_ERR_NOT_FOUND;
+    }
+    if (LoadJsonFile(root_config, root_json) != VXCORE_OK || !root_json.is_object()) {
+      return VXCORE_ERR_JSON_PARSE;
+    }
+  }
+  const FolderConfig staged_root = FolderConfig::FromJson(root_json);
+  if (staged_root.id.empty() || staged_root.name != name) {
+    VXCORE_LOG_ERROR("AttachImportedFolder: staged root vx.json does not match name '%s'",
+                     name.c_str());
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  // --- Destination parent must exist and must not already list @name. ------
+  FolderConfig *parent_config = nullptr;
+  VxCoreError error = GetFolderConfig(clean_dest, &parent_config);
+  if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("AttachImportedFolder: destination not found: %s", clean_dest.c_str());
+    return error;
+  }
+  if (std::find(parent_config->folders.begin(), parent_config->folders.end(), name) !=
+      parent_config->folders.end()) {
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+
+  const std::string child_relative_path = ConcatenatePaths(clean_dest, name);
+  const fs::path content_target = PathFromUtf8(GetContentPath(clean_dest)) / PathFromUtf8(name);
+  const fs::path metadata_target =
+      PathFromUtf8(GetConfigPath(child_relative_path)).parent_path();
+
+  if (fs::exists(content_target, ec) || fs::exists(metadata_target, ec)) {
+    VXCORE_LOG_ERROR("AttachImportedFolder: destination already occupied: %s", name.c_str());
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+
+  // --- Flatten the staged metadata tree into store records. ----------------
+  std::vector<StoreFolderRecord> folder_records;
+  std::vector<std::pair<StoreFileRecord, std::vector<std::string>>> file_records;
+  std::vector<std::string> all_ids;
+
+  std::function<VxCoreError(const fs::path &, const std::string &)> collect =
+      [&](const fs::path &dir, const std::string &parent_id) -> VxCoreError {
+    nlohmann::json json;
+    const fs::path config_file = dir / "vx.json";
+    std::error_code walk_ec;
+    if (!fs::is_regular_file(config_file, walk_ec) || walk_ec) {
+      return VXCORE_ERR_NOT_FOUND;
+    }
+    if (LoadJsonFile(config_file, json) != VXCORE_OK || !json.is_object()) {
+      return VXCORE_ERR_JSON_PARSE;
+    }
+
+    const FolderConfig config = FolderConfig::FromJson(json);
+    if (config.id.empty()) {
+      return VXCORE_ERR_INVALID_STATE;
+    }
+
+    folder_records.push_back(ToStoreFolderRecord(config, parent_id));
+    all_ids.push_back(config.id);
+
+    for (const auto &file : config.files) {
+      if (file.id.empty()) {
+        return VXCORE_ERR_INVALID_STATE;
+      }
+      // ToStoreFileRecord deliberately drops attachments (the store column is
+      // written separately), so carry them alongside.
+      file_records.emplace_back(ToStoreFileRecord(file, config.id), file.attachments);
+      all_ids.push_back(file.id);
+    }
+
+    for (const auto &child : config.folders) {
+      if (!IsSingleName(child) || child == "." || child == "..") {
+        return VXCORE_ERR_INVALID_STATE;
+      }
+      const VxCoreError err = collect(dir / PathFromUtf8(child), config.id);
+      if (err != VXCORE_OK) {
+        return err;
+      }
+    }
+    return VXCORE_OK;
+  };
+
+  error = collect(staged_metadata, parent_config->id);
+  if (error != VXCORE_OK) {
+    VXCORE_LOG_ERROR("AttachImportedFolder: staged metadata tree is invalid (error=%d)", error);
+    return error;
+  }
+
+  // --- Fail closed on ANY id collision, before touching the notebook. ------
+  // The store cannot be the oracle here: `uuid UNIQUE` is per-table, so a
+  // staged FOLDER id equal to an existing FILE id would slip through the
+  // insert and silently create two nodes sharing an id. Intersect against the
+  // authoritative on-disk walk instead, which puts folder and file ids in one
+  // namespace. The caller checks this too, but it releases the notebook lock
+  // between its check and this call, so the check is repeated here.
+  {
+    std::vector<std::string> existing_ids;
+    const VxCoreError collect_err = CollectAllNodeIds(existing_ids);
+    if (collect_err != VXCORE_OK) {
+      VXCORE_LOG_ERROR("AttachImportedFolder: cannot verify id uniqueness (error=%d)",
+                       collect_err);
+      return collect_err;
+    }
+
+    const std::unordered_set<std::string> existing(existing_ids.begin(), existing_ids.end());
+    for (const auto &id : all_ids) {
+      if (existing.count(id) > 0) {
+        VXCORE_LOG_ERROR("AttachImportedFolder: id already exists in this notebook: %s",
+                         id.c_str());
+        return VXCORE_ERR_ALREADY_EXISTS;
+      }
+    }
+
+    // A bundle that repeats an id internally would also corrupt the notebook.
+    const std::unordered_set<std::string> staged(all_ids.begin(), all_ids.end());
+    if (staged.size() != all_ids.size()) {
+      VXCORE_LOG_ERROR("AttachImportedFolder: staged subtree contains duplicate ids");
+      return VXCORE_ERR_INVALID_STATE;
+    }
+  }
+
+  // --- 1. Journal. ---------------------------------------------------------
+  const fs::path journal_path = staging / kImportJournalFileName;
+  const std::string parent_config_path = GetConfigPath(clean_dest);
+  std::string parent_config_bytes;
+  ReadFile(PathFromUtf8(parent_config_path), parent_config_bytes);
+
+  nlohmann::json journal;
+  journal[kJournalKeyPhase] = kPhaseInit;
+  journal[kJournalKeyDestPath] = clean_dest;
+  journal[kJournalKeyFinalName] = name;
+  journal[kJournalKeyContentTarget] = PathToUtf8(content_target);
+  journal[kJournalKeyMetadataTarget] = PathToUtf8(metadata_target);
+  journal[kJournalKeyRootFolderId] = staged_root.id;
+  journal[kJournalKeyIds] = all_ids;
+  journal[kJournalKeyParentBytes] = parent_config_bytes;
+
+  auto write_journal = [&](const char *phase) -> bool {
+    journal[kJournalKeyPhase] = phase;
+    return WriteFileDurable(journal_path, journal.dump(2));
+  };
+
+  if (!write_journal(kPhaseInit)) {
+    VXCORE_LOG_ERROR("AttachImportedFolder: cannot write import journal");
+    return VXCORE_ERR_IO;
+  }
+
+  // Undo everything published so far. Only ever called before the commit
+  // point, so the notebook is left byte-identical to its pre-import state.
+  auto rollback = [&](bool content_published, bool metadata_published, bool db_written) {
+    if (db_written) {
+      if (auto *store = notebook_->GetMetadataStore()) {
+        store->RollbackTransaction();
+      }
+    }
+    if (metadata_published) {
+      RemoveTreeQuietly(metadata_target);
+    }
+    if (content_published) {
+      RemoveTreeQuietly(content_target);
+    }
+    RemoveTreeQuietly(staging);
+  };
+
+  // --- 2. Publish content. -------------------------------------------------
+  if (!RenameWithRetries(staged_content, content_target)) {
+    VXCORE_LOG_ERROR("AttachImportedFolder: failed to publish content for %s", name.c_str());
+    rollback(false, false, false);
+    return VXCORE_ERR_IO;
+  }
+  if (!write_journal(kPhaseContent)) {
+    rollback(true, false, false);
+    return VXCORE_ERR_IO;
+  }
+
+  // --- 3. Publish metadata. ------------------------------------------------
+  if (!RenameWithRetries(staged_metadata, metadata_target)) {
+    VXCORE_LOG_ERROR("AttachImportedFolder: failed to publish metadata for %s", name.c_str());
+    rollback(true, false, false);
+    return VXCORE_ERR_IO;
+  }
+  if (!write_journal(kPhaseMetadata)) {
+    rollback(true, true, false);
+    return VXCORE_ERR_IO;
+  }
+
+  // --- 4. Insert-only store transaction. -----------------------------------
+  auto *store = notebook_->GetMetadataStore();
+  if (store) {
+    if (!store->BeginTransaction()) {
+      VXCORE_LOG_ERROR("AttachImportedFolder: cannot begin store transaction");
+      rollback(true, true, false);
+      return VXCORE_ERR_DATABASE;
+    }
+
+    for (const auto &record : folder_records) {
+      const VxCoreError err = store->InsertFolder(record);
+      if (err != VXCORE_OK) {
+        VXCORE_LOG_ERROR("AttachImportedFolder: folder id %s rejected (error=%d)",
+                         record.id.c_str(), err);
+        rollback(true, true, true);
+        return err;
+      }
+    }
+    for (const auto &entry : file_records) {
+      const VxCoreError err = store->InsertFile(entry.first);
+      if (err != VXCORE_OK) {
+        VXCORE_LOG_ERROR("AttachImportedFolder: file id %s rejected (error=%d)",
+                         entry.first.id.c_str(), err);
+        rollback(true, true, true);
+        return err;
+      }
+      if (!entry.second.empty() && !store->SetFileAttachments(entry.first.id, entry.second)) {
+        VXCORE_LOG_ERROR("AttachImportedFolder: failed to write attachments for %s",
+                         entry.first.id.c_str());
+        rollback(true, true, true);
+        return VXCORE_ERR_DATABASE;
+      }
+    }
+
+    if (!store->CommitTransaction()) {
+      VXCORE_LOG_ERROR("AttachImportedFolder: cannot commit store transaction");
+      rollback(true, true, true);
+      return VXCORE_ERR_DATABASE;
+    }
+  }
+  if (!write_journal(kPhaseDb)) {
+    rollback(true, true, false);
+    return VXCORE_ERR_IO;
+  }
+
+  // --- 5. COMMIT POINT: atomically replace the parent's vx.json. -----------
+  parent_config->folders.push_back(name);
+  const int64_t previous_modified = parent_config->modified_utc;
+  parent_config->modified_utc = GetCurrentTimestampMillis();
+
+  error = SaveFolderConfigAtomic(clean_dest, *parent_config);
+  if (error != VXCORE_OK) {
+    parent_config->folders.pop_back();
+    parent_config->modified_utc = previous_modified;
+    rollback(true, true, false);
+    return error;
+  }
+  write_journal(kPhaseCommitted);
+
+  // --- 6. Publish to callers. ----------------------------------------------
+  InvalidateCache(child_relative_path);
+  out_folder_id = staged_root.id;
+
+  // ONE structural event for the imported root. Descendant creations are NOT
+  // replayed: consumers reload the subtree from the parent.
+  EmitEvent(events::kFolderCreated,
+            {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", child_relative_path}});
+
+  RemoveTreeQuietly(staging);
+  VXCORE_LOG_INFO("AttachImportedFolder: attached %s as %s", name.c_str(),
+                  child_relative_path.c_str());
+  return VXCORE_OK;
+}
+
+VxCoreError BundledFolderManager::RecoverImports(int *out_recovered_count) {
+  if (out_recovered_count) {
+    *out_recovered_count = 0;
+  }
+
+  const fs::path staging_root =
+      PathFromUtf8(notebook_->GetMetadataFolder()) / kImportStagingDirName;
+  std::error_code ec;
+  if (!fs::is_directory(staging_root, ec) || ec) {
+    return VXCORE_OK;  // Nothing to recover.
+  }
+
+  std::vector<fs::path> journal_dirs;
+  for (fs::directory_iterator it(staging_root, ec), end; !ec && it != end; it.increment(ec)) {
+    if (fs::is_directory(it->path(), ec) && fs::is_regular_file(it->path() / kImportJournalFileName,
+                                                                ec)) {
+      journal_dirs.push_back(it->path());
+    }
+  }
+
+  int recovered = 0;
+  for (const auto &dir : journal_dirs) {
+    nlohmann::json journal;
+    if (LoadJsonFile(dir / kImportJournalFileName, journal) != VXCORE_OK ||
+        !journal.is_object()) {
+      VXCORE_LOG_WARN("RecoverImports: unreadable journal in %s; discarding staging dir",
+                      PathToUtf8(dir).c_str());
+      RemoveTreeQuietly(dir);
+      continue;
+    }
+
+    const std::string phase = journal.value(kJournalKeyPhase, std::string(kPhaseInit));
+    const std::string content_target = journal.value(kJournalKeyContentTarget, std::string());
+    const std::string metadata_target = journal.value(kJournalKeyMetadataTarget, std::string());
+    const std::string dest_path = journal.value(kJournalKeyDestPath, std::string("."));
+
+    if (phase == kPhaseCommitted) {
+      // The parent vx.json already names the import, so the on-disk tree is
+      // authoritative and complete: roll FORWARD. The store rows are restored
+      // by the SyncMetadataStoreFromConfigs() rebuild that follows this call.
+      VXCORE_LOG_INFO("RecoverImports: rolling forward committed import in %s",
+                      PathToUtf8(dir).c_str());
+    } else {
+      VXCORE_LOG_WARN("RecoverImports: rolling back import (phase=%s) in %s", phase.c_str(),
+                      PathToUtf8(dir).c_str());
+
+      if (!metadata_target.empty()) {
+        RemoveTreeQuietly(PathFromUtf8(metadata_target));
+      }
+      if (!content_target.empty()) {
+        RemoveTreeQuietly(PathFromUtf8(content_target));
+      }
+
+      // Drop any rows the interrupted transaction may have committed, so the
+      // subsequent rebuild cannot resurrect a tree that no longer exists.
+      if (auto *store = notebook_->GetMetadataStore()) {
+        if (journal.contains(kJournalKeyIds) && journal[kJournalKeyIds].is_array()) {
+          for (const auto &entry : journal[kJournalKeyIds]) {
+            if (!entry.is_string()) {
+              continue;
+            }
+            const std::string id = entry.get<std::string>();
+            store->DeleteFile(id);
+            store->DeleteFolder(id);
+          }
+        }
+      }
+
+      // Restore the parent's index bytes verbatim. Idempotent: if the commit
+      // point was never reached these bytes are already on disk.
+      if (journal.contains(kJournalKeyParentBytes) &&
+          journal[kJournalKeyParentBytes].is_string()) {
+        const std::string bytes = journal[kJournalKeyParentBytes].get<std::string>();
+        if (!bytes.empty()) {
+          const fs::path parent_config = PathFromUtf8(GetConfigPath(dest_path));
+          if (!WriteFileDurable(parent_config, bytes)) {
+            VXCORE_LOG_ERROR("RecoverImports: failed to restore %s",
+                             PathToUtf8(parent_config).c_str());
+          }
+        }
+      }
+    }
+
+    RemoveTreeQuietly(dir);
+    ++recovered;
+  }
+
+  if (recovered > 0) {
+    // Any cached config may now describe a tree that was rolled back.
+    ClearCache();
+  }
+  if (out_recovered_count) {
+    *out_recovered_count = recovered;
+  }
+  return VXCORE_OK;
 }
 
 std::string BundledFolderManager::GetParentFolderId(const std::string &folder_path) {

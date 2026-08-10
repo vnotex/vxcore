@@ -80,6 +80,19 @@ add_vxcore_test(test_node)
 add_vxcore_test(test_folder_share_paths)
 target_link_libraries(test_folder_share_paths PRIVATE nlohmann_json)
 
+# test_folder_import_bundle: Tasks 2-5 of the import-shared-folder-bundle plan.
+# Covers vxcore_folder_get_import_paths (ROOT is a legal destination, unlike
+# the share variant), vxcore_notebook_collect_node_ids (the authoritative
+# on-disk id oracle — root folder id and file ids in ONE namespace, because
+# SQLite is a lazily-populated incomplete index), and
+# vxcore_folder_attach_imported (journaled commit: publish, insert-only store
+# transaction, atomic parent vx.json replace, one folder.created). Also covers
+# vxcore_notebook_recover_imports against crash states constructed by hand on
+# disk at each journal phase. Public C API only, so links via
+# add_vxcore_test(); nlohmann_json for the on-disk vx.json fixtures.
+add_vxcore_test(test_folder_import_bundle)
+target_link_libraries(test_folder_import_bundle PRIVATE nlohmann_json)
+
 # test_missing_nodes: T4 of the missing-files-on-disk plan. Verifies the
 # reactive missing-content gate on the bundled read/access C-APIs
 # (vxcore_node_get_config / vxcore_node_get_metadata / vxcore_buffer_open)

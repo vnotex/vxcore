@@ -49,6 +49,7 @@ class SqliteMetadataStore : public MetadataStore {
 
   // --- Folder Operations ---
   bool CreateFolder(const StoreFolderRecord& folder) override;
+  VxCoreError InsertFolder(const StoreFolderRecord& folder) override;
   bool UpdateFolder(const std::string& folder_id, const std::string& name, int64_t modified_utc,
                     const std::string& metadata) override;
   bool DeleteFolder(const std::string& folder_id) override;
@@ -61,6 +62,7 @@ class SqliteMetadataStore : public MetadataStore {
 
   // --- File Operations ---
   bool CreateFile(const StoreFileRecord& file) override;
+  VxCoreError InsertFile(const StoreFileRecord& file) override;
   bool UpdateFile(const std::string& file_id, const std::string& name, int64_t modified_utc,
                   const std::string& metadata) override;
   bool DeleteFile(const std::string& file_id) override;

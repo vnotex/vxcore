@@ -59,6 +59,14 @@ class FileDb {
                                int64_t created_utc, int64_t modified_utc,
                                const std::string& metadata);
 
+  // Inserts a folder with an explicit UUID using a plain INSERT (never INSERT OR REPLACE),
+  // so an existing row is NEVER silently overwritten. Returns folder_id or -1 on error.
+  // When the insert fails because the uuid already exists, *out_conflict is set to true.
+  // Used by the bundle-import commit path, which must fail closed on any id collision.
+  int64_t InsertFolder(const std::string& uuid, int64_t parent_id, const std::string& name,
+                       int64_t created_utc, int64_t modified_utc, const std::string& metadata,
+                       bool* out_conflict);
+
   // Gets folder by id, returns nullopt if not found
   std::optional<DbFolderRecord> GetFolder(int64_t folder_id);
 
@@ -106,6 +114,12 @@ class FileDb {
   int64_t CreateOrUpdateFile(const std::string& uuid, int64_t folder_id, const std::string& name,
                              int64_t created_utc, int64_t modified_utc,
                              const std::string& metadata);
+
+  // Inserts a file with an explicit UUID using a plain INSERT (never INSERT OR REPLACE).
+  // Returns file_id or -1 on error; *out_conflict is set to true on a uuid UNIQUE violation.
+  int64_t InsertFile(const std::string& uuid, int64_t folder_id, const std::string& name,
+                     int64_t created_utc, int64_t modified_utc, const std::string& metadata,
+                     bool* out_conflict);
 
   // Gets file by id, returns nullopt if not found
   std::optional<DbFileRecord> GetFile(int64_t file_id);

@@ -300,6 +300,153 @@ VXCORE_API VxCoreError vxcore_folder_get_share_paths(VxCoreContextHandle context
                                                      char **out_content_root,
                                                      char **out_metadata_root);
 
+// Resolve the storage roots needed to ATTACH an imported folder bundle as a new
+// child of an existing bundled folder. The mirror image of
+// vxcore_folder_get_share_paths, with two deliberate differences:
+//   - the notebook ROOT is a valid destination (empty or "." folder_path),
+//   - the outputs describe the DESTINATION CONTAINER, not a selected folder.
+//
+// Like the share variant this is a SYNCHRONOUS, PATH-ONLY query performing no
+// copy and no mutation, and it proves full index reachability by walking every
+// path component from the notebook root.
+//
+// dest_folder_path: path relative to the notebook root, e.g. "Projects".
+//                   Empty or "." denotes the notebook root.
+//
+// Outputs (all UTF-8, allocated by vxcore, freed with vxcore_string_free()):
+//   out_notebook_root  absolute notebook root folder
+//   out_content_root   absolute physical directory that will CONTAIN the
+//                      imported folder
+//   out_metadata_root  absolute metadata directory that will CONTAIN the
+//                      imported folder's metadata directory
+//                      (i.e. <root>/vx_notebook/contents/<dest_folder_path>)
+//
+// All three outputs are initialized to NULL before any validation and are
+// assigned only after every check succeeds.
+//
+// Errors:
+//   VXCORE_ERR_INVALID_PARAM   null argument, or an absolute / "." / ".."
+//                              containing / escaping dest_folder_path
+//   VXCORE_ERR_UNSUPPORTED     raw (non-bundled) notebook
+//   VXCORE_ERR_READ_ONLY       read-only notebook
+//   VXCORE_ERR_NOT_FOUND       notebook not found, or a path component is not
+//                              indexed by its parent, or its vx.json is absent
+//   VXCORE_ERR_JSON_PARSE      a vx.json along the path is malformed
+//   VXCORE_ERR_INVALID_STATE   a vx.json's "name" does not match its path
+//                              component (corrupt metadata)
+//   VXCORE_ERR_NODE_NOT_EXISTS the physical directory is missing on disk
+VXCORE_API VxCoreError vxcore_folder_get_import_paths(VxCoreContextHandle context,
+                                                      const char *notebook_id,
+                                                      const char *dest_folder_path,
+                                                      char **out_notebook_root,
+                                                      char **out_content_root,
+                                                      char **out_metadata_root);
+
+// Collect EVERY node id reachable in a bundled notebook by walking the
+// on-disk metadata tree (<root>/vx_notebook/contents/**/vx.json), starting at
+// the root folder's own vx.json.
+//
+// This is the AUTHORITATIVE id oracle. It deliberately NEVER consults SQLite:
+// bundled notebooks populate the metadata store lazily, so the store is an
+// incomplete index and cannot prove the absence of an id. Bundle import uses
+// this to reject an id collision before writing anything.
+//
+// Folder ids and file ids are returned in ONE namespace, because a collision
+// across kinds is just as fatal as one within a kind. The ROOT folder's id is
+// included.
+//
+// out_ids_json: JSON array of id strings, allocated by vxcore, freed with
+//               vxcore_string_free().
+//
+// Errors:
+//   VXCORE_ERR_INVALID_PARAM   null argument
+//   VXCORE_ERR_UNSUPPORTED     raw (non-bundled) notebook
+//   VXCORE_ERR_NOT_FOUND       notebook not found, or the root vx.json is absent
+//   VXCORE_ERR_JSON_PARSE      a vx.json in the tree is malformed
+VXCORE_API VxCoreError vxcore_notebook_collect_node_ids(VxCoreContextHandle context,
+                                                        const char *notebook_id,
+                                                        char **out_ids_json);
+
+// Attach a STAGED imported folder bundle to its destination parent.
+//
+// @staging_dir is a directory prepared by the caller (VNote's
+// FolderBundleImporter) containing exactly two children:
+//   content/   the physical folder tree to publish as <dest>/<name>
+//   metadata/  the parallel metadata tree (vx.json files) to publish as
+//              <root>/vx_notebook/contents/<dest_folder_path>/<name>
+// The metadata tree's top-level vx.json MUST already carry its final "name"
+// (equal to @name) and every id in the subtree MUST be final.
+//
+// Preconditions the caller establishes while holding its notebook I/O lock:
+//   - no id in the staged subtree collides with an existing notebook id
+//     (verify with vxcore_notebook_collect_node_ids). This call RE-VERIFIES it
+//     itself — the caller's check happens before the lock is re-acquired, and
+//     the store cannot detect a cross-kind collision because `uuid UNIQUE` is
+//     per-table,
+//   - @name is not already listed by the destination parent nor present on
+//     disk under either destination.
+//
+// This call performs the whole COMMIT, journaled for crash recovery under
+// <root>/vx_notebook/vx_import/<uuid>/journal.json:
+//   1. write the journal,
+//   2. rename staged content into place,
+//   3. rename staged metadata into place,
+//   4. INSERT-ONLY metadata-store transaction (never INSERT OR REPLACE, so a
+//      surviving collision fails instead of silently replacing a row and
+//      cascade-deleting its associations), including attachments,
+//   5. ATOMICALLY replace the destination parent's vx.json with @name added to
+//      its "folders" array — THIS IS THE COMMIT POINT,
+//   6. invalidate caches, emit ONE `folder.created` for the attached folder,
+//      delete the journal.
+// A failure before step 5 rolls everything back and writes nothing. A crash at
+// any point is repaired by vxcore_notebook_recover_imports() on next open.
+//
+// Descendant creation events are NOT replayed; exactly one `folder.created`
+// fires, for the imported root.
+//
+// out_folder_id: id of the attached top-level folder, read back from its
+//                vx.json. Allocated by vxcore, freed with vxcore_string_free().
+//
+// Errors:
+//   VXCORE_ERR_INVALID_PARAM   null argument or an unsafe @name
+//   VXCORE_ERR_UNSUPPORTED     raw (non-bundled) notebook
+//   VXCORE_ERR_READ_ONLY       read-only notebook
+//   VXCORE_ERR_NOT_FOUND       notebook, destination, or staged subtree absent
+//   VXCORE_ERR_ALREADY_EXISTS  @name already listed by the parent or present on
+//                              disk, or an id in the subtree already exists
+//   VXCORE_ERR_JSON_PARSE      a vx.json in the staged subtree is malformed
+//   VXCORE_ERR_DATABASE        the store transaction failed
+//   VXCORE_ERR_IO              a rename or the parent vx.json replace failed
+VXCORE_API VxCoreError vxcore_folder_attach_imported(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     const char *dest_folder_path, const char *name,
+                                                     const char *staging_dir,
+                                                     char **out_folder_id);
+
+// Replay or roll back any incomplete folder-import journals left by a crash.
+//
+// Called automatically when a bundled notebook is opened, BEFORE the metadata
+// store is rebuilt from configs, so a rolled-back import never leaves rows the
+// rebuild would resurrect. Safe to call again at any time; a notebook with no
+// journals is a no-op returning VXCORE_OK.
+//
+// Per journal phase:
+//   init/content/metadata/db  roll BACK: delete the published directories,
+//                             delete the recorded ids from the store, restore
+//                             the parent vx.json bytes, delete the journal
+//   committed                 roll FORWARD: ensure the store rows exist,
+//                             invalidate caches, delete the journal
+//
+// out_recovered_count: optional; receives the number of journals processed.
+//
+// Errors:
+//   VXCORE_ERR_INVALID_PARAM   null argument
+//   VXCORE_ERR_UNSUPPORTED     raw (non-bundled) notebook
+//   VXCORE_ERR_NOT_FOUND       notebook not found
+VXCORE_API VxCoreError vxcore_notebook_recover_imports(VxCoreContextHandle context,
+                                                       const char *notebook_id,
+                                                       int *out_recovered_count);
+
 // ============ File Operations ============
 VXCORE_API VxCoreError vxcore_file_create(VxCoreContextHandle context, const char *notebook_id,
                                           const char *folder_path, const char *file_name,

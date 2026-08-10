@@ -127,6 +127,23 @@ VxCoreError BundledNotebook::Open(const std::string &local_data_folder,
     // Continue anyway - tags will be synced on next open or RebuildCache
   }
 
+  // Repair any folder-import journal left behind by a crash BEFORE anything
+  // reads or rebuilds the metadata store: a rolled-back import must not leave
+  // rows (or an orphan tree) that a later rebuild would resurrect.
+  if (auto *bundled_folder_manager =
+          dynamic_cast<BundledFolderManager *>(notebook->GetFolderManager())) {
+    int recovered = 0;
+    const VxCoreError recover_err = bundled_folder_manager->RecoverImports(&recovered);
+    if (recover_err != VXCORE_OK) {
+      VXCORE_LOG_WARN("Import recovery failed on open: root=%s, error=%d", root_folder.c_str(),
+                      recover_err);
+      // Continue anyway - the notebook is still usable.
+    } else if (recovered > 0) {
+      VXCORE_LOG_INFO("Recovered %d incomplete folder import(s) on open: root=%s", recovered,
+                      root_folder.c_str());
+    }
+  }
+
   // Note: We do NOT sync folder/file MetadataStore from config files here.
   // The cache uses lazy sync - data is loaded on demand when accessed.
   // Users can call RebuildCache() if they need a full refresh.

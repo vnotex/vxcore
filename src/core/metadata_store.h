@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include <vxcore/vxcore_types.h>
+
 namespace vxcore {
 // Metadata store record structures (storage-agnostic)
 // These mirror the core types but are used for store operations
@@ -90,6 +92,13 @@ class MetadataStore {
   // Returns true on success
   virtual bool CreateFolder(const StoreFolderRecord& folder) = 0;
 
+  // Inserts a folder WITHOUT overwriting an existing row.
+  // Unlike CreateFolder (which goes through INSERT OR REPLACE), a record whose id already
+  // exists is rejected with VXCORE_ERR_ALREADY_EXISTS instead of silently replacing the
+  // existing row and cascade-deleting its associations. Used by bundle import, which
+  // preserves ids verbatim and must fail closed on any collision.
+  virtual VxCoreError InsertFolder(const StoreFolderRecord& folder) = 0;
+
   // Updates folder metadata
   virtual bool UpdateFolder(const std::string& folder_id, const std::string& name,
                             int64_t modified_utc, const std::string& metadata) = 0;
@@ -124,6 +133,11 @@ class MetadataStore {
 
   // Creates a file in the store
   virtual bool CreateFile(const StoreFileRecord& file) = 0;
+
+  // Inserts a file WITHOUT overwriting an existing row.
+  // Returns VXCORE_ERR_ALREADY_EXISTS when the id is already present. See InsertFolder().
+  // Attachments are NOT written here; call SetFileAttachments() separately.
+  virtual VxCoreError InsertFile(const StoreFileRecord& file) = 0;
 
   // Updates file metadata (name, modified_utc, metadata)
   virtual bool UpdateFile(const std::string& file_id, const std::string& name, int64_t modified_utc,

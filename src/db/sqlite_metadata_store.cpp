@@ -171,8 +171,31 @@ bool SqliteMetadataStore::CreateFolder(const StoreFolderRecord &folder) {
   return true;
 }
 
-bool SqliteMetadataStore::UpdateFolder(const std::string &folder_id, const std::string &name,
-                                       int64_t modified_utc, const std::string &metadata) {
+VxCoreError SqliteMetadataStore::InsertFolder(const StoreFolderRecord &folder) {
+  if (!IsOpen()) {
+    last_error_ = "Store not open";
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  int64_t parent_db_id = GetFolderDbId(folder.parent_id);
+  if (parent_db_id == -1 && !folder.parent_id.empty()) {
+    last_error_ = "Parent folder not found: " + folder.parent_id;
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  bool conflict = false;
+  int64_t folder_db_id =
+      file_db_->InsertFolder(folder.id, parent_db_id, folder.name, folder.created_utc,
+                             folder.modified_utc, folder.metadata, &conflict);
+  if (folder_db_id == -1) {
+    last_error_ = "Failed to insert folder: " + file_db_->GetLastError();
+    return conflict ? VXCORE_ERR_ALREADY_EXISTS : VXCORE_ERR_DATABASE;
+  }
+
+  return VXCORE_OK;
+}
+
+bool SqliteMetadataStore::UpdateFolder(const std::string &folder_id, const std::string &name,                                       int64_t modified_utc, const std::string &metadata) {
   if (!IsOpen()) {
     last_error_ = "Store not open";
     return false;
@@ -357,6 +380,36 @@ bool SqliteMetadataStore::CreateFile(const StoreFileRecord &file) {
   }
 
   return true;
+}
+
+VxCoreError SqliteMetadataStore::InsertFile(const StoreFileRecord &file) {
+  if (!IsOpen()) {
+    last_error_ = "Store not open";
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  int64_t folder_db_id = GetFolderDbId(file.folder_id);
+  if (folder_db_id == -1 && !file.folder_id.empty()) {
+    last_error_ = "Parent folder not found: " + file.folder_id;
+    return VXCORE_ERR_NOT_FOUND;
+  }
+
+  bool conflict = false;
+  int64_t file_db_id = file_db_->InsertFile(file.id, folder_db_id, file.name, file.created_utc,
+                                            file.modified_utc, file.metadata, &conflict);
+  if (file_db_id == -1) {
+    last_error_ = "Failed to insert file: " + file_db_->GetLastError();
+    return conflict ? VXCORE_ERR_ALREADY_EXISTS : VXCORE_ERR_DATABASE;
+  }
+
+  if (!file.tags.empty()) {
+    if (!file_db_->SetFileTags(file_db_id, file.tags)) {
+      last_error_ = "Failed to set file tags: " + file_db_->GetLastError();
+      return VXCORE_ERR_DATABASE;
+    }
+  }
+
+  return VXCORE_OK;
 }
 
 bool SqliteMetadataStore::UpdateFile(const std::string &file_id, const std::string &name,
