@@ -2284,12 +2284,18 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
 
   // Reject importing a folder from within the notebook root to prevent circular copies
   try {
-    fs::path canonical_external = fs::canonical(external_path);
-    fs::path root_path = PathFromUtf8(notebook_->GetRootFolder());
+    // BOTH sides must be canonicalized before comparing. Canonicalizing only
+    // the external path made the check silently pass whenever the two spellings
+    // of the same location differ — e.g. on Windows where the notebook root was
+    // opened through an 8.3 short path (C:/Users/RUNNER~1/...) while
+    // fs::canonical resolves the external path to the long form
+    // (C:/Users/runneradmin/...), or anywhere a symlink is in play.
+    fs::path canonical_external = fs::weakly_canonical(external_path);
+    fs::path canonical_root = fs::weakly_canonical(PathFromUtf8(notebook_->GetRootFolder()));
     // Check if external path starts with (is under) notebook root
-    auto mismatch_pair = std::mismatch(root_path.begin(), root_path.end(),
+    auto mismatch_pair = std::mismatch(canonical_root.begin(), canonical_root.end(),
                                        canonical_external.begin(), canonical_external.end());
-    if (mismatch_pair.first == root_path.end()) {
+    if (mismatch_pair.first == canonical_root.end()) {
       // root_path is a prefix of canonical_external (external is inside notebook)
       VXCORE_LOG_ERROR("ImportFolder: Cannot import folder from within notebook root: %s",
                        external_folder_path.c_str());

@@ -1729,11 +1729,15 @@ VxCoreError RawFolderManager::ImportFolder(const std::string &dest_folder_path,
 
   // Reject importing from within the notebook root
   try {
-    fs::path canonical_external = fs::canonical(external_path);
-    fs::path root_path = PathFromUtf8(notebook_->GetRootFolder());
-    auto mismatch_pair = std::mismatch(root_path.begin(), root_path.end(),
+    // BOTH sides must be canonicalized — see the same guard in
+    // BundledFolderManager::ImportFolder for why comparing a raw root against a
+    // canonicalized external path misses containment (8.3 short paths,
+    // symlinks).
+    fs::path canonical_external = fs::weakly_canonical(external_path);
+    fs::path canonical_root = fs::weakly_canonical(PathFromUtf8(notebook_->GetRootFolder()));
+    auto mismatch_pair = std::mismatch(canonical_root.begin(), canonical_root.end(),
                                        canonical_external.begin(), canonical_external.end());
-    if (mismatch_pair.first == root_path.end()) {
+    if (mismatch_pair.first == canonical_root.end()) {
       VXCORE_LOG_ERROR("ImportFolder: Cannot import folder from within notebook root: %s",
                        external_folder_path.c_str());
       return VXCORE_ERR_INVALID_PARAM;
