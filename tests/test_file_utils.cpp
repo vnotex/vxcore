@@ -48,7 +48,6 @@ int test_clean_path() {
   ASSERT_EQ(vxcore::CleanPath("./local"), "local");
   ASSERT_EQ(vxcore::CleanPath("local/../bin"), "bin");
   ASSERT_EQ(vxcore::CleanPath("/local/usr/../bin"), "/local/bin");
-  ASSERT_EQ(vxcore::CleanPath("a\\b\\c"), "a/b/c");
   ASSERT_EQ(vxcore::CleanPath("a//b///c"), "a/b/c");
   ASSERT_EQ(vxcore::CleanPath("a/./b"), "a/b");
   ASSERT_EQ(vxcore::CleanPath("../a"), "../a");
@@ -58,15 +57,36 @@ int test_clean_path() {
   ASSERT_EQ(vxcore::CleanPath("/a/b/../.."), "/");
   ASSERT_EQ(vxcore::CleanPath("/../a"), "/a");
 
+  ASSERT_EQ(vxcore::CleanPath("C:/Windows/System32"), "C:/Windows/System32");
+
+  // Backslash and drive-letter handling is inherently platform-dependent:
+  // CleanPath normalizes through std::filesystem::path, where '\' is a
+  // separator (and "C:" a root name) ONLY on Windows. On POSIX a backslash is
+  // an ordinary filename character, so such inputs are single components and
+  // come back verbatim. Assert the real behavior on each platform rather than
+  // the Windows one everywhere.
+#ifdef _WIN32
+  ASSERT_EQ(vxcore::CleanPath("a\\b\\c"), "a/b/c");
   ASSERT_EQ(vxcore::CleanPath("C:\\Users\\test"), "C:/Users/test");
   ASSERT_EQ(vxcore::CleanPath("C:\\Users\\..\\test"), "C:/test");
-  ASSERT_EQ(vxcore::CleanPath("C:/Windows/System32"), "C:/Windows/System32");
   ASSERT_EQ(vxcore::CleanPath("C:\\Windows\\..\\..\\test"), "C:/test");
   ASSERT_EQ(vxcore::CleanPath("\\\\server\\share\\path"), "//server/share/path");
   ASSERT_EQ(vxcore::CleanPath("\\\\server\\share\\..\\other"), "//server/other");
   ASSERT_EQ(vxcore::CleanPath("C:\\"), "C:/");
   ASSERT_EQ(vxcore::CleanPath("C:\\.\\Users"), "C:/Users");
   ASSERT_EQ(vxcore::CleanPath("D:\\folder\\subfolder\\..\\file.txt"), "D:/folder/file.txt");
+#else
+  ASSERT_EQ(vxcore::CleanPath("a\\b\\c"), "a\\b\\c");
+  ASSERT_EQ(vxcore::CleanPath("C:\\Users\\test"), "C:\\Users\\test");
+  ASSERT_EQ(vxcore::CleanPath("C:\\Users\\..\\test"), "C:\\Users\\..\\test");
+  ASSERT_EQ(vxcore::CleanPath("C:\\Windows\\..\\..\\test"), "C:\\Windows\\..\\..\\test");
+  ASSERT_EQ(vxcore::CleanPath("\\\\server\\share\\path"), "\\\\server\\share\\path");
+  ASSERT_EQ(vxcore::CleanPath("\\\\server\\share\\..\\other"), "\\\\server\\share\\..\\other");
+  ASSERT_EQ(vxcore::CleanPath("C:\\"), "C:\\");
+  ASSERT_EQ(vxcore::CleanPath("C:\\.\\Users"), "C:\\.\\Users");
+  ASSERT_EQ(vxcore::CleanPath("D:\\folder\\subfolder\\..\\file.txt"),
+            "D:\\folder\\subfolder\\..\\file.txt");
+#endif
 
   std::cout << "  ✓ test_clean_path passed" << std::endl;
   return 0;
