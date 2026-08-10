@@ -25,11 +25,19 @@ function(add_vxcore_test test_name)
     cmake_parse_arguments(VXCORE_TEST "${options}" "" "" ${ARGN})
 
     add_executable(${test_name} ${test_name}.cpp)
-    target_link_libraries(${test_name} PRIVATE vxcore)
     target_include_directories(${test_name} PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+    # Link order matters on Linux: ld resolves left-to-right and the default
+    # --as-needed drops a DSO that satisfied no undefined symbol seen so far.
+    # vxcore_test_internals is a STATIC archive whose members (e.g.
+    # mock_sync_backend.cpp -> vxcore::BackendRegistration) pull in symbols that
+    # only vxcore provides, so it MUST precede vxcore on the link line. With the
+    # reverse order, a test whose own TU touches no vxcore symbol (e.g.
+    # test_mock_sync_backend) drops libvxcore.so and then fails with an
+    # undefined reference from inside the archive.
     if(VXCORE_TEST_INTERNALS)
         target_link_libraries(${test_name} PRIVATE vxcore_test_internals)
     endif()
+    target_link_libraries(${test_name} PRIVATE vxcore)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endfunction()
 
