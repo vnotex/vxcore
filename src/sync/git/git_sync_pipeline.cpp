@@ -222,8 +222,24 @@ VxCoreError GitSyncPipeline::ApplyDefaultGitConfig() {
 
   // core.autocrlf is set as a string ("false") to match git's textual config
   // representation; the others are booleans.
+  //
+  // core.safecrlf MUST be pinned off for the same reason. Our own
+  // .gitattributes declares `* text=auto eol=lf`, i.e. we deliberately
+  // normalize CRLF -> LF on check-in. safecrlf turns that intended,
+  // policy-declared normalization into a hard ERROR whenever the working-tree
+  // file actually has CRLF ("CRLF would be replaced by LF in <path>"), which
+  // aborts StageAll and fails the whole sync. Git for Windows ships
+  // `core.safecrlf = true` in its SYSTEM gitconfig
+  // (C:\Program Files\Git\etc\gitconfig), and a user's global `autocrlf=false`
+  // does NOT override it — so whether sync works would otherwise depend on
+  // which git installer the user happened to run. It is reliably reachable:
+  // vx_notebook/config.json is written through a text-mode std::ofstream, so on
+  // Windows it lands on disk with CRLF, and any note saved with CRLF endings
+  // hits the same wall. safecrlf is a safety net for a human running `git add`
+  // by hand; it has no business vetoing VNote's own declared EOL policy.
   rc = git_config_set_bool(cfg.get(), "core.filemode", 0);
   if (rc == 0) rc = git_config_set_string(cfg.get(), "core.autocrlf", "false");
+  if (rc == 0) rc = git_config_set_string(cfg.get(), "core.safecrlf", "false");
   if (rc == 0) rc = git_config_set_bool(cfg.get(), "commit.gpgsign", 0);
   if (rc == 0) rc = git_config_set_string(cfg.get(), "user.name", user_name);
   if (rc == 0) rc = git_config_set_string(cfg.get(), "user.email", user_email);
