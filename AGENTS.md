@@ -577,6 +577,31 @@ VXCORE_LOG_INFO("Opening notebook: %s", path.c_str());
 VXCORE_LOG_ERROR("Failed to open database: %s", db_path.c_str());
 ```
 
+### Context locale
+
+`vxcore_context_set_locale(ctx, "zh_CN")` / `vxcore_context_get_locale(ctx, &out)` set the
+app-wide locale used for locale-aware, UTF-8 output. Today the only consumer is
+`SnippetManager`'s built-in `%MMM%` / `%MMMM%` / `%ddd%` / `%dddd%` snippets.
+
+- **Runtime-only.** The locale is consumer *policy* pushed in at startup; it is NEVER written
+  to `vxcore.json`. (VNote pushes `QLocale().name()` right after `loadTranslators`.)
+- **English is the deterministic default.** A context that is never told a locale resolves
+  through the English table — output does not depend on the host OS locale, so the CLI, tests
+  and other embedders are reproducible.
+- **Month/day names never come from `strftime` / `setlocale`.** They come from the
+  statically-compiled UTF-8 tables in `src/core/datetime_names.{h,cpp}`. `strftime` would
+  return ANSI-code-page bytes on Windows, which become mojibake once they cross the C ABI
+  into a UTF-8-decoding consumer. Do not reintroduce a `strftime`-based helper.
+- **Non-ASCII table entries are written as explicit UTF-8 byte escapes** (`"\xE5\x9B\x9B..."`).
+  The production `vxcore` target does not get MSVC's `/utf-8`, so a raw CJK literal would be
+  re-encoded with the active ANSI code page. Do not "clean them up".
+- **Adding a locale** means adding a table entry in `datetime_names.cpp` plus a
+  `CanonicalizeLocale` mapping — nothing else. Matching is: normalize `-`→`_`, lowercase,
+  exact match, then language subtag, else English.
+- `SnippetManager` is not thread-safe; `SetLocale` inherits that. Set it before use, from the
+  thread that applies snippets. Its copy/move operations are deleted because the built-in
+  dynamic callbacks capture `this`.
+
 ## Common Patterns
 
 ### Adding a New C API Function

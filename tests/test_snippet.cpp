@@ -1,10 +1,12 @@
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <iostream>
 #include <nlohmann/json.hpp>
 
 #include "core/context.h"
+#include "core/datetime_names.h"
 #include "core/snippet_manager.h"
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
@@ -1340,6 +1342,213 @@ int test_snippet_api_expand() {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Locale-aware month/day name tests.
+// ---------------------------------------------------------------------------
+
+// Deterministic table tests: fixed indices, compared against explicit UTF-8
+// byte arrays so a mis-encoded build cannot pass.
+int test_datetime_names_tables() {
+  std::cout << "  Running test_datetime_names_tables..." << std::endl;
+
+  const auto &en = vxcore::DateTimeNames::ForLocale("en_US");
+  ASSERT_EQ(std::string(en.CanonicalName()), std::string("en"));
+  ASSERT_EQ(std::string(en.ShortMonth(3)), std::string("Apr"));
+  ASSERT_EQ(std::string(en.LongMonth(3)), std::string("April"));
+  ASSERT_EQ(std::string(en.ShortDay(4)), std::string("Thu"));
+  ASSERT_EQ(std::string(en.LongDay(4)), std::string("Thursday"));
+
+  const auto &zh = vxcore::DateTimeNames::ForLocale("zh_CN");
+  ASSERT_EQ(std::string(zh.CanonicalName()), std::string("zh_CN"));
+  ASSERT_EQ(std::string(zh.ShortMonth(3)), std::string("4\xE6\x9C\x88"));
+  ASSERT_EQ(std::string(zh.LongMonth(3)), std::string("\xE5\x9B\x9B\xE6\x9C\x88"));
+  ASSERT_EQ(std::string(zh.LongMonth(11)), std::string("\xE5\x8D\x81\xE4\xBA\x8C\xE6\x9C\x88"));
+  ASSERT_EQ(std::string(zh.ShortDay(4)), std::string("\xE5\x91\xA8\xE5\x9B\x9B"));
+  ASSERT_EQ(std::string(zh.LongDay(4)), std::string("\xE6\x98\x9F\xE6\x9C\x9F\xE5\x9B\x9B"));
+
+  const auto &ja = vxcore::DateTimeNames::ForLocale("ja_JP");
+  ASSERT_EQ(std::string(ja.CanonicalName()), std::string("ja"));
+  ASSERT_EQ(std::string(ja.ShortMonth(3)), std::string("4\xE6\x9C\x88"));
+  ASSERT_EQ(std::string(ja.LongMonth(3)), std::string("4\xE6\x9C\x88"));
+  ASSERT_EQ(std::string(ja.ShortDay(4)), std::string("\xE6\x9C\xA8"));
+  ASSERT_EQ(std::string(ja.LongDay(4)), std::string("\xE6\x9C\xA8\xE6\x9B\x9C\xE6\x97\xA5"));
+
+  // Out-of-range indices clamp to January / Sunday.
+  ASSERT_EQ(std::string(en.ShortMonth(-1)), std::string("Jan"));
+  ASSERT_EQ(std::string(en.ShortMonth(12)), std::string("Jan"));
+  ASSERT_EQ(std::string(en.ShortDay(-1)), std::string("Sun"));
+  ASSERT_EQ(std::string(en.ShortDay(7)), std::string("Sun"));
+
+  std::cout << "  \xe2\x9c\x93 test_datetime_names_tables passed" << std::endl;
+  return 0;
+}
+
+int test_datetime_names_resolution() {
+  std::cout << "  Running test_datetime_names_resolution..." << std::endl;
+
+  ASSERT_EQ(vxcore::CanonicalizeLocale("zh-TW"), std::string("zh_CN"));
+  ASSERT_EQ(vxcore::CanonicalizeLocale("ja_JP"), std::string("ja"));
+  ASSERT_EQ(vxcore::CanonicalizeLocale("ZH_cn"), std::string("zh_CN"));
+  ASSERT_EQ(vxcore::CanonicalizeLocale("pt_BR"), std::string("en"));
+  ASSERT_EQ(vxcore::CanonicalizeLocale(""), std::string("en"));
+  ASSERT_EQ(vxcore::CanonicalizeLocale("en_GB"), std::string("en"));
+
+  std::cout << "  \xe2\x9c\x93 test_datetime_names_resolution passed" << std::endl;
+  return 0;
+}
+
+namespace {
+
+struct ExpectedNames {
+  std::string ddd;
+  std::string dddd;
+  std::string mmm;
+  std::string mmmm;
+};
+
+// Snapshot the expected values derived from the current wall clock through the
+// same table the callbacks use.
+ExpectedNames derive_expected(const std::string &locale) {
+  const auto &names = vxcore::DateTimeNames::ForLocale(locale);
+  std::time_t t = std::time(nullptr);
+  struct tm local_tm;
+#ifdef _WIN32
+  localtime_s(&local_tm, &t);
+#else
+  localtime_r(&t, &local_tm);
+#endif
+  ExpectedNames e;
+  e.ddd = names.ShortDay(local_tm.tm_wday);
+  e.dddd = names.LongDay(local_tm.tm_wday);
+  e.mmm = names.ShortMonth(local_tm.tm_mon);
+  e.mmmm = names.LongMonth(local_tm.tm_mon);
+  return e;
+}
+
+}  // namespace
+
+// Callback integration: each token is expanded on its own and compared against
+// the values derived immediately before AND after THAT expansion, so a midnight /
+// month-boundary tick cannot flake (and cannot mix generations across tokens).
+int test_snippet_locale_callbacks() {
+  std::cout << "  Running test_snippet_locale_callbacks..." << std::endl;
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  auto *mgr = vctx->snippet_manager.get();
+
+  const char *locales[] = {"", "en_US", "zh_CN", "ja_JP"};
+  for (const char *loc : locales) {
+    if (loc[0] != '\0') {
+      mgr->SetLocale(loc);
+    }
+    // Default (no SetLocale call) resolves through the English table.
+    ASSERT_EQ(mgr->GetLocale(), vxcore::CanonicalizeLocale(loc));
+
+    struct Token {
+      const char *symbol;
+      std::string ExpectedNames::*field;
+    };
+    const Token tokens[] = {{"%ddd%", &ExpectedNames::ddd},
+                            {"%dddd%", &ExpectedNames::dddd},
+                            {"%MMM%", &ExpectedNames::mmm},
+                            {"%MMMM%", &ExpectedNames::mmmm}};
+
+    for (const Token &tok : tokens) {
+      ExpectedNames before = derive_expected(loc);
+      int offset = -1;
+      std::string got = mgr->ExpandSymbols(tok.symbol, "", offset, {});
+      ExpectedNames after = derive_expected(loc);
+      ASSERT_TRUE(got == before.*(tok.field) || got == after.*(tok.field));
+    }
+  }
+
+  vxcore_context_destroy(ctx);
+  std::cout << "  \xe2\x9c\x93 test_snippet_locale_callbacks passed" << std::endl;
+  return 0;
+}
+
+// Overrides still beat the built-in dynamic value, regardless of locale.
+int test_snippet_locale_override_wins() {
+  std::cout << "  Running test_snippet_locale_override_wins..." << std::endl;
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  auto *mgr = vctx->snippet_manager.get();
+  mgr->SetLocale("zh_CN");
+
+  vxcore::OverrideMap overrides;
+  overrides["MMM"] = "OVERRIDDEN";
+  overrides["dddd"] = "CUSTOM_DAY";
+
+  int offset = -1;
+  std::string got = mgr->ExpandSymbols("%MMM%|%dddd%", "", offset, overrides);
+  ASSERT_EQ(got, std::string("OVERRIDDEN|CUSTOM_DAY"));
+
+  vxcore_context_destroy(ctx);
+  std::cout << "  \xe2\x9c\x93 test_snippet_locale_override_wins passed" << std::endl;
+  return 0;
+}
+
+int test_context_locale_api() {
+  std::cout << "  Running test_context_locale_api..." << std::endl;
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  // Default is "en".
+  char *out = nullptr;
+  err = vxcore_context_get_locale(ctx, &out);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(out);
+  ASSERT_EQ(std::string(out), std::string("en"));
+  vxcore_string_free(out);
+
+  // Round-trip canonicalization.
+  ASSERT_EQ(vxcore_context_set_locale(ctx, "zh-TW"), VXCORE_OK);
+  out = nullptr;
+  ASSERT_EQ(vxcore_context_get_locale(ctx, &out), VXCORE_OK);
+  ASSERT_EQ(std::string(out), std::string("zh_CN"));
+  vxcore_string_free(out);
+
+  ASSERT_EQ(vxcore_context_set_locale(ctx, "ja_JP"), VXCORE_OK);
+  out = nullptr;
+  ASSERT_EQ(vxcore_context_get_locale(ctx, &out), VXCORE_OK);
+  ASSERT_EQ(std::string(out), std::string("ja"));
+  vxcore_string_free(out);
+
+  // The setter forwards to the snippet manager.
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  ASSERT_EQ(vctx->snippet_manager->GetLocale(), std::string("ja"));
+
+  // NULL / empty resolve to English.
+  ASSERT_EQ(vxcore_context_set_locale(ctx, nullptr), VXCORE_OK);
+  out = nullptr;
+  ASSERT_EQ(vxcore_context_get_locale(ctx, &out), VXCORE_OK);
+  ASSERT_EQ(std::string(out), std::string("en"));
+  vxcore_string_free(out);
+
+  ASSERT_EQ(vxcore_context_set_locale(ctx, "zh_CN"), VXCORE_OK);
+  ASSERT_EQ(vxcore_context_set_locale(ctx, ""), VXCORE_OK);
+  out = nullptr;
+  ASSERT_EQ(vxcore_context_get_locale(ctx, &out), VXCORE_OK);
+  ASSERT_EQ(std::string(out), std::string("en"));
+  vxcore_string_free(out);
+
+  // Null-pointer checks.
+  ASSERT_EQ(vxcore_context_set_locale(nullptr, "en"), VXCORE_ERR_NULL_POINTER);
+  ASSERT_EQ(vxcore_context_get_locale(nullptr, &out), VXCORE_ERR_NULL_POINTER);
+  ASSERT_EQ(vxcore_context_get_locale(ctx, nullptr), VXCORE_ERR_NULL_POINTER);
+
+  vxcore_context_destroy(ctx);
+  std::cout << "  \xe2\x9c\x93 test_context_locale_api passed" << std::endl;
+  return 0;
+}
+
 int main() {
   vxcore_set_test_mode(1);
   vxcore_clear_test_directory();
@@ -1385,6 +1594,11 @@ int main() {
   RUN_TEST(test_snippet_api_apply);
   RUN_TEST(test_snippet_api_apply_with_overrides);
   RUN_TEST(test_snippet_api_expand);
+  RUN_TEST(test_datetime_names_tables);
+  RUN_TEST(test_datetime_names_resolution);
+  RUN_TEST(test_snippet_locale_callbacks);
+  RUN_TEST(test_snippet_locale_override_wins);
+  RUN_TEST(test_context_locale_api);
   std::cout << "\nAll snippet tests passed!" << std::endl;
   vxcore_clear_test_directory();
   return 0;

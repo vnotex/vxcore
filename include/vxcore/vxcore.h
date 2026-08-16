@@ -28,6 +28,16 @@ VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
 
 VXCORE_API void vxcore_context_destroy(VxCoreContextHandle context);
 
+// Set the app-wide locale used for locale-aware, UTF-8 output (currently the
+// built-in %MMM%/%MMMM%/%ddd%/%dddd% snippets). |locale| is a Qt/POSIX-style name
+// such as "en_US", "zh_CN", "ja". Unknown or NULL/empty resolves to English.
+// Runtime-only: NOT persisted to vxcore.json. Not thread-safe; call before use.
+VXCORE_API VxCoreError vxcore_context_set_locale(VxCoreContextHandle context,
+                                                 const char *locale);
+
+// Out: canonical locale name ("en" | "zh_CN" | "ja"). Free with vxcore_string_free.
+VXCORE_API VxCoreError vxcore_context_get_locale(VxCoreContextHandle context, char **out_locale);
+
 // Snapshot current session state (buffers, workspaces) to disk.
 // Sets the shutdown_called flag, preventing destructor double-saves.
 // Idempotent: no-op if already called.

@@ -11,6 +11,7 @@
 namespace vxcore {
 
 class ConfigManager;
+class DateTimeNames;
 
 enum class SnippetType {
   kText,
@@ -36,9 +37,26 @@ struct ApplyResult {
 using DynamicCallback = std::function<std::string()>;
 using OverrideMap = std::unordered_map<std::string, std::string>;
 
+// NOT thread-safe. Set the locale (SetLocale) before use, from the same thread
+// that applies snippets; the built-in dynamic callbacks read the locale state at
+// call time.
 class SnippetManager {
  public:
   explicit SnippetManager(ConfigManager *config_manager);
+
+  // Copy and move are deleted: the built-in dynamic callbacks capture `this`, so
+  // a copied/moved manager would carry callbacks still pointing at the original
+  // object. Do NOT reintroduce them.
+  SnippetManager(const SnippetManager &) = delete;
+  SnippetManager &operator=(const SnippetManager &) = delete;
+  SnippetManager(SnippetManager &&) = delete;
+  SnippetManager &operator=(SnippetManager &&) = delete;
+
+  // Set the locale used by the locale-aware built-in snippets (%ddd%, %dddd%,
+  // %MMM%, %MMMM%). Accepts Qt/POSIX-style names ("en_US", "zh_CN", "ja");
+  // unknown or empty resolves to English. Stores the canonical name.
+  void SetLocale(const std::string &locale);
+  const std::string &GetLocale() const;
 
   VxCoreError GetSnippetFolderPath(std::string &out_path) const;
   VxCoreError ListSnippets(std::vector<SnippetData> &out_snippets) const;
@@ -76,6 +94,8 @@ class SnippetManager {
 
   ConfigManager *config_manager_ = nullptr;
   std::string snippet_folder_path_;
+  std::string locale_;
+  const DateTimeNames *names_ = nullptr;
   std::vector<SnippetData> builtin_snippets_;
   std::unordered_map<std::string, DynamicCallback> dynamic_callbacks_;
 };

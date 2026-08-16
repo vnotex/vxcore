@@ -37,6 +37,9 @@ struct VxCoreContext {
   // be alive at that point.
   std::unique_ptr<ActivityManager> activity_manager;
   std::string last_error;
+  // App-wide locale used for locale-aware, UTF-8 output (see
+  // vxcore_context_set_locale). Runtime-only: never persisted to vxcore.json.
+  std::string locale = "en";
   bool shutdown_called = false;
 };
 

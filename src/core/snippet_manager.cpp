@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/config_manager.h"
+#include "core/datetime_names.h"
 #include "utils/file_utils.h"
 
 namespace vxcore {
@@ -82,18 +83,23 @@ static int IsoWeekNumber(const struct tm &tm_val) {
   return w;
 }
 
-// Format a strftime result (small buffer, for day/month names).
-static std::string FormatStrftime(const struct tm &tm_val, const char *fmt) {
-  char buf[64];
-  std::strftime(buf, sizeof(buf), fmt, &tm_val);
-  return std::string(buf);
-}
+// NOTE: month/day names come from DateTimeNames (locale-independent UTF-8
+// tables), never from strftime/setlocale. Do not reintroduce a strftime helper.
 
 SnippetManager::SnippetManager(ConfigManager *config_manager)
     : config_manager_(config_manager),
-      snippet_folder_path_(config_manager->GetAppDataPath() + "/snippets") {
+      snippet_folder_path_(config_manager->GetAppDataPath() + "/snippets"),
+      locale_(CanonicalizeLocale("")),
+      names_(&DateTimeNames::ForLocale("")) {
   LoadBuiltInSnippets();
 }
+
+void SnippetManager::SetLocale(const std::string &locale) {
+  locale_ = CanonicalizeLocale(locale);
+  names_ = &DateTimeNames::ForLocale(locale_);
+}
+
+const std::string &SnippetManager::GetLocale() const { return locale_; }
 
 void SnippetManager::LoadBuiltInSnippets() {
   builtin_snippets_.clear();
@@ -115,24 +121,24 @@ void SnippetManager::LoadBuiltInSnippets() {
       []() { return std::to_string(GetLocalTime().tm_mday); });
   add("dd", "the day as number with a leading zero (01 to 31)",
       []() { return ZeroPad(GetLocalTime().tm_mday, 2); });
-  add("ddd", "the abbreviated localized day name (Mon to Sun)",
-      []() { return FormatStrftime(GetLocalTime(), "%a"); });
-  add("dddd", "the full localized day name (Monday to Sunday)",
-      []() { return FormatStrftime(GetLocalTime(), "%A"); });
+  add("ddd", "the abbreviated day name (locale-aware, follows the app locale)",
+      [this]() { return std::string(names_->ShortDay(GetLocalTime().tm_wday)); });
+  add("dddd", "the full day name (locale-aware, follows the app locale)",
+      [this]() { return std::string(names_->LongDay(GetLocalTime().tm_wday)); });
 
   // Month snippets.
   add("M", "the month as number without a leading zero (1 to 12)",
       []() { return std::to_string(GetLocalTime().tm_mon + 1); });
   add("MM", "the month as number with a leading zero (01 to 12)",
       []() { return ZeroPad(GetLocalTime().tm_mon + 1, 2); });
-  add("MMM", "the abbreviated localized month name (Jan to Dec)",
-      []() { return FormatStrftime(GetLocalTime(), "%b"); });
-  add("MMMM", "the full localized month name (January to December)",
-      []() { return FormatStrftime(GetLocalTime(), "%B"); });
+  add("MMM", "the abbreviated month name (locale-aware, follows the app locale)",
+      [this]() { return std::string(names_->ShortMonth(GetLocalTime().tm_mon)); });
+  add("MMMM", "the full month name (locale-aware, follows the app locale)",
+      [this]() { return std::string(names_->LongMonth(GetLocalTime().tm_mon)); });
 
   // Year snippets.
   add("yy", "the year as two digit number (00 to 99)",
-      []() { return FormatStrftime(GetLocalTime(), "%y"); });
+      []() { return ZeroPad((GetLocalTime().tm_year + 1900) % 100, 2); });
   add("yyyy", "the year as four digit number",
       []() { return std::to_string(GetLocalTime().tm_year + 1900); });
 

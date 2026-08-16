@@ -5,6 +5,7 @@
 #include "core/buffer_manager.h"
 #include "core/config_manager.h"
 #include "core/context.h"
+#include "core/datetime_names.h"
 #include "core/event_manager.h"
 #include "core/notebook_manager.h"
 #include "core/snippet_manager.h"
@@ -275,6 +276,46 @@ VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context
     *out_message = ctx->last_error.c_str();
   }
   return VXCORE_OK;
+}
+
+VXCORE_API VxCoreError vxcore_context_set_locale(VxCoreContextHandle context,
+                                                 const char *locale) {
+  if (!context) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    // NULL/empty is valid and means English.
+    ctx->locale = vxcore::CanonicalizeLocale(locale ? std::string(locale) : std::string());
+    if (ctx->snippet_manager) {
+      ctx->snippet_manager->SetLocale(ctx->locale);
+    }
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("vxcore_context_set_locale failed: %s", e.what());
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_context_get_locale(VxCoreContextHandle context, char **out_locale) {
+  if (!context || !out_locale) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  *out_locale = nullptr;
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    *out_locale = vxcore_strdup(ctx->locale.c_str());
+    if (!*out_locale) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("vxcore_context_get_locale failed: %s", e.what());
+    return VXCORE_ERR_UNKNOWN;
+  }
 }
 
 VXCORE_API VxCoreError vxcore_context_get_data_path(VxCoreContextHandle context,

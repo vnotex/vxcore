@@ -379,6 +379,7 @@ add_test(NAME test_asset_utils COMMAND test_asset_utils)
 # Compiles snippet_manager and dependencies directly since C++ symbols aren't DLL-exported.
 add_executable(test_snippet test_snippet.cpp
     ${CMAKE_SOURCE_DIR}/src/core/snippet_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/datetime_names.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
 target_link_libraries(test_snippet PRIVATE vxcore nlohmann_json)
 target_include_directories(test_snippet PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)

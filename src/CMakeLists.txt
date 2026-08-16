@@ -47,6 +47,7 @@ set(VXCORE_SOURCES
     core/raw_folder_manager.cpp
     core/template_manager.cpp
     core/snippet_manager.cpp
+    core/datetime_names.cpp
     core/work_queue.cpp
     core/event_manager.cpp
     core/activity_manager.cpp
