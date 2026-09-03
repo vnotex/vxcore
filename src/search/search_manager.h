@@ -64,6 +64,7 @@ class SearchManager {
   std::vector<SearchFileInfo> GetMatchedFilesByPattern(std::vector<SearchFileInfo> filtered_files,
                                                        const std::string &pattern,
                                                        bool include_files, bool include_folders,
+                                                       SearchFileMatchTarget match_target,
                                                        int max_results);
 
   std::vector<SearchFileInfo> GetMatchedFilesByTags(std::vector<SearchFileInfo> filtered_files,

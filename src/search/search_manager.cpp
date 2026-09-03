@@ -76,10 +76,11 @@ VxCoreError SearchManager::SearchFiles(const std::string &query_json,
     auto query = SearchFilesQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
     VXCORE_LOG_DEBUG(
         "SearchManager::SearchFiles: parsed pattern='%s' includeFiles=%d "
-        "includeFolders=%d maxResults=%d",
-        query.pattern.c_str(), query.include_files, query.include_folders, query.max_results);
+        "includeFolders=%d matchTarget=%d maxResults=%d",
+        query.pattern.c_str(), query.include_files, query.include_folders,
+        static_cast<int>(query.match_target), query.max_results);
 
-    auto filtered_files = FetchFilesToSearch(query.scope, input_files_json, true);
+    auto filtered_files = FetchFilesToSearch(query.scope, input_files_json, query.include_folders);
     VXCORE_LOG_DEBUG("SearchManager::SearchFiles: filtered_files count=%zu", filtered_files.size());
     for (size_t i = 0; i < filtered_files.size() && i < 20; ++i) {
       VXCORE_LOG_DEBUG("SearchManager::SearchFiles: file[%zu] name='%s' path='%s' is_folder=%d", i,
@@ -89,7 +90,7 @@ VxCoreError SearchManager::SearchFiles(const std::string &query_json,
 
     auto matched_files =
         GetMatchedFilesByPattern(std::move(filtered_files), query.pattern, query.include_files,
-                                 query.include_folders, query.max_results);
+                                 query.include_folders, query.match_target, query.max_results);
     VXCORE_LOG_DEBUG("SearchManager::SearchFiles: matched_files count=%zu", matched_files.size());
 
     out_results_json = SerializeFileResults(matched_files, query.max_results);
@@ -261,7 +262,7 @@ VxCoreError SearchManager::SearchByTags(const std::string &query_json,
 
 std::vector<SearchFileInfo> SearchManager::GetMatchedFilesByPattern(
     std::vector<SearchFileInfo> filtered_files, const std::string &pattern, bool include_files,
-    bool include_folders, int max_results) {
+    bool include_folders, SearchFileMatchTarget match_target, int max_results) {
   if (pattern.empty()) {
     std::vector<SearchFileInfo> matched_files;
     for (auto &file : filtered_files) {
@@ -286,8 +287,11 @@ std::vector<SearchFileInfo> SearchManager::GetMatchedFilesByPattern(
       continue;
     }
 
-    bool name_match = MatchesPattern(ToLowerString(file.name), lower_pattern);
-    bool path_match = !name_match && MatchesPattern(ToLowerString(file.path), lower_pattern);
+    const bool match_name = match_target != SearchFileMatchTarget::kPath;
+    const bool match_path = match_target != SearchFileMatchTarget::kName;
+    bool name_match = match_name && MatchesPattern(ToLowerString(file.name), lower_pattern);
+    bool path_match =
+        match_path && !name_match && MatchesPattern(ToLowerString(file.path), lower_pattern);
 
     if (name_match) {
       name_matches.push_back(std::move(file));

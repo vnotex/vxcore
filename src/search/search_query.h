@@ -54,10 +54,13 @@ struct SearchInputFiles {
   static SearchInputFiles FromJson(const Notebook *notebook, const nlohmann::json &json);
 };
 
+enum class SearchFileMatchTarget { kName, kPath, kNameAndPath };
+
 struct SearchFilesQuery {
   std::string pattern;
   bool include_files = true;
   bool include_folders = true;
+  SearchFileMatchTarget match_target = SearchFileMatchTarget::kNameAndPath;
   SearchScope scope;
   int max_results = 100;
 

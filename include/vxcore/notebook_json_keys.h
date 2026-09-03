@@ -117,6 +117,10 @@ inline constexpr const char *kJsonKeyAttachments = "attachments";
 // OUTPUT-ONLY and MUST NOT be persisted to vx.json or any config file.
 inline constexpr const char *kJsonKeyNodeExists = "exists";
 
+// ---------- Search query keys (vxcore_search_files) -------------------------
+// Transient C-API input shared with consumers that construct search queries.
+inline constexpr const char *kJsonKeyMatchTarget = "matchTarget";
+
 }  // namespace vxcore
 
 #endif  // VXCORE_NOTEBOOK_JSON_KEYS_H

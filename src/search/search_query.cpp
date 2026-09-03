@@ -1,6 +1,9 @@
 #include "search_query.h"
 
+#include <stdexcept>
+
 #include "core/notebook.h"
+#include "vxcore/notebook_json_keys.h"
 
 namespace vxcore {
 
@@ -104,6 +107,18 @@ SearchFilesQuery SearchFilesQuery::FromJson(const Notebook *notebook, const nloh
 
   if (json.contains("includeFolders")) {
     query.include_folders = json["includeFolders"].get<bool>();
+  }
+  if (json.contains(kJsonKeyMatchTarget)) {
+    const auto match_target = json[kJsonKeyMatchTarget].get<std::string>();
+    if (match_target == "name") {
+      query.match_target = SearchFileMatchTarget::kName;
+    } else if (match_target == "path") {
+      query.match_target = SearchFileMatchTarget::kPath;
+    } else if (match_target == "nameAndPath") {
+      query.match_target = SearchFileMatchTarget::kNameAndPath;
+    } else {
+      throw std::invalid_argument("Unsupported search file matchTarget: " + match_target);
+    }
   }
 
   if (json.contains("scope")) {

@@ -149,6 +149,93 @@ int test_search_files_include_folders() {
   return 0;
 }
 
+int test_search_files_match_target() {
+  std::cout << "  Running test_search_files_match_target..." << std::endl;
+  cleanup_test_dir(get_test_path("test_search_match_target"));
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, get_test_path("test_search_match_target").c_str(),
+                               "{\"name\":\"Test Search Match Target\"}", VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *needle_folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "needle", &needle_folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(needle_folder_id);
+
+  char *nested_file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "needle", "other.md", &nested_file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(nested_file_id);
+
+  char *matching_file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "actual-needle.md", &matching_file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(matching_file_id);
+
+  char *matching_folder_id = nullptr;
+  err = vxcore_folder_create(ctx, notebook_id, ".", "actual-folder", &matching_folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(matching_folder_id);
+
+  const char *name_query = R"({
+    "pattern": "actual",
+    "includeFiles": true,
+    "includeFolders": false,
+    "matchTarget": "name",
+    "maxResults": 100
+  })";
+  char *results = nullptr;
+  err = vxcore_search_files(ctx, notebook_id, name_query, nullptr, &results);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+  auto json_results = nlohmann::json::parse(results);
+  ASSERT(json_results["matchCount"].get<int>() == 1);
+  ASSERT(json_results["matches"][0]["path"].get<std::string>() == "actual-needle.md");
+  vxcore_string_free(results);
+
+  const char *path_query = R"({
+    "pattern": "needle/",
+    "includeFiles": true,
+    "includeFolders": false,
+    "matchTarget": "path",
+    "maxResults": 100
+  })";
+  results = nullptr;
+  err = vxcore_search_files(ctx, notebook_id, path_query, nullptr, &results);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+  json_results = nlohmann::json::parse(results);
+  ASSERT(json_results["matchCount"].get<int>() == 1);
+  ASSERT(json_results["matches"][0]["path"].get<std::string>() == "needle/other.md");
+  vxcore_string_free(results);
+
+  const char *legacy_query = R"({
+    "pattern": "needle",
+    "includeFiles": true,
+    "includeFolders": false,
+    "maxResults": 100
+  })";
+  results = nullptr;
+  err = vxcore_search_files(ctx, notebook_id, legacy_query, nullptr, &results);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+  json_results = nlohmann::json::parse(results);
+  ASSERT(json_results["matchCount"].get<int>() == 2);
+  vxcore_string_free(results);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(get_test_path("test_search_match_target"));
+  std::cout << "  ✓ test_search_files_match_target passed" << std::endl;
+  return 0;
+}
+
 int test_search_files_pattern_matching() {
   std::cout << "  Running test_search_files_pattern_matching..." << std::endl;
   cleanup_test_dir(get_test_path("test_search_pattern"));
@@ -3977,8 +4064,7 @@ static bool run_with_watchdog(Fn fn, int timeout_seconds) {
     fn();
     done_promise.set_value();
   });
-  bool finished =
-      done.wait_for(std::chrono::seconds(timeout_seconds)) == std::future_status::ready;
+  bool finished = done.wait_for(std::chrono::seconds(timeout_seconds)) == std::future_status::ready;
   if (finished) {
     worker.join();
   } else {
@@ -4031,7 +4117,9 @@ int test_search_content_no_external_drain() {
   char *results = nullptr;
   VxCoreError search_err = VXCORE_ERR_UNKNOWN;
   bool finished = run_with_watchdog(
-      [&]() { search_err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results); },
+      [&]() {
+        search_err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results);
+      },
       10);
   ASSERT(finished);
   ASSERT_EQ(search_err, VXCORE_OK);
@@ -4107,7 +4195,9 @@ int test_search_content_multidrain_parallelism() {
   char *results = nullptr;
   VxCoreError search_err = VXCORE_ERR_UNKNOWN;
   bool finished = run_with_watchdog(
-      [&]() { search_err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results); },
+      [&]() {
+        search_err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results);
+      },
       15);
 
   stop.store(true, std::memory_order_release);
@@ -4197,10 +4287,8 @@ int test_search_content_concurrent_no_deadlock() {
   char *r2 = nullptr;
   bool finished = run_with_watchdog(
       [&]() {
-        std::thread t1(
-            [&]() { e1 = vxcore_search_content(ctx, nb1, query_json, nullptr, &r1); });
-        std::thread t2(
-            [&]() { e2 = vxcore_search_content(ctx, nb2, query_json, nullptr, &r2); });
+        std::thread t1([&]() { e1 = vxcore_search_content(ctx, nb1, query_json, nullptr, &r1); });
+        std::thread t2([&]() { e2 = vxcore_search_content(ctx, nb2, query_json, nullptr, &r2); });
         t1.join();
         t2.join();
       },
@@ -4308,7 +4396,9 @@ int test_search_content_unreadable_file_no_strand() {
   char *results = nullptr;
   VxCoreError search_err = VXCORE_ERR_UNKNOWN;
   bool finished = run_with_watchdog(
-      [&]() { search_err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results); },
+      [&]() {
+        search_err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results);
+      },
       10);
   ASSERT(finished);
   ASSERT_EQ(search_err, VXCORE_OK);
@@ -4373,7 +4463,9 @@ int test_search_content_throwing_match_no_crash() {
   char *results = nullptr;
   VxCoreError search_err = VXCORE_OK;
   bool finished = run_with_watchdog(
-      [&]() { search_err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results); },
+      [&]() {
+        search_err = vxcore_search_content(ctx, notebook_id, query_json, nullptr, &results);
+      },
       10);
   ASSERT(finished);
   ASSERT_EQ(search_err, VXCORE_ERR_UNKNOWN);
@@ -4396,6 +4488,7 @@ int main() {
 
   RUN_TEST(test_search_files_basic);
   RUN_TEST(test_search_files_include_folders);
+  RUN_TEST(test_search_files_match_target);
   RUN_TEST(test_search_files_pattern_matching);
   RUN_TEST(test_search_files_name_vs_path_ranking);
   RUN_TEST(test_search_files_exclude_patterns);
