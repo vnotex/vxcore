@@ -70,6 +70,11 @@ add_vxcore_test(test_bundled_folder_manager_read_only)
 
 add_vxcore_test(test_node)
 
+# Cross-notebook bundled file/folder transfer through the additive two-phase C
+# API. Public API only; nlohmann_json is used to inspect result/config payloads.
+add_vxcore_test(test_node_transfer)
+target_link_libraries(test_node_transfer PRIVATE nlohmann_json)
+
 # test_folder_share_paths: Step 1 of the share-bundled-folder plan. Covers
 # vxcore_folder_get_share_paths — the synchronous, path-only resolution of a
 # bundled folder's notebook root / physical content root / parallel metadata

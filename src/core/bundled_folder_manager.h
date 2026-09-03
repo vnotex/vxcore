@@ -13,6 +13,7 @@
 namespace vxcore {
 
 class Notebook;
+class NodeTransfer;
 
 class BundledFolderManager : public FolderManager {
  public:
@@ -135,6 +136,9 @@ class BundledFolderManager : public FolderManager {
   // Called on notebook open BEFORE SyncMetadataStoreFromConfigs().
   VxCoreError RecoverImports(int *out_recovered_count);
 
+  // Recovers private cross-notebook transfer publication/removal journals.
+  VxCoreError RecoverTransfers(int *out_recovered_count);
+
   // Returns the path to the recycle bin folder
   std::string GetRecycleBinPath() const;
 
@@ -143,6 +147,23 @@ class BundledFolderManager : public FolderManager {
   // holds a FolderManager*) can gate read/access operations on bundled nodes
   // whose content has disappeared from disk.
   bool NodeContentExistsOnDisk(const std::string &relative_path, bool is_folder) const override;
+
+  // Internal transaction surface for NodeTransfer. These are deliberately not
+  // added to FolderManager because raw cross-notebook transfer is unsupported.
+  VxCoreError TransferGetFolderConfig(const std::string &folder_path, FolderConfig **out_config) {
+    return GetFolderConfig(folder_path, out_config);
+  }
+  VxCoreError TransferSaveFolderConfigAtomic(const std::string &folder_path,
+                                             const FolderConfig &config) {
+    return SaveFolderConfigAtomic(folder_path, config);
+  }
+  std::string TransferGetConfigPath(const std::string &folder_path) const {
+    return GetConfigPath(folder_path);
+  }
+  std::string TransferGetContentPath(const std::string &folder_path) const {
+    return GetContentPath(folder_path);
+  }
+  void TransferInvalidateCache(const std::string &folder_path) { InvalidateCache(folder_path); }
 
  private:
   VxCoreError GetFolderConfig(const std::string &folder_path, FolderConfig **out_config,
@@ -156,7 +177,6 @@ class BundledFolderManager : public FolderManager {
   // commit point, where a truncated-then-interrupted in-place rewrite (what
   // SaveFolderConfig does) would destroy the destination parent's index.
   VxCoreError SaveFolderConfigAtomic(const std::string &folder_path, const FolderConfig &config);
-
 
   std::string GetConfigPath(const std::string &folder_path) const;
   std::string GetContentPath(const std::string &folder_path) const;
@@ -176,8 +196,7 @@ class BundledFolderManager : public FolderManager {
   std::string GetParentFolderId(const std::string &folder_path);
 
   // Recursively process a copied folder tree: regenerate UUIDs, rename assets, rewrite content
-  VxCoreError ProcessCopiedFolderTree(const std::string &dest_path,
-                                      const std::string &parent_id,
+  VxCoreError ProcessCopiedFolderTree(const std::string &dest_path, const std::string &parent_id,
                                       const std::string &new_name = "");
 
   // Check if a file's content exists on disk at the expected location.

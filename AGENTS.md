@@ -568,6 +568,35 @@ scheduling/timing policy — it reports a FACT (changed vs. not), the consumer o
 check. Coverage: `tests/test_buffer.cpp` (`test_buffer_external_change_content_aware`,
 `test_buffer_mtime_no_jitter`, `test_buffer_check_external_changes`).
 
+### Cross-notebook node transfer
+
+Cross-notebook transfer is a bundled-notebook storage mechanism exposed through the two-phase
+`vxcore_node_transfer_prepare()` / `vxcore_node_transfer_commit()` C API. Prepare enumerates and
+fingerprints one indexed file or folder, copies it into private `vx_notebook/vx_transfer/` staging,
+generates fresh destination IDs, and invokes progress/cancellation synchronously on the caller's
+thread. Commit is callback-free, selects the final `Name (2)` collision-free name, journals
+content/metadata/assets/tag publication, emits destination facts only after the parent index commit,
+then optionally removes a Move source through a separate quarantine journal. Open-time recovery runs
+before tag synchronization; unrecoverable journals fail notebook open. Git ignore, staging, and status
+paths must always hard-exclude `vx_notebook/vx_transfer/` independent of user configuration.
+
+Prepared handles are context-owned and single-use. Commit/free unregister and consume the handle;
+context destruction discards any remaining prepared handles and their private staging trees.
+
+Permanent rules:
+
+- Every destination indexed node receives a fresh UUID. Copy resets timestamps; Move preserves them.
+- Managed UUID asset directories, attachments, bundled `comments.json`, metadata, tags, child order,
+  and hidden/unindexed subtree content travel. Unrelated relative links do not expand the snapshot.
+- Unsafe absolute, escaping, symlink, junction, or reparse-point assets paths fail closed.
+- A durable destination is never rolled back because source removal is uncertain. Return
+  `copiedSourceRetained` plus a fingerprinted resume token; finalization may only retry deletion and
+  must never import another destination.
+- Events are storage facts: destination create/config after destination commit, source delete/config
+  only after successful source removal. Do not add debounce, sync scheduling, or consumer policy.
+- vxcore must not know UI, Qt, clipboard state, open buffers, progress dialogs, application IO gates,
+  or policy defaults. The embedding application owns those concerns and serializes both notebooks.
+
 ### Logging
 
 ```cpp

@@ -12,6 +12,7 @@ namespace vxcore {
 const char *const kDefaultGitignore =
     "# VNote sync defaults — feel free to edit; this file is preserved on update.\n"
     "vx_notebook/vx_sync/\n"
+    "vx_notebook/vx_transfer/\n"
     "*.vswp\n"
     "*.tmp\n"
     ".DS_Store\n"

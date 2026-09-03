@@ -33,11 +33,7 @@ enum class SyncFileStatus {
   kDeletedRemote
 };
 
-enum class SyncConflictResolution {
-  kKeepBoth,
-  kKeepLocal,
-  kKeepRemote
-};
+enum class SyncConflictResolution { kKeepBoth, kKeepLocal, kKeepRemote };
 
 struct SyncProgress {
   std::string message;
@@ -65,7 +61,8 @@ struct SyncConfig {
   std::string backend;
   std::string remote_url;
   bool auto_sync_enabled = true;
-  std::vector<std::string> exclude_paths = {"*.vswp", "vx_notebook/vx_sync/"};
+  std::vector<std::string> exclude_paths = {"*.vswp", "vx_notebook/vx_sync/",
+                                            "vx_notebook/vx_transfer/"};
   nlohmann::json backend_options;
   bool auto_commit_merges = true;
 

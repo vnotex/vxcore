@@ -43,6 +43,7 @@ set(VXCORE_SOURCES
     core/notebook_manager.cpp
     core/folder.cpp
     core/bundled_folder_manager.cpp
+    core/node_transfer.cpp
     core/folder_manager.cpp
     core/raw_folder_manager.cpp
     core/template_manager.cpp

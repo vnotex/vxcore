@@ -1,11 +1,11 @@
 #include "bundled_notebook.h"
 
+#include <vxcore/notebook_json_keys.h>
+
 #include <cerrno>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-
-#include <vxcore/notebook_json_keys.h>
 
 #include "bundled_folder_manager.h"
 #include "event_manager.h"
@@ -120,28 +120,44 @@ VxCoreError BundledNotebook::Open(const std::string &local_data_folder,
     return err;
   }
 
-  // Sync tags from NotebookConfig to MetadataStore if needed
-  err = notebook->SyncTagsToMetadataStore();
-  if (err != VXCORE_OK) {
-    VXCORE_LOG_WARN("Tag sync failed on open: root=%s, error=%d", root_folder.c_str(), err);
-    // Continue anyway - tags will be synced on next open or RebuildCache
-  }
-
-  // Repair any folder-import journal left behind by a crash BEFORE anything
-  // reads or rebuilds the metadata store: a rolled-back import must not leave
-  // rows (or an orphan tree) that a later rebuild would resurrect.
+  // Repair transfer/import journals before tag synchronization. Transfer
+  // recovery may restore notebook config bytes containing tag definitions.
   if (auto *bundled_folder_manager =
           dynamic_cast<BundledFolderManager *>(notebook->GetFolderManager())) {
+    int transfer_recovered = 0;
+    const VxCoreError transfer_recover_err =
+        bundled_folder_manager->RecoverTransfers(&transfer_recovered);
+    if (transfer_recover_err != VXCORE_OK) {
+      VXCORE_LOG_ERROR("Transfer recovery failed on open: root=%s, error=%d", root_folder.c_str(),
+                       transfer_recover_err);
+      return transfer_recover_err;
+    }
+    if (transfer_recovered > 0) {
+      err = notebook->LoadConfig();
+      if (err != VXCORE_OK) {
+        return err;
+      }
+      VXCORE_LOG_INFO("Recovered %d incomplete node transfer(s) on open: root=%s",
+                      transfer_recovered, root_folder.c_str());
+    }
+
     int recovered = 0;
     const VxCoreError recover_err = bundled_folder_manager->RecoverImports(&recovered);
     if (recover_err != VXCORE_OK) {
-      VXCORE_LOG_WARN("Import recovery failed on open: root=%s, error=%d", root_folder.c_str(),
-                      recover_err);
-      // Continue anyway - the notebook is still usable.
+      VXCORE_LOG_ERROR("Import recovery failed on open: root=%s, error=%d", root_folder.c_str(),
+                       recover_err);
+      return recover_err;
     } else if (recovered > 0) {
       VXCORE_LOG_INFO("Recovered %d incomplete folder import(s) on open: root=%s", recovered,
                       root_folder.c_str());
     }
+  }
+
+  // Sync tags from the recovered NotebookConfig to MetadataStore if needed.
+  err = notebook->SyncTagsToMetadataStore();
+  if (err != VXCORE_OK) {
+    VXCORE_LOG_WARN("Tag sync failed on open: root=%s, error=%d", root_folder.c_str(), err);
+    // Continue anyway - tags will be synced on next open or RebuildCache
   }
 
   // Note: We do NOT sync folder/file MetadataStore from config files here.
@@ -214,8 +230,7 @@ VxCoreError BundledNotebook::UpdateConfig(const NotebookConfig &config) {
     // NotebookManager wires it via SetEventManager), so calling Emit
     // unconditionally would crash on notebook creation.
     if (event_manager_ != nullptr) {
-      event_manager_->Emit(events::kNotebookConfigChanged,
-                           {{kJsonKeyNotebookId, config_.id}});
+      event_manager_->Emit(events::kNotebookConfigChanged, {{kJsonKeyNotebookId, config_.id}});
     }
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &) {

@@ -32,8 +32,7 @@ VXCORE_API void vxcore_context_destroy(VxCoreContextHandle context);
 // built-in %MMM%/%MMMM%/%ddd%/%dddd% snippets). |locale| is a Qt/POSIX-style name
 // such as "en_US", "zh_CN", "ja". Unknown or NULL/empty resolves to English.
 // Runtime-only: NOT persisted to vxcore.json. Not thread-safe; call before use.
-VXCORE_API VxCoreError vxcore_context_set_locale(VxCoreContextHandle context,
-                                                 const char *locale);
+VXCORE_API VxCoreError vxcore_context_set_locale(VxCoreContextHandle context, const char *locale);
 
 // Out: canonical locale name ("en" | "zh_CN" | "ja"). Free with vxcore_string_free.
 VXCORE_API VxCoreError vxcore_context_get_locale(VxCoreContextHandle context, char **out_locale);
@@ -123,8 +122,7 @@ VXCORE_API VxCoreError vxcore_notebook_open(VxCoreContextHandle context, const c
 // notebook is registered (the orchestrator validates the options before
 // touching NotebookManager).
 VXCORE_API VxCoreError vxcore_notebook_open_ex(VxCoreContextHandle context, const char *path,
-                                                const char *options_json,
-                                                char **out_notebook_id);
+                                               const char *options_json, char **out_notebook_id);
 
 VXCORE_API VxCoreError vxcore_notebook_close(VxCoreContextHandle context, const char *notebook_id);
 
@@ -149,14 +147,12 @@ VXCORE_API VxCoreError vxcore_notebook_rebuild_cache(VxCoreContextHandle context
 // be mutated (no file/folder edits, saves, or sync operations).
 // Both bundled and raw notebooks support this flag.
 VXCORE_API VxCoreError vxcore_notebook_set_read_only(VxCoreContextHandle context,
-                                                     const char *notebook_id,
-                                                     bool read_only);
+                                                     const char *notebook_id, bool read_only);
 
 // Get the notebook's read-only flag.
 // Returns the current read-only state in out_read_only.
 VXCORE_API VxCoreError vxcore_notebook_is_read_only(VxCoreContextHandle context,
-                                                    const char *notebook_id,
-                                                    bool *out_read_only);
+                                                    const char *notebook_id, bool *out_read_only);
 
 // ============ Recycle Bin Operations (Bundled Notebooks Only) ============
 // Get the path to the recycle bin folder.
@@ -183,16 +179,16 @@ VXCORE_API VxCoreError vxcore_notebook_history_get(VxCoreContextHandle context,
 
 // Clear all file opening history for a notebook.
 VXCORE_API VxCoreError vxcore_notebook_history_clear(VxCoreContextHandle context,
-                                                      const char *notebook_id);
+                                                     const char *notebook_id);
 
 // Get file opening history with resolved paths for a notebook.
 // Returns a JSON array of history entries with resolved relative paths, most-recent first.
-// Each entry: {"fileId": "<uuid>", "openedUtc": <millis>, "relativePath": "<path>", "name": "<filename>"}
-// Entries whose fileId no longer resolves (deleted files) are silently filtered out.
+// Each entry: {"fileId": "<uuid>", "openedUtc": <millis>, "relativePath": "<path>", "name":
+// "<filename>"} Entries whose fileId no longer resolves (deleted files) are silently filtered out.
 // Caller must free the result with vxcore_string_free().
 VXCORE_API VxCoreError vxcore_notebook_history_get_resolved(VxCoreContextHandle context,
-                                                             const char *notebook_id,
-                                                             char **out_history_json);
+                                                            const char *notebook_id,
+                                                            char **out_history_json);
 
 // ============ Folder Operations ============
 VXCORE_API VxCoreError vxcore_folder_create(VxCoreContextHandle context, const char *notebook_id,
@@ -303,12 +299,9 @@ VXCORE_API VxCoreError vxcore_folder_set_children_order(VxCoreContextHandle cont
 //   VXCORE_ERR_INVALID_STATE   a vx.json's "name" does not match its path
 //                              component (corrupt metadata)
 //   VXCORE_ERR_NODE_NOT_EXISTS the physical directory is missing on disk
-VXCORE_API VxCoreError vxcore_folder_get_share_paths(VxCoreContextHandle context,
-                                                     const char *notebook_id,
-                                                     const char *folder_path,
-                                                     char **out_notebook_root,
-                                                     char **out_content_root,
-                                                     char **out_metadata_root);
+VXCORE_API VxCoreError vxcore_folder_get_share_paths(
+    VxCoreContextHandle context, const char *notebook_id, const char *folder_path,
+    char **out_notebook_root, char **out_content_root, char **out_metadata_root);
 
 // Resolve the storage roots needed to ATTACH an imported folder bundle as a new
 // child of an existing bundled folder. The mirror image of
@@ -345,12 +338,9 @@ VXCORE_API VxCoreError vxcore_folder_get_share_paths(VxCoreContextHandle context
 //   VXCORE_ERR_INVALID_STATE   a vx.json's "name" does not match its path
 //                              component (corrupt metadata)
 //   VXCORE_ERR_NODE_NOT_EXISTS the physical directory is missing on disk
-VXCORE_API VxCoreError vxcore_folder_get_import_paths(VxCoreContextHandle context,
-                                                      const char *notebook_id,
-                                                      const char *dest_folder_path,
-                                                      char **out_notebook_root,
-                                                      char **out_content_root,
-                                                      char **out_metadata_root);
+VXCORE_API VxCoreError vxcore_folder_get_import_paths(
+    VxCoreContextHandle context, const char *notebook_id, const char *dest_folder_path,
+    char **out_notebook_root, char **out_content_root, char **out_metadata_root);
 
 // Collect EVERY node id reachable in a bundled notebook by walking the
 // on-disk metadata tree (<root>/vx_notebook/contents/**/vx.json), starting at
@@ -430,8 +420,7 @@ VXCORE_API VxCoreError vxcore_notebook_collect_node_ids(VxCoreContextHandle cont
 VXCORE_API VxCoreError vxcore_folder_attach_imported(VxCoreContextHandle context,
                                                      const char *notebook_id,
                                                      const char *dest_folder_path, const char *name,
-                                                     const char *staging_dir,
-                                                     char **out_folder_id);
+                                                     const char *staging_dir, char **out_folder_id);
 
 // Replay or roll back any incomplete folder-import journals left by a crash.
 //
@@ -499,8 +488,7 @@ VXCORE_API VxCoreError vxcore_file_update_attachments(VxCoreContextHandle contex
 // VXCORE_OK without modifying the file's metadata or emitting an event.
 // attachment: relative filename, e.g. "doc.pdf"
 VXCORE_API VxCoreError vxcore_file_add_attachment(VxCoreContextHandle context,
-                                                  const char *notebook_id,
-                                                  const char *file_path,
+                                                  const char *notebook_id, const char *file_path,
                                                   const char *attachment);
 
 // Remove a single attachment from a file node (bundled notebooks).
@@ -508,8 +496,7 @@ VXCORE_API VxCoreError vxcore_file_add_attachment(VxCoreContextHandle context,
 // VXCORE_OK without modifying the file's metadata or emitting an event.
 // attachment: relative filename to remove
 VXCORE_API VxCoreError vxcore_file_delete_attachment(VxCoreContextHandle context,
-                                                     const char *notebook_id,
-                                                     const char *file_path,
+                                                     const char *notebook_id, const char *file_path,
                                                      const char *attachment);
 
 VXCORE_API VxCoreError vxcore_file_tag(VxCoreContextHandle context, const char *notebook_id,
@@ -530,6 +517,71 @@ VXCORE_API VxCoreError vxcore_file_peek(VxCoreContextHandle context, const char 
 // ============ Node Operations (Unified File/Folder API) ============
 // These APIs work with both files and folders using the same (notebook_id, node_path) pair.
 // The returned JSON includes a "type" field ("file" or "folder") for caller identification.
+
+// Opaque, context-owned, single-use cross-notebook transfer snapshot.
+typedef struct VxCoreNodeTransfer_ *VxCoreNodeTransferHandle;
+
+// Called synchronously on the thread executing vxcore_node_transfer_prepare().
+// Return non-zero to cancel. phase and userdata are valid only during the call.
+// Commit/finalize never invoke this callback, allowing consumers to hold their
+// non-recursive notebook IO gates during those mutation-only calls.
+typedef int (*VxCoreNodeTransferProgressCallback)(const char *phase, uint64_t completed_bytes,
+                                                  uint64_t total_bytes, void *userdata);
+
+// Stages and verifies one indexed bundled file/folder without publishing it.
+// Source and destination must be different, currently open bundled notebooks.
+// Copy may read a read-only source; Move requires both notebooks writable.
+// options_json schema:
+//   {"operation":"copy|move","conflictPolicy":"rename",
+//    "timestampPolicy":"reset|preserve","createMissingTags":true,
+//    "preserveRelativeLinks":true}
+// On success, the handle remains valid until exactly one commit or free call,
+// or until context destruction discards it and its private staging tree.
+VXCORE_API VxCoreError vxcore_node_transfer_prepare(
+    VxCoreContextHandle context, const char *source_notebook_id, const char *source_relative_path,
+    const char *destination_notebook_id, const char *destination_folder_path,
+    const char *options_json, VxCoreNodeTransferProgressCallback progress_callback, void *userdata,
+    VxCoreNodeTransferHandle *out_transfer);
+
+// Publishes a prepared destination atomically and optionally removes the
+// source for Move. Callback-free: mutation events are retained in a
+// context-owned one-shot batch named by result.eventBatchId. The handle is
+// consumed on every call.
+// out_result_json must be freed with vxcore_string_free(). A successful Move
+// whose source-removal rollback is proven byte-identical returns VXCORE_OK with
+// status "copiedSourceRetained" and a resumeToken. If source state is uncertain,
+// status "moveRecoveryRequired" carries the durable destination identity and the
+// same finalize-only token; callers must never retry import. Once destination
+// publication commits, exceptions return the separately preallocated
+// moveRecoveryRequired durable fact; a non-NULL internal output is never treated
+// as proof that the source was retained. Allocation/serialization failures before
+// that point publish nothing. Final filesystem publication is atomic no-replace.
+VXCORE_API VxCoreError vxcore_node_transfer_commit(VxCoreContextHandle context,
+                                                   VxCoreNodeTransferHandle transfer,
+                                                   char **out_result_json);
+
+// Dispatches one commit/finalize event batch synchronously, in mutation order,
+// then consumes it. Call only after releasing notebook IO gates. Subscribers
+// run on the calling thread and may re-enter vxcore. Returns NOT_FOUND if the
+// batch was already dispatched or does not belong to this context.
+VXCORE_API VxCoreError vxcore_node_transfer_dispatch_events(VxCoreContextHandle context,
+                                                            const char *event_batch_id);
+
+// Discards an uncommitted snapshot and its private staging tree. No-op for
+// NULL. The handle becomes invalid immediately.
+VXCORE_API void vxcore_node_transfer_free(VxCoreContextHandle context,
+                                          VxCoreNodeTransferHandle transfer);
+
+// Revalidates the already-published destination and exact source fingerprint,
+// then retries source removal only. It never creates another destination.
+// Callback-free; resume_token_json is the object returned by commit. Successful
+// The token is bound to the source recovery journal, so finalization also
+// converges after open-time recovery completed deletion. Successful source
+// deletion returns an eventBatchId that is dispatched through
+// vxcore_node_transfer_dispatch_events().
+VXCORE_API VxCoreError vxcore_node_finalize_transfer_move(VxCoreContextHandle context,
+                                                          const char *resume_token_json,
+                                                          char **out_result_json);
 
 // Get node config (unified version of folder_get_config and file_get_info)
 VXCORE_API VxCoreError vxcore_node_get_config(VxCoreContextHandle context, const char *notebook_id,
@@ -568,10 +620,8 @@ VXCORE_API VxCoreError vxcore_node_update_metadata(VxCoreContextHandle context,
 // If modified_utc <= 0, the existing modified_utc is preserved.
 // Returns VXCORE_ERR_UNSUPPORTED for raw notebooks (no vx.json metadata).
 VXCORE_API VxCoreError vxcore_node_update_timestamps(VxCoreContextHandle context,
-                                                     const char *notebook_id,
-                                                     const char *node_path,
-                                                     int64_t created_utc,
-                                                     int64_t modified_utc);
+                                                     const char *notebook_id, const char *node_path,
+                                                     int64_t created_utc, int64_t modified_utc);
 
 // Index a filesystem node (file or folder) into the metadata store.
 // The node must exist on filesystem but not be tracked in metadata.
@@ -725,10 +775,12 @@ VXCORE_API VxCoreError vxcore_search_content_ex(VxCoreContextHandle context,
 //
 // The call blocks on the invoking thread (help-draining the "vxcore.search" work queue) and
 // returns when the scan completes.
-VXCORE_API VxCoreError vxcore_search_content_streaming(
-    VxCoreContextHandle context, const char *notebook_id, const char *query_json,
-    const char *input_files_json, int batch_size, VxCoreSearchBatchCallback batch_cb,
-    void *userdata, volatile int *cancel_flag);
+VXCORE_API VxCoreError vxcore_search_content_streaming(VxCoreContextHandle context,
+                                                       const char *notebook_id,
+                                                       const char *query_json,
+                                                       const char *input_files_json, int batch_size,
+                                                       VxCoreSearchBatchCallback batch_cb,
+                                                       void *userdata, volatile int *cancel_flag);
 
 VXCORE_API VxCoreError vxcore_search_by_tags(VxCoreContextHandle context, const char *notebook_id,
                                              const char *query_json, const char *input_files_json,
@@ -875,7 +927,7 @@ VXCORE_API VxCoreError vxcore_buffer_reload(VxCoreContextHandle context, const c
 // Updates the buffer's internal state. Query the new state with vxcore_buffer_get_state().
 // Returns VXCORE_OK on success, VXCORE_ERR_BUFFER_NOT_FOUND if buffer doesn't exist.
 VXCORE_API VxCoreError vxcore_buffer_check_external_changes(VxCoreContextHandle context,
-                                                             const char *id);
+                                                            const char *id);
 
 // Get buffer content as JSON.
 // Returns JSON: {"content": "<hex-encoded-bytes>"} (caller must free with vxcore_string_free).
@@ -1224,8 +1276,7 @@ VXCORE_API VxCoreError vxcore_snippet_expand(VxCoreContextHandle context, const 
 //   (e.g., public-read git remotes, future local backends) proceed normally.
 // Returns VXCORE_ERR_UNSUPPORTED for raw notebooks.
 VXCORE_API VxCoreError vxcore_sync_enable(VxCoreContextHandle context, const char *notebook_id,
-                                          const char *config_json,
-                                          const char *credentials_json);
+                                          const char *config_json, const char *credentials_json);
 
 // Disable sync for a notebook.
 VXCORE_API VxCoreError vxcore_sync_disable(VxCoreContextHandle context, const char *notebook_id);
@@ -1295,10 +1346,8 @@ VXCORE_API VxCoreError vxcore_sync_trigger_cancellable(VxCoreContextHandle conte
 //   VXCORE_ERR_NOT_IMPLEMENTED   no backend registered, or the registered
 //                                backend does not override StageAndCommit
 //   VXCORE_ERR_*                 propagated from the backend
-VXCORE_API VxCoreError vxcore_sync_stage_only(VxCoreContextHandle context,
-                                              const char *notebook_id,
-                                              VxCoreSyncCancellation *token,
-                                              int *out_did_commit);
+VXCORE_API VxCoreError vxcore_sync_stage_only(VxCoreContextHandle context, const char *notebook_id,
+                                              VxCoreSyncCancellation *token, int *out_did_commit);
 
 // vxcore_sync_network_phase runs ONLY the network phases of a sync
 // round-trip: fetch + rebase + push, including the existing retry policy.
@@ -1327,7 +1376,8 @@ VXCORE_API VxCoreError vxcore_sync_get_status(VxCoreContextHandle context, const
                                               char **out_status_json);
 
 // Get unresolved sync conflicts.
-// out_conflicts_json: JSON output: {"conflicts":[{"path":"...","localModifiedUtc":123,"remoteModifiedUtc":456,"isBinary":false}]}
+// out_conflicts_json: JSON output:
+// {"conflicts":[{"path":"...","localModifiedUtc":123,"remoteModifiedUtc":456,"isBinary":false}]}
 // Caller must free with vxcore_string_free().
 VXCORE_API VxCoreError vxcore_sync_get_conflicts(VxCoreContextHandle context,
                                                  const char *notebook_id,
@@ -1379,8 +1429,7 @@ VXCORE_API VxCoreError vxcore_sync_is_ready(VxCoreContextHandle context, const c
 // notebook is registered, 0 otherwise. Returns VXCORE_ERR_NULL_POINTER if
 // any required parameter is NULL.
 VXCORE_API VxCoreError vxcore_sync_is_registered(VxCoreContextHandle context,
-                                                 const char *notebook_id,
-                                                 int *out_registered);
+                                                 const char *notebook_id, int *out_registered);
 
 // Enable sync for a notebook with credentials supplied BEFORE backend Initialize().
 // REMOVED in Wave 7.1 (sync-backend-phase4): the unified vxcore_sync_enable
@@ -1414,8 +1463,7 @@ VXCORE_API VxCoreError vxcore_sync_get_last_sync_utc(VxCoreContextHandle context
 //   VXCORE_ERR_NOT_FOUND      notebook is not loaded in NotebookManager
 //   VXCORE_OK                 success (timestamp persisted)
 VXCORE_API VxCoreError vxcore_sync_set_last_sync_utc(VxCoreContextHandle context,
-                                                     const char *notebook_id,
-                                                     int64_t utc_millis);
+                                                     const char *notebook_id, int64_t utc_millis);
 
 // Clone a remote notebook into target_dir using the backend specified in
 // config_json. T19 of open-notebook-remote-readonly: C-ABI translation of
@@ -1479,11 +1527,9 @@ VXCORE_API VxCoreError vxcore_sync_set_last_sync_utc(VxCoreContextHandle context
 // duration (libgit2 fetch + checkout). Callers SHOULD invoke this from a
 // worker thread, not the UI thread. SyncManager::CloneNotebook does NOT
 // hold state_mutex_ across the backend Clone() call.
-VXCORE_API VxCoreError vxcore_sync_clone(VxCoreContextHandle context,
-                                          const char *target_dir,
-                                          const char *config_json,
-                                          const char *credentials_json,
-                                          char **out_notebook_id);
+VXCORE_API VxCoreError vxcore_sync_clone(VxCoreContextHandle context, const char *target_dir,
+                                         const char *config_json, const char *credentials_json,
+                                         char **out_notebook_id);
 
 // Cancellable clone variant. Mirrors vxcore_sync_clone but accepts an
 // optional VxCoreSyncCancellation token (created via
@@ -1507,12 +1553,9 @@ VXCORE_API VxCoreError vxcore_sync_clone(VxCoreContextHandle context,
 // All other arguments, error codes, threading semantics, and JSON schemas
 // match vxcore_sync_clone exactly. See that function's docstring (above)
 // for the full contract.
-VXCORE_API VxCoreError vxcore_sync_clone_cancellable(VxCoreContextHandle context,
-                                                     const char *target_dir,
-                                                     const char *config_json,
-                                                     const char *credentials_json,
-                                                     VxCoreSyncCancellation *token,
-                                                     char **out_notebook_id);
+VXCORE_API VxCoreError vxcore_sync_clone_cancellable(
+    VxCoreContextHandle context, const char *target_dir, const char *config_json,
+    const char *credentials_json, VxCoreSyncCancellation *token, char **out_notebook_id);
 
 // Release the in-memory sync backend for one notebook (frees the libgit2
 // repo handle; on Windows this unmaps mmapped .pack files and closes

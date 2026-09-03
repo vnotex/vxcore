@@ -24,6 +24,7 @@
 #include "core/content_processor/content_processor.h"
 #include "core/event_names.h"
 #include "metadata_store.h"
+#include "node_transfer.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/string_utils.h"
@@ -144,8 +145,7 @@ VxCoreError BundledFolderManager::InitOnCreation() {
     return VXCORE_ERR_ALREADY_EXISTS;
   }
   if (err != VXCORE_ERR_NOT_FOUND) {
-    VXCORE_LOG_ERROR(
-        "InitOnCreation: unexpected error loading root config: err=%d", err);
+    VXCORE_LOG_ERROR("InitOnCreation: unexpected error loading root config: err=%d", err);
     return err;
   }
   root_config.reset(new FolderConfig(folder_path));
@@ -321,8 +321,8 @@ VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
                                                const std::string &folder_name,
                                                std::string &out_folder_id) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("Creating folder: parent=%s, name=%s", parent_path.c_str(), folder_name.c_str());
   VXCORE_LOG_DEBUG("CreateFolder: folder_name bytes=[%s] len=%zu", folder_name.c_str(),
                    folder_name.size());
@@ -366,8 +366,7 @@ VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
     VXCORE_LOG_ERROR("Failed to save parent folder config: error=%d", error);
     return error;
   }
-  VXCORE_LOG_DEBUG("CreateFolder: wrote parent vx.json for parent=%s",
-                   clean_parent_path.c_str());
+  VXCORE_LOG_DEBUG("CreateFolder: wrote parent vx.json for parent=%s", clean_parent_path.c_str());
 
   const auto folder_relative_path = ConcatenatePaths(clean_parent_path, folder_name);
   std::unique_ptr<FolderConfig> new_config(new FolderConfig(folder_name));
@@ -401,8 +400,8 @@ VxCoreError BundledFolderManager::CreateFolder(const std::string &parent_path,
 
 VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("Deleting folder: path=%s", folder_path.c_str());
 
   const auto clean_folder_path = GetCleanRelativePath(folder_path);
@@ -488,8 +487,8 @@ VxCoreError BundledFolderManager::DeleteFolder(const std::string &folder_path) {
 VxCoreError BundledFolderManager::UpdateFolderMetadata(const std::string &folder_path,
                                                        const std::string &metadata_json) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   const auto clean_folder_path = GetCleanRelativePath(folder_path);
 
   FolderConfig *config = nullptr;
@@ -531,8 +530,8 @@ VxCoreError BundledFolderManager::UpdateFolderMetadata(const std::string &folder
 VxCoreError BundledFolderManager::UpdateNodeTimestamps(const std::string &node_path,
                                                        int64_t created_utc, int64_t modified_utc) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   if (created_utc <= 0 && modified_utc <= 0) {
     return VXCORE_OK;  // Nothing to update
   }
@@ -621,8 +620,8 @@ VxCoreError BundledFolderManager::GetFolderMetadata(const std::string &folder_pa
 VxCoreError BundledFolderManager::RenameFolder(const std::string &folder_path,
                                                const std::string &new_name) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("RenameFolder: folder_path=%s, new_name=%s", folder_path.c_str(),
                   new_name.c_str());
   VXCORE_LOG_DEBUG("RenameFolder: new_name bytes=[%s] len=%zu", new_name.c_str(), new_name.size());
@@ -719,8 +718,8 @@ VxCoreError BundledFolderManager::RenameFolder(const std::string &folder_path,
 VxCoreError BundledFolderManager::MoveFolder(const std::string &src_path,
                                              const std::string &dest_parent_path) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("MoveFolder: src_path=%s, dest_parent_path=%s", src_path.c_str(),
                   dest_parent_path.c_str());
 
@@ -979,8 +978,8 @@ VxCoreError BundledFolderManager::CopyFolder(const std::string &src_path,
                                              const std::string &new_name,
                                              std::string &out_folder_id) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   const auto clean_src_path = GetCleanRelativePath(src_path);
   const auto clean_dest_parent_path = GetCleanRelativePath(dest_parent_path);
 
@@ -1080,8 +1079,8 @@ VxCoreError BundledFolderManager::CreateFile(const std::string &folder_path,
                                              const std::string &file_name,
                                              std::string &out_file_id) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("Creating file: folder=%s, name=%s", folder_path.c_str(), file_name.c_str());
   VXCORE_LOG_DEBUG("CreateFile: file_name bytes=[%s] len=%zu", file_name.c_str(), file_name.size());
 
@@ -1145,8 +1144,8 @@ VxCoreError BundledFolderManager::CreateFile(const std::string &folder_path,
 
 VxCoreError BundledFolderManager::DeleteFile(const std::string &file_path) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -1206,8 +1205,8 @@ VxCoreError BundledFolderManager::DeleteFile(const std::string &file_path) {
 VxCoreError BundledFolderManager::UpdateFileMetadata(const std::string &file_path,
                                                      const std::string &metadata_json) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -1256,8 +1255,8 @@ VxCoreError BundledFolderManager::UpdateFileMetadata(const std::string &file_pat
 VxCoreError BundledFolderManager::UpdateFileTags(const std::string &file_path,
                                                  const std::string &tags_json) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -1303,10 +1302,9 @@ VxCoreError BundledFolderManager::UpdateFileTags(const std::string &file_path,
       }
     }
 
-    EmitEvent(events::kFileTagsReplaced,
-              {{kJsonKeyNotebookId, notebook_->GetId()},
-               {"path", clean_file_path},
-               {"tags", new_tags}});
+    EmitEvent(
+        events::kFileTagsReplaced,
+        {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", clean_file_path}, {"tags", new_tags}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
@@ -1316,8 +1314,8 @@ VxCoreError BundledFolderManager::UpdateFileTags(const std::string &file_path,
 VxCoreError BundledFolderManager::TagFile(const std::string &file_path,
                                           const std::string &tag_name) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -1358,16 +1356,17 @@ VxCoreError BundledFolderManager::TagFile(const std::string &file_path,
     }
   }
 
-  EmitEvent(events::kFileTagged,
-            {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", clean_file_path}, {"tag", tag_name}});
+  EmitEvent(
+      events::kFileTagged,
+      {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", clean_file_path}, {"tag", tag_name}});
   return VXCORE_OK;
 }
 
 VxCoreError BundledFolderManager::UntagFile(const std::string &file_path,
                                             const std::string &tag_name) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -1404,8 +1403,9 @@ VxCoreError BundledFolderManager::UntagFile(const std::string &file_path,
     }
   }
 
-  EmitEvent(events::kFileUntagged,
-            {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", clean_file_path}, {"tag", tag_name}});
+  EmitEvent(
+      events::kFileUntagged,
+      {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", clean_file_path}, {"tag", tag_name}});
   return VXCORE_OK;
 }
 
@@ -1465,8 +1465,8 @@ VxCoreError BundledFolderManager::GetFileMetadata(const std::string &file_path,
 VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
                                              const std::string &new_name) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, old_name] = SplitPath(clean_file_path);
@@ -1526,18 +1526,17 @@ VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
 
   VXCORE_LOG_INFO("RenameFile successful: file renamed from %s to %s", clean_file_path.c_str(),
                   ConcatenatePaths(folder_path, new_name).c_str());
-  EmitEvent(events::kFileMoved,
-            {{kJsonKeyNotebookId, notebook_->GetId()},
-             {"oldPath", clean_file_path},
-             {"newPath", ConcatenatePaths(folder_path, new_name)}});
+  EmitEvent(events::kFileMoved, {{kJsonKeyNotebookId, notebook_->GetId()},
+                                 {"oldPath", clean_file_path},
+                                 {"newPath", ConcatenatePaths(folder_path, new_name)}});
   return VXCORE_OK;
 }
 
 VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
                                            const std::string &dest_folder_path) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   const auto clean_src_file_path = GetCleanRelativePath(src_file_path);
   const auto clean_dest_folder_path = GetCleanRelativePath(dest_folder_path);
 
@@ -1555,9 +1554,10 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
 
   FileRecord *file = FindFileRecord(*src_config, file_name);
   if (!file) {
-    VXCORE_LOG_ERROR("MoveFile: no metadata record for '%s' in source folder '%s' "
-                     "(vx.json and disk may have drifted)",
-                     file_name.c_str(), src_folder_path.c_str());
+    VXCORE_LOG_ERROR(
+        "MoveFile: no metadata record for '%s' in source folder '%s' "
+        "(vx.json and disk may have drifted)",
+        file_name.c_str(), src_folder_path.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
 
@@ -1574,9 +1574,10 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
     // NOTE: distinct from the on-disk collision below — this one means the
     // destination vx.json ALREADY lists the name, which can happen without a
     // corresponding file on disk. Keep the two messages distinguishable.
-    VXCORE_LOG_ERROR("MoveFile: destination folder '%s' already has a metadata record named "
-                     "'%s'",
-                     clean_dest_folder_path.c_str(), file_name.c_str());
+    VXCORE_LOG_ERROR(
+        "MoveFile: destination folder '%s' already has a metadata record named "
+        "'%s'",
+        clean_dest_folder_path.c_str(), file_name.c_str());
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
@@ -1632,9 +1633,10 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
         ConcatenatePaths(ConcatenatePaths(dest_content_path, assets_folder_name), file->id);
     VxCoreError assets_err = MoveAssetsDirectory(old_assets_abs, new_assets_abs);
     if (assets_err != VXCORE_OK) {
-      VXCORE_LOG_ERROR("MoveFile: failed to move assets dir for %s (error=%d); the note was "
-                       "moved but its assets remain at %s",
-                       clean_src_file_path.c_str(), assets_err, old_assets_abs.c_str());
+      VXCORE_LOG_ERROR(
+          "MoveFile: failed to move assets dir for %s (error=%d); the note was "
+          "moved but its assets remain at %s",
+          clean_src_file_path.c_str(), assets_err, old_assets_abs.c_str());
     }
   }
 
@@ -1652,13 +1654,12 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
       std::string content;
       VxCoreError read_err = ReadFile(dest_fs_path, content);
       if (read_err == VXCORE_OK) {
-        auto relative_paths = handler->DiscoverRelativeLinks(
-            content, notebook_->GetConfig().assets_folder);
+        auto relative_paths =
+            handler->DiscoverRelativeLinks(content, notebook_->GetConfig().assets_folder);
         if (!relative_paths.empty()) {
           std::string src_dir = PathToGenericUtf8(PathFromUtf8(src_content_path));
           std::string dest_dir = PathToGenericUtf8(PathFromUtf8(dest_content_path));
-          MoveRelativeLinkedFiles(relative_paths, src_dir, dest_dir,
-                                  notebook_->GetRootFolder(),
+          MoveRelativeLinkedFiles(relative_paths, src_dir, dest_dir, notebook_->GetRootFolder(),
                                   PathToGenericUtf8(dest_fs_path));
         }
       }
@@ -1673,9 +1674,10 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
   if (it == src_config->files.end()) {
     // Defensive: FindFileRecord matched above, so this should be unreachable.
     // erase(end()) would be undefined behaviour, so bail loudly instead.
-    VXCORE_LOG_ERROR("MoveFile: record for '%s' vanished from source config after the file was "
-                     "already renamed to %s; metadata is now out of sync with disk",
-                     file_name.c_str(), PathToUtf8(dest_fs_path).c_str());
+    VXCORE_LOG_ERROR(
+        "MoveFile: record for '%s' vanished from source config after the file was "
+        "already renamed to %s; metadata is now out of sync with disk",
+        file_name.c_str(), PathToUtf8(dest_fs_path).c_str());
     return VXCORE_ERR_INVALID_STATE;
   }
   src_config->files.erase(it);
@@ -1684,9 +1686,10 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
   if (error != VXCORE_OK) {
     // The file is ALREADY renamed on disk at this point, so a failure here is
     // exactly the disk/metadata divergence behind issue #2729. Log it loudly.
-    VXCORE_LOG_ERROR("MoveFile: failed to save source folder config '%s' (error=%d) AFTER the "
-                     "file was moved to %s; vx.json still lists it in the old folder",
-                     src_folder_path.c_str(), error, PathToUtf8(dest_fs_path).c_str());
+    VXCORE_LOG_ERROR(
+        "MoveFile: failed to save source folder config '%s' (error=%d) AFTER the "
+        "file was moved to %s; vx.json still lists it in the old folder",
+        src_folder_path.c_str(), error, PathToUtf8(dest_fs_path).c_str());
     return error;
   }
 
@@ -1694,9 +1697,10 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
   dest_config->modified_utc = file_copy.modified_utc;
   error = SaveFolderConfig(clean_dest_folder_path, *dest_config);
   if (error != VXCORE_OK) {
-    VXCORE_LOG_ERROR("MoveFile: failed to save destination folder config '%s' (error=%d) AFTER "
-                     "the file was moved to %s; the note is now listed in neither folder",
-                     clean_dest_folder_path.c_str(), error, PathToUtf8(dest_fs_path).c_str());
+    VXCORE_LOG_ERROR(
+        "MoveFile: failed to save destination folder config '%s' (error=%d) AFTER "
+        "the file was moved to %s; the note is now listed in neither folder",
+        clean_dest_folder_path.c_str(), error, PathToUtf8(dest_fs_path).c_str());
     return error;
   }
 
@@ -1709,10 +1713,9 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
 
   VXCORE_LOG_INFO("MoveFile successful: file moved from %s to %s", clean_src_file_path.c_str(),
                   ConcatenatePaths(clean_dest_folder_path, file_name).c_str());
-  EmitEvent(events::kFileMoved,
-            {{kJsonKeyNotebookId, notebook_->GetId()},
-             {"oldPath", clean_src_file_path},
-             {"newPath", ConcatenatePaths(clean_dest_folder_path, file_name)}});
+  EmitEvent(events::kFileMoved, {{kJsonKeyNotebookId, notebook_->GetId()},
+                                 {"oldPath", clean_src_file_path},
+                                 {"newPath", ConcatenatePaths(clean_dest_folder_path, file_name)}});
   return VXCORE_OK;
 }
 
@@ -1720,8 +1723,8 @@ VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
                                            const std::string &dest_folder_path,
                                            const std::string &new_name, std::string &out_file_id) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   const auto clean_src_file_path = GetCleanRelativePath(src_file_path);
   const auto clean_dest_folder_path = GetCleanRelativePath(dest_folder_path);
 
@@ -1790,9 +1793,10 @@ VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
     // links would dangle. Log so a broken copy is diagnosable.
     VxCoreError assets_err = CopyAssetsDirectory(src_assets_abs, dest_assets_abs);
     if (assets_err != VXCORE_OK) {
-      VXCORE_LOG_ERROR("CopyFile: failed to copy assets dir for %s (error=%d); the copied "
-                       "note's asset links will be broken",
-                       clean_src_file_path.c_str(), assets_err);
+      VXCORE_LOG_ERROR(
+          "CopyFile: failed to copy assets dir for %s (error=%d); the copied "
+          "note's asset links will be broken",
+          clean_src_file_path.c_str(), assets_err);
     }
   }
 
@@ -1815,8 +1819,8 @@ VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
             ConcatenatePaths(notebook_->GetConfig().assets_folder, file->id);
         std::string new_relative_assets =
             ConcatenatePaths(notebook_->GetConfig().assets_folder, new_file.id);
-        std::string rewritten = handler->RewriteAssetLinks(content, old_relative_assets,
-                                                           new_relative_assets);
+        std::string rewritten =
+            handler->RewriteAssetLinks(content, old_relative_assets, new_relative_assets);
         if (rewritten != content) {
           WriteFile(dest_fs_path, rewritten);
         }
@@ -1826,13 +1830,12 @@ VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
         std::string updated_content;
         VxCoreError re_read_err = ReadFile(dest_fs_path, updated_content);
         if (re_read_err == VXCORE_OK) {
-          auto relative_paths = handler->DiscoverRelativeLinks(
-              updated_content, notebook_->GetConfig().assets_folder);
+          auto relative_paths =
+              handler->DiscoverRelativeLinks(updated_content, notebook_->GetConfig().assets_folder);
           if (!relative_paths.empty()) {
             std::string src_dir = PathToGenericUtf8(PathFromUtf8(src_content_path));
             std::string dest_dir = PathToGenericUtf8(PathFromUtf8(dest_content_path));
-            CopyRelativeLinkedFiles(relative_paths, src_dir, dest_dir,
-                                    notebook_->GetRootFolder(),
+            CopyRelativeLinkedFiles(relative_paths, src_dir, dest_dir, notebook_->GetRootFolder(),
                                     PathToGenericUtf8(src_fs_path));
           }
         }
@@ -2134,8 +2137,7 @@ VxCoreError BundledFolderManager::SaveFolderConfigAtomic(const std::string &fold
 
     const std::string payload = config.ToJson().dump(2);
     if (!WriteFileDurable(tmp_path, payload)) {
-      VXCORE_LOG_ERROR("SaveFolderConfigAtomic: failed to write %s",
-                       PathToUtf8(tmp_path).c_str());
+      VXCORE_LOG_ERROR("SaveFolderConfigAtomic: failed to write %s", PathToUtf8(tmp_path).c_str());
       RemoveTreeQuietly(tmp_path);
       return VXCORE_ERR_IO;
     }
@@ -2269,8 +2271,7 @@ VxCoreError BundledFolderManager::AttachImportedFolder(const std::string &dest_f
 
   const std::string child_relative_path = ConcatenatePaths(clean_dest, name);
   const fs::path content_target = PathFromUtf8(GetContentPath(clean_dest)) / PathFromUtf8(name);
-  const fs::path metadata_target =
-      PathFromUtf8(GetConfigPath(child_relative_path)).parent_path();
+  const fs::path metadata_target = PathFromUtf8(GetConfigPath(child_relative_path)).parent_path();
 
   if (fs::exists(content_target, ec) || fs::exists(metadata_target, ec)) {
     VXCORE_LOG_ERROR("AttachImportedFolder: destination already occupied: %s", name.c_str());
@@ -2341,8 +2342,7 @@ VxCoreError BundledFolderManager::AttachImportedFolder(const std::string &dest_f
     std::vector<std::string> existing_ids;
     const VxCoreError collect_err = CollectAllNodeIds(existing_ids);
     if (collect_err != VXCORE_OK) {
-      VXCORE_LOG_ERROR("AttachImportedFolder: cannot verify id uniqueness (error=%d)",
-                       collect_err);
+      VXCORE_LOG_ERROR("AttachImportedFolder: cannot verify id uniqueness (error=%d)", collect_err);
       return collect_err;
     }
 
@@ -2516,8 +2516,8 @@ VxCoreError BundledFolderManager::RecoverImports(int *out_recovered_count) {
 
   std::vector<fs::path> journal_dirs;
   for (fs::directory_iterator it(staging_root, ec), end; !ec && it != end; it.increment(ec)) {
-    if (fs::is_directory(it->path(), ec) && fs::is_regular_file(it->path() / kImportJournalFileName,
-                                                                ec)) {
+    if (fs::is_directory(it->path(), ec) &&
+        fs::is_regular_file(it->path() / kImportJournalFileName, ec)) {
       journal_dirs.push_back(it->path());
     }
   }
@@ -2525,8 +2525,7 @@ VxCoreError BundledFolderManager::RecoverImports(int *out_recovered_count) {
   int recovered = 0;
   for (const auto &dir : journal_dirs) {
     nlohmann::json journal;
-    if (LoadJsonFile(dir / kImportJournalFileName, journal) != VXCORE_OK ||
-        !journal.is_object()) {
+    if (LoadJsonFile(dir / kImportJournalFileName, journal) != VXCORE_OK || !journal.is_object()) {
       VXCORE_LOG_WARN("RecoverImports: unreadable journal in %s; discarding staging dir",
                       PathToUtf8(dir).c_str());
       RemoveTreeQuietly(dir);
@@ -2572,8 +2571,7 @@ VxCoreError BundledFolderManager::RecoverImports(int *out_recovered_count) {
 
       // Restore the parent's index bytes verbatim. Idempotent: if the commit
       // point was never reached these bytes are already on disk.
-      if (journal.contains(kJournalKeyParentBytes) &&
-          journal[kJournalKeyParentBytes].is_string()) {
+      if (journal.contains(kJournalKeyParentBytes) && journal[kJournalKeyParentBytes].is_string()) {
         const std::string bytes = journal[kJournalKeyParentBytes].get<std::string>();
         if (!bytes.empty()) {
           const fs::path parent_config = PathFromUtf8(GetConfigPath(dest_path));
@@ -2597,6 +2595,10 @@ VxCoreError BundledFolderManager::RecoverImports(int *out_recovered_count) {
     *out_recovered_count = recovered;
   }
   return VXCORE_OK;
+}
+
+VxCoreError BundledFolderManager::RecoverTransfers(int *out_recovered_count) {
+  return NodeTransfer::Recover(notebook_, out_recovered_count);
 }
 
 std::string BundledFolderManager::GetParentFolderId(const std::string &folder_path) {
@@ -2799,8 +2801,8 @@ VxCoreError BundledFolderManager::ImportFile(const std::string &folder_path,
                                              const std::string &external_file_path,
                                              std::string &out_file_id) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("ImportFile: folder=%s, external_file=%s", folder_path.c_str(),
                   external_file_path.c_str());
   const fs::path external_file_path_fs = PathFromUtf8(external_file_path);
@@ -2888,8 +2890,8 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
                                                const std::string &suffix_allowlist,
                                                std::string &out_folder_id) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   VXCORE_LOG_INFO("ImportFolder: dest=%s, external=%s, suffix_allowlist=%s",
                   dest_folder_path.c_str(), external_folder_path.c_str(), suffix_allowlist.c_str());
 
@@ -2917,9 +2919,10 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
   // denied, cyclic link, device error) the import is rejected rather than
   // silently proceeding without a guard.
   if (IsPathWithin(notebook_->GetRootFolder(), external_folder_path, /*on_error=*/true)) {
-    VXCORE_LOG_ERROR("ImportFolder: Cannot import folder from within notebook root "
-                     "(or containment could not be verified): %s",
-                     external_folder_path.c_str());
+    VXCORE_LOG_ERROR(
+        "ImportFolder: Cannot import folder from within notebook root "
+        "(or containment could not be verified): %s",
+        external_folder_path.c_str());
     return VXCORE_ERR_INVALID_PARAM;
   }
 
@@ -3004,55 +3007,55 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
   // which is not attempted here.
   std::function<bool(const fs::path &, const fs::path &)> copy_filtered =
       [&](const fs::path &src, const fs::path &dest) -> bool {
-        fs::create_directories(dest);
-        for (const auto &entry : fs::directory_iterator(src)) {
-          const std::string entry_name = PathToUtf8(entry.path().filename());
-          // Skip hidden files/folders
-          if (entry_name.empty() || entry_name[0] == '.') {
-            continue;
+    fs::create_directories(dest);
+    for (const auto &entry : fs::directory_iterator(src)) {
+      const std::string entry_name = PathToUtf8(entry.path().filename());
+      // Skip hidden files/folders
+      if (entry_name.empty() || entry_name[0] == '.') {
+        continue;
+      }
+      const std::string entry_utf8 = PathToUtf8(entry.path());
+      // Primary defense: never follow symlinks/junctions/other reparse
+      // points, for files as well as directories.
+      const ReparseState reparse_state = CheckReparsePoint(entry_utf8);
+      if (reparse_state == ReparseState::kError) {
+        VXCORE_LOG_ERROR("ImportFolder: Failed to stat entry: %s", entry_utf8.c_str());
+        return false;
+      }
+      if (reparse_state == ReparseState::kYes) {
+        VXCORE_LOG_WARN("ImportFolder: Skipping symlink/junction/reparse point: %s",
+                        entry_utf8.c_str());
+        continue;
+      }
+      if (entry.is_directory()) {
+        // Defense in depth: cannot verify containment -> outside -> skip.
+        if (!IsPathWithinCanonical(canonical_source_root, entry_utf8, /*on_error=*/false)) {
+          VXCORE_LOG_WARN("ImportFolder: Skipping subdirectory outside source root: %s",
+                          entry_utf8.c_str());
+          continue;
+        }
+        if (!copy_filtered(entry.path(), dest / PathFromUtf8(entry_name))) {
+          return false;
+        }
+      } else if (entry.is_regular_file()) {
+        // Apply suffix filter if allowlist is specified
+        if (!allowed_suffixes.empty()) {
+          std::string ext = PathToUtf8(entry.path().extension());
+          if (!ext.empty() && ext[0] == '.') {
+            ext = ext.substr(1);
           }
-          const std::string entry_utf8 = PathToUtf8(entry.path());
-          // Primary defense: never follow symlinks/junctions/other reparse
-          // points, for files as well as directories.
-          const ReparseState reparse_state = CheckReparsePoint(entry_utf8);
-          if (reparse_state == ReparseState::kError) {
-            VXCORE_LOG_ERROR("ImportFolder: Failed to stat entry: %s", entry_utf8.c_str());
-            return false;
-          }
-          if (reparse_state == ReparseState::kYes) {
-            VXCORE_LOG_WARN("ImportFolder: Skipping symlink/junction/reparse point: %s",
-                            entry_utf8.c_str());
-            continue;
-          }
-          if (entry.is_directory()) {
-            // Defense in depth: cannot verify containment -> outside -> skip.
-            if (!IsPathWithinCanonical(canonical_source_root, entry_utf8, /*on_error=*/false)) {
-              VXCORE_LOG_WARN("ImportFolder: Skipping subdirectory outside source root: %s",
-                              entry_utf8.c_str());
-              continue;
-            }
-            if (!copy_filtered(entry.path(), dest / PathFromUtf8(entry_name))) {
-              return false;
-            }
-          } else if (entry.is_regular_file()) {
-            // Apply suffix filter if allowlist is specified
-            if (!allowed_suffixes.empty()) {
-              std::string ext = PathToUtf8(entry.path().extension());
-              if (!ext.empty() && ext[0] == '.') {
-                ext = ext.substr(1);
-              }
-              std::transform(ext.begin(), ext.end(), ext.begin(),
-                             [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-              if (allowed_suffixes.find(ext) == allowed_suffixes.end()) {
-                continue;  // Skip files not in allowlist
-              }
-            }
-            fs::copy_file(entry.path(), dest / PathFromUtf8(entry_name),
-                          fs::copy_options::overwrite_existing);
+          std::transform(ext.begin(), ext.end(), ext.begin(),
+                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+          if (allowed_suffixes.find(ext) == allowed_suffixes.end()) {
+            continue;  // Skip files not in allowlist
           }
         }
-        return true;
-      };
+        fs::copy_file(entry.path(), dest / PathFromUtf8(entry_name),
+                      fs::copy_options::overwrite_existing);
+      }
+    }
+    return true;
+  };
 
   try {
     if (!copy_filtered(external_path, target_path)) {
@@ -3465,9 +3468,8 @@ VxCoreError BundledFolderManager::ListExternalNodes(const std::string &folder_pa
       }
 
       // Skip legacy VNote metadata directories at any level
-      if (entry.is_directory() &&
-          (entry_name == "vx_images" || entry_name == "vx_attachments" ||
-           entry_name == "_v_images" || entry_name == "_v_attachments")) {
+      if (entry.is_directory() && (entry_name == "vx_images" || entry_name == "vx_attachments" ||
+                                   entry_name == "_v_images" || entry_name == "_v_attachments")) {
         continue;
       }
 
@@ -3529,8 +3531,8 @@ VxCoreError BundledFolderManager::GetFileAttachments(const std::string &file_pat
 VxCoreError BundledFolderManager::UpdateFileAttachments(const std::string &file_path,
                                                         const std::string &attachments_json) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -3570,10 +3572,9 @@ VxCoreError BundledFolderManager::UpdateFileAttachments(const std::string &file_
       }
     }
 
-    EmitEvent(events::kFileAttachmentsReplaced,
-              {{kJsonKeyNotebookId, notebook_->GetId()},
-               {"path", clean_file_path},
-               {"attachments", new_attachments}});
+    EmitEvent(events::kFileAttachmentsReplaced, {{kJsonKeyNotebookId, notebook_->GetId()},
+                                                 {"path", clean_file_path},
+                                                 {"attachments", new_attachments}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
@@ -3583,8 +3584,8 @@ VxCoreError BundledFolderManager::UpdateFileAttachments(const std::string &file_
 VxCoreError BundledFolderManager::AddFileAttachment(const std::string &file_path,
                                                     const std::string &attachment) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -3622,18 +3623,17 @@ VxCoreError BundledFolderManager::AddFileAttachment(const std::string &file_path
     }
   }
 
-  EmitEvent(events::kFileAttached,
-            {{kJsonKeyNotebookId, notebook_->GetId()},
-             {"path", clean_file_path},
-             {"attachment", attachment}});
+  EmitEvent(events::kFileAttached, {{kJsonKeyNotebookId, notebook_->GetId()},
+                                    {"path", clean_file_path},
+                                    {"attachment", attachment}});
   return VXCORE_OK;
 }
 
 VxCoreError BundledFolderManager::DeleteFileAttachment(const std::string &file_path,
                                                        const std::string &attachment) {
   if (notebook_ && notebook_->IsReadOnly()) {
-      return VXCORE_ERR_READ_ONLY;
-    }
+    return VXCORE_ERR_READ_ONLY;
+  }
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, file_name] = SplitPath(clean_file_path);
@@ -3671,10 +3671,9 @@ VxCoreError BundledFolderManager::DeleteFileAttachment(const std::string &file_p
     }
   }
 
-  EmitEvent(events::kFileDetached,
-            {{kJsonKeyNotebookId, notebook_->GetId()},
-             {"path", clean_file_path},
-             {"attachment", attachment}});
+  EmitEvent(events::kFileDetached, {{kJsonKeyNotebookId, notebook_->GetId()},
+                                    {"path", clean_file_path},
+                                    {"attachment", attachment}});
   return VXCORE_OK;
 }
 
@@ -3803,8 +3802,7 @@ VxCoreError BundledFolderManager::SetChildrenOrder(const std::string &folder_pat
       FileRecord *rec = FindFileRecord(*config, name);
       if (!rec) {
         // Should be unreachable: permutation check above guarantees presence.
-        VXCORE_LOG_ERROR("SetChildrenOrder: missing FileRecord for permuted name=%s",
-                         name.c_str());
+        VXCORE_LOG_ERROR("SetChildrenOrder: missing FileRecord for permuted name=%s", name.c_str());
         return VXCORE_ERR_PERMUTATION_MISMATCH;
       }
       reordered.push_back(*rec);
@@ -3847,7 +3845,8 @@ bool BundledFolderManager::FolderContentExistsOnDisk(const std::string &relative
 
 bool BundledFolderManager::NodeContentExistsOnDisk(const std::string &relative_path,
                                                    bool is_folder) const {
-  return is_folder ? FolderContentExistsOnDisk(relative_path) : FileContentExistsOnDisk(relative_path);
+  return is_folder ? FolderContentExistsOnDisk(relative_path)
+                   : FileContentExistsOnDisk(relative_path);
 }
 
 }  // namespace vxcore

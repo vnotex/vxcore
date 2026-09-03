@@ -1,5 +1,6 @@
 #include "sync/git/git_sync_pipeline.h"
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -69,8 +70,7 @@ static std::string MaybeEmbedPatInUrl(const std::string &url, const std::string 
   const size_t scheme_end = 8;  // length of "https://"
   const size_t first_slash = url.find('/', scheme_end);
   const size_t at_pos = url.find('@', scheme_end);
-  if (at_pos != std::string::npos &&
-      (first_slash == std::string::npos || at_pos < first_slash)) {
+  if (at_pos != std::string::npos && (first_slash == std::string::npos || at_pos < first_slash)) {
     return url;  // already has userinfo
   }
   return std::string("https://x-access-token:") + pat + "@" + url.substr(scheme_end);
@@ -105,9 +105,8 @@ static std::string MaybeEmbedPatInUrl(const std::string &url, const std::string 
 //     so the conflict resolver can `git_rebase_commit` after resolution.
 //   - `git_error_clear()` is called on `GIT_ITEROVER` to match the
 //     pre-refactor blocks (libgit2 leaves a non-fatal error string set).
-VxCoreError DriveRebaseLoop(git_repository *repo, git_rebase **rebase_out,
-                            git_signature *sig, bool allow_eapplied,
-                            VxCoreError on_conflict_result) {
+VxCoreError DriveRebaseLoop(git_repository *repo, git_rebase **rebase_out, git_signature *sig,
+                            bool allow_eapplied, VxCoreError on_conflict_result) {
   for (;;) {
     git_rebase_operation *op = nullptr;
     int rc = git_rebase_next(&op, *rebase_out);
@@ -170,8 +169,7 @@ void SnapshotAuthor(ICredentialProvider *provider, const std::string &remote_url
     return;
   }
   SyncCredentials snapshot;
-  if (provider->GetCredentials(remote_url, /*username_from_url=*/"x-access-token",
-                               &snapshot)) {
+  if (provider->GetCredentials(remote_url, /*username_from_url=*/"x-access-token", &snapshot)) {
     *out_name = snapshot.author_name;
     *out_email = snapshot.author_email;
   }
@@ -215,10 +213,8 @@ VxCoreError GitSyncPipeline::ApplyDefaultGitConfig() {
     return TranslateGitError(rc);
   }
 
-  const char *user_name =
-      author_name_.empty() ? kDefaultAuthorName : author_name_.c_str();
-  const char *user_email =
-      author_email_.empty() ? kDefaultAuthorEmail : author_email_.c_str();
+  const char *user_name = author_name_.empty() ? kDefaultAuthorName : author_name_.c_str();
+  const char *user_email = author_email_.empty() ? kDefaultAuthorEmail : author_email_.c_str();
 
   // core.autocrlf is set as a string ("false") to match git's textual config
   // representation; the others are booleans.
@@ -243,6 +239,8 @@ VxCoreError GitSyncPipeline::ApplyDefaultGitConfig() {
   if (rc == 0) rc = git_config_set_bool(cfg.get(), "commit.gpgsign", 0);
   if (rc == 0) rc = git_config_set_string(cfg.get(), "user.name", user_name);
   if (rc == 0) rc = git_config_set_string(cfg.get(), "user.email", user_email);
+  if (rc == 0) rc = git_ignore_add_rule(repo_, "vx_notebook/vx_sync/\n");
+  if (rc == 0) rc = git_ignore_add_rule(repo_, "vx_notebook/vx_transfer/\n");
 
   if (rc != 0) {
     return TranslateGitError(rc);
@@ -265,8 +263,7 @@ bool GitSyncPipeline::RemoteHasRefs() {
   {
     SyncCredentials cred_snapshot;
     if (creds_provider_ &&
-        creds_provider_->GetCredentials(config_.remote_url, "x-access-token",
-                                        &cred_snapshot) &&
+        creds_provider_->GetCredentials(config_.remote_url, "x-access-token", &cred_snapshot) &&
         !cred_snapshot.personal_access_token.empty()) {
       remote_url_for_call =
           MaybeEmbedPatInUrl(config_.remote_url, cred_snapshot.personal_access_token);
@@ -311,7 +308,8 @@ bool GitSyncPipeline::RemoteHasRefs() {
 }
 
 // T21: stage every change under the working tree, then defensively scrub any
-// path under vx_notebook/vx_sync/ from the index (the gitignore covers it,
+// path under vx_notebook/vx_sync/ or vx_notebook/vx_transfer/ from the index
+// (the gitignore covers both,
 // but we belt-and-brace because users may pass exclude_paths that override).
 // Caller holds op_mutex_ and has repo_ open.
 //
@@ -338,8 +336,12 @@ VxCoreError GitSyncPipeline::StageAll() {
   auto add_cb = [](const char *path, const char *matched_pathspec, void *payload) -> int {
     (void)matched_pathspec;
     (void)payload;
-    static const char kPrefix[] = "vx_notebook/vx_sync";
-    if (path != nullptr && std::strncmp(path, kPrefix, sizeof(kPrefix) - 1) == 0) {
+    static const char *const kPrefixes[] = {"vx_notebook/vx_sync", "vx_notebook/vx_transfer"};
+    if (path != nullptr &&
+        std::any_of(std::begin(kPrefixes), std::end(kPrefixes), [path](const char *prefix) {
+          const size_t size = std::strlen(prefix);
+          return std::strncmp(path, prefix, size) == 0 && (path[size] == '\0' || path[size] == '/');
+        })) {
       return 1;  // skip
     }
     return 0;  // include
@@ -357,7 +359,8 @@ VxCoreError GitSyncPipeline::StageAll() {
 
   // Defensive removal: collect entry paths under vx_notebook/vx_sync first
   // (avoid mutating while iterating), then drop them by path/stage 0.
-  static const std::string kExcludePrefix = "vx_notebook/vx_sync";
+  static const std::vector<std::string> kExcludePrefixes = {"vx_notebook/vx_sync",
+                                                            "vx_notebook/vx_transfer"};
   std::vector<std::string> to_remove;
   const size_t n = git_index_entrycount(idx.get());
   for (size_t i = 0; i < n; ++i) {
@@ -366,7 +369,11 @@ VxCoreError GitSyncPipeline::StageAll() {
       continue;
     }
     const std::string p(e->path);
-    if (p.compare(0, kExcludePrefix.size(), kExcludePrefix) == 0) {
+    if (std::any_of(kExcludePrefixes.begin(), kExcludePrefixes.end(),
+                    [&p](const std::string &prefix) {
+                      return p.compare(0, prefix.size(), prefix) == 0 &&
+                             (p.size() == prefix.size() || p[prefix.size()] == '/');
+                    })) {
       to_remove.push_back(p);
     }
   }
@@ -448,10 +455,8 @@ VxCoreError GitSyncPipeline::CommitIndex(const std::string &message, bool *out_d
     }
   }
 
-  const char *user_name =
-      author_name_.empty() ? kDefaultAuthorName : author_name_.c_str();
-  const char *user_email =
-      author_email_.empty() ? kDefaultAuthorEmail : author_email_.c_str();
+  const char *user_name = author_name_.empty() ? kDefaultAuthorName : author_name_.c_str();
+  const char *user_email = author_email_.empty() ? kDefaultAuthorEmail : author_email_.c_str();
 
   git_signature *raw_sig = nullptr;
   int rc = git_signature_now(&raw_sig, user_name, user_email);
@@ -509,15 +514,17 @@ VxCoreError GitSyncPipeline::FetchOrigin() {
   {
     SyncCredentials cred_snapshot;
     if (creds_provider_ &&
-        creds_provider_->GetCredentials(config_.remote_url, "x-access-token",
-                                        &cred_snapshot) &&
+        creds_provider_->GetCredentials(config_.remote_url, "x-access-token", &cred_snapshot) &&
         !cred_snapshot.personal_access_token.empty()) {
       const std::string embedded_url =
           MaybeEmbedPatInUrl(config_.remote_url, cred_snapshot.personal_access_token);
       if (embedded_url != config_.remote_url) {
         const int set_rc = git_remote_set_instance_url(remote.get(), embedded_url.c_str());
         if (set_rc != 0) {
-          VXCORE_LOG_WARN("FetchOrigin: git_remote_set_instance_url failed rc=%d, falling back to callback path", set_rc);
+          VXCORE_LOG_WARN(
+              "FetchOrigin: git_remote_set_instance_url failed rc=%d, falling back to callback "
+              "path",
+              set_rc);
         }
       }
     }
@@ -651,10 +658,8 @@ VxCoreError GitSyncPipeline::RebaseOntoOrigin() {
   }
 
   // Default signature for new commits created during rebase replay.
-  const char *user_name =
-      author_name_.empty() ? kDefaultAuthorName : author_name_.c_str();
-  const char *user_email =
-      author_email_.empty() ? kDefaultAuthorEmail : author_email_.c_str();
+  const char *user_name = author_name_.empty() ? kDefaultAuthorName : author_name_.c_str();
+  const char *user_email = author_email_.empty() ? kDefaultAuthorEmail : author_email_.c_str();
   git_signature *raw_sig = nullptr;
   rc = git_signature_now(&raw_sig, user_name, user_email);
   git_signaturePtr sig(raw_sig);
@@ -693,15 +698,16 @@ VxCoreError GitSyncPipeline::PushOrigin() {
   {
     SyncCredentials cred_snapshot;
     if (creds_provider_ &&
-        creds_provider_->GetCredentials(config_.remote_url, "x-access-token",
-                                        &cred_snapshot) &&
+        creds_provider_->GetCredentials(config_.remote_url, "x-access-token", &cred_snapshot) &&
         !cred_snapshot.personal_access_token.empty()) {
       const std::string embedded_url =
           MaybeEmbedPatInUrl(config_.remote_url, cred_snapshot.personal_access_token);
       if (embedded_url != config_.remote_url) {
         const int set_rc = git_remote_set_instance_url(remote.get(), embedded_url.c_str());
         if (set_rc != 0) {
-          VXCORE_LOG_WARN("PushOrigin: git_remote_set_instance_url failed rc=%d, falling back to callback path", set_rc);
+          VXCORE_LOG_WARN(
+              "PushOrigin: git_remote_set_instance_url failed rc=%d, falling back to callback path",
+              set_rc);
         }
       }
     }
@@ -752,10 +758,8 @@ VxCoreError GitSyncPipeline::ContinueRebaseAfterResolution() {
     return VXCORE_OK;
   }
 
-  const char *user_name =
-      author_name_.empty() ? kDefaultAuthorName : author_name_.c_str();
-  const char *user_email =
-      author_email_.empty() ? kDefaultAuthorEmail : author_email_.c_str();
+  const char *user_name = author_name_.empty() ? kDefaultAuthorName : author_name_.c_str();
+  const char *user_email = author_email_.empty() ? kDefaultAuthorEmail : author_email_.c_str();
   git_signature *raw_sig = nullptr;
   int rc = git_signature_now(&raw_sig, user_name, user_email);
   git_signaturePtr sig(raw_sig);
