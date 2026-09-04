@@ -107,8 +107,8 @@ int test_snippet_list() {
   err = mgr->ListSnippets(snippets);
   ASSERT_EQ(err, VXCORE_OK);
 
-  // Should have 24 built-ins + 2 user = at least 26.
-  ASSERT_TRUE(snippets.size() >= 26u);
+  // Should have 25 built-ins + 2 user = at least 27.
+  ASSERT_TRUE(snippets.size() >= 27u);
 
   // Verify user snippets are present.
   bool found_a = false, found_b = false;
@@ -120,7 +120,7 @@ int test_snippet_list() {
   }
   ASSERT_TRUE(found_a);
   ASSERT_TRUE(found_b);
-  ASSERT_EQ(builtin_count, 24);
+  ASSERT_EQ(builtin_count, 25);
 
   vxcore_context_destroy(ctx);
   std::cout << "  \xe2\x9c\x93 test_snippet_list passed" << std::endl;
@@ -279,6 +279,9 @@ int test_snippet_builtin_names_reserved() {
   err = mgr->CreateSnippet("note", kTestSnippetJson);
   ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
 
+  err = mgr->CreateSnippet("folder", kTestSnippetJson);
+  ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
+
   err = mgr->CreateSnippet("d", kTestSnippetJson);
   ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
 
@@ -289,8 +292,14 @@ int test_snippet_builtin_names_reserved() {
   err = mgr->DeleteSnippet("note");
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
 
+  err = mgr->DeleteSnippet("folder");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
   // Cannot rename a built-in snippet (as source).
   err = mgr->RenameSnippet("date", "mydate");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = mgr->RenameSnippet("folder", "myfolder");
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
 
   // Cannot rename a user snippet TO a built-in name.
@@ -298,9 +307,14 @@ int test_snippet_builtin_names_reserved() {
   ASSERT_EQ(err, VXCORE_OK);
   err = mgr->RenameSnippet("user_snippet", "date");
   ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
+  err = mgr->RenameSnippet("user_snippet", "folder");
+  ASSERT_EQ(err, VXCORE_ERR_ALREADY_EXISTS);
 
   // Cannot update a built-in snippet.
   err = mgr->UpdateSnippet("date", kTestSnippetJson);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+
+  err = mgr->UpdateSnippet("folder", kTestSnippetJson);
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
 
   // Can get built-in snippets.
@@ -530,10 +544,10 @@ int test_snippet_builtin_list() {
   err = mgr->ListSnippets(snippets);
   ASSERT_EQ(err, VXCORE_OK);
 
-  // All 24 built-in names must be present.
-  const char *expected[] = {"d",  "dd",   "ddd",  "dddd", "M",    "MM",       "MMM",  "MMMM",
-                            "yy", "yyyy", "w",    "ww",   "H",    "HH",       "m",    "mm",
-                            "s",  "ss",   "date", "da",   "time", "datetime", "note", "no"};
+  // All 25 built-in names must be present.
+  const char *expected[] = {"d",    "dd", "ddd",  "dddd",     "M",    "MM",     "MMM", "MMMM", "yy",
+                            "yyyy", "w",  "ww",   "H",        "HH",   "m",      "mm",  "s",    "ss",
+                            "date", "da", "time", "datetime", "note", "folder", "no"};
   for (const auto &name : expected) {
     bool found = false;
     for (const auto &s : snippets) {
@@ -708,8 +722,8 @@ int test_snippet_builtin_week_range() {
   return 0;
 }
 
-int test_snippet_builtin_note_fallback() {
-  std::cout << "  Running test_snippet_builtin_note_fallback..." << std::endl;
+int test_snippet_builtin_context_fallback() {
+  std::cout << "  Running test_snippet_builtin_context_fallback..." << std::endl;
   VxCoreContextHandle ctx = nullptr;
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
@@ -720,9 +734,11 @@ int test_snippet_builtin_note_fallback() {
   vxcore::OverrideMap overrides;
   auto result = mgr->ApplySnippet("note", "", "", overrides);
   ASSERT_EQ(result.text, std::string("[Value Not Available]"));
+  result = mgr->ApplySnippet("folder", "", "", overrides);
+  ASSERT_EQ(result.text, std::string("[Value Not Available]"));
 
   vxcore_context_destroy(ctx);
-  std::cout << "  \xe2\x9c\x93 test_snippet_builtin_note_fallback passed" << std::endl;
+  std::cout << "  \xe2\x9c\x93 test_snippet_builtin_context_fallback passed" << std::endl;
   return 0;
 }
 
@@ -743,6 +759,26 @@ int test_snippet_builtin_note_override() {
 
   vxcore_context_destroy(ctx);
   std::cout << "  \xe2\x9c\x93 test_snippet_builtin_note_override passed" << std::endl;
+  return 0;
+}
+
+int test_snippet_builtin_folder_override() {
+  std::cout << "  Running test_snippet_builtin_folder_override..." << std::endl;
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+  auto *mgr = vctx->snippet_manager.get();
+
+  vxcore::OverrideMap overrides;
+  overrides["folder"] = "folder/subfolder";
+  auto result = mgr->ApplySnippet("folder", "", "", overrides);
+  ASSERT_EQ(result.text, std::string("folder/subfolder"));
+  ASSERT_EQ(result.cursor_offset, 16);
+
+  vxcore_context_destroy(ctx);
+  std::cout << "  \xe2\x9c\x93 test_snippet_builtin_folder_override passed" << std::endl;
   return 0;
 }
 
@@ -1578,8 +1614,9 @@ int main() {
   RUN_TEST(test_snippet_builtin_day_range);
   RUN_TEST(test_snippet_builtin_month_range);
   RUN_TEST(test_snippet_builtin_week_range);
-  RUN_TEST(test_snippet_builtin_note_fallback);
+  RUN_TEST(test_snippet_builtin_context_fallback);
   RUN_TEST(test_snippet_builtin_note_override);
+  RUN_TEST(test_snippet_builtin_folder_override);
   RUN_TEST(test_snippet_builtin_no_override);
   RUN_TEST(test_snippet_expand_basic);
   RUN_TEST(test_snippet_expand_nested);

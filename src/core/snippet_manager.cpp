@@ -189,6 +189,8 @@ void SnippetManager::LoadBuiltInSnippets() {
 
   // Context-dependent snippets (fallback to "[Value Not Available]").
   add("note", "the note name", []() { return std::string("[Value Not Available]"); });
+  add("folder", "the notebook-relative folder path of the current note",
+      []() { return std::string("[Value Not Available]"); });
   add("no", "the note name without suffix", []() { return std::string("[Value Not Available]"); });
 }
 
@@ -577,13 +579,10 @@ ApplyResult SnippetManager::ApplySnippet(const std::string &name, const std::str
                              indent_first, overrides, /*detect_cursor_mark=*/false);
 }
 
-ApplyResult SnippetManager::ApplyMarksAndExpand(const std::string &content,
-                                                const std::string &selected_text,
-                                                const std::string &indentation,
-                                                const std::string &cursor_mark,
-                                                const std::string &selection_mark, bool indent_first,
-                                                const OverrideMap &overrides,
-                                                bool detect_cursor_mark) {
+ApplyResult SnippetManager::ApplyMarksAndExpand(
+    const std::string &content, const std::string &selected_text, const std::string &indentation,
+    const std::string &cursor_mark, const std::string &selection_mark, bool indent_first,
+    const OverrideMap &overrides, bool detect_cursor_mark) {
   // Whether the (top-level) content carries an actual cursor mark. Used to decide
   // if the caret should be placed at all (templates) or default to end-of-text
   // (named snippets).
@@ -592,8 +591,7 @@ ApplyResult SnippetManager::ApplyMarksAndExpand(const std::string &content,
   auto raw_result = ApplySnippetRaw(content, selected_text, indentation, cursor_mark,
                                     selection_mark, indent_first);
 
-  int cursor_offset =
-      (detect_cursor_mark && !has_cursor_mark) ? -1 : raw_result.cursor_offset;
+  int cursor_offset = (detect_cursor_mark && !has_cursor_mark) ? -1 : raw_result.cursor_offset;
   std::string expanded = ExpandSymbols(raw_result.text, selected_text, cursor_offset, overrides);
   return ApplyResult{expanded, cursor_offset};
 }
