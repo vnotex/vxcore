@@ -464,6 +464,7 @@ add_test(NAME test_metadata_store COMMAND test_metadata_store)
 # Links against folder manager sources instead of vxcore library
 add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/bundled_folder_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/node_transfer.cpp
     ${CMAKE_SOURCE_DIR}/src/core/raw_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/event_manager.cpp
