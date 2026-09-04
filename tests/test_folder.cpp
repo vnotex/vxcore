@@ -2631,6 +2631,95 @@ int test_recycle_bin_get_path() {
   return 0;
 }
 
+int test_recycle_bin_custom_relative_path() {
+  std::cout << "  Running test_recycle_bin_custom_relative_path..." << std::endl;
+  const std::string root_path = get_test_path("test_recycle_bin_relative_nb");
+  cleanup_test_dir(root_path);
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const std::string config_json =
+      nlohmann::json{{"name", "Test Notebook"},
+                     {"recycleBinFolder", "custom/../trash"}}
+          .dump();
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, root_path.c_str(), config_json.c_str(),
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *recycle_bin_path = nullptr;
+  err = vxcore_notebook_get_recycle_bin_path(ctx, notebook_id, &recycle_bin_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(recycle_bin_path);
+  ASSERT_EQ(std::string(recycle_bin_path), normalize_path(root_path + "/trash"));
+  vxcore_string_free(recycle_bin_path);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "relative.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+  err = vxcore_node_delete(ctx, notebook_id, "relative.md");
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT(path_exists(root_path + "/trash/relative.md"));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root_path);
+  std::cout << "  ✓ test_recycle_bin_custom_relative_path passed" << std::endl;
+  return 0;
+}
+
+int test_recycle_bin_custom_absolute_path() {
+  std::cout << "  Running test_recycle_bin_custom_absolute_path..." << std::endl;
+  const std::string root_path = get_test_path("test_recycle_bin_absolute_nb");
+  const std::string absolute_recycle_path =
+      normalize_path(get_test_path("test_recycle_bin_absolute_folder"));
+  cleanup_test_dir(root_path);
+  cleanup_test_dir(absolute_recycle_path);
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const std::string config_json =
+      nlohmann::json{{"name", "Test Notebook"},
+                     {"recycleBinFolder", absolute_recycle_path}}
+          .dump();
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(ctx, root_path.c_str(), config_json.c_str(),
+                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  char *recycle_bin_path = nullptr;
+  err = vxcore_notebook_get_recycle_bin_path(ctx, notebook_id, &recycle_bin_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(recycle_bin_path);
+  ASSERT_EQ(std::string(recycle_bin_path), absolute_recycle_path);
+  vxcore_string_free(recycle_bin_path);
+
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, ".", "absolute.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+  err = vxcore_node_delete(ctx, notebook_id, "absolute.md");
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT(path_exists(absolute_recycle_path + "/absolute.md"));
+
+  err = vxcore_notebook_empty_recycle_bin(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT(path_exists(absolute_recycle_path));
+  ASSERT(!path_exists(absolute_recycle_path + "/absolute.md"));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root_path);
+  cleanup_test_dir(absolute_recycle_path);
+  std::cout << "  ✓ test_recycle_bin_custom_absolute_path passed" << std::endl;
+  return 0;
+}
+
 int test_recycle_bin_empty() {
   std::cout << "  Running test_recycle_bin_empty..." << std::endl;
   cleanup_test_dir(get_test_path("test_recycle_bin_empty_nb"));
@@ -10004,6 +10093,8 @@ int main() {
   RUN_TEST(test_phantom_folder_delete_readonly);
   RUN_TEST(test_recycle_bin_name_conflict);
   RUN_TEST(test_recycle_bin_get_path);
+  RUN_TEST(test_recycle_bin_custom_relative_path);
+  RUN_TEST(test_recycle_bin_custom_absolute_path);
   RUN_TEST(test_recycle_bin_empty);
   RUN_TEST(test_recycle_bin_raw_notebook_unsupported);
 

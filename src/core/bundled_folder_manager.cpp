@@ -2678,7 +2678,12 @@ void BundledFolderManager::SyncFolderToStore(const std::string &folder_path,
 }
 
 std::string BundledFolderManager::GetRecycleBinPath() const {
-  return ConcatenatePaths(notebook_->GetMetadataFolder(), "recycle_bin");
+  const std::string &configured_path = notebook_->GetConfig().recycle_bin_folder;
+  if (!IsRelativePath(configured_path)) {
+    return CleanPath(configured_path);
+  }
+
+  return CleanFsPath(PathFromUtf8(notebook_->GetRootFolder()) / PathFromUtf8(configured_path));
 }
 
 std::string BundledFolderManager::GenerateUniqueRecycleBinName(const std::string &name) const {
@@ -2749,17 +2754,69 @@ VxCoreError BundledFolderManager::MoveToRecycleBin(const std::filesystem::path &
   std::string unique_name = GenerateUniqueRecycleBinName(original_name);
   fs::path dest_path = recycle_bin_path / PathFromUtf8(unique_name);
 
-  // Move the file/folder to recycle bin
-  try {
-    fs::rename(source_path, dest_path);
+  // Rename is atomic and handles the common same-volume case. Absolute recycle-bin paths may
+  // target another volume, where rename is unsupported; fall back to a checked copy then remove.
+  std::error_code move_ec;
+  fs::rename(source_path, dest_path, move_ec);
+  if (!move_ec) {
     VXCORE_LOG_INFO("MoveToRecycleBin: Moved %s to %s", PathToUtf8(source_path).c_str(),
                     PathToUtf8(dest_path).c_str());
     return VXCORE_OK;
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("MoveToRecycleBin: Failed to move %s: %s", PathToUtf8(source_path).c_str(),
-                     e.what());
+  }
+
+  const auto reparse_state = CheckReparsePoint(PathToUtf8(source_path));
+  if (reparse_state != ReparseState::kNo) {
+    VXCORE_LOG_ERROR("MoveToRecycleBin: Cannot copy reparse point %s after rename failed: %s",
+                     PathToUtf8(source_path).c_str(), move_ec.message().c_str());
     return VXCORE_ERR_IO;
   }
+
+  std::error_code type_ec;
+  const bool is_directory = fs::is_directory(source_path, type_ec);
+  if (type_ec) {
+    VXCORE_LOG_ERROR("MoveToRecycleBin: Cannot stat source type %s: %s",
+                     PathToUtf8(source_path).c_str(), type_ec.message().c_str());
+    return VXCORE_ERR_IO;
+  }
+
+  bool copied = false;
+  if (is_directory) {
+    std::error_code create_ec;
+    if (!fs::create_directory(dest_path, create_ec) || create_ec) {
+      VXCORE_LOG_ERROR("MoveToRecycleBin: Failed to reserve destination %s: %s",
+                       PathToUtf8(dest_path).c_str(), create_ec.message().c_str());
+      return VXCORE_ERR_IO;
+    }
+    copied = CopyTreeSkipReparsePoints(source_path, dest_path);
+  } else {
+    std::error_code copy_ec;
+    copied = fs::copy_file(source_path, dest_path, fs::copy_options::none, copy_ec);
+    if (copy_ec) {
+      VXCORE_LOG_ERROR("MoveToRecycleBin: Failed to copy %s to %s: %s",
+                       PathToUtf8(source_path).c_str(), PathToUtf8(dest_path).c_str(),
+                       copy_ec.message().c_str());
+    }
+  }
+
+  if (!copied) {
+    if (is_directory) {
+      std::error_code cleanup_ec;
+      fs::remove_all(dest_path, cleanup_ec);
+    }
+    return VXCORE_ERR_IO;
+  }
+
+  std::error_code remove_ec;
+  fs::remove_all(source_path, remove_ec);
+  if (remove_ec) {
+    VXCORE_LOG_ERROR("MoveToRecycleBin: Copied but failed to remove source %s: %s",
+                     PathToUtf8(source_path).c_str(), remove_ec.message().c_str());
+    return VXCORE_ERR_IO;
+  }
+
+  VXCORE_LOG_INFO("MoveToRecycleBin: Copied across volumes %s to %s",
+                  PathToUtf8(source_path).c_str(), PathToUtf8(dest_path).c_str());
+  return VXCORE_OK;
 }
 
 std::string BundledFolderManager::GenerateUniqueFileName(const std::string &folder_abs_path,

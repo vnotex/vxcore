@@ -39,6 +39,7 @@ struct VXCORE_API NotebookConfig {
   std::string name;
   std::string description;
   std::string assets_folder;
+  std::string recycle_bin_folder;
   nlohmann::json metadata;
   std::vector<std::string> ignored;
   std::vector<TagNode> tags;

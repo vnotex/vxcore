@@ -46,7 +46,10 @@ nlohmann::json TagNode::ToJson() const {
 }
 
 NotebookConfig::NotebookConfig()
-    : assets_folder("vx_assets"), metadata(nlohmann::json::object()), tags_modified_utc(0) {}
+    : assets_folder("vx_assets"),
+      recycle_bin_folder("vx_notebook/recycle_bin"),
+      metadata(nlohmann::json::object()),
+      tags_modified_utc(0) {}
 
 NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
   NotebookConfig config;
@@ -61,6 +64,12 @@ NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
   }
   if (json.contains(kJsonKeyAssetsFolder) && json[kJsonKeyAssetsFolder].is_string()) {
     config.assets_folder = json[kJsonKeyAssetsFolder].get<std::string>();
+  }
+  if (json.contains(kJsonKeyRecycleBinFolder) && json[kJsonKeyRecycleBinFolder].is_string()) {
+    const std::string recycle_bin_folder = json[kJsonKeyRecycleBinFolder].get<std::string>();
+    if (!recycle_bin_folder.empty()) {
+      config.recycle_bin_folder = recycle_bin_folder;
+    }
   }
   // Note: attachmentsFolder is deprecated - attachments are now stored in assets folder
   if (json.contains(kJsonKeyMetadata) && json[kJsonKeyMetadata].is_object()) {
@@ -102,6 +111,7 @@ nlohmann::json NotebookConfig::ToJson() const {
   json[kJsonKeyName] = name;
   json[kJsonKeyDescription] = description;
   json[kJsonKeyAssetsFolder] = assets_folder;
+  json[kJsonKeyRecycleBinFolder] = recycle_bin_folder;
   // Note: attachmentsFolder is deprecated - attachments are now stored in assets folder
   json[kJsonKeyMetadata] = metadata;
   nlohmann::json tags_array = nlohmann::json::array();
