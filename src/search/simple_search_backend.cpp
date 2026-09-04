@@ -5,13 +5,23 @@
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <exception>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <set>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
+
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#else
+#include <iconv.h>
+#endif
 
 #include "search_file_info.h"
 #include "utils/file_utils.h"
@@ -30,6 +40,196 @@ std::condition_variable g_probe_cv;
 std::set<std::thread::id> g_probe_thread_ids;
 size_t g_probe_expected = 0;
 size_t g_probe_arrived = 0;
+constexpr size_t kMaxSearchFileSize = 50U * 1024U * 1024U;
+
+const std::vector<std::string> &DefaultSearchEncodings() {
+  static const std::vector<std::string> encodings{"UTF-8", "GB18030"};
+  return encodings;
+}
+
+std::string NormalizeEncodingName(const std::string &name) {
+  std::string normalized;
+  normalized.reserve(name.size());
+  for (unsigned char ch : name) {
+    if (ch != '-' && ch != '_' && !std::isspace(ch)) {
+      normalized.push_back(static_cast<char>(std::toupper(ch)));
+    }
+  }
+  return normalized;
+}
+
+bool DecodeUtf8Scalar(const std::string &text, size_t *offset, uint32_t *scalar) {
+  const size_t i = *offset;
+  if (i >= text.size()) {
+    return false;
+  }
+
+  const auto byte = [&text](size_t index) { return static_cast<unsigned char>(text[index]); };
+  const unsigned char first = byte(i);
+  if (first <= 0x7F) {
+    *scalar = first;
+    *offset = i + 1;
+    return true;
+  }
+
+  size_t length = 0;
+  uint32_t value = 0;
+  if (first >= 0xC2 && first <= 0xDF) {
+    length = 2;
+    value = first & 0x1F;
+  } else if (first >= 0xE0 && first <= 0xEF) {
+    length = 3;
+    value = first & 0x0F;
+  } else if (first >= 0xF0 && first <= 0xF4) {
+    length = 4;
+    value = first & 0x07;
+  } else {
+    return false;
+  }
+
+  if (i + length > text.size()) {
+    return false;
+  }
+  for (size_t j = 1; j < length; ++j) {
+    const unsigned char continuation = byte(i + j);
+    if ((continuation & 0xC0) != 0x80) {
+      return false;
+    }
+    value = (value << 6) | (continuation & 0x3F);
+  }
+
+  if ((length == 3 && value < 0x800) || (length == 4 && value < 0x10000) ||
+      (value >= 0xD800 && value <= 0xDFFF) || value > 0x10FFFF) {
+    return false;
+  }
+
+  *scalar = value;
+  *offset = i + length;
+  return true;
+}
+
+bool IsValidUtf8(const std::string &text) {
+  size_t offset = 0;
+  while (offset < text.size()) {
+    uint32_t scalar = 0;
+    if (!DecodeUtf8Scalar(text, &offset, &scalar)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+int Utf16ColumnForByteOffset(const std::string &text, size_t byte_offset) {
+  size_t offset = 0;
+  int units = 0;
+  const size_t limit = std::min(byte_offset, text.size());
+  while (offset < limit) {
+    uint32_t scalar = 0;
+    const size_t before = offset;
+    if (!DecodeUtf8Scalar(text, &offset, &scalar) || offset > limit) {
+      offset = before + 1;
+      ++units;
+      continue;
+    }
+    units += scalar > 0xFFFF ? 2 : 1;
+  }
+  return units;
+}
+
+bool DecodeGb18030(const std::string &input, std::string &output) {
+  if (input.empty()) {
+    output.clear();
+    return true;
+  }
+
+#ifdef _WIN32
+  if (input.size() > static_cast<size_t>((std::numeric_limits<int>::max)())) {
+    return false;
+  }
+  constexpr UINT kGb18030CodePage = 54936;
+  const int input_size = static_cast<int>(input.size());
+  const int wide_size = MultiByteToWideChar(kGb18030CodePage, MB_ERR_INVALID_CHARS, input.data(),
+                                            input_size, nullptr, 0);
+  if (wide_size <= 0) {
+    return false;
+  }
+
+  std::wstring wide(static_cast<size_t>(wide_size), L'\0');
+  if (MultiByteToWideChar(kGb18030CodePage, MB_ERR_INVALID_CHARS, input.data(), input_size,
+                          wide.data(), wide_size) != wide_size) {
+    return false;
+  }
+
+  const int utf8_size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), wide_size,
+                                            nullptr, 0, nullptr, nullptr);
+  if (utf8_size <= 0) {
+    return false;
+  }
+  output.resize(static_cast<size_t>(utf8_size));
+  return WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), wide_size, output.data(),
+                             utf8_size, nullptr, nullptr) == utf8_size;
+#else
+  iconv_t converter = iconv_open("UTF-8", "GB18030");
+  if (converter == reinterpret_cast<iconv_t>(-1)) {
+    return false;
+  }
+
+  std::vector<char> converted(input.size() * 4 + 16);
+  char *input_ptr = const_cast<char *>(input.data());
+  size_t input_left = input.size();
+  char *output_ptr = converted.data();
+  size_t output_left = converted.size();
+  const size_t result = iconv(converter, &input_ptr, &input_left, &output_ptr, &output_left);
+  iconv_close(converter);
+  if (result != 0 || input_left != 0) {
+    return false;
+  }
+
+  output.assign(converted.data(), converted.size() - output_left);
+  return true;
+#endif
+}
+
+bool DecodeSearchText(const std::string &input, const std::vector<std::string> &encodings,
+                      std::string &output) {
+  for (const auto &encoding : encodings) {
+    const std::string normalized = NormalizeEncodingName(encoding);
+    if (normalized == "UTF8") {
+      const size_t bom_size = input.size() >= 3 && static_cast<unsigned char>(input[0]) == 0xEF &&
+                                      static_cast<unsigned char>(input[1]) == 0xBB &&
+                                      static_cast<unsigned char>(input[2]) == 0xBF
+                                  ? 3
+                                  : 0;
+      const std::string text = input.substr(bom_size);
+      if (IsValidUtf8(text)) {
+        output = text;
+        return true;
+      }
+    } else if (normalized == "GB18030" && DecodeGb18030(input, output)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ReadSearchText(const std::string &path, const std::vector<std::string> &encodings,
+                    std::string &output) {
+  std::ifstream file(PathFromUtf8(path), std::ios::binary | std::ios::ate);
+  if (!file.is_open()) {
+    return false;
+  }
+
+  const std::streampos end = file.tellg();
+  if (end < 0 || static_cast<uint64_t>(end) > kMaxSearchFileSize) {
+    return false;
+  }
+  std::string bytes(static_cast<size_t>(end), '\0');
+  file.seekg(0, std::ios::beg);
+  if (!bytes.empty() && !file.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))) {
+    return false;
+  }
+  return DecodeSearchText(bytes, encodings, output);
+}
 
 void RunWorkItemProbeHook() {
   if (g_scan_throw_armed.load(std::memory_order_relaxed) &&
@@ -53,6 +253,8 @@ void RunWorkItemProbeHook() {
 }
 
 }  // namespace
+SimpleSearchBackend::SimpleSearchBackend(std::vector<std::string> encodings)
+    : encodings_(encodings.empty() ? DefaultSearchEncodings() : std::move(encodings)) {}
 
 bool DoRegexMatch(const std::regex &pattern_regex, const std::string &line, int line_number,
                   std::vector<SearchMatch> &out_matches) {
@@ -66,8 +268,9 @@ bool DoRegexMatch(const std::regex &pattern_regex, const std::string &line, int 
     // TODO: optimize to avoid copying line multiple times
     match.line_text = line;
     match.line_number = line_number;
-    match.column_start = static_cast<int>(it->position());
-    match.column_end = match.column_start + static_cast<int>(it->length());
+    match.column_start = Utf16ColumnForByteOffset(line, static_cast<size_t>(it->position()));
+    match.column_end = Utf16ColumnForByteOffset(
+        line, static_cast<size_t>(it->position()) + static_cast<size_t>(it->length()));
     out_matches.push_back(std::move(match));
   }
   return has_match;
@@ -99,8 +302,8 @@ bool DoPatternMatch(const std::string &transformed_pattern, bool case_sensitive,
     // TODO: optimize to avoid copying line multiple times
     match.line_text = line;
     match.line_number = line_number;
-    match.column_start = static_cast<int>(pos);
-    match.column_end = static_cast<int>(pos + transformed_pattern.length());
+    match.column_start = Utf16ColumnForByteOffset(line, pos);
+    match.column_end = Utf16ColumnForByteOffset(line, pos + transformed_pattern.length());
     out_matches.push_back(std::move(match));
 
     pos += transformed_pattern.length();
@@ -182,10 +385,9 @@ VxCoreError SimpleSearchBackend::BuildMatchContext(
 
   if (out_ctx.regex) {
     try {
-      out_ctx.pattern_regex =
-          std::regex(pattern, out_ctx.case_sensitive
-                                  ? std::regex::ECMAScript
-                                  : (std::regex::ECMAScript | std::regex::icase));
+      out_ctx.pattern_regex = std::regex(
+          pattern, out_ctx.case_sensitive ? std::regex::ECMAScript
+                                          : (std::regex::ECMAScript | std::regex::icase));
     } catch (const std::regex_error &) {
       return VXCORE_ERR_INVALID_PARAM;
     }
@@ -213,29 +415,38 @@ void SimpleSearchBackend::ScanChunk(const std::vector<SearchFileInfo> &files, si
     }
 
     const auto &file_info = files[i];
-    std::ifstream file(PathFromUtf8(file_info.absolute_path));
-    if (!file.is_open()) {
+    std::string text;
+    if (!ReadSearchText(file_info.absolute_path, encodings_, text)) {
+      VXCORE_LOG_WARN("Skipping undecodable search file: %s", file_info.absolute_path.c_str());
       continue;
     }
 
     std::vector<SearchMatch> file_matches;
-    std::string line;
+    size_t line_start = 0;
     int line_number = 0;
-
-    while (std::getline(file, line)) {
-      line_number++;
-
-      if (IsLineExcluded(line, ctx.content_exclude_patterns, ctx.lowercased_exclude_patterns,
-                         ctx.exclude_regexes)) {
-        continue;
+    while (line_start <= text.size()) {
+      const size_t newline = text.find('\n', line_start);
+      const size_t line_end = newline == std::string::npos ? text.size() : newline;
+      std::string line = text.substr(line_start, line_end - line_start);
+      if (!line.empty() && line.back() == '\r') {
+        line.pop_back();
       }
+      ++line_number;
 
-      std::vector<SearchMatch> line_matches;
-      if (RunMatch(ctx, line, line_number, line_matches)) {
-        for (auto &match : line_matches) {
-          file_matches.push_back(std::move(match));
+      if (!IsLineExcluded(line, ctx.content_exclude_patterns, ctx.lowercased_exclude_patterns,
+                          ctx.exclude_regexes)) {
+        std::vector<SearchMatch> line_matches;
+        if (RunMatch(ctx, line, line_number, line_matches)) {
+          for (auto &match : line_matches) {
+            file_matches.push_back(std::move(match));
+          }
         }
       }
+
+      if (newline == std::string::npos) {
+        break;
+      }
+      line_start = newline + 1;
     }
 
     if (!file_matches.empty()) {
@@ -252,16 +463,15 @@ VxCoreError SimpleSearchBackend::SearchStreaming(
     const std::vector<SearchFileInfo> &files, const std::string &pattern, SearchOption options,
     const std::vector<std::string> &content_exclude_patterns, int batch_size,
     const SearchBatchEmitFn &emit_batch) {
-  const size_t effective_batch =
-      batch_size > 0 ? static_cast<size_t>(batch_size) : static_cast<size_t>(kDefaultSearchChunkSize);
+  const size_t effective_batch = batch_size > 0 ? static_cast<size_t>(batch_size)
+                                                : static_cast<size_t>(kDefaultSearchChunkSize);
   const size_t file_count = files.size();
   if (file_count == 0) {
     // Zero files -> total_batches == 0, no callbacks (contract).
     return VXCORE_OK;
   }
 
-  const int total_batches =
-      static_cast<int>((file_count + effective_batch - 1) / effective_batch);
+  const int total_batches = static_cast<int>((file_count + effective_batch - 1) / effective_batch);
 
   // An empty pattern can never match. Still fire one empty batch per chunk so a streaming
   // consumer observes the full sweep (uniform progress) without any filesystem I/O.

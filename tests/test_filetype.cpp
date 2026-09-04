@@ -26,6 +26,11 @@ int test_filetype_defaults() {
   ASSERT_EQ(j[2]["name"], "PDF");
   ASSERT_EQ(j[3]["name"], "MindMap");
   ASSERT_EQ(j[4]["name"], "Others");
+  ASSERT_TRUE(j[0]["isSearchable"]);   // Markdown
+  ASSERT_TRUE(j[1]["isSearchable"]);   // Text
+  ASSERT_FALSE(j[2]["isSearchable"]);  // PDF
+  ASSERT_TRUE(j[3]["isSearchable"]);   // MindMap
+  ASSERT_FALSE(j[4]["isSearchable"]);  // Others
 
   vxcore_string_free(json_str);
   vxcore_context_destroy(ctx);
@@ -222,6 +227,7 @@ int test_filetype_c_api_list() {
   ASSERT_TRUE(types_array[0].contains("name"));
   ASSERT_TRUE(types_array[0].contains("suffixes"));
   ASSERT_TRUE(types_array[0].contains("isNewable"));
+  ASSERT_TRUE(types_array[0].contains("isSearchable"));
   ASSERT_TRUE(types_array[0].contains("displayName"));
 
   vxcore_string_free(json);
@@ -379,6 +385,7 @@ int test_filetype_set_add_type() {
   new_type["name"] = "CustomCode";
   new_type["suffixes"] = nlohmann::json::array({"cc1", "cc2", "cc3"});
   new_type["isNewable"] = true;
+  new_type["isSearchable"] = true;
   new_type["displayName"] = "Custom Code Files";
   types.push_back(new_type);
 
@@ -406,6 +413,7 @@ int test_filetype_set_add_type() {
   nlohmann::json lookup = nlohmann::json::parse(lookup_json);
   vxcore_string_free(lookup_json);
   ASSERT_EQ(lookup["name"], "CustomCode");
+  ASSERT_TRUE(lookup["isSearchable"]);
 
   vxcore_context_destroy(ctx);
   std::cout << "  ✓ test_filetype_set_add_type passed" << std::endl;
@@ -514,6 +522,8 @@ int test_filetype_set_remove_type() {
   ASSERT_EQ(result.size(), 2);
   ASSERT_EQ(result[0]["name"], "Markdown");
   ASSERT_EQ(result[1]["name"], "Others");
+  ASSERT_TRUE(result[0]["isSearchable"]);   // Legacy Markdown entry migrates to searchable.
+  ASSERT_FALSE(result[1]["isSearchable"]);  // Legacy Others entry remains excluded.
 
   vxcore_context_destroy(ctx);
   std::cout << "  ✓ test_filetype_set_remove_type passed" << std::endl;

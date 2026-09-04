@@ -12,12 +12,21 @@ SearchConfig SearchConfig::FromJson(const nlohmann::json &json) {
       }
     }
   }
+  if (json.contains("encodings") && json["encodings"].is_array()) {
+    config.encodings.clear();
+    for (const auto &encoding : json["encodings"]) {
+      if (encoding.is_string()) {
+        config.encodings.push_back(encoding.get<std::string>());
+      }
+    }
+  }
   return config;
 }
 
 nlohmann::json SearchConfig::ToJson() const {
   nlohmann::json json = nlohmann::json::object();
   json["backends"] = backends;
+  json["encodings"] = encodings;
   return json;
 }
 
@@ -35,7 +44,8 @@ VxCoreConfig VxCoreConfig::FromJson(const nlohmann::json &json) {
   if (json.contains("recoverLastSession") && json["recoverLastSession"].is_boolean()) {
     config.recover_last_session = json["recoverLastSession"].get<bool>();
   }
-  if (json.contains("autoSyncDebounceSeconds") && json["autoSyncDebounceSeconds"].is_number_integer()) {
+  if (json.contains("autoSyncDebounceSeconds") &&
+      json["autoSyncDebounceSeconds"].is_number_integer()) {
     config.auto_sync_debounce_seconds = json["autoSyncDebounceSeconds"].get<int>();
   }
   return config;

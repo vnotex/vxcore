@@ -13,9 +13,13 @@ std::unique_ptr<vxcore::SearchManager> CreateSearchManager(vxcore::VxCoreContext
                                                            vxcore::WorkQueue *queue,
                                                            const volatile int *cancel_flag) {
   std::string backend = "simple";
+  const vxcore::FileTypesConfig *file_types = nullptr;
+  std::vector<std::string> encodings;
   if (ctx && ctx->config_manager) {
-    const auto &backends = ctx->config_manager->GetConfig().search.backends;
-    for (const auto &b : backends) {
+    const auto &config = ctx->config_manager->GetConfig();
+    file_types = &config.file_types;
+    encodings = config.search.encodings;
+    for (const auto &b : config.search.backends) {
       if (b == "rg" && vxcore::RgSearchBackend::IsAvailable()) {
         backend = "rg";
         break;
@@ -25,7 +29,8 @@ std::unique_ptr<vxcore::SearchManager> CreateSearchManager(vxcore::VxCoreContext
       }
     }
   }
-  auto manager = std::make_unique<vxcore::SearchManager>(notebook, backend);
+  auto manager =
+      std::make_unique<vxcore::SearchManager>(notebook, backend, file_types, std::move(encodings));
   manager->SetWorkQueue(queue);
   manager->SetCancelFlag(cancel_flag);
   return manager;
@@ -164,10 +169,12 @@ VXCORE_API VxCoreError vxcore_search_content_ex(VxCoreContextHandle context,
   }
 }
 
-VXCORE_API VxCoreError vxcore_search_content_streaming(
-    VxCoreContextHandle context, const char *notebook_id, const char *query_json,
-    const char *input_files_json, int batch_size, VxCoreSearchBatchCallback batch_cb,
-    void *userdata, volatile int *cancel_flag) {
+VXCORE_API VxCoreError vxcore_search_content_streaming(VxCoreContextHandle context,
+                                                       const char *notebook_id,
+                                                       const char *query_json,
+                                                       const char *input_files_json, int batch_size,
+                                                       VxCoreSearchBatchCallback batch_cb,
+                                                       void *userdata, volatile int *cancel_flag) {
   if (!context || !notebook_id || !query_json || !batch_cb) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -193,8 +200,8 @@ VXCORE_API VxCoreError vxcore_search_content_streaming(
       batch_cb(batch_index, total_batches, batch_json.c_str(), userdata);
     };
 
-    VxCoreError err = search_manager->SearchContentStreaming(query_json, input_files_str,
-                                                             batch_size, on_batch);
+    VxCoreError err =
+        search_manager->SearchContentStreaming(query_json, input_files_str, batch_size, on_batch);
     if (err != VXCORE_OK && err != VXCORE_ERR_CANCELLED) {
       ctx->last_error = "Search content streaming failed";
     }

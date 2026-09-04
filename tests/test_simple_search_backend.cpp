@@ -30,8 +30,7 @@ struct StreamCollector {
   int callback_count = 0;
 
   SearchBatchEmitFn fn() {
-    return [this](int batch_index, int total,
-                  std::vector<ContentSearchMatchedFile> &batch_files) {
+    return [this](int batch_index, int total, std::vector<ContentSearchMatchedFile> &batch_files) {
       std::lock_guard<std::mutex> lk(mu);
       total_batches = total;
       ++callback_count;
@@ -205,9 +204,13 @@ int test_matches_pattern_utf8() {
   SimpleSearchBackend backend;
   std::vector<SearchMatch> matches;
 
-  ASSERT_TRUE(SimpleSearchBackendTest::MatchesPattern(backend, "你好世界", "你好",
+  const std::string line = u8"😀你好世界";
+  ASSERT_TRUE(SimpleSearchBackendTest::MatchesPattern(backend, line, u8"你好",
                                                       SearchOption::kCaseSensitive, matches));
   ASSERT_EQ(matches.size(), 1);
+  // Qt consumes these as QString (UTF-16) indices: emoji=2 units, each CJK scalar=1.
+  ASSERT_EQ(matches[0].column_start, 2);
+  ASSERT_EQ(matches[0].column_end, 4);
 
   std::cout << "  ✓ test_matches_pattern_utf8 passed" << std::endl;
   return 0;
@@ -484,6 +487,69 @@ int test_search_utf8_content() {
 
   cleanup_test_dir(test_dir);
   std::cout << "  ✓ test_search_utf8_content passed" << std::endl;
+  return 0;
+}
+
+int test_search_gb18030_fallback() {
+  std::cout << "  Running test_search_gb18030_fallback..." << std::endl;
+
+  const std::string test_dir =
+      std::filesystem::temp_directory_path().string() + "/vxcore_test_search_gb18030";
+  cleanup_test_dir(test_dir);
+  create_directory(test_dir);
+
+  const std::string test_file = CleanPath(test_dir + "/gb.txt");
+  std::string gb18030 = "prefix ";
+  gb18030.append("\xC4\xE3\xBA\xC3", 4);  // 你好
+  gb18030.append(" suffix\n");
+  write_file(test_file, gb18030);
+
+  const std::vector<SearchFileInfo> files{make_file("gb.txt", test_file)};
+  ContentSearchResult result;
+  SimpleSearchBackend backend;
+  auto err = backend.Search(files, u8"你好", SearchOption::kCaseSensitive, {}, 100, result);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(result.matched_files.size(), 1);
+  ASSERT_EQ(result.matched_files[0].matches.size(), 1);
+  ASSERT_EQ(result.matched_files[0].matches[0].line_text, std::string(u8"prefix 你好 suffix"));
+  ASSERT_EQ(result.matched_files[0].matches[0].column_start, 7);
+  ASSERT_EQ(result.matched_files[0].matches[0].column_end, 9);
+
+  ContentSearchResult utf8_only_result;
+  SimpleSearchBackend utf8_only({"UTF-8"});
+  err = utf8_only.Search(files, u8"你好", SearchOption::kCaseSensitive, {}, 100, utf8_only_result);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_TRUE(utf8_only_result.matched_files.empty());
+
+  cleanup_test_dir(test_dir);
+  std::cout << "  ✓ test_search_gb18030_fallback passed" << std::endl;
+  return 0;
+}
+
+int test_search_skips_undecodable_file() {
+  std::cout << "  Running test_search_skips_undecodable_file..." << std::endl;
+
+  const std::string test_dir =
+      std::filesystem::temp_directory_path().string() + "/vxcore_test_search_decode_skip";
+  cleanup_test_dir(test_dir);
+  create_directory(test_dir);
+
+  const std::string invalid_file = CleanPath(test_dir + "/invalid.txt");
+  const std::string valid_file = CleanPath(test_dir + "/valid.txt");
+  write_file(invalid_file, std::string("\xFF\xFF", 2));
+  write_file(valid_file, "needle after invalid file\n");
+
+  const std::vector<SearchFileInfo> files{make_file("invalid.txt", invalid_file),
+                                          make_file("valid.txt", valid_file)};
+  ContentSearchResult result;
+  SimpleSearchBackend backend;
+  const auto err = backend.Search(files, "needle", SearchOption::kCaseSensitive, {}, 100, result);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(result.matched_files.size(), 1);
+  ASSERT_EQ(result.matched_files[0].path, "valid.txt");
+
+  cleanup_test_dir(test_dir);
+  std::cout << "  ✓ test_search_skips_undecodable_file passed" << std::endl;
   return 0;
 }
 
@@ -822,9 +888,8 @@ int test_streaming_invalid_regex() {
   std::vector<SearchFileInfo> files{make_file("r.txt", test_file)};
   StreamCollector c;
 
-  auto err = backend.SearchStreaming(files, "[invalid",
-                                     SearchOption::kCaseSensitive | SearchOption::kRegex, {}, 0,
-                                     c.fn());
+  auto err = backend.SearchStreaming(
+      files, "[invalid", SearchOption::kCaseSensitive | SearchOption::kRegex, {}, 0, c.fn());
 
   ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
   ASSERT_EQ(c.callback_count, 0);
@@ -854,6 +919,8 @@ int main() {
   RUN_TEST(test_search_max_results);
   RUN_TEST(test_search_no_matches);
   RUN_TEST(test_search_utf8_content);
+  RUN_TEST(test_search_gb18030_fallback);
+  RUN_TEST(test_search_skips_undecodable_file);
 
   // SearchStreaming (streaming primitive) tests.
   RUN_TEST(test_streaming_zero_files);

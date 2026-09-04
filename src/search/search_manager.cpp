@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "core/filetype_config.h"
 #include "core/folder_manager.h"
 #include "core/notebook.h"
 #include "rg_search_backend.h"
@@ -38,8 +39,10 @@ nlohmann::json EncodeMatchedFileJson(const ContentSearchMatchedFile &matched_fil
 
 }  // namespace
 
-SearchManager::SearchManager(Notebook *notebook, const std::string &search_backend)
-    : notebook_(notebook), search_backend_(nullptr) {
+SearchManager::SearchManager(Notebook *notebook, const std::string &search_backend,
+                             const FileTypesConfig *file_types,
+                             std::vector<std::string> search_encodings)
+    : notebook_(notebook), search_backend_(nullptr), file_types_(file_types) {
   if (search_backend == "rg") {
     if (RgSearchBackend::IsAvailable()) {
       VXCORE_LOG_DEBUG("Using ripgrep (rg) as the search backend");
@@ -47,15 +50,15 @@ SearchManager::SearchManager(Notebook *notebook, const std::string &search_backe
     } else {
       VXCORE_LOG_WARN(
           "ripgrep (rg) requested but not available, falling back to SimpleSearchBackend");
-      search_backend_.reset(new SimpleSearchBackend());
+      search_backend_.reset(new SimpleSearchBackend(std::move(search_encodings)));
     }
   } else if (search_backend == "simple") {
     VXCORE_LOG_DEBUG("Using SimpleSearchBackend");
-    search_backend_.reset(new SimpleSearchBackend());
+    search_backend_.reset(new SimpleSearchBackend(std::move(search_encodings)));
   } else {
     VXCORE_LOG_WARN("Unknown search backend '%s', using SimpleSearchBackend",
                     search_backend.c_str());
-    search_backend_.reset(new SimpleSearchBackend());
+    search_backend_.reset(new SimpleSearchBackend(std::move(search_encodings)));
   }
 }
 
@@ -116,6 +119,7 @@ VxCoreError SearchManager::SearchContent(const std::string &query_json,
   try {
     auto query = SearchContentQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
     auto filtered_files = FetchFilesToSearch(query.scope, input_files_json, false);
+    FilterDefaultContentFileTypes(filtered_files, query.scope);
     CalculateAbsolutePaths(filtered_files);
 
     nlohmann::json result;
@@ -183,6 +187,7 @@ VxCoreError SearchManager::SearchContentStreaming(const std::string &query_json,
   try {
     auto query = SearchContentQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
     auto filtered_files = FetchFilesToSearch(query.scope, input_files_json, false);
+    FilterDefaultContentFileTypes(filtered_files, query.scope);
     CalculateAbsolutePaths(filtered_files);
 
     if (!search_backend_) {
@@ -527,6 +532,27 @@ bool SearchManager::MatchesDateFilter(int64_t timestamp, const SearchScope &scop
     return false;
   }
   return true;
+}
+
+void SearchManager::FilterDefaultContentFileTypes(std::vector<SearchFileInfo> &files,
+                                                  const SearchScope &scope) const {
+  // An explicit pattern is an intentional override, including * or *.* for all types.
+  if (!scope.path_patterns.empty() || !file_types_) {
+    return;
+  }
+
+  files.erase(std::remove_if(files.begin(), files.end(),
+                             [this](const SearchFileInfo &file) {
+                               const size_t separator = file.path.find_last_of("/\\");
+                               const std::string name = file.path.substr(
+                                   separator == std::string::npos ? 0 : separator + 1);
+                               const size_t dot = name.find_last_of('.');
+                               const std::string lookup =
+                                   dot == std::string::npos ? name : name.substr(dot + 1);
+                               const FileTypeEntry *type = file_types_->GetBySuffix(lookup);
+                               return !type || !type->is_searchable;
+                             }),
+              files.end());
 }
 
 std::vector<SearchFileInfo> SearchManager::FetchFilesToSearch(const SearchScope &scope,

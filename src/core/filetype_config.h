@@ -11,16 +11,24 @@ struct FileTypeEntry {
   std::string name;
   std::vector<std::string> suffixes;
   bool is_newable;
+  bool is_searchable;
   std::string display_name;
   std::string metadata;
 
-  FileTypeEntry() : name(""), suffixes(), is_newable(true), display_name(""), metadata("") {}
+  FileTypeEntry()
+      : name(""),
+        suffixes(),
+        is_newable(true),
+        is_searchable(false),
+        display_name(""),
+        metadata("") {}
 
   FileTypeEntry(std::string p_name, std::vector<std::string> p_suffixes, bool p_newable = true,
-                std::string p_display_name = "")
+                std::string p_display_name = "", bool p_searchable = false)
       : name(std::move(p_name)),
         suffixes(std::move(p_suffixes)),
         is_newable(p_newable),
+        is_searchable(p_searchable),
         display_name(p_display_name.empty() ? name : std::move(p_display_name)),
         metadata("") {}
 

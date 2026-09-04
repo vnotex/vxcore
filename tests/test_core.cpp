@@ -155,7 +155,7 @@ int test_update_config_merges_all_fields() {
   const char *bulk =
       "{"
       "\"version\":\"9.9.9\","
-      "\"search\":{\"backends\":[\"only-rg\"]},"
+      "\"search\":{\"backends\":[\"only-rg\"],\"encodings\":[\"UTF-8\",\"GB18030\"]},"
       "\"fileTypes\":{\"types\":[]},"
       "\"recoverLastSession\":false,"
       "\"autoSyncDebounceSeconds\":300,"
@@ -174,6 +174,8 @@ int test_update_config_merges_all_fields() {
   ASSERT_TRUE(j["search"]["backends"].is_array());
   ASSERT_EQ(j["search"]["backends"].size(), static_cast<size_t>(1));
   ASSERT_EQ(j["search"]["backends"][0].get<std::string>(), std::string("only-rg"));
+  ASSERT_EQ(j["search"]["encodings"].size(), static_cast<size_t>(2));
+  ASSERT_EQ(j["search"]["encodings"][1].get<std::string>(), std::string("GB18030"));
   ASSERT_FALSE(j.contains("someUnknownKey"));
 
   // 2. Partial update: change only recoverLastSession. Version, search, and
@@ -190,6 +192,7 @@ int test_update_config_merges_all_fields() {
   ASSERT_EQ(j["version"].get<std::string>(), std::string("9.9.9"));
   ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 300);
   ASSERT_EQ(j["search"]["backends"][0].get<std::string>(), std::string("only-rg"));
+  ASSERT_EQ(j["search"]["encodings"][0].get<std::string>(), std::string("UTF-8"));
 
   // 3. Invalid input: non-object JSON must be rejected, leaving state intact.
   ASSERT_EQ(vxcore_context_update_config(ctx, "[1,2,3]"), VXCORE_ERR_INVALID_PARAM);
@@ -211,6 +214,9 @@ int test_update_config_merges_all_fields() {
   j = nlohmann::json::parse(json_str);
   vxcore_string_free(json_str);
   ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 120);
+  ASSERT_EQ(j["search"]["encodings"].size(), static_cast<size_t>(2));
+  ASSERT_EQ(j["search"]["encodings"][0].get<std::string>(), std::string("UTF-8"));
+  ASSERT_EQ(j["search"]["encodings"][1].get<std::string>(), std::string("GB18030"));
   vxcore_context_destroy(ctx2);
 
   std::cout << "  ✓ test_update_config_merges_all_fields passed" << std::endl;

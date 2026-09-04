@@ -45,6 +45,14 @@ FileTypeEntry FileTypeEntry::FromJson(const nlohmann::json &json) {
   if (json.contains("isNewable") && json["isNewable"].is_boolean()) {
     entry.is_newable = json["isNewable"].get<bool>();
   }
+  if (json.contains("isSearchable") && json["isSearchable"].is_boolean()) {
+    entry.is_searchable = json["isSearchable"].get<bool>();
+  } else {
+    // Migration for configs written before isSearchable existed.
+    const std::string lower_name = ToLowerString(entry.name);
+    entry.is_searchable =
+        lower_name == "markdown" || lower_name == "text" || lower_name == "mindmap";
+  }
 
   if (json.contains("displayName") && json["displayName"].is_string()) {
     entry.display_name = json["displayName"].get<std::string>();
@@ -62,6 +70,7 @@ nlohmann::json FileTypeEntry::ToJson() const {
   json["name"] = name;
   json["suffixes"] = suffixes;
   json["isNewable"] = is_newable;
+  json["isSearchable"] = is_searchable;
   json["displayName"] = display_name;
 
   if (!metadata.empty()) {
@@ -78,33 +87,34 @@ nlohmann::json FileTypeEntry::ToJson() const {
 // FileTypesConfig implementation
 
 FileTypesConfig::FileTypesConfig() {
-  types.push_back(FileTypeEntry("Markdown", {"md", "mkd", "rmd", "markdown"}, true, "Markdown"));
-  types.push_back(FileTypeEntry(
-      "Text",
-      {// Plain text / logs.
-       "txt", "text", "log",
-       // C / C++.
-       "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx", "inl",
-       // Other compiled languages.
-       "cs", "java", "kt", "kts", "go", "rs", "swift", "scala", "groovy", "gradle", "dart", "m",
-       "mm", "vb", "asm", "s",
-       // Scripting languages.
-       "py", "pyw", "rb", "php", "pl", "pm", "lua", "r", "jl", "tcl",
-       // Shell / batch.
-       "sh", "bash", "zsh", "fish", "bat", "cmd", "ps1", "psm1",
-       // Web / markup.
-       "html", "htm", "xml", "xhtml", "svg", "css", "scss", "sass", "less", "js", "mjs", "cjs",
-       "jsx", "ts", "tsx", "vue", "svelte",
-       // Data / config.
-       "json", "json5", "yaml", "yml", "toml", "ini", "cfg", "conf", "properties", "env", "csv",
-       "tsv",
-       // Docs / other text.
-       "rst", "tex", "bib", "org", "sql", "diff", "patch", "cmake", "mk", "makefile", "dockerfile",
-       "gitignore", "gitattributes", "editorconfig"},
-      true, "Text"));
-  types.push_back(FileTypeEntry("PDF", {"pdf"}, false, "Portable Document Format"));
-  types.push_back(FileTypeEntry("MindMap", {"emind"}, true, "Mind Map"));
-  types.push_back(FileTypeEntry("Others", {}, true, "Others"));
+  types.push_back(
+      FileTypeEntry("Markdown", {"md", "mkd", "rmd", "markdown"}, true, "Markdown", true));
+  types.push_back(
+      FileTypeEntry("Text",
+                    {// Plain text / logs.
+                     "txt", "text", "log",
+                     // C / C++.
+                     "c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx", "inl",
+                     // Other compiled languages.
+                     "cs", "java", "kt", "kts", "go", "rs", "swift", "scala", "groovy", "gradle",
+                     "dart", "m", "mm", "vb", "asm", "s",
+                     // Scripting languages.
+                     "py", "pyw", "rb", "php", "pl", "pm", "lua", "r", "jl", "tcl",
+                     // Shell / batch.
+                     "sh", "bash", "zsh", "fish", "bat", "cmd", "ps1", "psm1",
+                     // Web / markup.
+                     "html", "htm", "xml", "xhtml", "svg", "css", "scss", "sass", "less", "js",
+                     "mjs", "cjs", "jsx", "ts", "tsx", "vue", "svelte",
+                     // Data / config.
+                     "json", "json5", "yaml", "yml", "toml", "ini", "cfg", "conf", "properties",
+                     "env", "csv", "tsv",
+                     // Docs / other text.
+                     "rst", "tex", "bib", "org", "sql", "diff", "patch", "cmake", "mk", "makefile",
+                     "dockerfile", "gitignore", "gitattributes", "editorconfig"},
+                    true, "Text", true));
+  types.push_back(FileTypeEntry("PDF", {"pdf"}, false, "Portable Document Format", false));
+  types.push_back(FileTypeEntry("MindMap", {"emind"}, true, "Mind Map", true));
+  types.push_back(FileTypeEntry("Others", {}, true, "Others", false));
 }
 
 const FileTypeEntry *FileTypesConfig::GetBySuffix(const std::string &suffix) const {

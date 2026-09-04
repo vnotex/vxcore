@@ -15,7 +15,7 @@ namespace vxcore {
 
 class SimpleSearchBackend : public ISearchBackend {
  public:
-  SimpleSearchBackend() = default;
+  explicit SimpleSearchBackend(std::vector<std::string> encodings = {});
   ~SimpleSearchBackend() override = default;
 
   // Blob content search. Reimplemented as a thin accumulating wrapper over SearchStreaming:
@@ -104,6 +104,7 @@ class SimpleSearchBackend : public ISearchBackend {
 
   WorkQueue *work_queue_ = nullptr;
   const volatile int *cancel_flag_ = nullptr;
+  std::vector<std::string> encodings_;
 };
 
 }  // namespace vxcore

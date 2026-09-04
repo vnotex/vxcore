@@ -1597,6 +1597,168 @@ int test_content_search_basic() {
   return 0;
 }
 
+int test_content_search_file_type_defaults_and_override() {
+  std::cout << "  Running test_content_search_file_type_defaults_and_override..." << std::endl;
+  const std::string root = get_test_path("test_content_file_types");
+  cleanup_test_dir(root);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), "{\"name\":\"Content Types\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  const auto add_file = [&](const char *name) {
+    char *file_id = nullptr;
+    const VxCoreError create_err = vxcore_file_create(ctx, notebook_id, ".", name, &file_id);
+    vxcore_string_free(file_id);
+    return create_err;
+  };
+  ASSERT_EQ(add_file("note.md"), VXCORE_OK);
+  ASSERT_EQ(add_file("map.emind"), VXCORE_OK);
+  ASSERT_EQ(add_file("document.pdf"), VXCORE_OK);
+  ASSERT_EQ(add_file("custom.foo"), VXCORE_OK);
+
+  write_file(root + "/note.md", "shared-marker markdown\n");
+  write_file(root + "/map.emind", "{\"text\":\"shared-marker mindmap\"}\n");
+  write_file(root + "/document.pdf", "shared-marker pdf\n");
+  write_file(root + "/custom.foo", "shared-marker custom\n");
+
+  const char *default_query = R"({
+    "pattern": "shared-marker",
+    "caseSensitive": true,
+    "wholeWord": false,
+    "regex": false,
+    "maxResults": 100,
+    "scope": {"folderPath": ".", "recursive": false}
+  })";
+  char *results = nullptr;
+  ASSERT_EQ(vxcore_search_content(ctx, notebook_id, default_query, nullptr, &results), VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+  auto parsed = nlohmann::json::parse(results);
+  vxcore_string_free(results);
+  ASSERT_EQ(parsed["matches"].size(), static_cast<size_t>(2));
+  bool found_markdown = false;
+  bool found_mindmap = false;
+  for (const auto &match : parsed["matches"]) {
+    const std::string path = match["path"].get<std::string>();
+    found_markdown = found_markdown || path == "note.md";
+    found_mindmap = found_mindmap || path == "map.emind";
+  }
+  ASSERT_TRUE(found_markdown);
+  ASSERT_TRUE(found_mindmap);
+  char *types_json = nullptr;
+  ASSERT_EQ(vxcore_filetype_list(ctx, &types_json), VXCORE_OK);
+  auto types = nlohmann::json::parse(types_json);
+  vxcore_string_free(types_json);
+  for (auto &type : types) {
+    if (type["name"] == "PDF") {
+      type["isSearchable"] = true;
+    }
+  }
+  const std::string searchable_pdf_types = types.dump();
+  ASSERT_EQ(vxcore_filetype_set(ctx, searchable_pdf_types.c_str()), VXCORE_OK);
+
+  results = nullptr;
+  ASSERT_EQ(vxcore_search_content(ctx, notebook_id, default_query, nullptr, &results), VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+  parsed = nlohmann::json::parse(results);
+  vxcore_string_free(results);
+  ASSERT_EQ(parsed["matches"].size(), static_cast<size_t>(3));
+
+  for (auto &type : types) {
+    if (type["name"] == "PDF") {
+      type["isSearchable"] = false;
+    }
+  }
+  const std::string restored_types = types.dump();
+  ASSERT_EQ(vxcore_filetype_set(ctx, restored_types.c_str()), VXCORE_OK);
+
+  const char *override_query = R"({
+    "pattern": "shared-marker",
+    "caseSensitive": true,
+    "wholeWord": false,
+    "regex": false,
+    "maxResults": 100,
+    "scope": {"folderPath": ".", "recursive": false, "filePatterns": ["*.*"]}
+  })";
+  results = nullptr;
+  ASSERT_EQ(vxcore_search_content(ctx, notebook_id, override_query, nullptr, &results), VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+  parsed = nlohmann::json::parse(results);
+  vxcore_string_free(results);
+  ASSERT_EQ(parsed["matches"].size(), static_cast<size_t>(4));
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  std::cout << "  ✓ test_content_search_file_type_defaults_and_override passed" << std::endl;
+  return 0;
+}
+
+int test_content_search_encoding_config() {
+  std::cout << "  Running test_content_search_encoding_config..." << std::endl;
+  const std::string root = get_test_path("test_content_encoding_config");
+  cleanup_test_dir(root);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), "{\"name\":\"Content Encodings\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "utf8.md", &file_id), VXCORE_OK);
+  vxcore_string_free(file_id);
+  file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "gb18030.md", &file_id), VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  write_file(root + "/utf8.md", std::string(u8"你好 UTF-8\n"));
+  std::string gb18030;
+  gb18030.append("\xC4\xE3\xBA\xC3", 4);  // 你好
+  gb18030.append(" GB18030\n");
+  write_file(root + "/gb18030.md", gb18030);
+
+  const char *query = R"({
+    "pattern": "你好",
+    "caseSensitive": true,
+    "wholeWord": false,
+    "regex": false,
+    "maxResults": 100,
+    "scope": {"folderPath": ".", "recursive": false}
+  })";
+  char *results = nullptr;
+  ASSERT_EQ(vxcore_search_content(ctx, notebook_id, query, nullptr, &results), VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+  auto parsed = nlohmann::json::parse(results);
+  vxcore_string_free(results);
+  ASSERT_EQ(parsed["matches"].size(), static_cast<size_t>(2));
+
+  ASSERT_EQ(vxcore_context_update_config(ctx, "{\"search\":{\"encodings\":[\"UTF-8\"]}}"),
+            VXCORE_OK);
+  results = nullptr;
+  ASSERT_EQ(vxcore_search_content(ctx, notebook_id, query, nullptr, &results), VXCORE_OK);
+  ASSERT_NOT_NULL(results);
+  parsed = nlohmann::json::parse(results);
+  vxcore_string_free(results);
+  ASSERT_EQ(parsed["matches"].size(), static_cast<size_t>(1));
+  ASSERT_EQ(parsed["matches"][0]["path"], "utf8.md");
+
+  ASSERT_EQ(
+      vxcore_context_update_config(ctx, "{\"search\":{\"encodings\":[\"UTF-8\",\"GB18030\"]}}"),
+      VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  std::cout << "  ✓ test_content_search_encoding_config passed" << std::endl;
+  return 0;
+}
+
 int test_content_search_case_insensitive() {
   std::cout << "  Running test_content_search_case_insensitive..." << std::endl;
   cleanup_test_dir(get_test_path("test_content_case_insensitive"));
@@ -4523,6 +4685,8 @@ int main() {
   RUN_TEST(test_tag_count_files_by_tag);
 
   RUN_TEST(test_content_search_basic);
+  RUN_TEST(test_content_search_file_type_defaults_and_override);
+  RUN_TEST(test_content_search_encoding_config);
   RUN_TEST(test_content_search_case_insensitive);
   RUN_TEST(test_content_search_case_sensitive);
   RUN_TEST(test_content_search_whole_word);

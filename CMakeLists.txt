@@ -30,6 +30,10 @@ find_package(Threads REQUIRED)
 if(UNIX AND NOT APPLE)
     find_package(OpenSSL REQUIRED)
 endif()
+if(NOT WIN32)
+    find_package(Iconv REQUIRED)
+endif()
+
 
 # MSVC: enable C++ exception unwinding (/EHsc). Without this, try/catch blocks
 # emit C4530 warnings AND don't actually unwind at runtime — uncaught exceptions

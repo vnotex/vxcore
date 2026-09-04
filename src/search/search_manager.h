@@ -14,6 +14,7 @@
 namespace vxcore {
 
 class Notebook;
+struct FileTypesConfig;
 class WorkQueue;
 
 struct FileRecord;
@@ -21,7 +22,9 @@ struct FolderRecord;
 
 class SearchManager {
  public:
-  explicit SearchManager(Notebook *notebook, const std::string &search_backend);
+  explicit SearchManager(Notebook *notebook, const std::string &search_backend,
+                         const FileTypesConfig *file_types = nullptr,
+                         std::vector<std::string> search_encodings = {});
   ~SearchManager();
 
   VxCoreError SearchFiles(const std::string &query_json, const std::string &input_files_json,
@@ -60,6 +63,8 @@ class SearchManager {
   std::vector<SearchFileInfo> FetchFilesToSearch(const SearchScope &scope,
                                                  const std::string &input_files_json,
                                                  bool include_folders);
+  void FilterDefaultContentFileTypes(std::vector<SearchFileInfo> &files,
+                                     const SearchScope &scope) const;
 
   std::vector<SearchFileInfo> GetMatchedFilesByPattern(std::vector<SearchFileInfo> filtered_files,
                                                        const std::string &pattern,
@@ -91,6 +96,7 @@ class SearchManager {
   Notebook *notebook_;
   std::unique_ptr<ISearchBackend> search_backend_;
   WorkQueue *work_queue_ = nullptr;
+  const FileTypesConfig *file_types_ = nullptr;
   const volatile int *cancel_flag_ = nullptr;
 };
 

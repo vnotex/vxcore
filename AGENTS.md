@@ -448,6 +448,18 @@ VxCoreContext
 
 Content search fans out one work item per FILE-CHUNK (default 64 files) onto the pre-created `"vxcore.search"` `WorkQueue`; the caller's threads drain it (the initiating thread self-drains too), so `SearchManager` holds NO vxcore-owned thread pool. A search that fits in one chunk (≤ 64 files by default) runs inline sequentially.
 
+Content search without an explicit `scope.filePatterns` value includes only file types whose
+`isSearchable` flag is true. The built-in defaults enable Markdown, Text, and MindMap and disable
+PDF and Others. Any explicit file pattern overrides that type filter; `*.*` therefore opts into
+all files with a suffix. This filtering applies only to content search, never filename or tag
+search.
+
+`SimpleSearchBackend` reads at most 50 MiB per file and decodes it using `search.encodings` in
+order (default UTF-8, then GB18030). Every decoder is strict: an invalid byte sequence rejects
+that codec, all rejected codecs skip only that file, and the search continues. Successful input
+is normalized to UTF-8; reported match columns are UTF-16 code-unit indices because Qt consumers
+apply them to `QString`. `RgSearchBackend` does not implement this codec policy.
+
 ## Important Implementation Details
 
 ### Notebook Types

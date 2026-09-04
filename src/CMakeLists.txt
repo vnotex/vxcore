@@ -104,6 +104,10 @@ target_include_directories(vxcore
 )
 
 target_link_libraries(vxcore PRIVATE nlohmann_json sqlite3 cmark Threads::Threads libgit2package)
+if(NOT WIN32)
+    target_link_libraries(vxcore PRIVATE Iconv::Iconv)
+endif()
+
 
 if(WIN32)
     target_link_libraries(vxcore PRIVATE shell32)

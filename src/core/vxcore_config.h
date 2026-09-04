@@ -11,8 +11,9 @@ namespace vxcore {
 
 struct SearchConfig {
   std::vector<std::string> backends;
+  std::vector<std::string> encodings;
 
-  SearchConfig() : backends({"simple", "rg"}) {}
+  SearchConfig() : backends({"simple", "rg"}), encodings({"UTF-8", "GB18030"}) {}
 
   static SearchConfig FromJson(const nlohmann::json &json);
   nlohmann::json ToJson() const;
@@ -25,7 +26,12 @@ struct VxCoreConfig {
   bool recover_last_session;
   int auto_sync_debounce_seconds;
 
-  VxCoreConfig() : version("0.1.0"), search(), file_types(), recover_last_session(true), auto_sync_debounce_seconds(120) {}
+  VxCoreConfig()
+      : version("0.1.0"),
+        search(),
+        file_types(),
+        recover_last_session(true),
+        auto_sync_debounce_seconds(120) {}
 
   static VxCoreConfig FromJson(const nlohmann::json &json);
   nlohmann::json ToJson() const;
