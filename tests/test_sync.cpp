@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -55,8 +57,7 @@ class MockSyncBackend : public vxcore::ISyncBackend {
   VxCoreError Sync(vxcore::SyncProgressCallback, void *) override { return VXCORE_OK; }
   VxCoreError GetStatus(std::vector<vxcore::SyncFileInfo> &) override { return VXCORE_OK; }
   VxCoreError GetConflicts(std::vector<vxcore::SyncConflictInfo> &) override { return VXCORE_OK; }
-  VxCoreError ResolveConflict(const std::string &,
-                              vxcore::SyncConflictResolution) override {
+  VxCoreError ResolveConflict(const std::string &, vxcore::SyncConflictResolution) override {
     return VXCORE_OK;
   }
 };
@@ -97,12 +98,13 @@ int test_sync_enable_disable() {
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
 
-   // Task 5.2 (F4.1): "mock" is self-registered via BackendRegistration in
-   // test_internals. The force-link reference at the top of this file ensures
-   // the registration TU is pulled into the test binary, so the public C API
-   // can enable the mock backend directly.
-   err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}", nullptr);
-   ASSERT_EQ(err, VXCORE_OK);
+  // Task 5.2 (F4.1): "mock" is self-registered via BackendRegistration in
+  // test_internals. The force-link reference at the top of this file ensures
+  // the registration TU is pulled into the test binary, so the public C API
+  // can enable the mock backend directly.
+  err = vxcore_sync_enable(ctx, notebook_id,
+                           "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}", nullptr);
+  ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_sync_disable(ctx, notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
@@ -151,8 +153,7 @@ int test_sync_builtin_git_registered() {
   ASSERT_EQ(err, VXCORE_OK);
 
   auto names = vxcore::SyncBackendRegistry::Instance().Names();
-  bool has_git = std::find(names.begin(), names.end(), std::string("git")) !=
-                 names.end();
+  bool has_git = std::find(names.begin(), names.end(), std::string("git")) != names.end();
   ASSERT_TRUE(has_git);
 
   vxcore_context_destroy(ctx);
@@ -285,11 +286,10 @@ int test_notebook_config_sync_fields() {
 
 int test_sync_config_from_json_with_backend_options() {
   std::cout << "  Running test_sync_config_from_json_with_backend_options..." << std::endl;
-  nlohmann::json j = {
-      {"backend", "webdav"},
-      {"remoteUrl", "https://example.com/dav"},
-      {"autoSyncEnabled", false},
-      {"backendOptions", {{"authHeader", "Bearer token123"}, {"depth", 1}}}};
+  nlohmann::json j = {{"backend", "webdav"},
+                      {"remoteUrl", "https://example.com/dav"},
+                      {"autoSyncEnabled", false},
+                      {"backendOptions", {{"authHeader", "Bearer token123"}, {"depth", 1}}}};
   auto config = vxcore::SyncConfig::FromJson(j);
   ASSERT_EQ(config.backend, "webdav");
   ASSERT_EQ(config.remote_url, "https://example.com/dav");
@@ -311,7 +311,8 @@ int test_sync_config_to_json_includes_backend_options() {
   ASSERT_TRUE(j.contains("backendOptions"));
   ASSERT_EQ(j["backendOptions"]["region"], "us-east-1");
   ASSERT_EQ(j["backendOptions"]["prefix"], "notebooks/");
-  std::cout << "  \xE2\x9C\x93 test_sync_config_to_json_includes_backend_options passed" << std::endl;
+  std::cout << "  \xE2\x9C\x93 test_sync_config_to_json_includes_backend_options passed"
+            << std::endl;
   return 0;
 }
 
@@ -338,7 +339,8 @@ int test_sync_config_from_json_without_backend_options() {
   auto config = vxcore::SyncConfig::FromJson(j);
   ASSERT_EQ(config.backend, "git");
   ASSERT_TRUE(config.backend_options.is_null());
-  std::cout << "  \xE2\x9C\x93 test_sync_config_from_json_without_backend_options passed" << std::endl;
+  std::cout << "  \xE2\x9C\x93 test_sync_config_from_json_without_backend_options passed"
+            << std::endl;
   return 0;
 }
 
@@ -403,8 +405,7 @@ int test_last_sync_utc_persistence() {
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
 
   char *notebook_id = nullptr;
-  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(),
-                                   "{\"name\":\"LastSyncUtc Test\"}",
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), "{\"name\":\"LastSyncUtc Test\"}",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
@@ -414,34 +415,32 @@ int test_last_sync_utc_persistence() {
   ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, &before_utc), VXCORE_OK);
   ASSERT_EQ(before_utc, 0);
 
-   // Task 5.2 (F4.1): "mock" is self-registered via BackendRegistration in
-   // test_internals. The force-link reference at the top of this file ensures
-   // the registration TU is pulled into the test binary.
-   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}", nullptr),
-             VXCORE_OK);
+  // Task 5.2 (F4.1): "mock" is self-registered via BackendRegistration in
+  // test_internals. The force-link reference at the top of this file ensures
+  // the registration TU is pulled into the test binary.
+  ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}", nullptr),
+            VXCORE_OK);
 
-   const int64_t before_trigger = TestNowMillis();
-   ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_OK);
-   const int64_t after_trigger = TestNowMillis();
+  const int64_t before_trigger = TestNowMillis();
+  ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_OK);
+  const int64_t after_trigger = TestNowMillis();
 
-   // After successful trigger: should be a recent timestamp within the window.
-   int64_t after_utc = 0;
-   ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, &after_utc), VXCORE_OK);
-   ASSERT_TRUE(after_utc >= before_trigger);
-   ASSERT_TRUE(after_utc <= after_trigger);
+  // After successful trigger: should be a recent timestamp within the window.
+  int64_t after_utc = 0;
+  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, &after_utc), VXCORE_OK);
+  ASSERT_TRUE(after_utc >= before_trigger);
+  ASSERT_TRUE(after_utc <= after_trigger);
 
   // Null-pointer guards.
   int64_t dummy = 0;
-  ASSERT_EQ(vxcore_sync_get_last_sync_utc(nullptr, notebook_id, &dummy),
-            VXCORE_ERR_NULL_POINTER);
+  ASSERT_EQ(vxcore_sync_get_last_sync_utc(nullptr, notebook_id, &dummy), VXCORE_ERR_NULL_POINTER);
   ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, nullptr, &dummy), VXCORE_ERR_NULL_POINTER);
-  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, nullptr),
-            VXCORE_ERR_NULL_POINTER);
+  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, notebook_id, nullptr), VXCORE_ERR_NULL_POINTER);
 
   // Not-found case: unknown notebook id returns NOT_FOUND and zeros the out param.
   int64_t nf = 42;
-  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, "nonexistent-nb-id", &nf),
-            VXCORE_ERR_NOT_FOUND);
+  ASSERT_EQ(vxcore_sync_get_last_sync_utc(ctx, "nonexistent-nb-id", &nf), VXCORE_ERR_NOT_FOUND);
   ASSERT_EQ(nf, 0);
 
   vxcore_string_free(notebook_id);
@@ -464,8 +463,7 @@ int test_set_last_sync_utc_roundtrip() {
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
 
   char *notebook_id = nullptr;
-  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(),
-                                   "{\"name\":\"SetLastSyncUtc Test\"}",
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), "{\"name\":\"SetLastSyncUtc Test\"}",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
             VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
@@ -490,13 +488,11 @@ int test_set_last_sync_utc_roundtrip() {
   ASSERT_EQ(v, kStamp2);
 
   // Null-pointer guards.
-  ASSERT_EQ(vxcore_sync_set_last_sync_utc(nullptr, notebook_id, kStamp),
-            VXCORE_ERR_NULL_POINTER);
+  ASSERT_EQ(vxcore_sync_set_last_sync_utc(nullptr, notebook_id, kStamp), VXCORE_ERR_NULL_POINTER);
   ASSERT_EQ(vxcore_sync_set_last_sync_utc(ctx, nullptr, kStamp), VXCORE_ERR_NULL_POINTER);
 
   // Not-found: unknown notebook id returns NOT_FOUND (no persistence).
-  ASSERT_EQ(vxcore_sync_set_last_sync_utc(ctx, "nonexistent-nb-id", kStamp),
-            VXCORE_ERR_NOT_FOUND);
+  ASSERT_EQ(vxcore_sync_set_last_sync_utc(ctx, "nonexistent-nb-id", kStamp), VXCORE_ERR_NOT_FOUND);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
@@ -504,7 +500,6 @@ int test_set_last_sync_utc_roundtrip() {
   std::cout << "  \xE2\x9C\x93 test_set_last_sync_utc_roundtrip passed" << std::endl;
   return 0;
 }
-
 
 // ----------------------------------------------------------------------------
 // T7 (sync-queue-convergence): TriggerSync now emits sync.started and
@@ -556,18 +551,17 @@ int test_trigger_sync_emits_started_and_finished() {
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
 
   char *notebook_id = nullptr;
-  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_trigger_events").c_str(),
-                                   "{\"name\":\"TriggerEvents\"}", VXCORE_NOTEBOOK_BUNDLED,
-                                   &notebook_id),
-            VXCORE_OK);
+  ASSERT_EQ(
+      vxcore_notebook_create(ctx, get_test_path("test_trigger_events").c_str(),
+                             "{\"name\":\"TriggerEvents\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+      VXCORE_OK);
 
   SyncEventCounters counters;
   ASSERT_EQ(vxcore_on_event(ctx, "sync.started", started_cb, &counters), VXCORE_OK);
   ASSERT_EQ(vxcore_on_event(ctx, "sync.finished", finished_cb, &counters), VXCORE_OK);
 
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}",
-                               nullptr),
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}", nullptr),
             VXCORE_OK);
 
   ASSERT_EQ(vxcore_sync_trigger(ctx, notebook_id), VXCORE_OK);
@@ -595,18 +589,17 @@ int test_trigger_sync_emits_finished_with_error_code() {
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
 
   char *notebook_id = nullptr;
-  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_trigger_err").c_str(),
-                                   "{\"name\":\"TriggerErr\"}", VXCORE_NOTEBOOK_BUNDLED,
-                                   &notebook_id),
-            VXCORE_OK);
+  ASSERT_EQ(
+      vxcore_notebook_create(ctx, get_test_path("test_trigger_err").c_str(),
+                             "{\"name\":\"TriggerErr\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+      VXCORE_OK);
 
   SyncEventCounters counters;
   ASSERT_EQ(vxcore_on_event(ctx, "sync.started", started_cb, &counters), VXCORE_OK);
   ASSERT_EQ(vxcore_on_event(ctx, "sync.finished", finished_cb, &counters), VXCORE_OK);
 
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}",
-                               nullptr),
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}", nullptr),
             VXCORE_OK);
 
   // Reach into the registered backend and force Sync() to return NETWORK.
@@ -644,10 +637,10 @@ int test_auto_sync_does_not_double_emit() {
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
 
   char *notebook_id = nullptr;
-  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_auto_no_dup").c_str(),
-                                   "{\"name\":\"AutoNoDup\"}", VXCORE_NOTEBOOK_BUNDLED,
-                                   &notebook_id),
-            VXCORE_OK);
+  ASSERT_EQ(
+      vxcore_notebook_create(ctx, get_test_path("test_auto_no_dup").c_str(),
+                             "{\"name\":\"AutoNoDup\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+      VXCORE_OK);
 
   SyncEventCounters counters;
   ASSERT_EQ(vxcore_on_event(ctx, "sync.started", started_cb, &counters), VXCORE_OK);
@@ -655,7 +648,7 @@ int test_auto_sync_does_not_double_emit() {
 
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\","
-                                "\"autoSyncEnabled\":true}",
+                               "\"autoSyncEnabled\":true}",
                                nullptr),
             VXCORE_OK);
 
@@ -742,10 +735,10 @@ int test_trigger_sync_emits_conflict_with_files() {
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
 
   char *notebook_id = nullptr;
-  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_conflict_files").c_str(),
-                                   "{\"name\":\"ConflictFiles\"}", VXCORE_NOTEBOOK_BUNDLED,
-                                   &notebook_id),
-            VXCORE_OK);
+  ASSERT_EQ(
+      vxcore_notebook_create(ctx, get_test_path("test_conflict_files").c_str(),
+                             "{\"name\":\"ConflictFiles\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+      VXCORE_OK);
 
   SyncEventCounters counters;
   ConflictEventCapture conflict;
@@ -754,8 +747,7 @@ int test_trigger_sync_emits_conflict_with_files() {
   ASSERT_EQ(vxcore_on_event(ctx, "sync.conflict", conflict_cb, &conflict), VXCORE_OK);
 
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
-                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}",
-                               nullptr),
+                               "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\"}", nullptr),
             VXCORE_OK);
 
   auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
@@ -766,8 +758,12 @@ int test_trigger_sync_emits_conflict_with_files() {
   ASSERT_NOT_NULL(mock);
 
   std::vector<vxcore::SyncConflictInfo> fake;
-  vxcore::SyncConflictInfo c1; c1.path = "notes/a.md"; fake.push_back(c1);
-  vxcore::SyncConflictInfo c2; c2.path = "b.md"; fake.push_back(c2);
+  vxcore::SyncConflictInfo c1;
+  c1.path = "notes/a.md";
+  fake.push_back(c1);
+  vxcore::SyncConflictInfo c2;
+  c2.path = "b.md";
+  fake.push_back(c2);
   mock->SetConflicts(fake);
 
   VxCoreError err = vxcore_sync_trigger(ctx, notebook_id);
@@ -799,28 +795,29 @@ int test_auto_sync_conflict_carries_files() {
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
 
   char *notebook_id = nullptr;
-  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_auto_conflict").c_str(),
-                                   "{\"name\":\"AutoConflict\"}", VXCORE_NOTEBOOK_BUNDLED,
-                                   &notebook_id),
-            VXCORE_OK);
+  ASSERT_EQ(
+      vxcore_notebook_create(ctx, get_test_path("test_auto_conflict").c_str(),
+                             "{\"name\":\"AutoConflict\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+      VXCORE_OK);
 
   ConflictEventCapture conflict;
   ASSERT_EQ(vxcore_on_event(ctx, "sync.conflict", conflict_cb, &conflict), VXCORE_OK);
 
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\","
-                                "\"autoSyncEnabled\":true}",
+                               "\"autoSyncEnabled\":true}",
                                nullptr),
             VXCORE_OK);
 
   auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
   auto &backends = vctx->sync_manager->BackendsForTesting();
-  auto *mock = dynamic_cast<vxcore::MockSyncBackend *>(
-      backends.find(notebook_id)->second.get());
+  auto *mock = dynamic_cast<vxcore::MockSyncBackend *>(backends.find(notebook_id)->second.get());
   ASSERT_NOT_NULL(mock);
 
   std::vector<vxcore::SyncConflictInfo> fake;
-  vxcore::SyncConflictInfo c1; c1.path = "x/y.md"; fake.push_back(c1);
+  vxcore::SyncConflictInfo c1;
+  c1.path = "x/y.md";
+  fake.push_back(c1);
   mock->SetConflicts(fake);
 
   // T9 (sync-queue-convergence): the auto path emits sync.should_run instead
@@ -839,8 +836,7 @@ int test_auto_sync_conflict_carries_files() {
   ASSERT_EQ(vxcore_on_event(ctx, "sync.should_run", auto_route_cb, &auto_route), VXCORE_OK);
 
   char *file_id = nullptr;
-  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "auto_conflict.md", &file_id),
-            VXCORE_OK);
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "auto_conflict.md", &file_id), VXCORE_OK);
   vxcore_string_free(file_id);
 
   // vxcore-metadata-events T4: vxcore_file_create produces TWO sync.should_run
@@ -893,10 +889,10 @@ int test_tag_file_triggers_sync_chain() {
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
 
   char *notebook_id = nullptr;
-  ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_tag_sync_chain").c_str(),
-                                   "{\"name\":\"TagSyncChain\"}", VXCORE_NOTEBOOK_BUNDLED,
-                                   &notebook_id),
-            VXCORE_OK);
+  ASSERT_EQ(
+      vxcore_notebook_create(ctx, get_test_path("test_tag_sync_chain").c_str(),
+                             "{\"name\":\"TagSyncChain\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+      VXCORE_OK);
 
   // Register this notebook with SyncManager so mark_dirty's predicate
   // (configs_cache_.count(nb_id) > 0) passes when folder.config_changed
@@ -904,7 +900,7 @@ int test_tag_file_triggers_sync_chain() {
   // unobservable.
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\","
-                                "\"autoSyncEnabled\":true}",
+                               "\"autoSyncEnabled\":true}",
                                nullptr),
             VXCORE_OK);
 
@@ -1006,8 +1002,8 @@ int test_rename_folder_triggers_sync_chain_via_persistence() {
 
   char *notebook_id = nullptr;
   ASSERT_EQ(vxcore_notebook_create(ctx, get_test_path("test_rename_folder_sync_chain").c_str(),
-                                   "{\"name\":\"RenameFolderSyncChain\"}",
-                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+                                   "{\"name\":\"RenameFolderSyncChain\"}", VXCORE_NOTEBOOK_BUNDLED,
+                                   &notebook_id),
             VXCORE_OK);
 
   // Register this notebook with SyncManager so mark_dirty's predicate
@@ -1016,7 +1012,7 @@ int test_rename_folder_triggers_sync_chain_via_persistence() {
   // unobservable.
   ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id,
                                "{\"backend\":\"mock\",\"remoteUrl\":\"file:///tmp/x\","
-                                "\"autoSyncEnabled\":true}",
+                               "\"autoSyncEnabled\":true}",
                                nullptr),
             VXCORE_OK);
 
@@ -1077,9 +1073,8 @@ int test_rename_folder_triggers_sync_chain_via_persistence() {
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_rename_folder_sync_chain"));
-  std::cout
-      << "  \xE2\x9C\x93 test_rename_folder_triggers_sync_chain_via_persistence passed"
-      << std::endl;
+  std::cout << "  \xE2\x9C\x93 test_rename_folder_triggers_sync_chain_via_persistence passed"
+            << std::endl;
   return 0;
 }
 
@@ -1147,6 +1142,115 @@ int test_auto_sync_disabled_suppresses_should_run() {
   return 0;
 }
 
+int test_recycle_bin_cleanup_marks_internal_path_dirty_only() {
+  std::cout << "  Running test_recycle_bin_cleanup_marks_internal_path_dirty_only..." << std::endl;
+  auto count_event = [](const char *, const char *, void *userdata) {
+    static_cast<std::atomic<int> *>(userdata)->fetch_add(1);
+  };
+  const char *sync_config =
+      R"({"backend":"mock","remoteUrl":"file:///tmp/x","autoSyncEnabled":true})";
+
+  {
+    const std::string root = get_test_path("test_cleanup_sync_internal");
+    cleanup_test_dir(root);
+    VxCoreContextHandle ctx = nullptr;
+    ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+    char *notebook_id = nullptr;
+    ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Internal"})",
+                                     VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+              VXCORE_OK);
+    ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id, sync_config, nullptr), VXCORE_OK);
+
+    const std::string recycle_bin = root + "/vx_notebook/recycle_bin";
+    create_directory(recycle_bin);
+    write_file(recycle_bin + "/old.md", "old");
+    std::error_code ec;
+    std::filesystem::last_write_time(
+        recycle_bin + "/old.md",
+        std::filesystem::file_time_type::clock::now() - std::chrono::hours(1), ec);
+    ASSERT(!ec);
+
+    auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+    vctx->sync_manager->ClearDirty(notebook_id);
+    std::atomic<int> cleaned_count{0};
+    std::atomic<int> should_run_count{0};
+    ASSERT_EQ(vxcore_on_event(ctx, "recycle_bin.cleaned", count_event, &cleaned_count), VXCORE_OK);
+    ASSERT_EQ(vxcore_on_event(ctx, "sync.should_run", count_event, &should_run_count), VXCORE_OK);
+
+    VxCoreRecycleBinCleanup *cleanup = nullptr;
+    ASSERT_EQ(
+        vxcore_notebook_prepare_recycle_bin_cleanup(ctx, notebook_id, TestNowMillis(), &cleanup),
+        VXCORE_OK);
+    int removed_count = 0;
+    ASSERT_EQ(vxcore_recycle_bin_cleanup_execute(cleanup, &removed_count), VXCORE_OK);
+    ASSERT_EQ(removed_count, 1);
+    ASSERT_EQ(cleaned_count.load(), 1);
+    ASSERT_TRUE(should_run_count.load() >= 1);
+    const auto dirty = vctx->sync_manager->GetDirtyNotebooks();
+    ASSERT_EQ(dirty.size(), 1u);
+    ASSERT_EQ(dirty[0], std::string(notebook_id));
+
+    vxcore_recycle_bin_cleanup_free(cleanup);
+    vxcore_off_event(ctx, "recycle_bin.cleaned", count_event);
+    vxcore_off_event(ctx, "sync.should_run", count_event);
+    vxcore_string_free(notebook_id);
+    vxcore_context_destroy(ctx);
+    cleanup_test_dir(root);
+  }
+
+  {
+    const std::string root = get_test_path("test_cleanup_sync_external");
+    const std::string recycle_bin = get_test_path("test_cleanup_sync_external_bin");
+    cleanup_test_dir(root);
+    cleanup_test_dir(recycle_bin);
+    const std::string config =
+        nlohmann::json{{"name", "External"}, {"recycleBinFolder", recycle_bin}}.dump();
+    VxCoreContextHandle ctx = nullptr;
+    ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+    char *notebook_id = nullptr;
+    ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), config.c_str(), VXCORE_NOTEBOOK_BUNDLED,
+                                     &notebook_id),
+              VXCORE_OK);
+    ASSERT_EQ(vxcore_sync_enable(ctx, notebook_id, sync_config, nullptr), VXCORE_OK);
+    create_directory(recycle_bin);
+    write_file(recycle_bin + "/old.md", "old");
+    std::error_code ec;
+    std::filesystem::last_write_time(
+        recycle_bin + "/old.md",
+        std::filesystem::file_time_type::clock::now() - std::chrono::hours(1), ec);
+    ASSERT(!ec);
+
+    auto *vctx = reinterpret_cast<vxcore::VxCoreContext *>(ctx);
+    vctx->sync_manager->ClearDirty(notebook_id);
+    std::atomic<int> cleaned_count{0};
+    std::atomic<int> should_run_count{0};
+    ASSERT_EQ(vxcore_on_event(ctx, "recycle_bin.cleaned", count_event, &cleaned_count), VXCORE_OK);
+    ASSERT_EQ(vxcore_on_event(ctx, "sync.should_run", count_event, &should_run_count), VXCORE_OK);
+
+    VxCoreRecycleBinCleanup *cleanup = nullptr;
+    ASSERT_EQ(
+        vxcore_notebook_prepare_recycle_bin_cleanup(ctx, notebook_id, TestNowMillis(), &cleanup),
+        VXCORE_OK);
+    int removed_count = 0;
+    ASSERT_EQ(vxcore_recycle_bin_cleanup_execute(cleanup, &removed_count), VXCORE_OK);
+    ASSERT_EQ(removed_count, 1);
+    ASSERT_EQ(cleaned_count.load(), 0);
+    ASSERT_EQ(should_run_count.load(), 0);
+    ASSERT_TRUE(vctx->sync_manager->GetDirtyNotebooks().empty());
+
+    vxcore_recycle_bin_cleanup_free(cleanup);
+    vxcore_off_event(ctx, "recycle_bin.cleaned", count_event);
+    vxcore_off_event(ctx, "sync.should_run", count_event);
+    vxcore_string_free(notebook_id);
+    vxcore_context_destroy(ctx);
+    cleanup_test_dir(root);
+    cleanup_test_dir(recycle_bin);
+  }
+
+  std::cout << "  ✓ test_recycle_bin_cleanup_marks_internal_path_dirty_only passed" << std::endl;
+  return 0;
+}
+
 int main() {
   std::cout << "Running sync tests..." << std::endl;
 
@@ -1178,6 +1282,7 @@ int main() {
   RUN_TEST(test_tag_file_triggers_sync_chain);
   RUN_TEST(test_rename_folder_triggers_sync_chain_via_persistence);
   RUN_TEST(test_auto_sync_disabled_suppresses_should_run);
+  RUN_TEST(test_recycle_bin_cleanup_marks_internal_path_dirty_only);
 
   std::cout << "\xE2\x9C\x93 All sync tests passed" << std::endl;
   return 0;

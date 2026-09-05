@@ -12,6 +12,7 @@ constexpr const char *kFolderCreated = "folder.created";
 constexpr const char *kFolderDeleted = "folder.deleted";
 constexpr const char *kNotebookOpened = "notebook.opened";
 constexpr const char *kNotebookClosed = "notebook.closed";
+constexpr const char *kRecycleBinCleaned = "recycle_bin.cleaned";
 
 // Sync event catalog (Wave 2.1-2.10, T7-T9):
 //

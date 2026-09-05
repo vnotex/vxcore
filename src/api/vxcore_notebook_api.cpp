@@ -1,19 +1,37 @@
 #include <stdlib.h>
 #include <string.h>
-
-#include <nlohmann/json.hpp>
 #include <vxcore/notebook_json_keys.h>
+
+#include <atomic>
+#include <filesystem>
+#include <memory>
+#include <new>
+#include <nlohmann/json.hpp>
+#include <string>
 
 #include "api/api_utils.h"
 #include "core/buffer_manager.h"
+#include "core/bundled_notebook.h"
 #include "core/context.h"
+#include "core/event_manager.h"
+#include "core/event_names.h"
 #include "core/history_manager.h"
 #include "core/metadata_store.h"
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
+#include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "vxcore/vxcore.h"
 
+struct VxCoreRecycleBinCleanup {
+  std::string notebook_id;
+  std::string recycle_bin_path;
+  int64_t cutoff_utc_ms = 0;
+  bool path_inside_notebook_root = false;
+  vxcore::EventManager *event_manager = nullptr;
+  std::atomic_bool cancelled{false};
+  std::atomic_bool executed{false};
+};
 VXCORE_API VxCoreError vxcore_notebook_create(VxCoreContextHandle context, const char *path,
                                               const char *config_json, VxCoreNotebookType type,
                                               char **out_notebook_id) {
@@ -63,8 +81,7 @@ VXCORE_API VxCoreError vxcore_notebook_open(VxCoreContextHandle context, const c
 }
 
 VXCORE_API VxCoreError vxcore_notebook_open_ex(VxCoreContextHandle context, const char *path,
-                                                const char *options_json,
-                                                char **out_notebook_id) {
+                                               const char *options_json, char **out_notebook_id) {
   if (!context || !path || !out_notebook_id) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -97,7 +114,7 @@ VXCORE_API VxCoreError vxcore_notebook_open_ex(VxCoreContextHandle context, cons
     opts_to_parse = "{}";
   }
   auto opts_json = nlohmann::json::parse(opts_to_parse, /*cb=*/nullptr,
-                                          /*allow_exceptions=*/false);
+                                         /*allow_exceptions=*/false);
   if (opts_json.is_discarded()) {
     ctx->last_error = "vxcore_notebook_open_ex: options_json malformed";
     return VXCORE_ERR_JSON_PARSE;
@@ -343,6 +360,110 @@ VXCORE_API VxCoreError vxcore_notebook_empty_recycle_bin(VxCoreContextHandle con
   }
 }
 
+VXCORE_API VxCoreError vxcore_notebook_prepare_recycle_bin_cleanup(
+    VxCoreContextHandle context, const char *notebook_id, int64_t cutoff_utc_ms,
+    VxCoreRecycleBinCleanup **out_cleanup) {
+  if (!context || !notebook_id || !out_cleanup) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  *out_cleanup = nullptr;
+  if (cutoff_utc_ms < 0) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+    if (notebook->IsReadOnly()) {
+      ctx->last_error = "Notebook is read-only";
+      return VXCORE_ERR_READ_ONLY;
+    }
+    if (notebook->GetType() != vxcore::NotebookType::Bundled) {
+      ctx->last_error = "Recycle bin cleanup requires a bundled notebook";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    const std::string recycle_bin_path = notebook->GetRecycleBinPath();
+    const std::string root_path = notebook->GetRootFolder();
+    std::error_code root_ec;
+    const std::filesystem::path canonical_root =
+        std::filesystem::weakly_canonical(vxcore::PathFromUtf8(root_path), root_ec);
+    std::error_code recycle_ec;
+    const std::filesystem::path canonical_recycle =
+        std::filesystem::weakly_canonical(vxcore::PathFromUtf8(recycle_bin_path), recycle_ec);
+    if (root_ec || recycle_ec || canonical_root.empty() || canonical_recycle.empty()) {
+      ctx->last_error = "Failed to resolve recycle bin path";
+      return VXCORE_ERR_IO;
+    }
+    if (canonical_recycle == canonical_root) {
+      ctx->last_error = "Recycle bin path cannot equal the notebook root";
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+
+    std::unique_ptr<VxCoreRecycleBinCleanup> cleanup(new (std::nothrow) VxCoreRecycleBinCleanup());
+    if (!cleanup) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+    cleanup->notebook_id = notebook_id;
+    cleanup->recycle_bin_path = vxcore::PathToUtf8(canonical_recycle);
+    cleanup->cutoff_utc_ms = cutoff_utc_ms;
+    cleanup->path_inside_notebook_root =
+        vxcore::IsPathWithinCanonical(canonical_root, cleanup->recycle_bin_path, false);
+    cleanup->event_manager = ctx->event_manager.get();
+    *out_cleanup = cleanup.release();
+    return VXCORE_OK;
+  } catch (...) {
+    ctx->last_error = "Unknown error preparing recycle bin cleanup";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_recycle_bin_cleanup_execute(VxCoreRecycleBinCleanup *cleanup,
+                                                          int *out_removed_count) {
+  if (out_removed_count) {
+    *out_removed_count = 0;
+  }
+  if (!cleanup) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  if (cleanup->executed.exchange(true, std::memory_order_acq_rel)) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  try {
+    int removed_count = 0;
+    bool changed = false;
+    const VxCoreError error = vxcore::BundledNotebook::CleanupRecycleBinPath(
+        cleanup->recycle_bin_path, cleanup->cutoff_utc_ms, cleanup->cancelled, &removed_count,
+        &changed);
+    if (out_removed_count) {
+      *out_removed_count = removed_count;
+    }
+    if (changed && cleanup->path_inside_notebook_root && cleanup->event_manager) {
+      cleanup->event_manager->Emit(
+          vxcore::events::kRecycleBinCleaned,
+          {{vxcore::kJsonKeyNotebookId, cleanup->notebook_id}, {"removedCount", removed_count}});
+    }
+    return error;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API void vxcore_recycle_bin_cleanup_cancel(VxCoreRecycleBinCleanup *cleanup) {
+  if (cleanup) {
+    cleanup->cancelled.store(true, std::memory_order_relaxed);
+  }
+}
+
+VXCORE_API void vxcore_recycle_bin_cleanup_free(VxCoreRecycleBinCleanup *cleanup) {
+  delete cleanup;
+}
+
 VXCORE_API VxCoreError vxcore_path_resolve(VxCoreContextHandle context, const char *absolute_path,
                                            char **out_notebook_id, char **out_relative_path) {
   if (!context || !absolute_path || !out_notebook_id || !out_relative_path) {
@@ -488,8 +609,8 @@ VXCORE_API VxCoreError vxcore_notebook_history_clear(VxCoreContextHandle context
 }
 
 VXCORE_API VxCoreError vxcore_notebook_history_get_resolved(VxCoreContextHandle context,
-                                                             const char *notebook_id,
-                                                             char **out_history_json) {
+                                                            const char *notebook_id,
+                                                            char **out_history_json) {
   if (!context || !notebook_id || !out_history_json) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -510,13 +631,13 @@ VXCORE_API VxCoreError vxcore_notebook_history_get_resolved(VxCoreContextHandle 
     }
 
     auto history = vxcore::GetHistory(store);
-    VXCORE_LOG_DEBUG("history_get_resolved: %zu entries from store for notebook %s",
-                    history.size(), notebook_id);
+    VXCORE_LOG_DEBUG("history_get_resolved: %zu entries from store for notebook %s", history.size(),
+                     notebook_id);
     nlohmann::json arr = nlohmann::json::array();
     for (const auto &entry : history) {
       auto path = store->GetNodePathById(entry.file_id);
       VXCORE_LOG_DEBUG("history_get_resolved: file_id=%s -> path=%s", entry.file_id.c_str(),
-                      path.empty() ? "DROPPED" : path.c_str());
+                       path.empty() ? "DROPPED" : path.c_str());
       if (path.empty()) {
         continue;
       }
@@ -535,7 +656,7 @@ VXCORE_API VxCoreError vxcore_notebook_history_get_resolved(VxCoreContextHandle 
       return VXCORE_ERR_OUT_OF_MEMORY;
     }
 
-     *out_history_json = json_copy;
+    *out_history_json = json_copy;
     return VXCORE_OK;
   } catch (...) {
     ctx->last_error = "Unknown error getting resolved notebook history";
@@ -544,8 +665,7 @@ VXCORE_API VxCoreError vxcore_notebook_history_get_resolved(VxCoreContextHandle 
 }
 
 VXCORE_API VxCoreError vxcore_notebook_set_read_only(VxCoreContextHandle context,
-                                                     const char *notebook_id,
-                                                     bool read_only) {
+                                                     const char *notebook_id, bool read_only) {
   if (!context || !notebook_id) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -568,8 +688,7 @@ VXCORE_API VxCoreError vxcore_notebook_set_read_only(VxCoreContextHandle context
 }
 
 VXCORE_API VxCoreError vxcore_notebook_is_read_only(VxCoreContextHandle context,
-                                                    const char *notebook_id,
-                                                    bool *out_read_only) {
+                                                    const char *notebook_id, bool *out_read_only) {
   if (!context || !notebook_id || !out_read_only) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -590,4 +709,3 @@ VXCORE_API VxCoreError vxcore_notebook_is_read_only(VxCoreContextHandle context,
     return VXCORE_ERR_UNKNOWN;
   }
 }
-

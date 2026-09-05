@@ -86,6 +86,40 @@ bool RootListingContainsFolder(VxCoreContextHandle ctx, const char *notebook_id,
   return false;
 }
 
+int64_t TestNowMillis() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+std::filesystem::file_time_type FileTimeFromUnixMillis(int64_t unix_millis) {
+  const auto target =
+      std::chrono::system_clock::time_point(std::chrono::milliseconds(unix_millis)) +
+      std::chrono::microseconds(500);
+  return std::filesystem::file_time_type::clock::now() +
+         (target - std::chrono::system_clock::now());
+}
+
+int64_t FileTimeToUnixMillisForTest(const std::filesystem::file_time_type &file_time) {
+  const auto system_time = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+      file_time - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
+  return std::chrono::duration_cast<std::chrono::milliseconds>(system_time.time_since_epoch())
+      .count();
+}
+
+bool SetMtimeMillis(const std::string &path, int64_t unix_millis) {
+  std::error_code ec;
+  std::filesystem::last_write_time(PathFromUtf8ForTest(path), FileTimeFromUnixMillis(unix_millis),
+                                   ec);
+  return !ec;
+}
+
+bool WriteTestFile(const std::string &path, const std::string &content = "x") {
+  std::ofstream stream(PathFromUtf8ForTest(path), std::ios::binary);
+  stream << content;
+  return stream.good();
+}
+
 }  // namespace
 
 int test_folder_create() {
@@ -1411,8 +1445,9 @@ int test_folder_create_path_idempotent() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_folder_path_idempotent_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_folder_path_idempotent_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *folder_id1 = nullptr;
@@ -1445,8 +1480,9 @@ int test_folder_create_path_id_correct() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_folder_path_id_correct_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_folder_path_id_correct_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *folder_id = nullptr;
@@ -2336,9 +2372,9 @@ int test_phantom_folder_delete() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_phantom_folder_delete_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_phantom_folder_delete_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *folder_id = nullptr;
@@ -2384,9 +2420,9 @@ int test_phantom_folder_with_descendants_delete() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_phantom_folder_descendants_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_phantom_folder_descendants_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *folder_id = nullptr;
@@ -2440,9 +2476,9 @@ int test_delete_truly_nonexistent_folder() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_delete_truly_nonexistent_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_delete_truly_nonexistent_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_node_delete(ctx, notebook_id, "never_existed");
@@ -2464,9 +2500,9 @@ int test_phantom_folder_stray_file_at_path() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_phantom_folder_stray_file_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_phantom_folder_stray_file_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *folder_id = nullptr;
@@ -2508,9 +2544,9 @@ int test_phantom_folder_delete_readonly() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_phantom_folder_readonly_nb").c_str(),
-                               "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_phantom_folder_readonly_nb").c_str(),
+                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *folder_id = nullptr;
@@ -2641,12 +2677,10 @@ int test_recycle_bin_custom_relative_path() {
   ASSERT_EQ(err, VXCORE_OK);
 
   const std::string config_json =
-      nlohmann::json{{"name", "Test Notebook"},
-                     {"recycleBinFolder", "custom/../trash"}}
-          .dump();
+      nlohmann::json{{"name", "Test Notebook"}, {"recycleBinFolder", "custom/../trash"}}.dump();
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, root_path.c_str(), config_json.c_str(),
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, root_path.c_str(), config_json.c_str(), VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *recycle_bin_path = nullptr;
@@ -2663,6 +2697,16 @@ int test_recycle_bin_custom_relative_path() {
   err = vxcore_node_delete(ctx, notebook_id, "relative.md");
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT(path_exists(root_path + "/trash/relative.md"));
+
+  VxCoreRecycleBinCleanup *cleanup = nullptr;
+  err = vxcore_notebook_prepare_recycle_bin_cleanup(ctx, notebook_id, TestNowMillis() + 1000,
+                                                    &cleanup);
+  ASSERT_EQ(err, VXCORE_OK);
+  int removed_count = 0;
+  ASSERT_EQ(vxcore_recycle_bin_cleanup_execute(cleanup, &removed_count), VXCORE_OK);
+  ASSERT_EQ(removed_count, 1);
+  ASSERT(!path_exists(root_path + "/trash/relative.md"));
+  vxcore_recycle_bin_cleanup_free(cleanup);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
@@ -2684,12 +2728,10 @@ int test_recycle_bin_custom_absolute_path() {
   ASSERT_EQ(err, VXCORE_OK);
 
   const std::string config_json =
-      nlohmann::json{{"name", "Test Notebook"},
-                     {"recycleBinFolder", absolute_recycle_path}}
-          .dump();
+      nlohmann::json{{"name", "Test Notebook"}, {"recycleBinFolder", absolute_recycle_path}}.dump();
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, root_path.c_str(), config_json.c_str(),
-                               VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err = vxcore_notebook_create(ctx, root_path.c_str(), config_json.c_str(), VXCORE_NOTEBOOK_BUNDLED,
+                               &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *recycle_bin_path = nullptr;
@@ -2706,6 +2748,16 @@ int test_recycle_bin_custom_absolute_path() {
   err = vxcore_node_delete(ctx, notebook_id, "absolute.md");
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT(path_exists(absolute_recycle_path + "/absolute.md"));
+
+  VxCoreRecycleBinCleanup *cleanup = nullptr;
+  err = vxcore_notebook_prepare_recycle_bin_cleanup(ctx, notebook_id, TestNowMillis() + 1000,
+                                                    &cleanup);
+  ASSERT_EQ(err, VXCORE_OK);
+  int removed_count = 0;
+  ASSERT_EQ(vxcore_recycle_bin_cleanup_execute(cleanup, &removed_count), VXCORE_OK);
+  ASSERT_EQ(removed_count, 1);
+  ASSERT(!path_exists(absolute_recycle_path + "/absolute.md"));
+  vxcore_recycle_bin_cleanup_free(cleanup);
 
   err = vxcore_notebook_empty_recycle_bin(ctx, notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
@@ -2800,6 +2852,230 @@ int test_recycle_bin_raw_notebook_unsupported() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_recycle_bin_raw_nb"));
   std::cout << "  ✓ test_recycle_bin_raw_notebook_unsupported passed" << std::endl;
+  return 0;
+}
+
+int test_recycle_bin_cleanup_selective_and_single_use() {
+  std::cout << "  Running test_recycle_bin_cleanup_selective_and_single_use..." << std::endl;
+  const std::string root = get_test_path("test_recycle_bin_cleanup_selective");
+  cleanup_test_dir(root);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Cleanup"})",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  const std::string recycle_bin = root + "/vx_notebook/recycle_bin";
+  const std::string old_file = recycle_bin + "/old.md";
+  const std::string new_file = recycle_bin + "/new.md";
+  const std::string boundary_file = recycle_bin + "/boundary.md";
+  const std::string old_dir = recycle_bin + "/old_dir";
+  const std::string young_child = old_dir + "/young.md";
+  std::filesystem::create_directories(PathFromUtf8ForTest(old_dir));
+  ASSERT(WriteTestFile(old_file));
+  ASSERT(WriteTestFile(new_file));
+  ASSERT(WriteTestFile(boundary_file));
+  ASSERT(WriteTestFile(young_child));
+
+  constexpr int64_t day_ms = 24LL * 60 * 60 * 1000;
+  const int64_t now = TestNowMillis();
+  const int64_t cutoff = now - 60 * day_ms;
+  ASSERT(SetMtimeMillis(old_file, cutoff - day_ms));
+  ASSERT(SetMtimeMillis(new_file, cutoff + day_ms));
+  ASSERT(SetMtimeMillis(boundary_file, cutoff));
+  ASSERT(SetMtimeMillis(young_child, cutoff + day_ms));
+  ASSERT(SetMtimeMillis(old_dir, cutoff - day_ms));
+
+  VxCoreRecycleBinCleanup *cleanup = nullptr;
+  ASSERT_EQ(vxcore_notebook_prepare_recycle_bin_cleanup(ctx, notebook_id, cutoff, &cleanup),
+            VXCORE_OK);
+  ASSERT_NOT_NULL(cleanup);
+  int removed_count = -1;
+  ASSERT_EQ(vxcore_recycle_bin_cleanup_execute(cleanup, &removed_count), VXCORE_OK);
+  ASSERT_EQ(removed_count, 2);
+  ASSERT(!path_exists(old_file));
+  ASSERT(!path_exists(old_dir));
+  ASSERT(path_exists(new_file));
+  ASSERT(path_exists(boundary_file));
+  ASSERT(path_exists(recycle_bin));
+
+  removed_count = -1;
+  ASSERT_EQ(vxcore_recycle_bin_cleanup_execute(cleanup, &removed_count), VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(removed_count, 0);
+  vxcore_recycle_bin_cleanup_free(cleanup);
+
+  cleanup = nullptr;
+  ASSERT_EQ(vxcore_notebook_prepare_recycle_bin_cleanup(ctx, notebook_id, cutoff, &cleanup),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_recycle_bin_cleanup_execute(cleanup, &removed_count), VXCORE_OK);
+  ASSERT_EQ(removed_count, 0);
+  vxcore_recycle_bin_cleanup_free(cleanup);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  std::cout << "  ✓ test_recycle_bin_cleanup_selective_and_single_use passed" << std::endl;
+  return 0;
+}
+
+int test_recycle_bin_cleanup_missing_and_pre_cancelled() {
+  std::cout << "  Running test_recycle_bin_cleanup_missing_and_pre_cancelled..." << std::endl;
+  const std::string root = get_test_path("test_recycle_bin_cleanup_cancelled");
+  cleanup_test_dir(root);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Cleanup"})",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+
+  const std::string recycle_bin = root + "/vx_notebook/recycle_bin";
+  cleanup_test_dir(recycle_bin);
+  VxCoreRecycleBinCleanup *cleanup = nullptr;
+  ASSERT_EQ(
+      vxcore_notebook_prepare_recycle_bin_cleanup(ctx, notebook_id, TestNowMillis(), &cleanup),
+      VXCORE_OK);
+  int removed_count = -1;
+  ASSERT_EQ(vxcore_recycle_bin_cleanup_execute(cleanup, &removed_count), VXCORE_OK);
+  ASSERT_EQ(removed_count, 0);
+  vxcore_recycle_bin_cleanup_free(cleanup);
+
+  std::filesystem::create_directories(PathFromUtf8ForTest(recycle_bin));
+  const std::string old_file = recycle_bin + "/old.md";
+  ASSERT(WriteTestFile(old_file));
+  ASSERT(SetMtimeMillis(old_file, TestNowMillis() - 10000));
+  cleanup = nullptr;
+  ASSERT_EQ(
+      vxcore_notebook_prepare_recycle_bin_cleanup(ctx, notebook_id, TestNowMillis(), &cleanup),
+      VXCORE_OK);
+  vxcore_recycle_bin_cleanup_cancel(cleanup);
+  ASSERT_EQ(vxcore_recycle_bin_cleanup_execute(cleanup, &removed_count), VXCORE_ERR_CANCELLED);
+  ASSERT_EQ(removed_count, 0);
+  ASSERT(path_exists(old_file));
+  vxcore_recycle_bin_cleanup_free(cleanup);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  std::cout << "  ✓ test_recycle_bin_cleanup_missing_and_pre_cancelled passed" << std::endl;
+  return 0;
+}
+
+int test_recycle_bin_cleanup_resets_delete_timestamp() {
+  std::cout << "  Running test_recycle_bin_cleanup_resets_delete_timestamp..." << std::endl;
+  const std::string root = get_test_path("test_recycle_bin_cleanup_timestamp");
+  cleanup_test_dir(root);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Cleanup"})",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "old_source.md", &file_id), VXCORE_OK);
+  vxcore_string_free(file_id);
+
+  const std::string source = root + "/old_source.md";
+  ASSERT(SetMtimeMillis(source, TestNowMillis() - 90LL * 24 * 60 * 60 * 1000));
+  const int64_t before_delete = TestNowMillis();
+  ASSERT_EQ(vxcore_node_delete(ctx, notebook_id, "old_source.md"), VXCORE_OK);
+  const std::string recycled = root + "/vx_notebook/recycle_bin/old_source.md";
+  ASSERT(path_exists(recycled));
+  std::error_code ec;
+  const auto recycled_time = std::filesystem::last_write_time(PathFromUtf8ForTest(recycled), ec);
+  ASSERT(!ec);
+  const int64_t recycled_ms = FileTimeToUnixMillisForTest(recycled_time);
+  ASSERT(recycled_ms >= before_delete - 1000);
+  ASSERT(recycled_ms <= TestNowMillis() + 1000);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  std::cout << "  ✓ test_recycle_bin_cleanup_resets_delete_timestamp passed" << std::endl;
+  return 0;
+}
+
+int test_recycle_bin_cleanup_removes_link_only() {
+  std::cout << "  Running test_recycle_bin_cleanup_removes_link_only..." << std::endl;
+  const std::string root = get_test_path("test_recycle_bin_cleanup_link");
+  const std::string outside = get_test_path("test_recycle_bin_cleanup_link_target");
+  cleanup_test_dir(root);
+  cleanup_test_dir(outside);
+  create_directory(outside);
+  ASSERT(WriteTestFile(outside + "/keep.md"));
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Cleanup"})",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  char *folder_id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "outside_link", &folder_id), VXCORE_OK);
+  vxcore_string_free(folder_id);
+
+  const std::string source_link = root + "/outside_link";
+  std::error_code ec;
+  std::filesystem::remove_all(PathFromUtf8ForTest(source_link), ec);
+  ASSERT(!ec);
+  ASSERT(vxcore_test::create_junction(outside, source_link));
+  const auto target_mtime = std::filesystem::last_write_time(PathFromUtf8ForTest(outside), ec);
+  ASSERT(!ec);
+
+  ASSERT_EQ(vxcore_node_delete(ctx, notebook_id, "outside_link"), VXCORE_OK);
+  const std::string recycle_bin = root + "/vx_notebook/recycle_bin";
+  const std::string link = recycle_bin + "/outside_link";
+  ASSERT(path_exists(link));
+  ASSERT(std::filesystem::last_write_time(PathFromUtf8ForTest(outside), ec) == target_mtime);
+  ASSERT(!ec);
+
+  VxCoreRecycleBinCleanup *cleanup = nullptr;
+  ASSERT_EQ(vxcore_notebook_prepare_recycle_bin_cleanup(ctx, notebook_id, TestNowMillis() + 1000,
+                                                        &cleanup),
+            VXCORE_OK);
+  int removed_count = 0;
+  ASSERT_EQ(vxcore_recycle_bin_cleanup_execute(cleanup, &removed_count), VXCORE_OK);
+  ASSERT_EQ(removed_count, 1);
+  ASSERT(!path_exists(link));
+  ASSERT(path_exists(outside + "/keep.md"));
+  ASSERT(std::filesystem::last_write_time(PathFromUtf8ForTest(outside), ec) == target_mtime);
+  ASSERT(!ec);
+  vxcore_recycle_bin_cleanup_free(cleanup);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  cleanup_test_dir(outside);
+  std::cout << "  ✓ test_recycle_bin_cleanup_removes_link_only passed" << std::endl;
+  return 0;
+}
+
+int test_recycle_bin_cleanup_rejects_notebook_root() {
+  std::cout << "  Running test_recycle_bin_cleanup_rejects_notebook_root..." << std::endl;
+  const std::string root = get_test_path("test_recycle_bin_cleanup_root");
+  cleanup_test_dir(root);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(
+      vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Cleanup","recycleBinFolder":"."})",
+                             VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+      VXCORE_OK);
+  VxCoreRecycleBinCleanup *cleanup = reinterpret_cast<VxCoreRecycleBinCleanup *>(1);
+  ASSERT_EQ(
+      vxcore_notebook_prepare_recycle_bin_cleanup(ctx, notebook_id, TestNowMillis(), &cleanup),
+      VXCORE_ERR_INVALID_PARAM);
+  ASSERT_NULL(cleanup);
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  std::cout << "  ✓ test_recycle_bin_cleanup_rejects_notebook_root passed" << std::endl;
   return 0;
 }
 
@@ -4978,8 +5254,8 @@ int test_node_update_timestamps_partial() {
   // Set both timestamps first
   int64_t initial_created = 1705318200000;
   int64_t initial_modified = 1705404600000;
-  err = vxcore_node_update_timestamps(ctx, notebook_id, "note.md", initial_created,
-                                      initial_modified);
+  err =
+      vxcore_node_update_timestamps(ctx, notebook_id, "note.md", initial_created, initial_modified);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Now update only modified (pass 0 for created to skip)
@@ -5056,8 +5332,7 @@ int test_file_update_attachments_basic() {
   vxcore_string_free(file_id);
 
   // Set attachments
-  err = vxcore_file_update_attachments(ctx, notebook_id, "note.md",
-                                       R"(["report.pdf","data.csv"])");
+  err = vxcore_file_update_attachments(ctx, notebook_id, "note.md", R"(["report.pdf","data.csv"])");
   ASSERT_EQ(err, VXCORE_OK);
 
   // List attachments and verify
@@ -5101,8 +5376,7 @@ int test_file_update_attachments_replace() {
   vxcore_string_free(file_id);
 
   // Set initial attachments
-  err = vxcore_file_update_attachments(ctx, notebook_id, "note.md",
-                                       R"(["old1.pdf","old2.pdf"])");
+  err = vxcore_file_update_attachments(ctx, notebook_id, "note.md", R"(["old1.pdf","old2.pdf"])");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Replace with different attachments
@@ -5147,8 +5421,7 @@ int test_file_update_attachments_not_found() {
   ASSERT_NOT_NULL(notebook_id);
 
   // Call with non-existent file
-  err = vxcore_file_update_attachments(ctx, notebook_id, "nonexistent.md",
-                                       R"(["file.pdf"])");
+  err = vxcore_file_update_attachments(ctx, notebook_id, "nonexistent.md", R"(["file.pdf"])");
   ASSERT_NE(err, VXCORE_OK);
 
   vxcore_string_free(notebook_id);
@@ -6425,7 +6698,9 @@ int test_raw_copy_folder_with_assets() {
   std::string nb_root = get_test_path("test_raw_cpfld_assets_nb");
   std::string src_assets_dir = nb_root + "/src/vx_assets/" + old_uuid;
   std::filesystem::create_directories(src_assets_dir);
-  { std::ofstream(src_assets_dir + "/pic.png") << "fake image data"; }
+  {
+    std::ofstream(src_assets_dir + "/pic.png") << "fake image data";
+  }
   ASSERT(path_exists(src_assets_dir + "/pic.png"));
 
   // Write some content
@@ -6474,9 +6749,9 @@ int test_raw_copy_folder_rewrites_markdown() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_raw_cpfld_rewrite_nb").c_str(),
-                               "{\"name\":\"Raw CpFldRewrite\"}", VXCORE_NOTEBOOK_RAW,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_raw_cpfld_rewrite_nb").c_str(),
+                             "{\"name\":\"Raw CpFldRewrite\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create source folder and file
@@ -6500,7 +6775,9 @@ int test_raw_copy_folder_rewrites_markdown() {
   // Create assets
   std::string src_assets_dir = nb_root + "/src/vx_assets/" + old_uuid;
   std::filesystem::create_directories(src_assets_dir);
-  { std::ofstream(src_assets_dir + "/pic.png") << "fake image data"; }
+  {
+    std::ofstream(src_assets_dir + "/pic.png") << "fake image data";
+  }
 
   // Copy
   char *copy_id = nullptr;
@@ -6593,11 +6870,15 @@ int test_raw_copy_folder_recursive_assets() {
   // Create assets at both levels
   std::string assets_a = nb_root + "/parent/vx_assets/" + uuid_a;
   std::filesystem::create_directories(assets_a);
-  { std::ofstream(assets_a + "/img_a.png") << "image_a"; }
+  {
+    std::ofstream(assets_a + "/img_a.png") << "image_a";
+  }
 
   std::string assets_b = nb_root + "/parent/child/vx_assets/" + uuid_b;
   std::filesystem::create_directories(assets_b);
-  { std::ofstream(assets_b + "/img_b.png") << "image_b"; }
+  {
+    std::ofstream(assets_b + "/img_b.png") << "image_b";
+  }
 
   // Copy parent
   char *copy_id = nullptr;
@@ -6769,9 +7050,9 @@ int test_raw_create_file_duplicate() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_raw_create_file_dup_nb").c_str(),
-                               "{\"name\":\"Raw CreateFileDup\"}", VXCORE_NOTEBOOK_RAW,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_raw_create_file_dup_nb").c_str(),
+                             "{\"name\":\"Raw CreateFileDup\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create a file
@@ -7359,9 +7640,9 @@ int test_raw_copy_file_with_new_name() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_raw_copy_file_name_nb").c_str(),
-                               "{\"name\":\"Raw CopyFileName\"}", VXCORE_NOTEBOOK_RAW,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_raw_copy_file_name_nb").c_str(),
+                             "{\"name\":\"Raw CopyFileName\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create source file
@@ -7431,7 +7712,9 @@ int test_raw_file_copy_with_assets() {
   std::string nb_root = get_test_path("test_raw_fcopy_assets_nb");
   std::string assets_dir = nb_root + "/vx_assets/" + old_uuid;
   std::filesystem::create_directories(assets_dir);
-  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+  {
+    std::ofstream(assets_dir + "/pic.png") << "fake image data";
+  }
   ASSERT(path_exists(assets_dir + "/pic.png"));
 
   // Copy the file
@@ -7486,7 +7769,9 @@ int test_raw_file_copy_rewrites_markdown_content() {
   // Create the assets dir
   std::string assets_dir = nb_root + "/vx_assets/" + old_uuid;
   std::filesystem::create_directories(assets_dir);
-  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+  {
+    std::ofstream(assets_dir + "/pic.png") << "fake image data";
+  }
 
   // Copy
   char *copied_id = nullptr;
@@ -7525,9 +7810,9 @@ int test_raw_file_copy_without_assets_no_empty_dir() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_raw_fcopy_noassets_nb").c_str(),
-                               "{\"name\":\"Raw CopyNoAssets\"}", VXCORE_NOTEBOOK_RAW,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_raw_fcopy_noassets_nb").c_str(),
+                             "{\"name\":\"Raw CopyNoAssets\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create source file (no assets)
@@ -7577,7 +7862,9 @@ int test_raw_file_move_with_assets() {
   std::string nb_root = get_test_path("test_raw_fmove_assets_nb");
   std::string assets_dir = nb_root + "/vx_assets/" + uuid;
   std::filesystem::create_directories(assets_dir);
-  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+  {
+    std::ofstream(assets_dir + "/pic.png") << "fake image data";
+  }
 
   // Create dest folder
   char *folder_id = nullptr;
@@ -7614,9 +7901,9 @@ int test_raw_file_move_without_assets_no_error() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_raw_fmove_noassets_nb").c_str(),
-                               "{\"name\":\"Raw MoveNoAssets\"}", VXCORE_NOTEBOOK_RAW,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_raw_fmove_noassets_nb").c_str(),
+                             "{\"name\":\"Raw MoveNoAssets\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Create source file
@@ -7723,9 +8010,9 @@ int test_raw_import_file_preserves_content() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_raw_import_content_nb").c_str(),
-                               "{\"name\":\"Raw ImportContent\"}", VXCORE_NOTEBOOK_RAW,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_raw_import_content_nb").c_str(),
+                             "{\"name\":\"Raw ImportContent\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Import
@@ -7828,8 +8115,9 @@ int test_raw_import_folder() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_raw_import_folder_nb").c_str(),
-                               "{\"name\":\"Raw ImportFolder\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_raw_import_folder_nb").c_str(),
+                             "{\"name\":\"Raw ImportFolder\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // Import folder into root (no suffix filter)
@@ -9029,7 +9317,9 @@ int test_file_copy_with_assets() {
   std::string nb_root = get_test_path("test_fcopy_assets_nb");
   std::string assets_dir = nb_root + "/vx_assets/" + std::string(file_id);
   std::filesystem::create_directories(assets_dir);
-  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+  {
+    std::ofstream(assets_dir + "/pic.png") << "fake image data";
+  }
   ASSERT(path_exists(assets_dir + "/pic.png"));
 
   // Copy the file
@@ -9083,7 +9373,9 @@ int test_file_copy_rewrites_markdown_content() {
   // Create the assets dir
   std::string assets_dir = nb_root + "/vx_assets/" + old_uuid;
   std::filesystem::create_directories(assets_dir);
-  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+  {
+    std::ofstream(assets_dir + "/pic.png") << "fake image data";
+  }
 
   // Copy
   char *copied_id = nullptr;
@@ -9170,12 +9462,16 @@ int test_file_copy_nonmarkdown_no_rewrite() {
   // Write content that looks like markdown but file is .txt
   std::string nb_root = get_test_path("test_fcopy_nomd_nb");
   std::string file_path = nb_root + "/data.txt";
-  { std::ofstream(file_path) << "![img](vx_assets/" << old_uuid << "/pic.png)\n"; }
+  {
+    std::ofstream(file_path) << "![img](vx_assets/" << old_uuid << "/pic.png)\n";
+  }
 
   // Create assets dir
   std::string assets_dir = nb_root + "/vx_assets/" + old_uuid;
   std::filesystem::create_directories(assets_dir);
-  { std::ofstream(assets_dir + "/pic.png") << "fake"; }
+  {
+    std::ofstream(assets_dir + "/pic.png") << "fake";
+  }
 
   // Copy
   char *copied_id = nullptr;
@@ -9224,7 +9520,9 @@ int test_file_move_with_assets() {
   std::string nb_root = get_test_path("test_fmove_assets_nb");
   std::string assets_dir = nb_root + "/vx_assets/" + uuid;
   std::filesystem::create_directories(assets_dir);
-  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+  {
+    std::ofstream(assets_dir + "/pic.png") << "fake image data";
+  }
 
   // Create dest folder
   char *folder_id = nullptr;
@@ -9321,7 +9619,9 @@ int test_folder_copy_with_assets() {
   std::string nb_root = get_test_path("test_fcopy_folder_assets_nb");
   std::string assets_dir = nb_root + "/src_folder/vx_assets/" + old_uuid;
   std::filesystem::create_directories(assets_dir);
-  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+  {
+    std::ofstream(assets_dir + "/pic.png") << "fake image data";
+  }
 
   // Copy the folder
   char *new_folder_id = nullptr;
@@ -9394,7 +9694,9 @@ int test_folder_copy_rewrites_markdown_content() {
   // Create the assets dir
   std::string assets_dir = nb_root + "/src/vx_assets/" + old_uuid;
   std::filesystem::create_directories(assets_dir);
-  { std::ofstream(assets_dir + "/pic.png") << "fake image data"; }
+  {
+    std::ofstream(assets_dir + "/pic.png") << "fake image data";
+  }
 
   // Copy
   char *new_folder_id = nullptr;
@@ -9468,11 +9770,15 @@ int test_folder_copy_recursive_assets() {
   // Create assets for both files
   std::string assets1 = nb_root + "/src/vx_assets/" + old_uuid1;
   std::filesystem::create_directories(assets1);
-  { std::ofstream(assets1 + "/img1.png") << "image1"; }
+  {
+    std::ofstream(assets1 + "/img1.png") << "image1";
+  }
 
   std::string assets2 = nb_root + "/src/sub/vx_assets/" + old_uuid2;
   std::filesystem::create_directories(assets2);
-  { std::ofstream(assets2 + "/img2.png") << "image2"; }
+  {
+    std::ofstream(assets2 + "/img2.png") << "image2";
+  }
 
   // Write markdown content
   {
@@ -9609,8 +9915,9 @@ int test_bundled_folder_manager_read_only() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_readonly_nb").c_str(),
-                               "{\"name\":\"ReadOnly Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_readonly_nb").c_str(),
+                             "{\"name\":\"ReadOnly Test\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   // First, verify operations work normally
@@ -10097,6 +10404,11 @@ int main() {
   RUN_TEST(test_recycle_bin_custom_absolute_path);
   RUN_TEST(test_recycle_bin_empty);
   RUN_TEST(test_recycle_bin_raw_notebook_unsupported);
+  RUN_TEST(test_recycle_bin_cleanup_selective_and_single_use);
+  RUN_TEST(test_recycle_bin_cleanup_missing_and_pre_cancelled);
+  RUN_TEST(test_recycle_bin_cleanup_resets_delete_timestamp);
+  RUN_TEST(test_recycle_bin_cleanup_removes_link_only);
+  RUN_TEST(test_recycle_bin_cleanup_rejects_notebook_root);
 
   // Node index/unindex tests
   RUN_TEST(test_node_index_file);

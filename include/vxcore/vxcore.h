@@ -155,6 +155,8 @@ VXCORE_API VxCoreError vxcore_notebook_is_read_only(VxCoreContextHandle context,
                                                     const char *notebook_id, bool *out_read_only);
 
 // ============ Recycle Bin Operations (Bundled Notebooks Only) ============
+typedef struct VxCoreRecycleBinCleanup VxCoreRecycleBinCleanup;
+
 // Get the path to the recycle bin folder.
 // Returns empty string for raw notebooks (not supported).
 VXCORE_API VxCoreError vxcore_notebook_get_recycle_bin_path(VxCoreContextHandle context,
@@ -165,6 +167,27 @@ VXCORE_API VxCoreError vxcore_notebook_get_recycle_bin_path(VxCoreContextHandle 
 // Returns VXCORE_ERR_UNSUPPORTED for raw notebooks.
 VXCORE_API VxCoreError vxcore_notebook_empty_recycle_bin(VxCoreContextHandle context,
                                                          const char *notebook_id);
+
+// Prepare an age-based cleanup without traversing the recycle bin. The returned
+// caller-owned handle snapshots all data needed by worker-safe execution.
+// cutoff_utc_ms is milliseconds since the Unix epoch and must be non-negative.
+// Returns VXCORE_ERR_READ_ONLY before VXCORE_ERR_UNSUPPORTED for read-only raw notebooks.
+VXCORE_API VxCoreError vxcore_notebook_prepare_recycle_bin_cleanup(
+    VxCoreContextHandle context, const char *notebook_id, int64_t cutoff_utc_ms,
+    VxCoreRecycleBinCleanup **out_cleanup);
+
+// Execute a prepared cleanup once. Worker-safe. A second call on the same handle
+// returns VXCORE_ERR_INVALID_PARAM. out_removed_count is optional and counts only
+// completely removed top-level recycle-bin entries.
+VXCORE_API VxCoreError vxcore_recycle_bin_cleanup_execute(VxCoreRecycleBinCleanup *cleanup,
+                                                          int *out_removed_count);
+
+// Request lock-free cancellation. Null-safe; execution stops at the next traversal boundary.
+VXCORE_API void vxcore_recycle_bin_cleanup_cancel(VxCoreRecycleBinCleanup *cleanup);
+
+// Free a prepared cleanup. Null-safe, but must not race execution. The caller must
+// cancel, join, and free before destroying the context used to prepare the handle.
+VXCORE_API void vxcore_recycle_bin_cleanup_free(VxCoreRecycleBinCleanup *cleanup);
 
 // ============ Notebook History Operations ============
 

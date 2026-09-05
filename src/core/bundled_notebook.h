@@ -1,6 +1,8 @@
 #ifndef VXCORE_BUNDLED_NOTEBOOK_H_
 #define VXCORE_BUNDLED_NOTEBOOK_H_
 
+#include <atomic>
+
 #include "notebook.h"
 
 namespace vxcore {
@@ -21,6 +23,9 @@ class BundledNotebook : public Notebook {
 
   std::string GetRecycleBinPath() const override;
   VxCoreError EmptyRecycleBin() override;
+  static VxCoreError CleanupRecycleBinPath(const std::string &recycle_bin_path,
+                                           int64_t cutoff_utc_ms, const std::atomic_bool &cancelled,
+                                           int *out_removed_count, bool *out_changed);
 
   static const char *kMetadataFolderName;
 

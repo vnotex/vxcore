@@ -3,9 +3,17 @@
 #include <vxcore/notebook_json_keys.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <system_error>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
 
 #include "bundled_folder_manager.h"
 #include "event_manager.h"
@@ -15,6 +23,142 @@
 #include "utils/logger.h"
 
 namespace vxcore {
+namespace {
+
+namespace fs = std::filesystem;
+
+int64_t FileTimeToUnixMillis(const fs::file_time_type &file_time) {
+  const auto system_time = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+      file_time - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+  return static_cast<int64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(system_time.time_since_epoch())
+          .count());
+}
+
+bool GetEntryUnixMillis(const fs::path &path, ReparseState reparse_state, int64_t *out_millis) {
+  if (reparse_state == ReparseState::kNo) {
+    std::error_code ec;
+    const auto modified_time = fs::last_write_time(path, ec);
+    if (ec) {
+      return false;
+    }
+    *out_millis = FileTimeToUnixMillis(modified_time);
+    return true;
+  }
+
+#ifdef _WIN32
+  HANDLE handle = CreateFileW(
+      path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  FILETIME modified_time;
+  const BOOL succeeded = GetFileTime(handle, nullptr, nullptr, &modified_time);
+  CloseHandle(handle);
+  if (!succeeded) {
+    return false;
+  }
+  ULARGE_INTEGER ticks;
+  ticks.LowPart = modified_time.dwLowDateTime;
+  ticks.HighPart = modified_time.dwHighDateTime;
+  constexpr uint64_t windows_epoch_offset_100ns = 116444736000000000ULL;
+  if (ticks.QuadPart < windows_epoch_offset_100ns) {
+    return false;
+  }
+  *out_millis = static_cast<int64_t>((ticks.QuadPart - windows_epoch_offset_100ns) / 10000);
+  return true;
+#else
+  struct stat status;
+  if (lstat(path.c_str(), &status) != 0) {
+    return false;
+  }
+  *out_millis = static_cast<int64_t>(status.st_mtime) * 1000;
+  return true;
+#endif
+}
+
+VxCoreError RemoveRecycleBinEntry(const fs::path &path, const std::atomic_bool &cancelled,
+                                  bool *out_changed, bool *out_complete) {
+  *out_complete = false;
+  if (cancelled.load(std::memory_order_relaxed)) {
+    return VXCORE_ERR_CANCELLED;
+  }
+
+  const ReparseState reparse_state = CheckReparsePoint(PathToUtf8(path));
+  if (reparse_state == ReparseState::kError) {
+    VXCORE_LOG_WARN("CleanupRecycleBin: Failed to inspect %s", PathToUtf8(path).c_str());
+    return VXCORE_ERR_IO;
+  }
+
+  std::error_code ec;
+  if (reparse_state == ReparseState::kYes || !fs::is_directory(path, ec)) {
+    if (ec) {
+      VXCORE_LOG_WARN("CleanupRecycleBin: Failed to inspect entry %s: %s", PathToUtf8(path).c_str(),
+                      ec.message().c_str());
+      return VXCORE_ERR_IO;
+    }
+    const bool removed = fs::remove(path, ec);
+    if (ec) {
+      VXCORE_LOG_WARN("CleanupRecycleBin: Failed to remove entry %s: %s", PathToUtf8(path).c_str(),
+                      ec.message().c_str());
+      return VXCORE_ERR_IO;
+    }
+    *out_changed = *out_changed || removed;
+    *out_complete = true;
+    return VXCORE_OK;
+  }
+
+  VxCoreError result = VXCORE_OK;
+  fs::directory_iterator iterator(path, ec);
+  if (ec) {
+    VXCORE_LOG_WARN("CleanupRecycleBin: Failed to enumerate %s: %s", PathToUtf8(path).c_str(),
+                    ec.message().c_str());
+    return VXCORE_ERR_IO;
+  }
+
+  const fs::directory_iterator end;
+  while (iterator != end) {
+    if (cancelled.load(std::memory_order_relaxed)) {
+      return VXCORE_ERR_CANCELLED;
+    }
+
+    const fs::path child_path = iterator->path();
+    iterator.increment(ec);
+    if (ec) {
+      VXCORE_LOG_WARN("CleanupRecycleBin: Failed to continue enumerating %s: %s",
+                      PathToUtf8(path).c_str(), ec.message().c_str());
+      result = VXCORE_ERR_IO;
+      break;
+    }
+
+    bool child_complete = false;
+    const VxCoreError child_error =
+        RemoveRecycleBinEntry(child_path, cancelled, out_changed, &child_complete);
+    if (child_error == VXCORE_ERR_CANCELLED) {
+      return child_error;
+    }
+    if (child_error != VXCORE_OK) {
+      result = VXCORE_ERR_IO;
+    }
+  }
+
+  if (cancelled.load(std::memory_order_relaxed)) {
+    return VXCORE_ERR_CANCELLED;
+  }
+
+  const bool removed = fs::remove(path, ec);
+  if (ec) {
+    VXCORE_LOG_WARN("CleanupRecycleBin: Failed to remove directory %s: %s",
+                    PathToUtf8(path).c_str(), ec.message().c_str());
+    return VXCORE_ERR_IO;
+  }
+  *out_changed = *out_changed || removed;
+  *out_complete = true;
+  return result;
+}
+
+}  // namespace
 
 const char *BundledNotebook::kMetadataFolderName = "vx_notebook";
 
@@ -278,6 +422,98 @@ VxCoreError BundledNotebook::EmptyRecycleBin() {
     VXCORE_LOG_ERROR("EmptyRecycleBin: Failed to empty recycle bin: %s", e.what());
     return VXCORE_ERR_IO;
   }
+}
+
+VxCoreError BundledNotebook::CleanupRecycleBinPath(const std::string &recycle_bin_path,
+                                                   int64_t cutoff_utc_ms,
+                                                   const std::atomic_bool &cancelled,
+                                                   int *out_removed_count, bool *out_changed) {
+  int removed_count = 0;
+  bool changed = false;
+  if (out_removed_count) {
+    *out_removed_count = 0;
+  }
+  if (out_changed) {
+    *out_changed = false;
+  }
+  if (recycle_bin_path.empty() || cutoff_utc_ms < 0) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  const fs::path recycle_bin = PathFromUtf8(recycle_bin_path);
+  std::error_code ec;
+  const bool exists = fs::exists(recycle_bin, ec);
+  if (ec) {
+    VXCORE_LOG_WARN("CleanupRecycleBin: Failed to inspect recycle bin %s: %s",
+                    recycle_bin_path.c_str(), ec.message().c_str());
+    return VXCORE_ERR_IO;
+  }
+  if (!exists) {
+    return VXCORE_OK;
+  }
+
+  VxCoreError result = VXCORE_OK;
+  fs::directory_iterator iterator(recycle_bin, ec);
+  if (ec) {
+    VXCORE_LOG_WARN("CleanupRecycleBin: Failed to enumerate recycle bin %s: %s",
+                    recycle_bin_path.c_str(), ec.message().c_str());
+    return VXCORE_ERR_IO;
+  }
+
+  const fs::directory_iterator end;
+  while (iterator != end) {
+    if (cancelled.load(std::memory_order_relaxed)) {
+      result = VXCORE_ERR_CANCELLED;
+      break;
+    }
+
+    const fs::path entry_path = iterator->path();
+    iterator.increment(ec);
+    if (ec) {
+      VXCORE_LOG_WARN("CleanupRecycleBin: Failed to continue enumerating %s: %s",
+                      recycle_bin_path.c_str(), ec.message().c_str());
+      result = VXCORE_ERR_IO;
+      break;
+    }
+
+    const ReparseState reparse_state = CheckReparsePoint(PathToUtf8(entry_path));
+    int64_t modified_utc_ms = 0;
+    if (reparse_state == ReparseState::kError ||
+        !GetEntryUnixMillis(entry_path, reparse_state, &modified_utc_ms)) {
+      VXCORE_LOG_WARN("CleanupRecycleBin: Failed to read timestamp for %s",
+                      PathToUtf8(entry_path).c_str());
+      result = VXCORE_ERR_IO;
+      continue;
+    }
+    if (modified_utc_ms >= cutoff_utc_ms) {
+      continue;
+    }
+
+    bool complete = false;
+    const VxCoreError remove_error =
+        RemoveRecycleBinEntry(entry_path, cancelled, &changed, &complete);
+    if (complete) {
+      ++removed_count;
+    }
+    if (remove_error == VXCORE_ERR_CANCELLED) {
+      result = remove_error;
+      break;
+    }
+    if (remove_error != VXCORE_OK) {
+      result = VXCORE_ERR_IO;
+    }
+  }
+
+  if (cancelled.load(std::memory_order_relaxed)) {
+    result = VXCORE_ERR_CANCELLED;
+  }
+  if (out_removed_count) {
+    *out_removed_count = removed_count;
+  }
+  if (out_changed) {
+    *out_changed = changed;
+  }
+  return result;
 }
 
 }  // namespace vxcore

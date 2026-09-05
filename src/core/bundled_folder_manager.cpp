@@ -2753,18 +2753,35 @@ VxCoreError BundledFolderManager::MoveToRecycleBin(const std::filesystem::path &
   std::string original_name = PathToUtf8(source_path.filename());
   std::string unique_name = GenerateUniqueRecycleBinName(original_name);
   fs::path dest_path = recycle_bin_path / PathFromUtf8(unique_name);
+  const auto reparse_state = CheckReparsePoint(PathToUtf8(source_path));
+  const auto deleted_at = fs::file_time_type::clock::now();
+  std::error_code timestamp_ec;
+  if (reparse_state == ReparseState::kNo) {
+    fs::last_write_time(source_path, deleted_at, timestamp_ec);
+    if (timestamp_ec) {
+      VXCORE_LOG_WARN("MoveToRecycleBin: Failed to stamp source %s: %s",
+                      PathToUtf8(source_path).c_str(), timestamp_ec.message().c_str());
+    }
+  }
 
   // Rename is atomic and handles the common same-volume case. Absolute recycle-bin paths may
   // target another volume, where rename is unsupported; fall back to a checked copy then remove.
   std::error_code move_ec;
   fs::rename(source_path, dest_path, move_ec);
   if (!move_ec) {
+    if (reparse_state == ReparseState::kNo) {
+      timestamp_ec.clear();
+      fs::last_write_time(dest_path, deleted_at, timestamp_ec);
+      if (timestamp_ec) {
+        VXCORE_LOG_WARN("MoveToRecycleBin: Failed to stamp destination %s: %s",
+                        PathToUtf8(dest_path).c_str(), timestamp_ec.message().c_str());
+      }
+    }
     VXCORE_LOG_INFO("MoveToRecycleBin: Moved %s to %s", PathToUtf8(source_path).c_str(),
                     PathToUtf8(dest_path).c_str());
     return VXCORE_OK;
   }
 
-  const auto reparse_state = CheckReparsePoint(PathToUtf8(source_path));
   if (reparse_state != ReparseState::kNo) {
     VXCORE_LOG_ERROR("MoveToRecycleBin: Cannot copy reparse point %s after rename failed: %s",
                      PathToUtf8(source_path).c_str(), move_ec.message().c_str());
@@ -2812,6 +2829,12 @@ VxCoreError BundledFolderManager::MoveToRecycleBin(const std::filesystem::path &
     VXCORE_LOG_ERROR("MoveToRecycleBin: Copied but failed to remove source %s: %s",
                      PathToUtf8(source_path).c_str(), remove_ec.message().c_str());
     return VXCORE_ERR_IO;
+  }
+  timestamp_ec.clear();
+  fs::last_write_time(dest_path, deleted_at, timestamp_ec);
+  if (timestamp_ec) {
+    VXCORE_LOG_WARN("MoveToRecycleBin: Failed to stamp destination %s: %s",
+                    PathToUtf8(dest_path).c_str(), timestamp_ec.message().c_str());
   }
 
   VXCORE_LOG_INFO("MoveToRecycleBin: Copied across volumes %s to %s",

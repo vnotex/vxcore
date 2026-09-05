@@ -1,9 +1,9 @@
 #include "sync_manager.h"
 
+#include <vxcore/notebook_json_keys.h>
+
 #include <chrono>
 #include <mutex>
-
-#include <vxcore/notebook_json_keys.h>
 
 #include "core/event_manager.h"
 #include "core/event_names.h"
@@ -19,8 +19,7 @@
 
 namespace vxcore {
 
-SyncManager::SyncManager(NotebookManager *notebook_manager)
-    : notebook_manager_(notebook_manager) {
+SyncManager::SyncManager(NotebookManager *notebook_manager) : notebook_manager_(notebook_manager) {
   VXCORE_LOG_DEBUG("SyncManager initialized");
 }
 
@@ -39,7 +38,7 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
 
   auto mark_dirty = [this](const std::string &event_name, const nlohmann::json &data) {
     auto mark_dirty_start = std::chrono::steady_clock::now();
-    
+
     if (data.contains(kJsonKeyNotebookId) && data[kJsonKeyNotebookId].is_string()) {
       std::string nb_id = data[kJsonKeyNotebookId].get<std::string>();
       // Task 7.5 (F3.2): cache-presence is the correct predicate here — it
@@ -66,10 +65,11 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
         MaybeEnqueueSync(nb_id);
       }
     }
-    
+
     auto mark_dirty_end = std::chrono::steady_clock::now();
-    auto mark_dirty_us = std::chrono::duration_cast<std::chrono::microseconds>(
-        mark_dirty_end - mark_dirty_start).count();
+    auto mark_dirty_us =
+        std::chrono::duration_cast<std::chrono::microseconds>(mark_dirty_end - mark_dirty_start)
+            .count();
     VXCORE_LOG_DEBUG("SyncManager: [perf.mark_dirty] elapsed_us=%ld", mark_dirty_us);
   };
 
@@ -79,8 +79,11 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
   event_listener_ids_.push_back(event_manager_->Subscribe(events::kFileMoved, mark_dirty));
   event_listener_ids_.push_back(event_manager_->Subscribe(events::kFolderCreated, mark_dirty));
   event_listener_ids_.push_back(event_manager_->Subscribe(events::kFolderDeleted, mark_dirty));
-  event_listener_ids_.push_back(event_manager_->Subscribe(events::kFolderConfigChanged, mark_dirty));
-  event_listener_ids_.push_back(event_manager_->Subscribe(events::kNotebookConfigChanged, mark_dirty));
+  event_listener_ids_.push_back(
+      event_manager_->Subscribe(events::kFolderConfigChanged, mark_dirty));
+  event_listener_ids_.push_back(
+      event_manager_->Subscribe(events::kNotebookConfigChanged, mark_dirty));
+  event_listener_ids_.push_back(event_manager_->Subscribe(events::kRecycleBinCleaned, mark_dirty));
 }
 
 void SyncManager::SetWorkQueueManager(WorkQueueManager *work_queue_manager) {
@@ -89,7 +92,7 @@ void SyncManager::SetWorkQueueManager(WorkQueueManager *work_queue_manager) {
 
 void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
   auto maybe_enqueue_start = std::chrono::steady_clock::now();
-  
+
   // (Debounce removal fix): vxcore no longer applies debounce inside MaybeEnqueueSync.
   // Each call emits sync.should_run exactly once, regardless of cadence. The debounce
   // gate that checked "auto_sync_enabled" and "now - last_enqueue_time_ < interval"
@@ -117,11 +120,11 @@ void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
   // we still need a valid SyncConfig to proceed). If config is missing or
   // auto-sync is disabled for the notebook, skip emission.
   SyncConfig effective_cfg;
-  if (GetSyncConfig(notebook_id, effective_cfg) != VXCORE_OK ||
-      !effective_cfg.auto_sync_enabled) {
-    VXCORE_LOG_DEBUG("SyncManager::MaybeEnqueueSync: skipped (no config or auto-sync disabled) "
-                     "notebook_id=%s",
-                     notebook_id.c_str());
+  if (GetSyncConfig(notebook_id, effective_cfg) != VXCORE_OK || !effective_cfg.auto_sync_enabled) {
+    VXCORE_LOG_DEBUG(
+        "SyncManager::MaybeEnqueueSync: skipped (no config or auto-sync disabled) "
+        "notebook_id=%s",
+        notebook_id.c_str());
     return;
   }
 
@@ -132,10 +135,11 @@ void SyncManager::MaybeEnqueueSync(const std::string &notebook_id) {
   // may re-enter SyncManager (e.g., the Qt auto-route consumer that calls TriggerSync).
   event_manager_->Emit(events::kSyncShouldRun, {{kJsonKeyNotebookId, notebook_id}});
   VXCORE_LOG_INFO("SyncManager: emitted sync.should_run for notebook: %s", notebook_id.c_str());
-  
+
   auto maybe_enqueue_end = std::chrono::steady_clock::now();
-  auto maybe_enqueue_us = std::chrono::duration_cast<std::chrono::microseconds>(
-      maybe_enqueue_end - maybe_enqueue_start).count();
+  auto maybe_enqueue_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(maybe_enqueue_end - maybe_enqueue_start)
+          .count();
   VXCORE_LOG_DEBUG("SyncManager: [perf.maybe_enqueue] elapsed_us=%ld", maybe_enqueue_us);
 }
 
@@ -237,8 +241,8 @@ VxCoreError SyncManager::EnableSync(const std::string &notebook_id, const SyncCo
 }
 
 VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
-                                         std::shared_ptr<ICredentialProvider> provider,
-                                         SyncBackendFactory factory_override) {
+                                        std::shared_ptr<ICredentialProvider> provider,
+                                        SyncBackendFactory factory_override) {
   VxCoreError err = ValidateNotebook(notebook_id);
   if (err != VXCORE_OK) {
     return err;
@@ -300,9 +304,10 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
     backend = SyncBackendRegistry::Instance().Create(backend_name, config, provider);
   }
   if (!backend) {
-    VXCORE_LOG_WARN("SyncManager::EnableSyncImpl: factory returned null for backend '%s' "
-                    "(notebook: %s)",
-                    config.backend.c_str(), notebook_id.c_str());
+    VXCORE_LOG_WARN(
+        "SyncManager::EnableSyncImpl: factory returned null for backend '%s' "
+        "(notebook: %s)",
+        config.backend.c_str(), notebook_id.c_str());
     rollback();
     return VXCORE_ERR_UNKNOWN_BACKEND;
   }
@@ -312,12 +317,12 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
   // must wrap them in an InMemoryCredentialProvider (the EnableSync(id, cfg,
   // creds) overload does this transparently). Rolls back maps so the caller
   // can retry without leaving the notebook half-enabled.
-  if ((backend->GetCapabilities() &
-       static_cast<uint32_t>(SyncCapability::AuthRequired)) &&
+  if ((backend->GetCapabilities() & static_cast<uint32_t>(SyncCapability::AuthRequired)) &&
       !provider) {
-    VXCORE_LOG_WARN("SyncManager::EnableSyncImpl: backend '%s' requires AuthRequired "
-                    "but no ICredentialProvider was supplied (notebook: %s)",
-                    config.backend.c_str(), notebook_id.c_str());
+    VXCORE_LOG_WARN(
+        "SyncManager::EnableSyncImpl: backend '%s' requires AuthRequired "
+        "but no ICredentialProvider was supplied (notebook: %s)",
+        config.backend.c_str(), notebook_id.c_str());
     backend.reset();
     rollback();
     return VXCORE_ERR_MISSING_CREDENTIALS;
@@ -550,8 +555,7 @@ VxCoreError SyncManager::CloneNotebook(const std::string &target_dir, const Sync
     return open_err;
   }
   out_notebook_id = std::move(opened_id);
-  VXCORE_LOG_INFO("SyncManager::CloneNotebook: registered notebook id=%s",
-                  out_notebook_id.c_str());
+  VXCORE_LOG_INFO("SyncManager::CloneNotebook: registered notebook id=%s", out_notebook_id.c_str());
   return VXCORE_OK;
 }
 
@@ -609,8 +613,8 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id) {
 
 VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
                                      SyncCancellationPtr cancellation) {
-  VXCORE_LOG_DEBUG("SyncManager::TriggerSync: notebook_id=%s cancellable=%d",
-                   notebook_id.c_str(), cancellation ? 1 : 0);
+  VXCORE_LOG_DEBUG("SyncManager::TriggerSync: notebook_id=%s cancellable=%d", notebook_id.c_str(),
+                   cancellation ? 1 : 0);
 
   VxCoreError err = ValidateNotebook(notebook_id);
   if (err != VXCORE_OK) {
@@ -631,9 +635,10 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     const size_t states_count = states_.count(notebook_id);
-    VXCORE_LOG_DEBUG("SyncManager::TriggerSync: states_ size=%zu count(notebook_id)=%zu "
-                     "(0 means reconcile-on-open did not populate runtime state)",
-                     states_.size(), states_count);
+    VXCORE_LOG_DEBUG(
+        "SyncManager::TriggerSync: states_ size=%zu count(notebook_id)=%zu "
+        "(0 means reconcile-on-open did not populate runtime state)",
+        states_.size(), states_count);
 
     if (states_.find(notebook_id) == states_.end()) {
       return VXCORE_ERR_SYNC_NOT_ENABLED;
@@ -663,10 +668,9 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
   // The lambda captures only progress_dispatcher_ by reference — NO
   // state_mutex_ touch on the callback hot path. The dispatcher self-locks
   // and copies-before-invoke per Wave 0.5 contract.
-  SyncProgressCallback progress_cb =
-      [this](const SyncProgress &progress, void * /*userdata*/) {
-        progress_dispatcher_.Dispatch(progress);
-      };
+  SyncProgressCallback progress_cb = [this](const SyncProgress &progress, void * /*userdata*/) {
+    progress_dispatcher_.Dispatch(progress);
+  };
   VxCoreError sync_err = backend_ptr->Sync(progress_cb, nullptr);
   // ALWAYS clear the token to avoid stale state on the next Sync() that
   // arrives without one. Safe even when SetCancellation is a no-op (Mock /
@@ -715,18 +719,16 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
   // Payload carries the result code so subscribers can distinguish
   // OK / CONFLICT / NETWORK / AUTH_FAILED / ... without a separate event.
   if (event_manager_) {
-    event_manager_->Emit(events::kSyncFinished,
-                         {{kJsonKeyNotebookId, notebook_id},
-                          {"result", static_cast<int>(sync_err)}});
+    event_manager_->Emit(events::kSyncFinished, {{kJsonKeyNotebookId, notebook_id},
+                                                 {"result", static_cast<int>(sync_err)}});
   }
   return sync_err;
 }
 
-VxCoreError SyncManager::StageOnly(const std::string &notebook_id,
-                                   SyncCancellationPtr cancellation,
+VxCoreError SyncManager::StageOnly(const std::string &notebook_id, SyncCancellationPtr cancellation,
                                    bool *out_did_commit) {
-  VXCORE_LOG_DEBUG("SyncManager::StageOnly: notebook_id=%s cancellable=%d",
-                   notebook_id.c_str(), cancellation ? 1 : 0);
+  VXCORE_LOG_DEBUG("SyncManager::StageOnly: notebook_id=%s cancellable=%d", notebook_id.c_str(),
+                   cancellation ? 1 : 0);
 
   if (out_did_commit != nullptr) {
     *out_did_commit = false;

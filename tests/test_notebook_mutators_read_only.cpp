@@ -37,7 +37,7 @@ VxCoreContextHandle g_ctx = nullptr;
 // notebook id (free with vxcore_string_free) AND the on-disk directory
 // (clean up at end of subtest via cleanup_test_dir).
 VxCoreError CreateWritableBundled(const std::string &name, std::string &out_nb_path,
-                                   char **out_notebook_id) {
+                                  char **out_notebook_id) {
   out_nb_path = get_test_path(name);
   cleanup_test_dir(out_nb_path);
   create_directory(out_nb_path);
@@ -46,7 +46,7 @@ VxCoreError CreateWritableBundled(const std::string &name, std::string &out_nb_p
 }
 
 VxCoreError CreateWritableRaw(const std::string &name, std::string &out_nb_path,
-                               char **out_notebook_id) {
+                              char **out_notebook_id) {
   out_nb_path = get_test_path(name);
   cleanup_test_dir(out_nb_path);
   create_directory(out_nb_path);
@@ -85,8 +85,7 @@ int test_bundled_notebook_mutators_read_only() {
   ASSERT_EQ(vxcore_tag_create(g_ctx, nb.notebook_id, "blocked_tag"), VXCORE_ERR_READ_ONLY);
 
   // CreateTagPath → VXCORE_ERR_READ_ONLY.
-  ASSERT_EQ(vxcore_tag_create_path(g_ctx, nb.notebook_id, "blocked/path"),
-            VXCORE_ERR_READ_ONLY);
+  ASSERT_EQ(vxcore_tag_create_path(g_ctx, nb.notebook_id, "blocked/path"), VXCORE_ERR_READ_ONLY);
 
   // DeleteTag → VXCORE_ERR_READ_ONLY (pre-existing tag stays).
   ASSERT_EQ(vxcore_tag_delete(g_ctx, nb.notebook_id, "seed_tag"), VXCORE_ERR_READ_ONLY);
@@ -100,6 +99,11 @@ int test_bundled_notebook_mutators_read_only() {
 
   // EmptyRecycleBin → VXCORE_ERR_READ_ONLY.
   ASSERT_EQ(vxcore_notebook_empty_recycle_bin(g_ctx, nb.notebook_id), VXCORE_ERR_READ_ONLY);
+
+  VxCoreRecycleBinCleanup *cleanup = reinterpret_cast<VxCoreRecycleBinCleanup *>(1);
+  ASSERT_EQ(vxcore_notebook_prepare_recycle_bin_cleanup(g_ctx, nb.notebook_id, 0, &cleanup),
+            VXCORE_ERR_READ_ONLY);
+  ASSERT_NULL(cleanup);
 
   std::cout << "  \xe2\x9c\x93 test_bundled_notebook_mutators_read_only passed" << std::endl;
   return 0;
@@ -117,14 +121,24 @@ int test_raw_notebook_mutators_read_only() {
 
   // Tag ops: read-only must beat UNSUPPORTED.
   ASSERT_EQ(vxcore_tag_create(g_ctx, nb.notebook_id, "blocked_tag"), VXCORE_ERR_READ_ONLY);
-  ASSERT_EQ(vxcore_tag_create_path(g_ctx, nb.notebook_id, "blocked/path"),
-            VXCORE_ERR_READ_ONLY);
+  ASSERT_EQ(vxcore_tag_create_path(g_ctx, nb.notebook_id, "blocked/path"), VXCORE_ERR_READ_ONLY);
   ASSERT_EQ(vxcore_tag_delete(g_ctx, nb.notebook_id, "blocked_tag"), VXCORE_ERR_READ_ONLY);
   ASSERT_EQ(vxcore_tag_move(g_ctx, nb.notebook_id, "blocked_tag", ""), VXCORE_ERR_READ_ONLY);
 
   ASSERT_EQ(vxcore_notebook_update_config(g_ctx, nb.notebook_id, R"({"name":"Blocked Update"})"),
             VXCORE_ERR_READ_ONLY);
   ASSERT_EQ(vxcore_notebook_empty_recycle_bin(g_ctx, nb.notebook_id), VXCORE_ERR_READ_ONLY);
+
+  VxCoreRecycleBinCleanup *cleanup = reinterpret_cast<VxCoreRecycleBinCleanup *>(1);
+  ASSERT_EQ(vxcore_notebook_prepare_recycle_bin_cleanup(g_ctx, nb.notebook_id, 0, &cleanup),
+            VXCORE_ERR_READ_ONLY);
+  ASSERT_NULL(cleanup);
+
+  ASSERT_EQ(vxcore_notebook_set_read_only(g_ctx, nb.notebook_id, 0), VXCORE_OK);
+  cleanup = reinterpret_cast<VxCoreRecycleBinCleanup *>(1);
+  ASSERT_EQ(vxcore_notebook_prepare_recycle_bin_cleanup(g_ctx, nb.notebook_id, 0, &cleanup),
+            VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(cleanup);
 
   std::cout << "  \xe2\x9c\x93 test_raw_notebook_mutators_read_only passed" << std::endl;
   return 0;
@@ -135,8 +149,7 @@ int test_raw_notebook_mutators_read_only() {
 int test_mutators_succeed_when_writable() {
   std::cout << "  Running test_mutators_succeed_when_writable..." << std::endl;
   NotebookCleanup nb{nullptr, {}};
-  ASSERT_EQ(CreateWritableBundled("t12_bundled_writable", nb.nb_path, &nb.notebook_id),
-            VXCORE_OK);
+  ASSERT_EQ(CreateWritableBundled("t12_bundled_writable", nb.nb_path, &nb.notebook_id), VXCORE_OK);
 
   // Flip on then off to prove the guard releases.
   ASSERT_EQ(vxcore_notebook_set_read_only(g_ctx, nb.notebook_id, 1), VXCORE_OK);
