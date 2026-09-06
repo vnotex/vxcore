@@ -67,7 +67,7 @@ void create_test_file(const std::string &path, const std::string &content) {
 
 // Helper to read file content
 std::string read_file_content(const std::string &path) {
-  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  std::ifstream file(utf8_to_fs_path(path), std::ios::binary | std::ios::ate);
   if (!file.is_open()) return "";
 
   std::streamsize size = file.tellg();
@@ -1762,6 +1762,18 @@ int test_buffer_insert_attachment() {
   ASSERT_NOT_NULL(filename);
   ASSERT_EQ(std::string(filename), "document.pdf");
 
+  const std::string config_path =
+      get_test_path("test_buffer_insert_attachment") + "/vx_notebook/contents/vx.json";
+  auto config = nlohmann::json::parse(read_file_content(config_path));
+  ASSERT_EQ(config.at("files").at(0).at("attachments"), nlohmann::json::array({"document.pdf"}));
+
+  char *attachments_folder = nullptr;
+  err = vxcore_buffer_get_attachments_folder(ctx, buffer_id, &attachments_folder);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(attachments_folder);
+  ASSERT_EQ(read_file_content(std::string(attachments_folder) + "/" + filename), "PDF content");
+  vxcore_string_free(attachments_folder);
+
   // Verify attachment is in the list
   char *attachments_json = nullptr;
   err = vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json);
@@ -1831,6 +1843,11 @@ int test_buffer_delete_attachment() {
   ASSERT_EQ(json.size(), 1u);
   vxcore_string_free(attachments_json);
 
+  const std::string config_path =
+      get_test_path("test_buffer_delete_attachment") + "/vx_notebook/contents/vx.json";
+  auto config = nlohmann::json::parse(read_file_content(config_path));
+  ASSERT_EQ(config.at("files").at(0).at("attachments"), nlohmann::json::array({"to_delete.zip"}));
+
   // Delete attachment
   err = vxcore_buffer_delete_attachment(ctx, buffer_id, filename);
   ASSERT_EQ(err, VXCORE_OK);
@@ -1848,10 +1865,10 @@ int test_buffer_delete_attachment() {
   ASSERT_EQ(err, VXCORE_OK);
   json = nlohmann::json::parse(attachments_json);
   ASSERT_EQ(json.size(), 0u);
-  for (const auto &item : json) {
-    ASSERT_NE(item.get<std::string>(), std::string(filename));
-  }
   vxcore_string_free(attachments_json);
+
+  config = nlohmann::json::parse(read_file_content(config_path));
+  ASSERT_FALSE(config.at("files").at(0).contains("attachments"));
 
   vxcore_string_free(filename);
   vxcore_string_free(file_id);
@@ -1897,12 +1914,26 @@ int test_buffer_rename_attachment() {
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_EQ(std::string(filename), "old_name.pdf");
 
+  char *attachments_folder = nullptr;
+  err = vxcore_buffer_get_attachments_folder(ctx, buffer_id, &attachments_folder);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(attachments_folder);
+  const std::string assets_path = attachments_folder;
+  vxcore_string_free(attachments_folder);
+
   // Rename attachment
   char *new_filename = nullptr;
   err = vxcore_buffer_rename_attachment(ctx, buffer_id, filename, "new_name.pdf", &new_filename);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(new_filename);
   ASSERT_EQ(std::string(new_filename), "new_name.pdf");
+
+  ASSERT_FALSE(path_exists(assets_path + "/old_name.pdf"));
+  ASSERT_EQ(read_file_content(assets_path + "/new_name.pdf"), "PDF content");
+  const std::string config_path =
+      get_test_path("test_buffer_rename_attachment") + "/vx_notebook/contents/vx.json";
+  auto config = nlohmann::json::parse(read_file_content(config_path));
+  ASSERT_EQ(config.at("files").at(0).at("attachments"), nlohmann::json::array({"new_name.pdf"}));
 
   // Verify updated in list
   char *attachments_json = nullptr;
@@ -1921,6 +1952,225 @@ int test_buffer_rename_attachment() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_buffer_rename_attachment"));
   std::cout << "  ✓ test_buffer_rename_attachment passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_legacy_attachment_metadata() {
+  std::cout << "  Running test_buffer_legacy_attachment_metadata..." << std::endl;
+  const std::string fixture_path = get_test_path("test_buffer_legacy_attachment_metadata");
+  const std::string notebook_path = fixture_path + "/notebook";
+  const char *note_path = "parent/nested/note.md";
+  const std::string config_path = notebook_path + "/vx_notebook/contents/parent/nested/vx.json";
+  cleanup_test_dir(fixture_path);
+
+  VxCoreContextHandle ctx = nullptr;
+  VxCoreError err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+  char *notebook_id = nullptr;
+  err = vxcore_notebook_create(
+      ctx, notebook_path.c_str(),
+      R"({"name":"Legacy Attachments","assetsFolder":"../../../shared-assets"})",
+      VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  char *folder_id = nullptr;
+  err = vxcore_folder_create_path(ctx, notebook_id, "parent/nested", &folder_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(folder_id);
+  char *file_id = nullptr;
+  err = vxcore_file_create(ctx, notebook_id, "parent/nested", "note.md", &file_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(file_id);
+  char *buffer_id = nullptr;
+  err = vxcore_buffer_open(ctx, notebook_id, note_path, &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+
+  const std::string source_path = notebook_path + "/document.pdf";
+  write_file(source_path, "attachment content");
+  char *filename = nullptr;
+  err = vxcore_buffer_insert_attachment(ctx, buffer_id, source_path.c_str(), &filename);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(filename);
+  ASSERT_EQ(std::string(filename), "document.pdf");
+  vxcore_string_free(filename);
+
+  // An untracked generic asset also supplies the later rename collision.
+  const std::string generic_source = notebook_path + "/occupied.pdf";
+  write_file(generic_source, "unrelated generic asset");
+  char *generic_relative_path = nullptr;
+  err = vxcore_buffer_insert_asset(ctx, buffer_id, generic_source.c_str(), &generic_relative_path);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(generic_relative_path);
+  const std::string generic_path = notebook_path + "/" + generic_relative_path;
+  vxcore_string_free(generic_relative_path);
+  ASSERT_EQ(read_file_content(generic_path), "unrelated generic asset");
+
+  char *attachments_folder = nullptr;
+  err = vxcore_buffer_get_attachments_folder(ctx, buffer_id, &attachments_folder);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(attachments_folder);
+  const std::string assets_path = attachments_folder;
+  vxcore_string_free(attachments_folder);
+  ASSERT_EQ(read_file_content(assets_path + "/document.pdf"), "attachment content");
+  ASSERT_EQ(read_file_content(assets_path + "/occupied.pdf"), "unrelated generic asset");
+
+  // Tear down all cached folder state before replacing the existing disk fixture.
+  err = vxcore_notebook_close(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(buffer_id);
+  buffer_id = nullptr;
+  vxcore_string_free(notebook_id);
+  notebook_id = nullptr;
+  vxcore_context_destroy(ctx);
+  ctx = nullptr;
+
+  ASSERT_TRUE(path_exists(config_path));
+  auto config = nlohmann::json::parse(read_file_content(config_path));
+  ASSERT_EQ(config.at("files").at(0).at("name"), "note.md");
+  const std::string windows_prefix =
+      "parent\\nested\\old-assets\\00000000-0000-4000-8000-000000000001\\";
+  const std::string posix_prefix =
+      "other/parent/custom-assets/00000000-0000-4000-8000-000000000002/";
+  config.at("files").at(0)["attachments"] = nlohmann::json::array(
+      {"../shared-assets/" + config.at("files").at(0).at("id").get<std::string>() + "/document.pdf",
+       windows_prefix + "document.pdf", "document.pdf", posix_prefix + "document.pdf"});
+  config["modifiedUtc"] = config.at("modifiedUtc").get<int64_t>() + 1000;
+  const std::string legacy_bytes = config.dump(2);
+  write_file(config_path, legacy_bytes);
+
+  err = vxcore_context_create(nullptr, &ctx);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_notebook_open(ctx, notebook_path.c_str(), &notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  err = vxcore_buffer_open(ctx, notebook_id, note_path, &buffer_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  char *attachments_json = nullptr;
+  err = vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json), nlohmann::json::array({"document.pdf"}));
+  vxcore_string_free(attachments_json);
+  err = vxcore_node_list_attachments(ctx, notebook_id, note_path, &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json), nlohmann::json::array({"document.pdf"}));
+  vxcore_string_free(attachments_json);
+  ASSERT_EQ(read_file_content(config_path), legacy_bytes);
+
+  // Adding the canonical name of a legacy entry is a true no-op, not a migration save.
+  err = vxcore_file_add_attachment(ctx, notebook_id, note_path, "document.pdf");
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(read_file_content(config_path), legacy_bytes);
+  err = vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json), nlohmann::json::array({"document.pdf"}));
+  vxcore_string_free(attachments_json);
+
+  // Reject invalid basenames before touching the physical attachment or its metadata.
+  char *new_filename = nullptr;
+  err = vxcore_buffer_rename_attachment(ctx, buffer_id, "document.pdf", "C:escape.pdf",
+                                        &new_filename);
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+  err = vxcore_buffer_delete_attachment(ctx, buffer_id, "../document.pdf");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(read_file_content(assets_path + "/document.pdf"), "attachment content");
+  ASSERT_EQ(read_file_content(config_path), legacy_bytes);
+
+  err = vxcore_buffer_rename_attachment(ctx, buffer_id, "document.pdf", "occupied.pdf",
+                                        &new_filename);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_NOT_NULL(new_filename);
+  const std::string renamed_name = new_filename;
+  vxcore_string_free(new_filename);
+  ASSERT_NE(renamed_name, "occupied.pdf");
+  ASSERT_NE(renamed_name, "document.pdf");
+  ASSERT_EQ(renamed_name.find_first_of("/\\"), std::string::npos);
+  ASSERT_FALSE(path_exists(assets_path + "/document.pdf"));
+  ASSERT_EQ(read_file_content(assets_path + "/" + renamed_name), "attachment content");
+  ASSERT_EQ(read_file_content(generic_path), "unrelated generic asset");
+  config = nlohmann::json::parse(read_file_content(config_path));
+  ASSERT_EQ(config.at("files").at(0).at("attachments"), nlohmann::json::array({renamed_name}));
+  err = vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json), nlohmann::json::array({renamed_name}));
+  vxcore_string_free(attachments_json);
+
+  err = vxcore_buffer_delete_attachment(ctx, buffer_id, renamed_name.c_str());
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_FALSE(path_exists(assets_path + "/" + renamed_name));
+  ASSERT_EQ(read_file_content(notebook_path + "/vx_notebook/recycle_bin/" + renamed_name),
+            "attachment content");
+  ASSERT_EQ(read_file_content(generic_path), "unrelated generic asset");
+  config = nlohmann::json::parse(read_file_content(config_path));
+  ASSERT_FALSE(config.at("files").at(0).contains("attachments"));
+  err = vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json), nlohmann::json::array());
+  vxcore_string_free(attachments_json);
+
+  // Metadata-only replacement normalizes both separator styles and preserves first-seen order.
+  const auto replacement = nlohmann::json::array(
+      {windows_prefix + "report.zip", "document.pdf", posix_prefix + "document.pdf", "report.zip"});
+  err = vxcore_file_update_attachments(ctx, notebook_id, note_path, replacement.dump().c_str());
+  ASSERT_EQ(err, VXCORE_OK);
+  auto expected = nlohmann::json::array({"report.zip", "document.pdf"});
+  config = nlohmann::json::parse(read_file_content(config_path));
+  ASSERT_EQ(config.at("files").at(0).at("attachments"), expected);
+  err = vxcore_node_list_attachments(ctx, notebook_id, note_path, &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json), expected);
+  vxcore_string_free(attachments_json);
+
+  err =
+      vxcore_file_add_attachment(ctx, notebook_id, note_path, (posix_prefix + "third.txt").c_str());
+  ASSERT_EQ(err, VXCORE_OK);
+  expected.push_back("third.txt");
+  config = nlohmann::json::parse(read_file_content(config_path));
+  ASSERT_EQ(config.at("files").at(0).at("attachments"), expected);
+  const std::string added_bytes = read_file_content(config_path);
+  err = vxcore_file_add_attachment(ctx, notebook_id, note_path,
+                                   (windows_prefix + "third.txt").c_str());
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(read_file_content(config_path), added_bytes);
+
+  err = vxcore_file_delete_attachment(ctx, notebook_id, note_path,
+                                      (windows_prefix + "document.pdf").c_str());
+  ASSERT_EQ(err, VXCORE_OK);
+  expected = nlohmann::json::array({"report.zip", "third.txt"});
+  config = nlohmann::json::parse(read_file_content(config_path));
+  ASSERT_EQ(config.at("files").at(0).at("attachments"), expected);
+
+  // Reject traversal before changing either the live list or the persisted record.
+  const std::string valid_bytes = read_file_content(config_path);
+  err = vxcore_file_add_attachment(ctx, notebook_id, note_path, "..\\outside.pdf");
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(read_file_content(config_path), valid_bytes);
+  err = vxcore_file_delete_attachment(ctx, notebook_id, note_path,
+                                      (posix_prefix + "../report.zip").c_str());
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(read_file_content(config_path), valid_bytes);
+  const auto invalid_replacement =
+      nlohmann::json::array({"replacement.zip", windows_prefix + "..\\third.txt"});
+  err = vxcore_file_update_attachments(ctx, notebook_id, note_path,
+                                       invalid_replacement.dump().c_str());
+  ASSERT_EQ(err, VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(read_file_content(config_path), valid_bytes);
+  err = vxcore_node_list_attachments(ctx, notebook_id, note_path, &attachments_json);
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json), expected);
+  vxcore_string_free(attachments_json);
+  ASSERT_EQ(read_file_content(generic_path), "unrelated generic asset");
+
+  err = vxcore_file_update_attachments(ctx, notebook_id, note_path, "[]");
+  ASSERT_EQ(err, VXCORE_OK);
+  config = nlohmann::json::parse(read_file_content(config_path));
+  ASSERT_FALSE(config.at("files").at(0).contains("attachments"));
+  ASSERT_EQ(read_file_content(generic_path), "unrelated generic asset");
+
+  err = vxcore_notebook_close(ctx, notebook_id);
+  ASSERT_EQ(err, VXCORE_OK);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(fixture_path);
+  std::cout << "  test_buffer_legacy_attachment_metadata passed" << std::endl;
   return 0;
 }
 
@@ -3921,6 +4171,7 @@ int main() {
   RUN_TEST(test_buffer_insert_attachment);
   RUN_TEST(test_buffer_delete_attachment);
   RUN_TEST(test_buffer_rename_attachment);
+  RUN_TEST(test_buffer_legacy_attachment_metadata);
   RUN_TEST(test_buffer_list_attachments);
   RUN_TEST(test_buffer_get_attachments_folder);
 

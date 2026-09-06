@@ -40,6 +40,7 @@ FileRecord FileRecord::FromJson(const nlohmann::json &json) {
   }
   if (json.contains(kJsonKeyAttachments) && json[kJsonKeyAttachments].is_array()) {
     record.attachments = json[kJsonKeyAttachments].get<std::vector<std::string>>();
+    NormalizeAttachments(record.attachments, record.id);
   }
   return record;
 }

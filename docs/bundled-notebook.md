@@ -88,7 +88,7 @@ Each folder tracked by the notebook has a `vx.json` stored inside `vx_notebook/c
 
 - `files` lists `FileRecord` objects for every file **directly** in this folder.
 - `folders` lists **names** (not full paths) of immediate child folders. Each child has its own `vx.json`.
-- `attachments` on a `FileRecord` stores paths relative to `<assets_folder>/<file_uuid>/`.
+- `attachments` on a `FileRecord` stores basenames within the note's assets directory; the field is omitted when empty.
 
 ## Metadata Database (SQLite Cache)
 
@@ -251,7 +251,15 @@ For the default config (`"vx_assets"`) and a file at `docs/note.md` with UUID `a
 <notebook_root>/docs/vx_assets/abc123/
 ```
 
-Attachments are tracked in `FileRecord.attachments` as relative paths within the asset directory (e.g. `["image.png", "diagram.svg"]`). CRUD operations on attachments (`AddFileAttachment`, `DeleteFileAttachment`, `UpdateFileAttachments`) update both the `vx.json` and the DB, with deduplication on add.
+Attachments are tracked in `FileRecord.attachments` as **basenames** (e.g. `["image.png", "diagram.svg"]`). The note determines the assets directory; this array records membership, distinguishing tracked attachments from generic assets in the same directory. Generic asset operations still return relative paths for embedding in note content and do not change attachment membership.
+
+Buffer insertion copies the file and records its actual basename. Rename and deletion use the same basename for filesystem and metadata operations. The metadata-only `AddFileAttachment`, `DeleteFileAttachment`, and `UpdateFileAttachments` APIs do not copy, rename, or delete physical files; they save `vx.json` and attempt DB write-through. Equivalent attachment names are deduplicated in first-seen order.
+
+For compatibility, `FileRecord::FromJson()` and SQLite cache reads normalize legacy relative paths such as `docs/vx_assets/<old-file-uuid>/image.png` to `image.png`, accepting both slash styles. Historical `../.../<this-note-uuid>/image.png` values from assets folders outside the notebook are also recognized. Other malformed, rooted, or traversal-bearing entries remain unchanged on read rather than being silently discarded; new metadata mutations reject them with `VXCORE_ERR_INVALID_PARAM`.
+
+Normalization does not move files or rewrite `vx.json` merely on read, including read-only notebooks. The next normal folder-config save persists normalized entries. Cache readers also tolerate old rows until they are updated. Transfer can regenerate note IDs without rewriting attachment basenames; note-content asset links remain a separate rewrite.
+
+External-file providers have no attachment metadata: they list immediate regular files under `<filename-stem>_assets/`, including generic assets.
 
 ## Recycle Bin
 

@@ -3634,8 +3634,11 @@ VxCoreError BundledFolderManager::UpdateFileAttachments(const std::string &file_
     }
 
     std::vector<std::string> new_attachments = attachments.get<std::vector<std::string>>();
+    if (!FileRecord::NormalizeAttachments(new_attachments, file->id)) {
+      return VXCORE_ERR_INVALID_PARAM;
+    }
 
-    file->attachments = new_attachments;
+    file->attachments = std::move(new_attachments);
     file->modified_utc = GetCurrentTimestampMillis();
 
     config->modified_utc = file->modified_utc;
@@ -3654,7 +3657,7 @@ VxCoreError BundledFolderManager::UpdateFileAttachments(const std::string &file_
 
     EmitEvent(events::kFileAttachmentsReplaced, {{kJsonKeyNotebookId, notebook_->GetId()},
                                                  {"path", clean_file_path},
-                                                 {"attachments", new_attachments}});
+                                                 {"attachments", file->attachments}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
@@ -3679,15 +3682,19 @@ VxCoreError BundledFolderManager::AddFileAttachment(const std::string &file_path
   if (!file) {
     return VXCORE_ERR_NOT_FOUND;
   }
+  std::string name = attachment;
+  if (!FileRecord::NormalizeAttachmentName(name, file->id)) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
 
   // Deduplication: check if attachment already exists
-  auto it = std::find(file->attachments.begin(), file->attachments.end(), attachment);
+  auto it = std::find(file->attachments.begin(), file->attachments.end(), name);
   if (it != file->attachments.end()) {
     // Already exists, nothing to do
     return VXCORE_OK;
   }
 
-  file->attachments.push_back(attachment);
+  file->attachments.push_back(name);
   file->modified_utc = GetCurrentTimestampMillis();
   config->modified_utc = file->modified_utc;
 
@@ -3703,9 +3710,9 @@ VxCoreError BundledFolderManager::AddFileAttachment(const std::string &file_path
     }
   }
 
-  EmitEvent(events::kFileAttached, {{kJsonKeyNotebookId, notebook_->GetId()},
-                                    {"path", clean_file_path},
-                                    {"attachment", attachment}});
+  EmitEvent(
+      events::kFileAttached,
+      {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", clean_file_path}, {"attachment", name}});
   return VXCORE_OK;
 }
 
@@ -3727,9 +3734,13 @@ VxCoreError BundledFolderManager::DeleteFileAttachment(const std::string &file_p
   if (!file) {
     return VXCORE_ERR_NOT_FOUND;
   }
+  std::string name = attachment;
+  if (!FileRecord::NormalizeAttachmentName(name, file->id)) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
 
   // Find and remove the attachment
-  auto it = std::find(file->attachments.begin(), file->attachments.end(), attachment);
+  auto it = std::find(file->attachments.begin(), file->attachments.end(), name);
   if (it == file->attachments.end()) {
     // Not found, nothing to do
     return VXCORE_OK;
@@ -3751,9 +3762,9 @@ VxCoreError BundledFolderManager::DeleteFileAttachment(const std::string &file_p
     }
   }
 
-  EmitEvent(events::kFileDetached, {{kJsonKeyNotebookId, notebook_->GetId()},
-                                    {"path", clean_file_path},
-                                    {"attachment", attachment}});
+  EmitEvent(
+      events::kFileDetached,
+      {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", clean_file_path}, {"attachment", name}});
   return VXCORE_OK;
 }
 

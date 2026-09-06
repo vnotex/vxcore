@@ -204,7 +204,7 @@ The rationale: tags require persistent per-file metadata that survives outside t
 
 Attachments are **not supported** for raw notebooks. All attachment-related operations (`GetFileAttachments`, `UpdateFileAttachments`, `AddFileAttachment`, `DeleteFileAttachment`) return `VXCORE_ERR_UNSUPPORTED`.
 
-The rationale: attachment tracking requires per-file metadata in `vx.json` to associate relative paths with file UUIDs. Without per-folder configs, there is no reliable place to persist this mapping as ground truth.
+The rationale: attachment tracking requires per-file metadata in `vx.json` to distinguish tracked basenames from generic assets sharing the note's assets directory. Without per-folder configs, there is no reliable place to persist this membership as ground truth.
 
 ## Recycle Bin
 

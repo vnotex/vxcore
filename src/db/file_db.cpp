@@ -5,6 +5,7 @@
 #include <chrono>
 #include <nlohmann/json.hpp>
 
+#include "core/folder.h"
 #include "tag_db.h"
 
 namespace vxcore {
@@ -890,7 +891,7 @@ std::vector<std::string> FileDb::GetFileTags(int64_t file_id) {
 }
 
 std::vector<std::string> FileDb::GetFileAttachments(int64_t file_id) {
-  const char* sql = "SELECT attachments FROM files WHERE id = ?;";
+  const char *sql = "SELECT attachments, uuid FROM files WHERE id = ?;";
 
   sqlite3_stmt* stmt = nullptr;
   int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -913,6 +914,8 @@ std::vector<std::string> FileDb::GetFileAttachments(int64_t file_id) {
       nlohmann::json j = nlohmann::json::parse(json_str);
       if (j.is_array()) {
         attachments = j.get<std::vector<std::string>>();
+        const char *uuid = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+        FileRecord::NormalizeAttachments(attachments, uuid ? uuid : "");
       }
     } catch (...) {
       // Ignore parse errors, return empty vector

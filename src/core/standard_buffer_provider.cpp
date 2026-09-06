@@ -215,9 +215,10 @@ VxCoreError StandardBufferProvider::InsertAttachment(const std::string &source_p
     return err;
   }
 
-  // Add to attachment metadata
+  // Track membership by basename; the note already determines the assets directory.
+  std::string filename = PathFilename(relative_path);
   auto folder_manager = notebook_->GetFolderManager();
-  err = folder_manager->AddFileAttachment(file_path_, relative_path);
+  err = folder_manager->AddFileAttachment(file_path_, filename);
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to add file attachment: error %d", err);
     // Try to clean up the file we just created
@@ -231,9 +232,7 @@ VxCoreError StandardBufferProvider::InsertAttachment(const std::string &source_p
     return err;
   }
 
-  // Extract just the filename from relative path
-  std::filesystem::path rel = PathFromUtf8(relative_path);
-  out_filename = PathToUtf8(rel.filename());
+  out_filename = std::move(filename);
   return VXCORE_OK;
 }
 
@@ -242,8 +241,9 @@ VxCoreError StandardBufferProvider::DeleteAttachment(const std::string &filename
     return VXCORE_ERR_UNSUPPORTED;
   }
 
-  if (filename.empty()) {
-    VXCORE_LOG_ERROR("Filename cannot be empty");
+  if (!IsSingleName(filename) || filename == "." || filename == ".." ||
+      filename.find(':') != std::string::npos || filename.find('\0') != std::string::npos) {
+    VXCORE_LOG_ERROR("Attachment must be a basename");
     return VXCORE_ERR_INVALID_PARAM;
   }
 
@@ -266,7 +266,7 @@ VxCoreError StandardBufferProvider::DeleteAttachment(const std::string &filename
 
   // Delete from metadata first
   auto folder_manager = notebook_->GetFolderManager();
-  VxCoreError err = folder_manager->DeleteFileAttachment(file_path_, relative_path);
+  VxCoreError err = folder_manager->DeleteFileAttachment(file_path_, filename);
   if (err != VXCORE_OK && err != VXCORE_ERR_NOT_FOUND) {
     VXCORE_LOG_WARN("Failed to remove attachment metadata: error %d", err);
   }
@@ -291,13 +291,16 @@ VxCoreError StandardBufferProvider::RenameAttachment(const std::string &old_file
     return VXCORE_ERR_UNSUPPORTED;
   }
 
-  if (old_filename.empty() || new_filename.empty()) {
-    VXCORE_LOG_ERROR("Old filename or new filename cannot be empty");
+  if (!IsSingleName(old_filename) || !IsSingleName(new_filename) || old_filename == "." ||
+      old_filename == ".." || new_filename == "." || new_filename == ".." ||
+      old_filename.find(':') != std::string::npos || new_filename.find(':') != std::string::npos ||
+      old_filename.find('\0') != std::string::npos ||
+      new_filename.find('\0') != std::string::npos) {
+    VXCORE_LOG_ERROR("Attachment names must be basenames");
     return VXCORE_ERR_INVALID_PARAM;
   }
 
   std::string assets_folder_path = GetAssetsFolderPath();
-  std::string notebook_root = notebook_->GetRootFolder();
 
   // Build old absolute path
   std::string old_abs_path = CleanPath(assets_folder_path + "/" + old_filename);
@@ -321,26 +324,14 @@ VxCoreError StandardBufferProvider::RenameAttachment(const std::string &old_file
     return VXCORE_ERR_IO;
   }
 
-  // Compute old and new relative paths
-  std::string old_relative_path, new_relative_path;
-  try {
-    old_relative_path = CleanPath(PathToUtf8(
-        std::filesystem::relative(PathFromUtf8(old_abs_path), PathFromUtf8(notebook_root))));
-    new_relative_path = CleanPath(PathToUtf8(
-        std::filesystem::relative(PathFromUtf8(new_abs_path), PathFromUtf8(notebook_root))));
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("Failed to compute relative path: %s", e.what());
-    return VXCORE_ERR_UNKNOWN;
-  }
-
   // Update metadata: remove old attachment, add new
   auto folder_manager = notebook_->GetFolderManager();
-  VxCoreError err = folder_manager->DeleteFileAttachment(file_path_, old_relative_path);
+  VxCoreError err = folder_manager->DeleteFileAttachment(file_path_, old_filename);
   if (err != VXCORE_OK && err != VXCORE_ERR_NOT_FOUND) {
     VXCORE_LOG_WARN("Failed to remove old attachment metadata: error %d", err);
   }
 
-  err = folder_manager->AddFileAttachment(file_path_, new_relative_path);
+  err = folder_manager->AddFileAttachment(file_path_, unique_name);
   if (err != VXCORE_OK) {
     VXCORE_LOG_WARN("Failed to add new attachment metadata: error %d", err);
   }
@@ -372,11 +363,9 @@ VxCoreError StandardBufferProvider::ListAttachments(std::vector<std::string> &ou
   try {
     nlohmann::json j = nlohmann::json::parse(attachments_json);
     if (j.is_array()) {
-      // Extract filenames from relative paths
-      for (const auto &rel_path : j) {
-        std::string path = rel_path.get<std::string>();
-        std::filesystem::path p = PathFromUtf8(path);
-        out_filenames.push_back(PathToUtf8(p.filename()));
+      // Keep malformed legacy metadata from exposing paths through the public filename list.
+      for (const auto &attachment : j) {
+        out_filenames.push_back(PathFilename(attachment.get<std::string>()));
       }
     }
     return VXCORE_OK;

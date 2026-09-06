@@ -1,3 +1,5 @@
+#include <sqlite3.h>
+
 #include <filesystem>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -486,6 +488,49 @@ int test_filedb_create_file() {
   db_manager.Close();
   cleanup_test_db();
   std::cout << "  ✓ test_filedb_create_file passed" << std::endl;
+  return 0;
+}
+
+int test_filedb_legacy_attachment_names() {
+  setup_test_db();
+  DbManager db_manager;
+  ASSERT_TRUE(db_manager.Open(test_db_path));
+  ASSERT_TRUE(db_manager.InitializeSchema());
+  FileDb file_db(db_manager.GetHandle());
+  const auto folder_id = file_db.CreateFolder(-1, "folder", 1000, 2000);
+  ASSERT_NE(folder_id, -1);
+  const auto file_id = file_db.CreateFile(folder_id, "note.md", 1100, 2100, {});
+  ASSERT_NE(file_id, -1);
+  const auto file = file_db.GetFile(file_id);
+  ASSERT_TRUE(file.has_value());
+
+  // Seed an old row directly: canonical writers must not be needed to read an existing cache.
+  const auto legacy =
+      nlohmann::json::array({"../shared-assets/" + file->uuid + "/first.pdf",
+                             "nested\\vx_assets\\old-id\\second.zip", "first.pdf", "../escape.bin"})
+          .dump();
+  sqlite3_stmt *stmt = nullptr;
+  ASSERT_EQ(sqlite3_prepare_v2(db_manager.GetHandle(),
+                               "UPDATE files SET attachments = ? WHERE id = ?", -1, &stmt, nullptr),
+            SQLITE_OK);
+  sqlite3_bind_text(stmt, 1, legacy.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt, 2, file_id);
+  ASSERT_EQ(sqlite3_step(stmt), SQLITE_DONE);
+  sqlite3_finalize(stmt);
+
+  ASSERT_EQ(nlohmann::json(file_db.GetFileAttachments(file_id)),
+            nlohmann::json::array({"first.pdf", "second.zip", "../escape.bin"}));
+
+  // Normalization is read-time compatibility, not a destructive rewrite of legacy data.
+  ASSERT_EQ(sqlite3_prepare_v2(db_manager.GetHandle(), "SELECT attachments FROM files WHERE id = ?",
+                               -1, &stmt, nullptr),
+            SQLITE_OK);
+  sqlite3_bind_int64(stmt, 1, file_id);
+  ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+  ASSERT_EQ(std::string(reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0))), legacy);
+  sqlite3_finalize(stmt);
+  db_manager.Close();
+  cleanup_test_db();
   return 0;
 }
 
@@ -1304,6 +1349,7 @@ int main() {
 
   // FileDb - File tests
   RUN_TEST(test_filedb_create_file);
+  RUN_TEST(test_filedb_legacy_attachment_names);
   RUN_TEST(test_filedb_create_or_update_file);
   RUN_TEST(test_filedb_get_file_by_name);
   RUN_TEST(test_filedb_list_files);

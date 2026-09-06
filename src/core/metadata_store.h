@@ -30,7 +30,7 @@ struct StoreFileRecord {
   int64_t modified_utc;
   std::string metadata;  // JSON string
   std::vector<std::string> tags;
-  std::vector<std::string> attachments;  // Relative paths within vx_assets/<file_uuid>/
+  std::vector<std::string> attachments;  // Basenames within the note's assets directory.
 };
 
 struct StoreTagRecord {

@@ -500,7 +500,11 @@ VXCORE_API VxCoreError vxcore_file_update_tags(VxCoreContextHandle context, cons
                                                const char *file_path, const char *tags_json);
 
 // Update the list of attachments for a file node (bundled notebooks).
-// attachments_json: JSON array of relative filenames, e.g. ["doc.pdf", "data.zip"]
+// attachments_json: JSON array of basenames, e.g. ["doc.pdf", "data.zip"].
+// Legacy relative paths are normalized to basenames; duplicates are collapsed.
+// Historical ../.../<this-note-id>/name paths from external assets folders are supported.
+// Unrecognized rooted or traversal paths return VXCORE_ERR_INVALID_PARAM.
+// Metadata only: no files are copied or removed.
 VXCORE_API VxCoreError vxcore_file_update_attachments(VxCoreContextHandle context,
                                                       const char *notebook_id,
                                                       const char *file_path,
@@ -509,7 +513,9 @@ VXCORE_API VxCoreError vxcore_file_update_attachments(VxCoreContextHandle contex
 // Add a single attachment to a file node (bundled notebooks).
 // Idempotent: if attachment already exists in the file's list, returns
 // VXCORE_OK without modifying the file's metadata or emitting an event.
-// attachment: relative filename, e.g. "doc.pdf"
+// attachment: basename, e.g. "doc.pdf"; legacy relative paths are normalized.
+// Unrecognized rooted or traversal paths return VXCORE_ERR_INVALID_PARAM.
+// Metadata only: no file is copied.
 VXCORE_API VxCoreError vxcore_file_add_attachment(VxCoreContextHandle context,
                                                   const char *notebook_id, const char *file_path,
                                                   const char *attachment);
@@ -517,7 +523,9 @@ VXCORE_API VxCoreError vxcore_file_add_attachment(VxCoreContextHandle context,
 // Remove a single attachment from a file node (bundled notebooks).
 // Idempotent: if attachment is not present in the file's list, returns
 // VXCORE_OK without modifying the file's metadata or emitting an event.
-// attachment: relative filename to remove
+// attachment: basename to remove; legacy relative paths are normalized.
+// Unrecognized rooted or traversal paths return VXCORE_ERR_INVALID_PARAM.
+// Metadata only: the physical file is not removed.
 VXCORE_API VxCoreError vxcore_file_delete_attachment(VxCoreContextHandle context,
                                                      const char *notebook_id, const char *file_path,
                                                      const char *attachment);

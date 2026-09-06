@@ -34,7 +34,7 @@ CREATE INDEX IF NOT EXISTS idx_folders_uuid ON folders(uuid);
 // folder_id references folders(id)
 // uuid is the string ID from JSON files (from FileRecord.id)
 // metadata stores additional JSON data
-// attachments stores JSON array of attachment paths (relative to vx_assets/<file_uuid>/)
+// attachments stores a JSON array of basenames within the note's assets directory
 inline constexpr const char* kCreateFilesTable = R"(
 CREATE TABLE IF NOT EXISTS files (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

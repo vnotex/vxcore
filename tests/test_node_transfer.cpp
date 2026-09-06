@@ -197,7 +197,7 @@ int test_file_copy_move_unicode_and_conflicts() {
   return 0;
 }
 
-int test_recursive_folder_fidelity_and_assets() {
+int check_recursive_folder_fidelity_and_assets(bool legacy) {
   Fixture fixture("node_transfer_folder");
   ASSERT(fixture.valid());
   char *folder_id = nullptr;
@@ -213,9 +213,6 @@ int test_recursive_folder_fidelity_and_assets() {
   ASSERT_EQ(vxcore_file_update_tags(fixture.context, fixture.source_id, "Project/Sub/note.md",
                                     "[\"project\"]"),
             VXCORE_OK);
-  ASSERT_EQ(vxcore_file_update_attachments(fixture.context, fixture.source_id,
-                                           "Project/Sub/note.md", "[\"spec.pdf\"]"),
-            VXCORE_OK);
   ASSERT_EQ(vxcore_node_update_metadata(fixture.context, fixture.source_id, "Project",
                                         "{\"color\":\"blue\",\"custom\":7}"),
             VXCORE_OK);
@@ -228,8 +225,39 @@ int test_recursive_folder_fidelity_and_assets() {
       fixture.source_path + "/Project/Sub/vx_assets/" + std::string(file_id);
   create_directory(asset_root);
   write_file(asset_root + "/image.png", "PNG");
-  write_file(asset_root + "/spec.pdf", "PDF");
   write_file(asset_root + "/comments.json", "{\"comments\":[1]}");
+  const std::string attachment_source = fixture.source_path + "/spec.pdf";
+  write_file(attachment_source, "PDF");
+  char *buffer_id = nullptr;
+  ASSERT_EQ(
+      vxcore_buffer_open(fixture.context, fixture.source_id, "Project/Sub/note.md", &buffer_id),
+      VXCORE_OK);
+  char *attachment_name = nullptr;
+  ASSERT_EQ(vxcore_buffer_insert_attachment(fixture.context, buffer_id, attachment_source.c_str(),
+                                            &attachment_name),
+            VXCORE_OK);
+  ASSERT_EQ(std::string(attachment_name), "spec.pdf");
+  vxcore_string_free(attachment_name);
+  ASSERT_EQ(vxcore_buffer_close(fixture.context, buffer_id), VXCORE_OK);
+  vxcore_string_free(buffer_id);
+  buffer_id = nullptr;
+
+  if (legacy) {
+    ASSERT_EQ(vxcore_notebook_close(fixture.context, fixture.source_id), VXCORE_OK);
+    vxcore_string_free(fixture.source_id);
+    fixture.source_id = nullptr;
+    const std::string config_path =
+        fixture.source_path + "/vx_notebook/contents/Project/Sub/vx.json";
+    nlohmann::json config = nlohmann::json::parse(read_file_bytes(config_path));
+    config.at("files").at(0)["attachments"] =
+        nlohmann::json::array({"Project/Sub/vx_assets/" + std::string(file_id) + "/spec.pdf"});
+    write_file(config_path, config.dump());
+    ASSERT_EQ(
+        vxcore_notebook_open(fixture.context, fixture.source_path.c_str(), &fixture.source_id),
+        VXCORE_OK);
+    ASSERT_EQ(node_config(fixture.context, fixture.source_id, "Project/Sub/note.md")["attachments"],
+              nlohmann::json::array({"spec.pdf"}));
+  }
 
   VxCoreError error = VXCORE_ERR_UNKNOWN;
   const nlohmann::json result = transfer(fixture, "Project", ".", kCopyOptions, &error);
@@ -243,7 +271,14 @@ int test_recursive_folder_fidelity_and_assets() {
       node_config(fixture.context, fixture.destination_id, "Project/Sub/note.md");
   ASSERT_NE(file["id"].get<std::string>(), std::string(file_id));
   ASSERT_EQ(file["tags"][0], "project");
-  ASSERT_EQ(file["attachments"][0], "spec.pdf");
+  ASSERT_EQ(file["attachments"], nlohmann::json::array({"spec.pdf"}));
+  const std::string destination_config_path =
+      fixture.destination_path + "/vx_notebook/contents/Project/Sub/vx.json";
+  ASSERT_EQ(nlohmann::json::parse(read_file_bytes(destination_config_path))
+                .at("files")
+                .at(0)
+                .at("attachments"),
+            nlohmann::json::array({"spec.pdf"}));
   const std::string destination_assets =
       fixture.destination_path + "/Project/Sub/vx_assets/" + file["id"].get<std::string>();
   ASSERT(path_exists(destination_assets + "/image.png"));
@@ -257,6 +292,44 @@ int test_recursive_folder_fidelity_and_assets() {
          std::string::npos);
   ASSERT(content.find("[relative](../outside.txt)") != std::string::npos);
 
+  ASSERT_EQ(vxcore_buffer_open(fixture.context, fixture.destination_id, "Project/Sub/note.md",
+                               &buffer_id),
+            VXCORE_OK);
+  char *renamed_name = nullptr;
+  ASSERT_EQ(vxcore_buffer_rename_attachment(fixture.context, buffer_id, "spec.pdf",
+                                            "renamed-spec.pdf", &renamed_name),
+            VXCORE_OK);
+  ASSERT_EQ(std::string(renamed_name), "renamed-spec.pdf");
+  vxcore_string_free(renamed_name);
+  ASSERT_FALSE(path_exists(destination_assets + "/spec.pdf"));
+  ASSERT_EQ(read_file_bytes(destination_assets + "/renamed-spec.pdf"), "PDF");
+  ASSERT_EQ(
+      node_config(fixture.context, fixture.destination_id, "Project/Sub/note.md")["attachments"],
+      nlohmann::json::array({"renamed-spec.pdf"}));
+  ASSERT_EQ(nlohmann::json::parse(read_file_bytes(destination_config_path))
+                .at("files")
+                .at(0)
+                .at("attachments"),
+            nlohmann::json::array({"renamed-spec.pdf"}));
+  ASSERT_EQ(vxcore_buffer_delete_attachment(fixture.context, buffer_id, "renamed-spec.pdf"),
+            VXCORE_OK);
+  ASSERT_FALSE(path_exists(destination_assets + "/renamed-spec.pdf"));
+  char *attachments_json = nullptr;
+  ASSERT_EQ(vxcore_buffer_list_attachments(fixture.context, buffer_id, &attachments_json),
+            VXCORE_OK);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json), nlohmann::json::array());
+  vxcore_string_free(attachments_json);
+  ASSERT_FALSE(nlohmann::json::parse(read_file_bytes(destination_config_path))
+                   .at("files")
+                   .at(0)
+                   .contains("attachments"));
+  ASSERT_EQ(vxcore_buffer_close(fixture.context, buffer_id), VXCORE_OK);
+  vxcore_string_free(buffer_id);
+  ASSERT_EQ(read_file_bytes(asset_root + "/spec.pdf"), "PDF");
+  ASSERT_EQ(read_file_bytes(destination_assets + "/image.png"), "PNG");
+  ASSERT_EQ(read_file_bytes(destination_assets + "/comments.json"), "{\"comments\":[1]}");
+  ASSERT_EQ(read_file_bytes(fixture.destination_path + "/Project/Sub/note.md"), content);
+
   char *tags_json = nullptr;
   ASSERT_EQ(vxcore_tag_list(fixture.context, fixture.destination_id, &tags_json), VXCORE_OK);
   const nlohmann::json tags = nlohmann::json::parse(tags_json);
@@ -266,6 +339,11 @@ int test_recursive_folder_fidelity_and_assets() {
   }));
   vxcore_string_free(file_id);
   return 0;
+}
+
+int test_recursive_folder_fidelity_and_assets() {
+  const int result = check_recursive_folder_fidelity_and_assets(false);
+  return result == 0 ? check_recursive_folder_fidelity_and_assets(true) : result;
 }
 
 int test_cancellation_and_rejections() {
@@ -314,13 +392,37 @@ int test_cancellation_and_rejections() {
   vxcore_node_transfer_free(fixture.context, handle);
   ASSERT_FALSE(path_exists(fixture.destination_path + "/cancel.md"));
   ASSERT_EQ(vxcore_notebook_set_read_only(fixture.context, fixture.source_id, false), VXCORE_OK);
+  const nlohmann::json before_invalid_update =
+      node_config(fixture.context, fixture.source_id, "cancel.md");
   ASSERT_EQ(vxcore_file_update_attachments(fixture.context, fixture.source_id, "cancel.md",
                                            "[\"../escape.bin\"]"),
+            VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(node_config(fixture.context, fixture.source_id, "cancel.md"), before_invalid_update);
+
+  // Persisted unsafe metadata must still reach and fail the transfer validation gate.
+  ASSERT_EQ(vxcore_notebook_close(fixture.context, fixture.source_id), VXCORE_OK);
+  vxcore_string_free(fixture.source_id);
+  fixture.source_id = nullptr;
+  const std::string config_path = fixture.source_path + "/vx_notebook/contents/vx.json";
+  nlohmann::json config = nlohmann::json::parse(read_file_bytes(config_path));
+  config.at("files").at(0)["attachments"] = nlohmann::json::array({"../escape.bin"});
+  write_file(config_path, config.dump());
+  ASSERT_EQ(vxcore_notebook_open(fixture.context, fixture.source_path.c_str(), &fixture.source_id),
             VXCORE_OK);
+  ASSERT_EQ(node_config(fixture.context, fixture.source_id, "cancel.md")["attachments"],
+            nlohmann::json::array({"../escape.bin"}));
+  char *listed = nullptr;
+  ASSERT_EQ(vxcore_node_list_attachments(fixture.context, fixture.source_id, "cancel.md", &listed),
+            VXCORE_OK);
+  ASSERT_EQ(nlohmann::json::parse(listed), nlohmann::json::array({"escape.bin"}));
+  vxcore_string_free(listed);
+  handle = nullptr;
   ASSERT_EQ(vxcore_node_transfer_prepare(fixture.context, fixture.source_id, "cancel.md",
                                          fixture.destination_id, ".", kCopyOptions, nullptr,
                                          nullptr, &handle),
             VXCORE_ERR_INVALID_PARAM);
+  ASSERT_NULL(handle);
+  ASSERT_FALSE(path_exists(fixture.destination_path + "/cancel.md"));
 
   const std::string raw_path = get_test_path("node_transfer_raw");
   cleanup_test_dir(raw_path);
@@ -608,12 +710,20 @@ int test_exception_after_source_quarantine_requires_recovery() {
   ASSERT_EQ(vxcore_file_create(fixture.context, fixture.source_id, ".", "quarantine.md", &file_id),
             VXCORE_OK);
   write_file(fixture.source_path + "/quarantine.md", "source bytes\n");
-  ASSERT_EQ(vxcore_file_update_attachments(fixture.context, fixture.source_id, "quarantine.md",
-                                           "[\"asset.bin\"]"),
+  const std::string attachment_source = fixture.source_path + "/asset.bin";
+  write_file(attachment_source, "asset bytes\n");
+  char *buffer_id = nullptr;
+  ASSERT_EQ(vxcore_buffer_open(fixture.context, fixture.source_id, "quarantine.md", &buffer_id),
             VXCORE_OK);
+  char *attachment_name = nullptr;
+  ASSERT_EQ(vxcore_buffer_insert_attachment(fixture.context, buffer_id, attachment_source.c_str(),
+                                            &attachment_name),
+            VXCORE_OK);
+  ASSERT_EQ(std::string(attachment_name), "asset.bin");
+  vxcore_string_free(attachment_name);
+  ASSERT_EQ(vxcore_buffer_close(fixture.context, buffer_id), VXCORE_OK);
+  vxcore_string_free(buffer_id);
   const std::string asset_root = fixture.source_path + "/vx_assets/" + std::string(file_id);
-  create_directory(asset_root);
-  write_file(asset_root + "/asset.bin", "asset bytes\n");
   vxcore_string_free(file_id);
 
   VxCoreError error = VXCORE_ERR_UNKNOWN;
