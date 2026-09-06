@@ -132,6 +132,13 @@ $env:VXCORE_LOG_LEVEL="trace"; $env:VXCORE_LOG_FILE="C:\Temp\vxcore.log"; .\myap
 
 ## Build Commands
 
+Keep vxcore's `find_package(Iconv REQUIRED)` **after** `add_subdirectory(third_party)`
+and before `src`/`tests`. Earlier discovery leaks `ICONV_FOUND` into libgit2 and
+enables its Unicode precomposition code on Linux, where directory iterator cleanup
+can call `iconv_close` on an uninitialized handle. Discovery must remain in the root
+scope because both vxcore and the standalone `test_simple_search_backend` use
+`Iconv::Iconv`. Clone and search tests cover both sides of this dependency.
+
 ```bash
 # Configure
 cmake -B build -DVXCORE_BUILD_TESTS=ON

@@ -30,10 +30,6 @@ find_package(Threads REQUIRED)
 if(UNIX AND NOT APPLE)
     find_package(OpenSSL REQUIRED)
 endif()
-if(NOT WIN32)
-    find_package(Iconv REQUIRED)
-endif()
-
 
 # MSVC: enable C++ exception unwinding (/EHsc). Without this, try/catch blocks
 # emit C4530 warnings AND don't actually unwind at runtime — uncaught exceptions
@@ -53,6 +49,14 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
 
 add_subdirectory(third_party)
+
+# Discover Iconv after libgit2: leaking ICONV_FOUND into its configuration
+# enables Unicode precomposition on Linux and can close an uninitialized handle.
+# Keep the imported target in this scope for both src and standalone tests.
+if(NOT WIN32)
+    find_package(Iconv REQUIRED)
+endif()
+
 add_subdirectory(src)
 
 if(VXCORE_BUILD_CLI)
