@@ -27,7 +27,8 @@ const char *const kDefaultGitattributes =
     "*.gif binary\n"
     "*.pdf binary\n"
     "*.zip binary\n"
-    "*.mp4 binary\n";
+    "*.mp4 binary\n"
+    "*.vne -text -diff -merge\n";
 
 const char *const kDefaultAuthorName = "VNote Sync";
 

@@ -2,6 +2,7 @@
 #define VXCORE_BUFFER_PROVIDER_H
 
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
 
@@ -18,8 +19,9 @@ class Notebook;
 // - (Future) TextBundleProvider: text bundle folders (assets inside bundle)
 //
 // Terminology:
-// - "Asset": Any file in the assets folder (filesystem only, no metadata tracking)
-// - "Attachment": A file in the assets folder that is tracked in the attachment list
+// - "Asset": A resource not tracked in the attachment list
+// - "Attachment": A resource tracked in the attachment list
+// Protected resources live in an authenticated manifest, not plaintext FileRecord metadata.
 //
 // Lifecycle: created when buffer opens, destroyed when buffer closes.
 // Provider is owned by BufferManager, one per buffer.
@@ -30,8 +32,12 @@ class IBufferProvider {
   // Get the type identifier for this provider (for debugging/logging)
   virtual std::string GetType() const = 0;
 
-  // ============ Asset Filesystem Operations (No Metadata) ============
-  // These methods only operate on the filesystem, never touching metadata.
+  // Cached classification only; no filesystem or key lookup on the ordinary path.
+  virtual bool IsEncrypted() const noexcept { return false; }
+  virtual VxCoreError GetProtectionError() const noexcept { return VXCORE_OK; }
+
+  // ============ Asset Operations (No Attachment Tracking) ============
+  // Ordinary assets use the filesystem; protected assets also update the encrypted manifest.
 
   // Insert binary data as an asset file.
   // Creates assets folder lazily if it doesn't exist.
@@ -43,6 +49,7 @@ class IBufferProvider {
   // out_relative_path: receives path relative to file's parent directory for embedding
   //                    (e.g., "vx_assets/<uuid>/image.png" for notebook files,
   //                     or "<filename>_assets/image.png" for external files)
+  // Protected buffers return "vxasset:<resourceId>", never a plaintext filesystem path.
   virtual VxCoreError InsertAssetRaw(const std::string &name, const std::vector<uint8_t> &data,
                                      std::string &out_relative_path) = 0;
 
@@ -50,7 +57,7 @@ class IBufferProvider {
   // Does NOT add to attachment list (use InsertAttachment for that).
   //
   // source_path: absolute path to source file
-  // out_relative_path: receives relative path for embedding
+  // out_relative_path: receives a relative path, or "vxasset:<resourceId>" when protected
   virtual VxCoreError InsertAsset(const std::string &source_path,
                                   std::string &out_relative_path) = 0;
 
@@ -60,6 +67,7 @@ class IBufferProvider {
   // For external files: always permanently deletes.
   //
   // relative_path: path as returned by InsertAsset/InsertAssetRaw
+  // Protected deletion removes the logical entry; immutable ciphertext is retained.
   virtual VxCoreError DeleteAsset(const std::string &relative_path) = 0;
 
   // Get absolute filesystem path to the assets folder.
@@ -68,10 +76,19 @@ class IBufferProvider {
 
   // Get absolute filesystem path to a specific asset.
   // relative_path: path as returned by InsertAsset
+  // Protected buffers reject this operation; use ReadResource or explicit export.
   virtual VxCoreError GetAssetAbsolutePath(const std::string &relative_path,
                                            std::string &out_abs_path) = 0;
 
   // ============ Resource Resolution ============
+  // Read a local resource without opening/loading the owning note.
+  // Protected URLs must be "vxasset:<resourceId>" from the authenticated open manifest.
+  // Ordinary paths use the insertion result (notebook-relative or external-file-parent-relative)
+  // and must remain canonically inside that root. Read-only notebooks remain readable.
+  // Clear out_data on every failure. Callers own the returned bytes and their lifetime.
+  virtual VxCoreError ReadResource(const std::string &resource_url,
+                                  std::vector<uint8_t> &out_data) = 0;
+
   // Get the base path for resolving relative resource URLs in the file's content.
   // For standard files: parent directory of the file (e.g., notebook_root/folder/)
   // For external files: parent directory of the file
@@ -87,6 +104,10 @@ class IBufferProvider {
 
   // Update cached file path after move/rename.
   virtual void SetFilePath(const std::string &path) { (void)path; }
+  virtual void SetFileState(const std::string &path, const nlohmann::json &metadata) {
+    SetFilePath(path);
+    (void)metadata;
+  }
 
   // ============ Attachment Operations (Filesystem + Metadata) ============
   // These methods operate on both filesystem and attachment metadata.
@@ -98,17 +119,21 @@ class IBufferProvider {
   //
   // source_path: absolute path to source file
   // out_filename: receives just the filename (not full path) for the attachment
+  // Protected insertion encrypts immediately and returns "vxasset:<resourceId>" instead.
   virtual VxCoreError InsertAttachment(const std::string &source_path,
                                        std::string &out_filename) = 0;
 
   // Delete an attachment file and remove from attachment list.
   // filename: just the filename (not full path)
+  // Protected buffers require the logical URL, not its display name.
   virtual VxCoreError DeleteAttachment(const std::string &filename) = 0;
 
   // Rename an attachment file and update attachment list.
   // old_filename: current filename
   // new_filename: new filename. If exists, a unique name is generated.
   // out_new_filename: receives the actual new filename (may differ if collision)
+  // Protected old_filename is the logical URL; new_filename/out_new_filename are display
+  // names only, and the logical resource ID does not change.
   virtual VxCoreError RenameAttachment(const std::string &old_filename,
                                        const std::string &new_filename,
                                        std::string &out_new_filename) = 0;
@@ -117,6 +142,7 @@ class IBufferProvider {
   // For StandardBufferProvider: returns FileRecord.attachments
   // For ExternalBufferProvider: returns filesystem listing (no metadata)
   // out_filenames: receives list of filenames (not full paths)
+  // Protected buffers return authenticated display names only; unloaded notes return LOCKED.
   virtual VxCoreError ListAttachments(std::vector<std::string> &out_filenames) = 0;
 
   // Enumerate immediate regular files absent from the attachment index, without creating folders.

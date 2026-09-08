@@ -103,7 +103,7 @@ target_include_directories(vxcore
         ${PROJECT_SOURCE_DIR}/src
 )
 
-target_link_libraries(vxcore PRIVATE nlohmann_json sqlite3 cmark Threads::Threads libgit2package)
+target_link_libraries(vxcore PRIVATE nlohmann_json sqlite3 cmark Threads::Threads libgit2package sodium)
 if(NOT WIN32)
     target_link_libraries(vxcore PRIVATE Iconv::Iconv)
 endif()

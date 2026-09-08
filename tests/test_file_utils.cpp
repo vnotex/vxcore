@@ -1,3 +1,4 @@
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -408,6 +409,62 @@ int test_copy_tree_skip_reparse_points() {
   return 0;
 }
 
+int test_atomic_file_publication() {
+  const auto base = std::filesystem::temp_directory_path() /
+                    ("vxcore_atomic_" + std::to_string(
+                        std::chrono::steady_clock::now().time_since_epoch().count()));
+  ASSERT_TRUE(std::filesystem::create_directory(base));
+  const auto destination = base / vxcore::PathFromUtf8(u8"密钥.vne");
+  const std::string original("old\0\r\n", 6);
+  const std::string replacement("new\0\r\n", 6);
+  auto read_binary = [](const std::filesystem::path &path) {
+    std::ifstream input(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  };
+
+  ASSERT_EQ(vxcore::WriteFileAtomic(destination, original), VXCORE_OK);
+  {
+    vxcore::AtomicFileWriter writer(destination);
+    ASSERT_EQ(writer.Open(), VXCORE_OK);
+    ASSERT_EQ(writer.Write(replacement.data(), 2), VXCORE_OK);
+    ASSERT_EQ(writer.Write(replacement.data() + 2, replacement.size() - 2), VXCORE_OK);
+    ASSERT_EQ(read_binary(destination), original);
+    ASSERT_EQ(writer.Commit(), VXCORE_OK);
+  }
+  ASSERT_EQ(read_binary(destination), replacement);
+
+  // An abandoned or failed write must not publish its partially written bytes.
+  {
+    vxcore::AtomicFileWriter writer(destination);
+    ASSERT_EQ(writer.Open(), VXCORE_OK);
+    ASSERT_EQ(writer.Write(original.data(), original.size()), VXCORE_OK);
+  }
+  ASSERT_EQ(read_binary(destination), replacement);
+  {
+    vxcore::AtomicFileWriter writer(destination);
+    ASSERT_EQ(writer.Open(), VXCORE_OK);
+    ASSERT_EQ(writer.Write(original.data(), original.size()), VXCORE_OK);
+    ASSERT_EQ(writer.Write(nullptr, 1), VXCORE_ERR_NULL_POINTER);
+    ASSERT_EQ(writer.Commit(), VXCORE_ERR_NULL_POINTER);
+  }
+  ASSERT_EQ(read_binary(destination), replacement);
+  ASSERT_EQ(std::distance(std::filesystem::directory_iterator(base),
+                          std::filesystem::directory_iterator()), 1);
+
+  // A real replacement error must preserve the existing destination tree.
+  const auto blocked = base / "blocked";
+  ASSERT_TRUE(std::filesystem::create_directory(blocked));
+  ASSERT_EQ(vxcore::WriteFileAtomic(blocked / "keep", original), VXCORE_OK);
+  ASSERT_EQ(vxcore::WriteFileAtomic(blocked, replacement), VXCORE_ERR_IO);
+  ASSERT_EQ(read_binary(blocked / "keep"), original);
+  ASSERT_EQ(vxcore::WriteFileAtomic(base / "missing" / "file", replacement), VXCORE_ERR_IO);
+  ASSERT_FALSE(std::filesystem::exists(base / "missing"));
+  ASSERT_EQ(vxcore::WriteFileAtomic(destination, std::string()), VXCORE_OK);
+  ASSERT_EQ(std::filesystem::file_size(destination), 0);
+  std::filesystem::remove_all(base);
+  return 0;
+}
+
 int main() {
   std::cout << "Running file_utils tests..." << std::endl;
 
@@ -422,6 +479,7 @@ int main() {
   RUN_TEST(test_is_path_within);
   RUN_TEST(test_is_reparse_point);
   RUN_TEST(test_copy_tree_skip_reparse_points);
+  RUN_TEST(test_atomic_file_publication);
 
   std::cout << "✓ All file_utils tests passed" << std::endl;
   return 0;

@@ -79,6 +79,10 @@ class MetadataStore {
   // Returns true if store is open and ready
   virtual bool IsOpen() const = 0;
 
+  // Conversion-only: remove logically deleted values from backing files/WAL.
+  // Caller must commit metadata updates and hold exclusive notebook IO first.
+  virtual bool PurgeDeletedContent() = 0;
+
   // --- Transaction Management ---
   // Use transactions to batch multiple operations atomically
 

@@ -72,6 +72,31 @@ void SqliteMetadataStore::Close() {
 
 bool SqliteMetadataStore::IsOpen() const { return db_manager_->IsOpen(); }
 
+bool SqliteMetadataStore::PurgeDeletedContent() {
+  sqlite3 *db = db_manager_->GetHandle();
+  if (!db || sqlite3_get_autocommit(db) == 0) {
+    last_error_ = "Metadata compaction requires an open store outside a transaction";
+    return false;
+  }
+  auto checkpoint = [&]() {
+    const int result = sqlite3_wal_checkpoint_v2(db, "main", SQLITE_CHECKPOINT_TRUNCATE,
+                                                nullptr, nullptr);
+    if (result != SQLITE_OK) {
+      last_error_ = "Metadata checkpoint failed: " + db_manager_->GetLastError();
+      return false;
+    }
+    return true;
+  };
+  if (!checkpoint()) return false;
+  // Rebuild only live rows; do not enable secure_delete for future ordinary writes.
+  // Logical removal must have committed before this conversion-only operation.
+  if (sqlite3_exec(db, "VACUUM", nullptr, nullptr, nullptr) != SQLITE_OK) {
+    last_error_ = "Metadata compaction failed: " + db_manager_->GetLastError();
+    return false;
+  }
+  return checkpoint();
+}
+
 // --- Transaction Management ---
 
 bool SqliteMetadataStore::BeginTransaction() {

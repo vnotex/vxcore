@@ -1,15 +1,18 @@
 #include "sync/git/git_conflict_resolver.h"
 
 #include <chrono>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <system_error>
 #include <utility>
 
 #include "sync/git/git_error_translator.h"
 #include "sync/git/git_handles.h"
 #include "sync/git/git_sync_pipeline.h"
+#include "sync/git/libgit2_init.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -25,10 +28,51 @@ namespace {
 // itself just sees an already-mapped index_entry pointer plus this tag.
 enum class Side : uint8_t { Local, Remote };
 
+bool IsEncryptedPath(const char *path) {
+  if (!path) return false;
+  const size_t size = std::strlen(path);
+  return size >= 4 && path[size - 4] == '.' &&
+         (path[size - 3] == 'v' || path[size - 3] == 'V') &&
+         (path[size - 2] == 'n' || path[size - 2] == 'N') &&
+         (path[size - 1] == 'e' || path[size - 1] == 'E');
+}
+
+bool IsEncryptedEntry(const git_index_entry *entry) {
+  return entry && IsEncryptedPath(entry->path);
+}
+
 }  // namespace
 
 GitConflictResolver::GitConflictResolver(git_repository *repo, const std::string &root_folder)
     : repo_(repo), root_folder_(root_folder) {}
+
+VxCoreError GitConflictResolver::CheckEncryptionKeyConflict(const std::string &git_dir) {
+  std::error_code ec;
+  const bool exists = std::filesystem::exists(PathFromUtf8(git_dir), ec);
+  if (ec) return VXCORE_ERR_IO;
+  if (!exists) return VXCORE_OK;
+
+  LibGit2Init init;
+  if (!LibGit2Init::ok()) return VXCORE_ERR_IO;
+  git_repository *repo_raw = nullptr;
+  int rc = git_repository_open_ext(&repo_raw, git_dir.c_str(), GIT_REPOSITORY_OPEN_NO_SEARCH,
+                                    nullptr);
+  git_repositoryPtr repo(repo_raw);
+  if (rc != 0) return TranslateGitError(rc);
+
+  git_index *index_raw = nullptr;
+  rc = git_repository_index(&index_raw, repo.get());
+  git_indexPtr index(index_raw);
+  if (rc != 0) return TranslateGitError(rc);
+  rc = git_index_read(index.get(), true);
+  if (rc != 0) return TranslateGitError(rc);
+  for (int stage = 1; stage <= 3; ++stage) {
+    if (git_index_get_bypath(index.get(), "vx_notebook/encryption.vne", stage)) {
+      return VXCORE_ERR_SYNC_CONFLICT;
+    }
+  }
+  return VXCORE_OK;
+}
 
 VxCoreError GitConflictResolver::GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) {
   out_conflicts.clear();
@@ -100,17 +144,18 @@ VxCoreError GitConflictResolver::GetConflicts(std::vector<SyncConflictInfo> &out
     // remote mtime, and the conflict was just observed during fetch+rebase.
     info.remote_modified_utc = now_unix_secs;
 
-    // is_binary: query libgit2's blob heuristic on the THEIR side (if any).
-    info.is_binary = false;
-    if (their != nullptr) {
+    // Suffix policy is independent of blob heuristics and covers either side
+    // of rename/delete-modify conflicts, including the notebook key envelope.
+    info.is_binary = IsEncryptedEntry(ancestor) || IsEncryptedEntry(our) ||
+                     IsEncryptedEntry(their);
+    for (const auto *entry : {our, their, ancestor}) {
+      if (info.is_binary) break;
+      if (!entry) continue;
       git_blob *blob_raw = nullptr;
-      int brc = git_blob_lookup(&blob_raw, repo_, &their->id);
-      if (brc == 0 && blob_raw != nullptr) {
-        git_blobPtr blob(blob_raw);
-        info.is_binary = (git_blob_is_binary(blob.get()) != 0);
-      } else {
-        git_error_clear();
-      }
+      const int brc = git_blob_lookup(&blob_raw, repo_, &entry->id);
+      if (brc != 0 || !blob_raw) return TranslateGitError(brc);
+      git_blobPtr blob(blob_raw);
+      info.is_binary = git_blob_is_binary(blob.get()) != 0;
     }
 
     out_conflicts.push_back(std::move(info));
@@ -125,6 +170,9 @@ VxCoreError GitConflictResolver::ResolveConflict(const std::string &path,
   // Legacy C-ABI-shaped wrapper: delegates to the tri-state Ex variant and
   // collapses the result back to a single VxCoreError. Kept until Wave 7
   // widens the public C ABI.
+  if (resolution == SyncConflictResolution::kKeepBoth && IsEncryptedPath(path.c_str())) {
+    return VXCORE_ERR_UNSUPPORTED;
+  }
   return MapResolveResult(ResolveConflictEx(path, resolution, pipeline));
 }
 
@@ -159,6 +207,14 @@ ResolveResult GitConflictResolver::ResolveConflictEx(const std::string &path,
     return ResolveResult::Failed;
   }
 
+  const bool encrypted_conflict = IsEncryptedEntry(ancestor) || IsEncryptedEntry(our) ||
+                                  IsEncryptedEntry(their);
+  if (encrypted_conflict && resolution == SyncConflictResolution::kKeepBoth) {
+    // Duplicating a ciphertext filename does not create a second note identity
+    // or a usable second key envelope. Keep either complete revision instead.
+    return ResolveResult::Failed;
+  }
+
   const std::string abs_original = root_folder_ + "/" + path;
 
   // Rebase semantic flip: when libgit2 rebases LOCAL onto REMOTE, the index
@@ -184,6 +240,17 @@ ResolveResult GitConflictResolver::ResolveConflictEx(const std::string &path,
     git_blobPtr blob(blob_raw);
     const void *raw = git_blob_rawcontent(blob.get());
     git_object_size_t raw_size = git_blob_rawsize(blob.get());
+    if (encrypted_conflict) {
+      if (raw_size > std::numeric_limits<size_t>::max()) return VXCORE_ERR_IO;
+      std::error_code ec;
+      std::filesystem::create_directories(PathFromUtf8(abs).parent_path(), ec);
+      if (ec) return VXCORE_ERR_IO;
+      AtomicFileWriter writer(PathFromUtf8(abs));
+      auto error = writer.Open();
+      if (error == VXCORE_OK) error = writer.Write(raw, static_cast<size_t>(raw_size));
+      if (error == VXCORE_OK) error = writer.Commit();
+      return error;
+    }
     try {
       std::filesystem::create_directories(PathFromUtf8(abs).parent_path());
     } catch (...) {
@@ -213,6 +280,31 @@ ResolveResult GitConflictResolver::ResolveConflictEx(const std::string &path,
   // "delete on the chosen side" resolutions.
   auto write_resolved_side = [&](Side side) -> VxCoreError {
     const git_index_entry *src = (side == Side::Local) ? local_side : remote_side;
+    if (encrypted_conflict) {
+      int result;
+      if (src) {
+        auto error = write_blob_to_path(src, abs_original);
+        if (error != VXCORE_OK) return error;
+        // Select the original blob ID directly: no EOL/filter pass may change
+        // even one byte of an authenticated envelope.
+        git_index_entry selected = *src;
+        selected.path = path.c_str();
+        GIT_INDEX_ENTRY_STAGE_SET(&selected, 0);
+        result = git_index_add(idx.get(), &selected);
+      } else {
+        std::error_code ec;
+        std::filesystem::remove(PathFromUtf8(abs_original), ec);
+        if (ec) return VXCORE_ERR_IO;
+        result = git_index_remove(idx.get(), path.c_str(), 0);
+        if (result == GIT_ENOTFOUND) {
+          git_error_clear();
+          result = 0;
+        }
+      }
+      if (result == 0) result = git_index_conflict_remove(idx.get(), path.c_str());
+      if (result == 0) result = git_index_write(idx.get());
+      return result == 0 ? VXCORE_OK : TranslateGitError(result);
+    }
     if (src != nullptr) {
       VxCoreError werr = write_blob_to_path(src, abs_original);
       if (werr != VXCORE_OK) {

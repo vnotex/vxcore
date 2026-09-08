@@ -352,9 +352,7 @@ VxCoreError BundledNotebook::LoadConfig() {
 }
 
 VxCoreError BundledNotebook::UpdateConfig(const NotebookConfig &config) {
-  if (IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (CheckWritable() != VXCORE_OK) { return CheckWritable(); }
 
   assert(config_.id == config.id);
 
@@ -403,9 +401,7 @@ std::string BundledNotebook::GetRecycleBinPath() const {
 }
 
 VxCoreError BundledNotebook::EmptyRecycleBin() {
-  if (IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (CheckWritable() != VXCORE_OK) { return CheckWritable(); }
 
   std::string recycle_bin_path = GetRecycleBinPath();
   try {

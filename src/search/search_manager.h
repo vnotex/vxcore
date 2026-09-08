@@ -55,14 +55,15 @@ class SearchManager {
  private:
   std::vector<SearchFileInfo> GetAllFiles(const SearchScope &scope,
                                           const SearchInputFiles *input_files,
-                                          bool include_folders);
+                                          bool include_folders, size_t *encrypted_skipped);
 
   std::vector<SearchFileInfo> FilterFilesByTagsAndDate(std::vector<SearchFileInfo> files,
                                                        const SearchScope &scope);
 
   std::vector<SearchFileInfo> FetchFilesToSearch(const SearchScope &scope,
                                                  const std::string &input_files_json,
-                                                 bool include_folders);
+                                                 bool include_folders,
+                                                 size_t *encrypted_skipped = nullptr);
   void FilterDefaultContentFileTypes(std::vector<SearchFileInfo> &files,
                                      const SearchScope &scope) const;
 
@@ -80,10 +81,14 @@ class SearchManager {
   std::string SerializeFileResults(const std::vector<SearchFileInfo> &matched_files,
                                    int max_results);
 
-  void CollectFilesInFolder(const std::string &folder_path, bool recursive,
+  void CollectFilesInFolder(const std::string &folder_path, const SearchScope &scope,
                             const std::vector<std::string> &lower_path_patterns,
                             const std::vector<std::string> &lower_exclude_path_patterns,
-                            bool include_folders, std::vector<SearchFileInfo> &out_files);
+                            bool include_folders, std::vector<SearchFileInfo> &out_files,
+                            size_t *encrypted_skipped);
+
+  bool SkipEncryptedCandidate(const std::string &path, const FileRecord &record,
+                               const SearchScope &scope, size_t &encrypted_skipped) const;
 
   bool MatchesTags(const std::vector<std::string> &file_tags,
                    const std::vector<std::string> &search_tags,

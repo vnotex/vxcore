@@ -740,3 +740,47 @@ Rules:
 - Wrap path strings with `PathFromUtf8(...)` at every `std::filesystem` boundary (Windows UTF-8 safety — see [UTF-8 Path Safety](#utf-8-path-safety-critical-on-windows) above).
 
 See `GitSyncBackend::EnsureGitkeepFiles()` in `src/sync/git_sync_backend.cpp` for a real production example.
+
+
+## Portable encrypted notes
+
+`NotebookEncryption` in `src/core/notebook.h/.cpp` is the sole authenticated storage
+implementation. It uses libsodium Argon2id for password-derived wrapping, independent
+master/notebook/document keys, XChaCha20-Poly1305 key envelopes, and secretstream objects.
+Keys and authenticated scratch storage are move-only secure owners. Do not add another
+codec in Qt, transfer, sync, or a buffer provider. Sodium and key registries are lazy:
+ordinary notes must work with unrelated missing/corrupt key files and without crypto IO.
+
+The C ABI in `include/vxcore/vxcore.h` owns setup handles per context. Prepare creates no
+files and runs outside the caller's notebook IO gate; commit rechecks identity and
+writability under maintenance exclusion and the gate, consumes the handle, and never
+replaces an existing key file. Unlock authenticates only the key envelope, not every
+closed note. Lock All requires protected buffers, resource leases, and prepared setups to
+have been released; an outstanding owner must prevent successful key release.
+
+Encrypted notes use `.vne` envelopes and authenticated manifests selecting immutable
+resource versions. Body, resource kind, document/key identity, stream FINAL and exact EOF
+are checked before exposing plaintext. Missing keys, unsupported formats, malformed or
+mismatched objects and recovery-required journals fail closed, never as an empty editable
+note or a plaintext save. Resources are loaded on demand; text-only saves reuse existing
+resource ciphertext. Protected backups, recycle/restore and transfer retain protection.
+
+`vxcore_encryption_protect_note` stages and verifies the complete resource closure before
+publication. Its journal permits keyless recovery after interruption and blocks mutation
+and sync until recovery completes. Keep shared/external originals and warn; remove only
+exclusively owned plaintext after publication. New protected notes publish ciphertext
+from the initial write, including templates. Plaintext and raw/external paths retain the
+existing behavior and IO schedule.
+
+Git sync needs no unlock. Preserve `*.vne -text -diff -merge` in new and initialized existing
+repositories and resolve encrypted conflicts as complete binary envelopes, never a text
+merge. Keep all immutable objects needed by the selected manifest. A key-envelope conflict
+blocks protected access. Copies get fresh document keys/identity; cross-notebook moves
+rewrap the document key and require both notebooks initialized and unlocked. The VNote
+caller still owns `NodeTransferService` leases, comment durability and IO-gate ordering.
+
+Security limits: visible filenames/folders/tags are not authenticated secret metadata;
+valid old ciphertext may be replayed. Existing Git history, remote versions, backups,
+shared assets and external source files may retain plaintext. Backups must include
+`vx_notebook/encryption.vne` as well as notes and encrypted objects. Losing that envelope
+or the password is not repairable by initializing a new key over existing ciphertext.

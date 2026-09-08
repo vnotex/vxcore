@@ -77,3 +77,24 @@ if(MSVC)
 else()
   target_compile_options(libgit2package PRIVATE -w)
 endif()
+
+# Function scope keeps sodium's options from changing other dependencies.
+function(vxcore_add_sodium)
+  include(FetchContent)
+  set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+  set(BUILD_SHARED_LIBS OFF)
+  set(SODIUM_DISABLE_TESTS ON)
+  set(SODIUM_MINIMAL ON)
+  FetchContent_Declare(vxcore_sodium
+    GIT_REPOSITORY https://github.com/robinlinden/libsodium-cmake.git
+    GIT_TAG 9b2848dfc1b917a9410f0de9d81059b26cbfaa8d
+    # This adapter pins official libsodium at 93a7d0d41fe2e32409b5d00386946f491750b7de.
+    GIT_SUBMODULES_RECURSE TRUE
+  )
+  FetchContent_MakeAvailable(vxcore_sodium)
+  set_target_properties(sodium PROPERTIES
+    MSVC_RUNTIME_LIBRARY "${CMAKE_MSVC_RUNTIME_LIBRARY}"
+  )
+endfunction()
+
+vxcore_add_sodium()

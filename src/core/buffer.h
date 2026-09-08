@@ -13,6 +13,7 @@ namespace vxcore {
 
 class IBufferProvider;
 class Notebook;
+class StandardBufferProvider;
 
 class BufferManager;
 
@@ -37,6 +38,9 @@ class Buffer {
   int GetRevision() const { return revision_; }
   bool IsModified() const { return modified_; }
   bool IsVirtual() const { return is_virtual_; }
+  bool IsEncrypted() const noexcept { return is_encrypted_; }
+  VxCoreError GetProtectionError() const noexcept { return protection_error_; }
+  std::string GetAuthenticatedEditorType() const;
   VxCoreBufferState GetState() const { return state_; }
   const nlohmann::json &GetMetadata() const { return metadata_; }
   int64_t GetLastModifiedTime() const { return last_modified_time_; }
@@ -49,11 +53,11 @@ class Buffer {
   void SetMetadata(const nlohmann::json &metadata) { metadata_ = metadata; }
 
   // Content management methods
-  void LoadContent(const std::string &full_path);
-  void SaveContent(const std::string &full_path);
+  VxCoreError LoadContent(const std::string &full_path);
+  VxCoreError SaveContent(const std::string &full_path);
   const std::vector<uint8_t> &GetContent() const;
   void SetContent(const std::vector<uint8_t> &data);
-  void CheckExternalChanges(const std::string &full_path);
+  VxCoreError CheckExternalChanges(const std::string &full_path);
 
   // Resolve full path (uses notebook root if available, else file_path as-is)
   std::string ResolveFullPath() const;
@@ -82,12 +86,17 @@ class Buffer {
 
   // Create appropriate provider based on context
   void CreateProvider();
+  void RefreshProtectionState();
+  StandardBufferProvider *GetProtectedProvider(VxCoreError &out_error) const noexcept;
+  bool DetectEncryptedContent(const std::vector<uint8_t> &data);
+  void ReplaceProtectedContent(std::vector<uint8_t> &data) noexcept;
+  void UpdateProtectedTimestamp(const std::string &full_path) noexcept;
 
   // Return true if the on-disk file at @full_path has the same content as the
   // cached content_ (exact byte match, or equal after EOL normalization).
   // Used by CheckExternalChanges to suppress benign mtime-only changes.
   // Caller must ensure no concurrent mutation of content_ (Qt-side gate).
-  bool FileContentMatchesBuffer(const std::string &full_path) const;
+  bool FileContentMatchesBuffer(const std::string &full_path);
 
   std::string id_;
   Notebook *notebook_;       // nullptr for external files (non-owning)
@@ -100,6 +109,9 @@ class Buffer {
   int64_t last_modified_time_;    // File timestamp for change detection
   bool content_loaded_;           // True if content has been loaded from disk
   bool is_virtual_ = false;       // True if this buffer has no filesystem backing
+  bool is_encrypted_ = false;     // Cached provider classification, never a key/disk lookup
+  bool discovered_encryption_ = false;  // Latches unmarked ciphertext until this handle closes
+  VxCoreError protection_error_ = VXCORE_OK;
   std::unique_ptr<IBufferProvider> provider_;
   std::string backup_file_path_;  // Cached backup file path (<full_path>.vswp)
 };

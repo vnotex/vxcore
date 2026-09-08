@@ -75,6 +75,12 @@ endif()
 if(VXCORE_INSTALL)
     include(GNUInstallDirs)
 
+    get_target_property(_vxcore_sodium_source_dir sodium SOURCE_DIR)
+    install(FILES "${_vxcore_sodium_source_dir}/libsodium/LICENSE"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/vxcore RENAME LICENSE.libsodium)
+    install(FILES "${_vxcore_sodium_source_dir}/LICENSE"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/vxcore RENAME LICENSE.libsodium-cmake)
+
     install(DIRECTORY include/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
         FILES_MATCHING PATTERN "*.h"

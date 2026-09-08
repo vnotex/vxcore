@@ -122,6 +122,36 @@ inline constexpr const char *kJsonKeyNodeExists = "exists";
 // Transient C-API input shared with consumers that construct search queries.
 inline constexpr const char *kJsonKeyMatchTarget = "matchTarget";
 
+// ---------- Encryption storage and explicit API schemas ---------------------
+inline constexpr const char *kJsonKeyEncrypted = "encrypted";
+inline constexpr const char *kJsonKeyEditorType = "editorType";
+inline constexpr const char *kJsonKeyEncryptedSkippedCount = "encryptedSkippedCount";
+inline constexpr const char *kJsonKeyInitialized = "initialized";
+inline constexpr const char *kJsonKeyUnlocked = "unlocked";
+inline constexpr const char *kJsonKeyVaultId = "vaultId";
+inline constexpr const char *kJsonKeyVersion = "version";
+inline constexpr const char *kJsonKeyNotebookKeyId = "notebookKeyId";
+inline constexpr const char *kJsonKeyKdf = "kdf";
+inline constexpr const char *kJsonKeyOpslimit = "opslimit";
+inline constexpr const char *kJsonKeyMemlimit = "memlimit";
+inline constexpr const char *kJsonKeySalt = "salt";
+inline constexpr const char *kJsonKeyMasterNonce = "masterNonce";
+inline constexpr const char *kJsonKeyWrappedMasterKey = "wrappedMasterKey";
+inline constexpr const char *kJsonKeyNotebookNonce = "notebookNonce";
+inline constexpr const char *kJsonKeyWrappedNotebookKey = "wrappedNotebookKey";
+inline constexpr const char *kJsonKeyKind = "kind";
+inline constexpr const char *kJsonKeyDocumentId = "documentId";
+inline constexpr const char *kJsonKeyObjectId = "objectId";
+inline constexpr const char *kJsonKeyKeyNonce = "keyNonce";
+inline constexpr const char *kJsonKeyWrappedNoteKey = "wrappedNoteKey";
+inline constexpr const char *kJsonKeyResources = "resources";
+inline constexpr const char *kJsonKeyResourceId = "resourceId";
+inline constexpr const char *kJsonKeyMediaType = "mediaType";
+inline constexpr const char *kJsonKeyRole = "role";
+inline constexpr const char *kJsonKeySourceSha256 = "sourceSha256";
+inline constexpr const char *kJsonKeySourcePath = "sourcePath";
+inline constexpr const char *kJsonKeyRetainOriginal = "retainOriginal";
+
 }  // namespace vxcore
 
 #endif  // VXCORE_NOTEBOOK_JSON_KEYS_H

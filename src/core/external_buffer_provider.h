@@ -21,6 +21,12 @@ class ExternalBufferProvider : public IBufferProvider {
 
   // IBufferProvider implementation
   std::string GetType() const override { return "external"; }
+  bool IsEncrypted() const noexcept override { return encrypted_; }
+  VxCoreError GetProtectionError() const noexcept override {
+    return encrypted_ ? VXCORE_ERR_UNSUPPORTED : VXCORE_OK;
+  }
+  void SetFilePath(const std::string &path) override;
+  void SetFileState(const std::string &path, const nlohmann::json &metadata) override;
 
   // Asset operations (filesystem only)
   VxCoreError InsertAssetRaw(const std::string &name, const std::vector<uint8_t> &data,
@@ -36,6 +42,9 @@ class ExternalBufferProvider : public IBufferProvider {
                                    std::string &out_abs_path) override;
 
   // Resource resolution
+  VxCoreError ReadResource(const std::string &resource_url,
+                          std::vector<uint8_t> &out_data) override;
+
   VxCoreError GetResourceBasePath(std::string &out_path) override;
 
   // Attachment operations (filesystem only, no metadata for external files)
@@ -57,6 +66,8 @@ class ExternalBufferProvider : public IBufferProvider {
   std::string file_dir_;        // Parent directory of the file
   std::string file_name_stem_;  // Filename without extension
   std::string assets_folder_;   // Absolute path to assets folder
+  bool encrypted_ = false;
+  bool marked_encrypted_ = false;
 };
 
 }  // namespace vxcore

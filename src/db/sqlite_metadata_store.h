@@ -41,6 +41,7 @@ class SqliteMetadataStore : public MetadataStore {
   bool Open(const std::string& db_path) override;
   void Close() override;
   bool IsOpen() const override;
+  bool PurgeDeletedContent() override;
 
   // --- Transaction Management ---
   bool BeginTransaction() override;

@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cctype>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <unordered_map>
@@ -6,6 +8,8 @@
 
 #include "api/api_utils.h"
 #include "core/buffer_manager.h"
+#include "core/content_processor/content_processor.h"
+#include "utils/file_utils.h"
 #include "core/context.h"
 #include "core/event_manager.h"
 #include "core/folder_manager.h"
@@ -237,6 +241,72 @@ VXCORE_API VxCoreError vxcore_node_transfer_prepare(
   } catch (const std::exception &e) {
     ctx->last_error = e.what();
     return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_node_transfer_prepare_encrypted_bundle(
+    VxCoreContextHandle context, const char *bundle_root, const char *folder_name,
+    const char *destination_notebook_id, const char *destination_folder_path,
+    const void *password, size_t password_size, VxCoreNodeTransferHandle *out_transfer) {
+  if (out_transfer) *out_transfer = nullptr;
+  if (!context || !bundle_root || !folder_name || !destination_notebook_id ||
+      !destination_folder_path || !password || !password_size || !out_transfer) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    auto handle = std::make_unique<VxCoreNodeTransfer_>();
+    handle->context = ctx;
+    std::string message;
+    const auto error = vxcore::NodeTransfer::PrepareBundle(
+        ctx->notebook_manager.get(), bundle_root, folder_name, destination_notebook_id,
+        destination_folder_path, password, password_size, {}, handle->transfer, message);
+    if (error != VXCORE_OK) {
+      ctx->last_error = message;
+      return error;
+    }
+    try {
+      RegisterTransferHandle(ctx, handle.get());
+    } catch (...) {
+      vxcore::NodeTransfer::Discard(std::move(handle->transfer));
+      throw;
+    }
+    *out_transfer = handle.release();
+    return VXCORE_OK;
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const nlohmann::json::exception &) {
+    return VXCORE_ERR_ENCRYPTION_FORMAT;
+  } catch (...) {
+    return VXCORE_ERR_IO;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_rewrite_plaintext_asset_links(
+    const char *staged_file_path, const char *old_assets_path, const char *new_assets_path) {
+  if (!staged_file_path || !old_assets_path || !new_assets_path) return VXCORE_ERR_INVALID_PARAM;
+  try {
+    const auto path = vxcore::PathFromUtf8(staged_file_path);
+    std::string extension = vxcore::PathToUtf8(path.extension());
+    if (!extension.empty()) extension.erase(0, 1);
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    if (extension == "vne") return VXCORE_ERR_ENCRYPTION_FORMAT;
+    vxcore::ContentProcessor processor;
+    auto *handler = processor.GetHandler(extension);
+    if (!handler) return VXCORE_OK;
+    std::string body;
+    auto error = vxcore::ReadFile(path, body);
+    if (error != VXCORE_OK) return error;
+    if (body.size() >= 8 && body.compare(0, 8, std::string("VNOTEE1\0", 8)) == 0) {
+      return VXCORE_ERR_ENCRYPTION_FORMAT;
+    }
+    const auto rewritten = handler->RewriteAssetLinks(body, old_assets_path, new_assets_path);
+    return rewritten == body ? VXCORE_OK : vxcore::WriteFileAtomic(path, rewritten);
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (...) {
+    return VXCORE_ERR_IO;
   }
 }
 

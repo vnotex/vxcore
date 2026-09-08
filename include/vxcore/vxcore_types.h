@@ -59,6 +59,10 @@ typedef enum {
   VXCORE_ERR_PERMUTATION_MISMATCH = 30,
   // Node is indexed in metadata but its content no longer exists on disk (bundled notebook).
   VXCORE_ERR_NODE_NOT_EXISTS = 31,
+  VXCORE_ERR_ENCRYPTION_LOCKED = 32,
+  VXCORE_ERR_ENCRYPTION_AUTH_FAILED = 33,
+  VXCORE_ERR_ENCRYPTION_FORMAT = 34,
+  VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED = 35,
   VXCORE_ERR_UNKNOWN = 999
 } VxCoreError;
 

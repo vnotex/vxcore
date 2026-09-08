@@ -5,10 +5,15 @@
 #include "file_utils.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <new>
 #include <sstream>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #if defined(VXCORE_BUILD_DLL)
@@ -16,12 +21,16 @@
 #endif
 
 #ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
 #include <windows.h>
 #endif
 
 #if !defined(_WIN32)
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #ifndef VXCORE_LOG_DEBUG
@@ -508,6 +517,200 @@ VxCoreError WriteFile(const std::filesystem::path &path, const std::string &cont
   } catch (...) {
     return VXCORE_ERR_IO;
   }
+}
+
+namespace {
+
+VxCoreError AtomicWriteError() {
+  return errno == ENOMEM ? VXCORE_ERR_OUT_OF_MEMORY : VXCORE_ERR_IO;
+}
+
+// Match the bounded sharing-violation retry policy used by folder-config publication.
+constexpr int kAtomicRenameRetries = 5;
+constexpr int kAtomicRenameRetryDelayMs = 40;
+constexpr int kAtomicTempAttempts = 64;
+
+}  // namespace
+
+AtomicFileWriter::AtomicFileWriter(const std::filesystem::path &path) {
+  try {
+    path_ = path;
+  } catch (const std::bad_alloc &) {
+    error_ = VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (...) {
+    error_ = VXCORE_ERR_IO;
+  }
+}
+
+AtomicFileWriter::~AtomicFileWriter() {
+  if (file_) {
+    std::fclose(file_);
+  }
+  if (owns_temp_) {
+#ifdef _WIN32
+    _wremove(temp_path_.c_str());
+#else
+    ::unlink(temp_path_.c_str());
+#endif
+  }
+}
+
+VxCoreError AtomicFileWriter::Open() {
+  if (error_ != VXCORE_OK) {
+    return error_;
+  }
+  if (opened_) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+  opened_ = true;
+
+  try {
+    if (path_.empty() || !path_.has_filename() ||
+        path_.native().find(std::filesystem::path::value_type{}) !=
+            std::filesystem::path::string_type::npos) {
+      return error_ = VXCORE_ERR_INVALID_PARAM;
+    }
+
+    // Exclusivity, not name unpredictability, prevents reuse of another writer's
+    // file or a pre-existing symlink. No UUID/crypto dependency is needed here.
+    static std::atomic<uint64_t> sequence{0};
+#ifdef _WIN32
+    const auto process_id = GetCurrentProcessId();
+#else
+    const auto process_id = ::getpid();
+#endif
+    for (int attempt = 0; attempt < kAtomicTempAttempts; ++attempt) {
+      temp_path_ = path_;
+      temp_path_ += PathFromUtf8(".tmp-" + std::to_string(process_id) + "-" +
+                                std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
+#ifdef _WIN32
+      const int fd = _wopen(temp_path_.c_str(),
+                           _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT,
+                           _S_IREAD | _S_IWRITE);
+#else
+      const int fd = ::open(temp_path_.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+                            S_IRUSR | S_IWUSR);
+#endif
+      if (fd < 0) {
+        if (errno == EEXIST) {
+          continue;
+        }
+        return error_ = AtomicWriteError();
+      }
+
+      owns_temp_ = true;
+#ifdef _WIN32
+      file_ = _wfdopen(fd, L"wb");
+#else
+      file_ = ::fdopen(fd, "wb");
+#endif
+      if (!file_) {
+        error_ = AtomicWriteError();
+#ifdef _WIN32
+        _close(fd);
+#else
+        ::close(fd);
+#endif
+        return error_;
+      }
+      return VXCORE_OK;
+    }
+    return error_ = VXCORE_ERR_IO;
+  } catch (const std::bad_alloc &) {
+    return error_ = VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (...) {
+    return error_ = VXCORE_ERR_IO;
+  }
+}
+
+VxCoreError AtomicFileWriter::Write(const void *data, size_t size) {
+  if (error_ != VXCORE_OK) {
+    return error_;
+  }
+  if (!file_) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+  if (!data && size != 0) {
+    return error_ = VXCORE_ERR_NULL_POINTER;
+  }
+  errno = 0;
+  if (size != 0 && std::fwrite(data, 1, size, file_) != size) {
+    return error_ = AtomicWriteError();
+  }
+  return VXCORE_OK;
+}
+
+VxCoreError AtomicFileWriter::Commit() {
+  if (error_ != VXCORE_OK) {
+    return error_;
+  }
+  if (!file_) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+
+  errno = 0;
+  if (std::fflush(file_) != 0) {
+    error_ = AtomicWriteError();
+  }
+  if (error_ == VXCORE_OK) {
+    errno = 0;
+#ifdef _WIN32
+    if (_commit(_fileno(file_)) != 0) {
+#else
+    if (::fsync(fileno(file_)) != 0) {
+#endif
+      error_ = AtomicWriteError();
+    }
+  }
+  errno = 0;
+  const int close_result = std::fclose(file_);
+  file_ = nullptr;
+  if (close_result != 0 && error_ == VXCORE_OK) {
+    error_ = AtomicWriteError();
+  }
+  if (error_ != VXCORE_OK) {
+    return error_;
+  }
+
+  try {
+    for (int attempt = 0; attempt < kAtomicRenameRetries; ++attempt) {
+      std::error_code ec;
+      // Same-directory rename replaces the destination atomically, without an
+      // intermediate removal that could lose the previous live file on failure.
+#ifdef _WIN32
+      if (!MoveFileExW(temp_path_.c_str(), path_.c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+      }
+#else
+      std::filesystem::rename(temp_path_, path_, ec);
+#endif
+      if (!ec) {
+        owns_temp_ = false;
+        return VXCORE_OK;
+      }
+      if (ec == std::errc::not_enough_memory) {
+        return error_ = VXCORE_ERR_OUT_OF_MEMORY;
+      }
+      if (attempt + 1 < kAtomicRenameRetries) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kAtomicRenameRetryDelayMs));
+      }
+    }
+    return error_ = VXCORE_ERR_IO;
+  } catch (const std::bad_alloc &) {
+    return error_ = VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (...) {
+    return error_ = VXCORE_ERR_IO;
+  }
+}
+
+VxCoreError WriteFileAtomic(const std::filesystem::path &path, const std::string &content) {
+  AtomicFileWriter writer(path);
+  VxCoreError error = writer.Open();
+  if (error == VXCORE_OK) {
+    error = writer.Write(content.data(), content.size());
+  }
+  return error == VXCORE_OK ? writer.Commit() : error;
 }
 
 VxCoreError LoadJsonFile(const std::filesystem::path &path, nlohmann::json &out_json) {

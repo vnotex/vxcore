@@ -45,6 +45,36 @@ FileRecord FileRecord::FromJson(const nlohmann::json &json) {
   return record;
 }
 
+VxCoreError FileRecord::CheckPlaintextAttachmentAccess() const {
+  const auto size = name.size();
+  const bool suffix = size >= 4 && name[size - 4] == '.' &&
+      (name[size - 3] == 'v' || name[size - 3] == 'V') &&
+      (name[size - 2] == 'n' || name[size - 2] == 'N') &&
+      (name[size - 1] == 'e' || name[size - 1] == 'E');
+  bool encrypted = false;
+  if (metadata.is_object()) {
+    const auto marker = metadata.find(kJsonKeyEncrypted);
+    if (marker != metadata.end()) {
+      if (marker->is_boolean() == false) {
+        return VXCORE_ERR_ENCRYPTION_FORMAT;
+      }
+      encrypted = marker->get<bool>();
+    }
+  }
+  if (encrypted != suffix) {
+    return VXCORE_ERR_ENCRYPTION_FORMAT;
+  }
+  if (encrypted == false) {
+    return VXCORE_OK;
+  }
+  const auto editor = metadata.find(kJsonKeyEditorType);
+  if (editor == metadata.end() || editor->is_string() == false ||
+      (*editor != "markdown" && *editor != "text")) {
+    return VXCORE_ERR_ENCRYPTION_FORMAT;
+  }
+  return VXCORE_ERR_ENCRYPTION_LOCKED;
+}
+
 nlohmann::json FileRecord::ToJson() const {
   nlohmann::json json;
   json[kJsonKeyId] = id;

@@ -263,6 +263,7 @@ int check_recursive_folder_fidelity_and_assets(bool legacy) {
   const nlohmann::json result = transfer(fixture, "Project", ".", kCopyOptions, &error);
   ASSERT_EQ(error, VXCORE_OK);
   ASSERT_EQ(result["status"], "copied");
+  ASSERT_FALSE(result.value("recoveryDeferred", false));
   ASSERT(path_exists(fixture.destination_path + "/Project/.hidden"));
   ASSERT_FALSE(path_exists(fixture.destination_path + "/outside.txt"));
   const nlohmann::json folder = node_config(fixture.context, fixture.destination_id, "Project");

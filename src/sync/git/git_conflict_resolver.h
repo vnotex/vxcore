@@ -34,6 +34,10 @@ class GitConflictResolver {
 
   VxCoreError GetConflicts(std::vector<SyncConflictInfo> &out_conflicts);
 
+  // Encryption-only preflight; ordinary notebook operations never inspect this.
+  // A missing Git repository is allowed, but an unreadable index fails closed.
+  static VxCoreError CheckEncryptionKeyConflict(const std::string &git_dir);
+
   // Tri-state resolver entry point. Prefer this in new C++ code so callers
   // can react differently to "Resolved" vs "NoConflict" vs "Aborted" vs
   // "Failed". The legacy VxCoreError-returning shim below preserves the

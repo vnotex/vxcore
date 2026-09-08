@@ -14,6 +14,7 @@
 #include "metadata_store.h"
 #include "notebook.h"
 #include "notebook_manager.h"
+#include "sync/git/git_conflict_resolver.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -62,6 +63,7 @@ void BufferManager::EmitEvent(const char *event_name, const nlohmann::json &data
 
 void BufferManager::LoadBuffers() {
   auto &session_config = config_manager_->GetSessionConfig();
+  protected_buffers_.reset();
   buffers_.clear();
 
   // Check if session recovery is disabled
@@ -118,6 +120,9 @@ void BufferManager::LoadBuffers() {
 
     std::string id = buffer->GetId();
     buffers_[id] = std::move(buffer);
+    if (buffers_[id]->IsEncrypted()) {
+      UpdateProtectedRegistration(*buffers_[id]);
+    }
     VXCORE_LOG_DEBUG("Loaded buffer: id=%s, notebook_id=%s, file_path=%s", id.c_str(),
                      record.notebook_id.c_str(), record.file_path.c_str());
   }
@@ -200,7 +205,12 @@ void BufferManager::UpdatePaths(const std::string &notebook_id) {
     buffer->SetFilePath(current_path);
     buffer->ClearBackupPathCache();
     buffer->DiscardBackup();
+    const bool was_encrypted = buffer->IsEncrypted();
     provider->SetFilePath(current_path);
+    buffer->RefreshProtectionState();
+    if (was_encrypted || buffer->IsEncrypted()) {
+      UpdateProtectedRegistration(*buffer);
+    }
 
     VXCORE_LOG_INFO("UpdatePaths: buffer id=%s, old=%s, new=%s", buffer->GetId().c_str(),
                     old_path.c_str(), current_path.c_str());
@@ -212,108 +222,139 @@ void BufferManager::UpdatePaths(const std::string &notebook_id) {
   }
 }
 
-std::string BufferManager::OpenBuffer(const std::string &notebook_id,
-                                      const std::string &file_path) {
+VxCoreError BufferManager::OpenBuffer(const std::string &notebook_id,
+                                      const std::string &file_path, std::string &out_id) {
+  out_id.clear();
   std::string effective_notebook_id = notebook_id;
   std::string effective_path = file_path;
-
   if (effective_path.rfind("vx://", 0) == 0) {
-    VXCORE_LOG_WARN("Cannot open virtual URI via OpenBuffer: %s", effective_path.c_str());
-    return "";
+    return VXCORE_ERR_INVALID_PARAM;
   }
 
-  // Auto-resolve absolute paths to notebook-relative paths
+  // Auto-resolve absolute paths to notebook-relative paths.
   if (effective_notebook_id.empty() && !IsRelativePath(effective_path)) {
     std::string resolved_nb_id;
     std::string resolved_rel_path;
     if (notebook_manager_->ResolvePathToNotebook(effective_path, resolved_nb_id,
                                                  resolved_rel_path) == VXCORE_OK) {
-      VXCORE_LOG_INFO("Auto-resolved absolute path to notebook: notebook_id=%s, relative_path=%s",
-                      resolved_nb_id.c_str(), resolved_rel_path.c_str());
       effective_notebook_id = resolved_nb_id;
       effective_path = resolved_rel_path;
     }
   }
 
-  VXCORE_LOG_INFO("OpenBuffer: notebook_id=%s, effective_path=%s",
-                  effective_notebook_id.c_str(), effective_path.c_str());
-
-  // Check if buffer already exists (de-duplication)
-  std::string existing_id = FindBufferByPath(effective_notebook_id, effective_path);
-  if (!existing_id.empty()) {
-    if (!effective_notebook_id.empty()) {
-      Notebook *nb = notebook_manager_->GetNotebook(effective_notebook_id);
-      if (nb) {
-        auto *store = nb->GetMetadataStore();
-        if (store) {
-          auto file_record = store->GetFileByPath(effective_path);
-          VXCORE_LOG_INFO("OpenBuffer[dedup]: GetFileByPath(%s) -> %s", effective_path.c_str(),
-                          file_record.has_value() ? file_record->id.c_str() : "NOT_FOUND");
-          if (!file_record.has_value()) {
-            file_record = TrySyncAndGetFile(nb, store, effective_path);
-          }
-          if (file_record.has_value()) {
-            RecordFileOpen(store, file_record->id);
-            VXCORE_LOG_INFO("OpenBuffer[dedup]: RecordFileOpen called for file_id=%s",
-                            file_record->id.c_str());
-          }
-        } else {
-          VXCORE_LOG_WARN("OpenBuffer[dedup]: MetadataStore is null for notebook %s",
-                          effective_notebook_id.c_str());
-        }
-      }
-    }
-    VXCORE_LOG_DEBUG("Buffer already open: id=%s, path=%s", existing_id.c_str(),
-                     effective_path.c_str());
-    return existing_id;
-  }
-
-  // Resolve notebook pointer for validation
   Notebook *notebook = nullptr;
   if (!effective_notebook_id.empty()) {
     notebook = notebook_manager_->GetNotebook(effective_notebook_id);
     if (!notebook) {
-      VXCORE_LOG_ERROR("Cannot open buffer: notebook not found: %s", effective_notebook_id.c_str());
-      return "";
+      return VXCORE_ERR_NOT_FOUND;
     }
   }
 
-  // Create new buffer (content loaded lazily on first access)
-  std::unique_ptr<Buffer> buffer;
-  if (notebook) {
-    buffer = std::make_unique<Buffer>(notebook, effective_path);
+  std::string existing_id = FindBufferByPath(effective_notebook_id, effective_path);
+  std::unique_ptr<Buffer> created;
+  Buffer *buffer = nullptr;
+  if (!existing_id.empty()) {
+    buffer = GetBuffer(existing_id);
   } else {
-    // External file - file_path is absolute
-    buffer = std::make_unique<Buffer>(effective_path);
+    created = notebook ? std::make_unique<Buffer>(notebook, effective_path)
+                       : std::make_unique<Buffer>(effective_path);
+    buffer = created.get();
   }
 
-  std::string id = buffer->GetId();
-  buffers_[id] = std::move(buffer);
-
-  VXCORE_LOG_INFO("Opened buffer: id=%s, notebook_id=%s, file_path=%s", id.c_str(),
-                  effective_notebook_id.c_str(), effective_path.c_str());
-
-  if (notebook) {
-    auto *store = notebook->GetMetadataStore();
-    if (store) {
-      auto file_record = store->GetFileByPath(effective_path);
-      VXCORE_LOG_INFO("OpenBuffer[new]: GetFileByPath(%s) -> %s", effective_path.c_str(),
-                      file_record.has_value() ? file_record->id.c_str() : "NOT_FOUND");
-      if (!file_record.has_value()) {
-        file_record = TrySyncAndGetFile(notebook, store, effective_path);
-      }
-      if (file_record.has_value()) {
-        RecordFileOpen(store, file_record->id);
-        VXCORE_LOG_INFO("OpenBuffer[new]: RecordFileOpen called for file_id=%s",
-                        file_record->id.c_str());
-      }
-    } else {
-      VXCORE_LOG_WARN("OpenBuffer[new]: MetadataStore is null for notebook %s",
-                      effective_notebook_id.c_str());
+  // Reuse the existing activity record only for protected-candidate validation.
+  // Ordinary deduplication keeps the mode cached; conversion replaces handles.
+  auto *store = notebook ? notebook->GetMetadataStore() : nullptr;
+  std::optional<StoreFileRecord> file_record;
+  if (store) {
+    file_record = store->GetFileByPath(effective_path);
+    if (!file_record) {
+      file_record = TrySyncAndGetFile(notebook, store, effective_path);
+    }
+    if (file_record && !created && buffer->IsEncrypted()) {
+      RefreshFileState(*buffer, effective_path, file_record->metadata);
+    }
+  }
+  if (buffer->IsEncrypted()) {
+    const auto error = EnsureProtectedContent(*buffer);
+    if (error != VXCORE_OK) {
+      return error;  // A failed new open destroys its candidate and retains .vswp.
     }
   }
 
-  return id;
+  if (created) {
+    existing_id = buffer->GetId();
+    buffers_[existing_id] = std::move(created);
+    if (buffer->IsEncrypted()) {
+      try {
+        UpdateProtectedRegistration(*buffer);
+      } catch (...) {
+        buffers_.erase(existing_id);
+        throw;
+      }
+    }
+  }
+  if (file_record) {
+    RecordFileOpen(store, file_record->id);
+  }
+  out_id = existing_id;
+  VXCORE_LOG_INFO("Opened buffer: id=%s, notebook_id=%s, file_path=%s", out_id.c_str(),
+                  effective_notebook_id.c_str(), effective_path.c_str());
+  return VXCORE_OK;
+}
+
+VxCoreError BufferManager::EnsureProtectedContent(Buffer &buffer) {
+  if (buffer.GetProtectionError() != VXCORE_OK) {
+    return buffer.GetProtectionError();
+  }
+  if (buffer.IsContentLoaded()) {
+    const auto *notebook = buffer.GetNotebook();
+    return notebook ? GitConflictResolver::CheckEncryptionKeyConflict(
+                          ConcatenatePaths(notebook->GetMetadataFolder(), "vx_sync"))
+                    : VXCORE_ERR_UNSUPPORTED;
+  }
+  if (!buffer.GetNotebook() || !notebook_manager_) {
+    return VXCORE_ERR_UNSUPPORTED;
+  }
+  const auto error =
+      notebook_manager_->UnlockNotebookWithCachedMaster(buffer.GetNotebookId());
+  if (error != VXCORE_OK) {
+    return error;
+  }
+  return buffer.LoadContent(buffer.ResolveFullPath());
+}
+
+void BufferManager::RefreshFileState(Buffer &buffer, const std::string &path,
+                                      const std::string &metadata) {
+  auto *provider = buffer.GetProvider();
+  if (!provider) {
+    return;
+  }
+  const bool was_encrypted = buffer.IsEncrypted();
+  const auto parsed = metadata.empty() ? nlohmann::json()
+                                      : nlohmann::json::parse(metadata, nullptr, false);
+  provider->SetFileState(path, parsed);
+  buffer.RefreshProtectionState();
+  if (was_encrypted || buffer.IsEncrypted()) {
+    UpdateProtectedRegistration(buffer);
+  }
+}
+
+void BufferManager::UpdateProtectedRegistration(Buffer &buffer) {
+  if (buffer.IsEncrypted()) {
+    if (!protected_buffers_) {
+      protected_buffers_ = std::make_unique<std::unordered_set<Buffer *>>();
+    }
+    protected_buffers_->insert(&buffer);
+  } else if (protected_buffers_) {
+    protected_buffers_->erase(&buffer);
+    if (protected_buffers_->empty()) {
+      protected_buffers_.reset();
+    }
+  }
+}
+
+bool BufferManager::HasProtectedBuffers() const noexcept {
+  return protected_buffers_ && !protected_buffers_->empty();
 }
 
 std::string BufferManager::OpenVirtualBuffer(const std::string &address) {
@@ -339,8 +380,17 @@ bool BufferManager::CloseBuffer(const std::string &id) {
     return false;
   }
 
-  // Clean up backup file before closing buffer
-  it->second->DiscardBackup();
+  // An incomplete conversion still owns its plaintext backup precondition.
+  if (!it->second->GetNotebook() ||
+      !it->second->GetNotebook()->IsEncryptionRecoveryRequired()) {
+    it->second->DiscardBackup();
+  }
+  if (it->second->IsEncrypted() && protected_buffers_) {
+    protected_buffers_->erase(it->second.get());
+    if (protected_buffers_->empty()) {
+      protected_buffers_.reset();
+    }
+  }
 
   buffers_.erase(it);
   VXCORE_LOG_INFO("Closed buffer: id=%s", id.c_str());
@@ -379,6 +429,9 @@ VxCoreError BufferManager::SaveBuffer(const std::string &id) {
     VXCORE_LOG_ERROR("Cannot save: buffer not found: id=%s", id.c_str());
     return VXCORE_ERR_BUFFER_NOT_FOUND;
   }
+  if (buffer->GetNotebook() && buffer->GetNotebook()->IsEncryptionRecoveryRequired()) {
+    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+  }
 
   if (buffer->IsVirtual()) {
     return VXCORE_OK;
@@ -390,11 +443,9 @@ VxCoreError BufferManager::SaveBuffer(const std::string &id) {
     VXCORE_LOG_ERROR("Cannot save: failed to resolve path for buffer: id=%s", id.c_str());
     return VXCORE_ERR_IO;
   }
-  buffer->SaveContent(full_path);
-
-  // Check if save succeeded
-  if (buffer->GetState() == VXCORE_BUFFER_SAVE_FAILED) {
-    return VXCORE_ERR_IO;
+  const auto error = buffer->SaveContent(full_path);
+  if (error != VXCORE_OK) {
+    return error;
   }
 
   VXCORE_LOG_INFO("Saved buffer: id=%s, revision=%d", id.c_str(), buffer->GetRevision());
@@ -431,11 +482,15 @@ VxCoreError BufferManager::ReloadBuffer(const std::string &id) {
     VXCORE_LOG_ERROR("Cannot reload: failed to resolve path for buffer: id=%s", id.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
-  buffer->LoadContent(full_path);
-
-  // Check if load succeeded
-  if (buffer->GetState() == VXCORE_BUFFER_FILE_MISSING) {
-    return VXCORE_ERR_NOT_FOUND;
+  if (buffer->IsEncrypted() && !buffer->IsContentLoaded()) {
+    return EnsureProtectedContent(*buffer);
+  }
+  const auto error = buffer->LoadContent(full_path);
+  if (buffer->IsEncrypted()) {
+    UpdateProtectedRegistration(*buffer);
+  }
+  if (error != VXCORE_OK) {
+    return error;
   }
 
   VXCORE_LOG_INFO("Reloaded buffer: id=%s, %zu bytes", id.c_str(), buffer->GetContent().size());
@@ -459,8 +514,11 @@ VxCoreError BufferManager::CheckExternalChanges(const std::string &id) {
                      id.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
-  buffer->CheckExternalChanges(full_path);
-  return VXCORE_OK;
+  const auto error = buffer->CheckExternalChanges(full_path);
+  if (buffer->IsEncrypted()) {
+    UpdateProtectedRegistration(*buffer);
+  }
+  return error;
 }
 
 VxCoreError BufferManager::GetBufferContent(const std::string &id, const void **out_data,
@@ -468,11 +526,20 @@ VxCoreError BufferManager::GetBufferContent(const std::string &id, const void **
   if (!out_data || !out_size) {
     return VXCORE_ERR_NULL_POINTER;
   }
+  *out_data = nullptr;
+  *out_size = 0;
 
   auto *buffer = GetBuffer(id);
   if (!buffer) {
     VXCORE_LOG_ERROR("Cannot get content: buffer not found: id=%s", id.c_str());
     return VXCORE_ERR_BUFFER_NOT_FOUND;
+  }
+
+  if (buffer->IsEncrypted()) {
+    const auto error = EnsureProtectedContent(*buffer);
+    if (error != VXCORE_OK) {
+      return error;
+    }
   }
 
   // Lazy load content if not yet loaded
@@ -482,9 +549,12 @@ VxCoreError BufferManager::GetBufferContent(const std::string &id, const void **
       VXCORE_LOG_ERROR("Cannot load content: failed to resolve path for buffer: id=%s", id.c_str());
       return VXCORE_ERR_NOT_FOUND;
     }
-    buffer->LoadContent(full_path);
-    if (buffer->GetState() == VXCORE_BUFFER_FILE_MISSING) {
-      return VXCORE_ERR_NOT_FOUND;
+    const auto error = buffer->LoadContent(full_path);
+    if (buffer->IsEncrypted()) {
+      UpdateProtectedRegistration(*buffer);
+    }
+    if (error != VXCORE_OK) {
+      return error;
     }
   }
 
@@ -494,7 +564,7 @@ VxCoreError BufferManager::GetBufferContent(const std::string &id, const void **
 }
 
 VxCoreError BufferManager::SetBufferContent(const std::string &id, const void *data, size_t size) {
-  if (!data) {
+  if (!data && size != 0) {
     return VXCORE_ERR_NULL_POINTER;
   }
 
@@ -503,10 +573,30 @@ VxCoreError BufferManager::SetBufferContent(const std::string &id, const void *d
     VXCORE_LOG_ERROR("Cannot set content: buffer not found: id=%s", id.c_str());
     return VXCORE_ERR_BUFFER_NOT_FOUND;
   }
+  if (buffer->GetNotebook() && buffer->GetNotebook()->IsEncryptionRecoveryRequired()) {
+    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+  }
+
+  if (buffer->IsEncrypted()) {
+    const auto error = EnsureProtectedContent(*buffer);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+    // Copy borrowed input before erasing the old content; input may alias it.
+    std::vector<uint8_t> new_content(size);
+    if (size != 0) {
+      std::memcpy(new_content.data(), data, size);
+    }
+    buffer->ReplaceProtectedContent(new_content);
+    buffer->SetContent(buffer->GetContent());
+    return VXCORE_OK;
+  }
 
   // Copy data into buffer's content vector
   std::vector<uint8_t> new_content(size);
-  std::memcpy(new_content.data(), data, size);
+  if (size != 0) {
+    std::memcpy(new_content.data(), data, size);
+  }
 
   buffer->SetContent(new_content);
   VXCORE_LOG_DEBUG("Set buffer content: id=%s, %zu bytes", id.c_str(), size);
@@ -518,6 +608,9 @@ VxCoreError BufferManager::WriteBackup(const std::string &id) {
   if (!buffer) {
     VXCORE_LOG_ERROR("Cannot write backup: buffer not found: id=%s", id.c_str());
     return VXCORE_ERR_BUFFER_NOT_FOUND;
+  }
+  if (buffer->GetNotebook() && buffer->GetNotebook()->IsEncryptionRecoveryRequired()) {
+    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
   }
 
   VxCoreError err = buffer->WriteBackup();
@@ -544,8 +637,21 @@ VxCoreError BufferManager::RecoverBackup(const std::string &id) {
     VXCORE_LOG_ERROR("Cannot recover backup: buffer not found: id=%s", id.c_str());
     return VXCORE_ERR_BUFFER_NOT_FOUND;
   }
+  if (buffer->GetNotebook() && buffer->GetNotebook()->IsEncryptionRecoveryRequired()) {
+    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+  }
 
+
+  if (buffer->IsEncrypted()) {
+    const auto error = EnsureProtectedContent(*buffer);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+  }
   VxCoreError err = buffer->RecoverBackup();
+  if (buffer->IsEncrypted()) {
+    UpdateProtectedRegistration(*buffer);
+  }
   VXCORE_LOG_INFO("Recover backup for buffer: id=%s, err=%d", id.c_str(), static_cast<int>(err));
   return err;
 }
@@ -555,6 +661,9 @@ VxCoreError BufferManager::DiscardBackup(const std::string &id) {
   if (!buffer) {
     VXCORE_LOG_ERROR("Cannot discard backup: buffer not found: id=%s", id.c_str());
     return VXCORE_ERR_BUFFER_NOT_FOUND;
+  }
+  if (buffer->GetNotebook() && buffer->GetNotebook()->IsEncryptionRecoveryRequired()) {
+    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
   }
 
   buffer->DiscardBackup();

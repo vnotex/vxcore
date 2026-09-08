@@ -126,6 +126,14 @@ VXCORE_API const char *vxcore_error_message(VxCoreError error) {
       return "Submitted order is not an exact permutation of existing children";
     case VXCORE_ERR_NODE_NOT_EXISTS:
       return "Node no longer exists on disk";
+    case VXCORE_ERR_ENCRYPTION_LOCKED:
+      return "Encrypted content is locked";
+    case VXCORE_ERR_ENCRYPTION_AUTH_FAILED:
+      return "Unable to unlock: incorrect password or damaged key data";
+    case VXCORE_ERR_ENCRYPTION_FORMAT:
+      return "Invalid or damaged encrypted data";
+    case VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED:
+      return "Encryption recovery is required";
     default:
       return "Unknown error";
   }

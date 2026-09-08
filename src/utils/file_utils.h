@@ -1,6 +1,7 @@
 #ifndef VXCORE_FILE_UTILS_H
 #define VXCORE_FILE_UTILS_H
 
+#include <cstdio>
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -117,6 +118,31 @@ bool IsSingleName(const std::string &path);
 VxCoreError ReadFile(const std::filesystem::path &path, std::string &out_content);
 
 VxCoreError WriteFile(const std::filesystem::path &path, const std::string &content);
+
+// Single-use binary writer. The parent directory must already exist. Write failures
+// prevent publication; destruction closes and removes an uncommitted temporary sibling.
+class AtomicFileWriter final {
+ public:
+  explicit AtomicFileWriter(const std::filesystem::path &path);
+  ~AtomicFileWriter();
+
+  AtomicFileWriter(const AtomicFileWriter &) = delete;
+  AtomicFileWriter &operator=(const AtomicFileWriter &) = delete;
+
+  VxCoreError Open();
+  VxCoreError Write(const void *data, size_t size);
+  VxCoreError Commit();
+
+ private:
+  std::filesystem::path path_;
+  std::filesystem::path temp_path_;
+  std::FILE *file_ = nullptr;
+  VxCoreError error_ = VXCORE_OK;
+  bool opened_ = false;
+  bool owns_temp_ = false;
+};
+
+VxCoreError WriteFileAtomic(const std::filesystem::path &path, const std::string &content);
 
 VxCoreError LoadJsonFile(const std::filesystem::path &path, nlohmann::json &out_json);
 

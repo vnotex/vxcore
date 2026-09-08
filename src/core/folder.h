@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include "vxcore/vxcore_types.h"
+
 namespace vxcore {
 
 struct FileRecord {
@@ -86,6 +88,10 @@ struct FileRecord {
   static FileRecord FromJson(const nlohmann::json &json);
   nlohmann::json ToJson() const;
   nlohmann::json ToJsonWithType() const;
+
+  // Metadata-only attachment APIs cannot authorize protected plaintext access.
+  // Uses this already-loaded record only; protected callers must use an open buffer.
+  VxCoreError CheckPlaintextAttachmentAccess() const;
 };
 
 // Folder record contains all infomation about the folder itself including metadata.

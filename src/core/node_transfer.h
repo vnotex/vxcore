@@ -56,7 +56,8 @@ class NodeTransfer {
                              const std::string &destination_folder_path,
                              const nlohmann::json &options, const NodeTransferProgress &progress,
                              std::unique_ptr<PreparedNodeTransfer> &out_transfer,
-                             std::string &out_error);
+                             std::string &out_error, Notebook *source_override = nullptr,
+                             Notebook *destination_override = nullptr);
 
   static VxCoreError Commit(NotebookManager *notebook_manager,
                             std::unique_ptr<PreparedNodeTransfer> transfer,
@@ -71,6 +72,18 @@ class NodeTransfer {
   static VxCoreError Recover(Notebook *notebook, int *out_recovered_count);
 
   static void Discard(std::unique_ptr<PreparedNodeTransfer> transfer);
+
+  static VxCoreError CopyWithinNotebook(Notebook *notebook, const std::string &source_path,
+                                        const std::string &destination_folder,
+                                        const std::string &new_name, std::string &out_id,
+                                        nlohmann::json &out_events);
+  // Source is a read-only portable encrypted bundle, never registered/opened in
+  // the destination session. Password/KDF work happens during prepare, outside IO.
+  static VxCoreError PrepareBundle(
+      NotebookManager *manager, const std::string &bundle_root, const std::string &folder_name,
+      const std::string &destination_id, const std::string &destination_folder,
+      const void *password, size_t password_size, const NodeTransferProgress &progress,
+      std::unique_ptr<PreparedNodeTransfer> &out_transfer, std::string &out_error);
 };
 
 }  // namespace vxcore

@@ -1,7 +1,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <new>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <vxcore/notebook_json_keys.h>
 
 #include "api/api_utils.h"
@@ -13,6 +15,7 @@
 #include "core/metadata_store.h"
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
+#include "core/standard_buffer_provider.h"
 #include "utils/base64.h"
 #include "vxcore/vxcore.h"
 
@@ -33,16 +36,84 @@ VxCoreError CheckBufferNotebookReadOnly(vxcore::VxCoreContext *ctx, const char *
     return VXCORE_OK;
   }
   auto *notebook = buffer->GetNotebook();
-  if (notebook && notebook->IsReadOnly()) {
-    return VXCORE_ERR_READ_ONLY;
-  }
+  if (notebook) return notebook->CheckWritable();
   return VXCORE_OK;
+}
+
+void AddBufferProtectionInfo(const vxcore::Buffer &buffer, nlohmann::json &json) {
+  if (!buffer.IsEncrypted()) {
+    return;
+  }
+  json[vxcore::kJsonKeyEncrypted] = true;
+  const auto editor_type = buffer.GetAuthenticatedEditorType();
+  if (!editor_type.empty()) {
+    json[vxcore::kJsonKeyEditorType] = editor_type;
+  }
+}
+
+// Resource calls borrow an existing buffer only. In particular, session-restored
+// protected buffers must not be loaded just to list or read their resources.
+VxCoreError GetResourceProvider(vxcore::VxCoreContext *ctx, const char *buffer_id,
+                               vxcore::IBufferProvider *&out_provider, bool writing = false) {
+  out_provider = nullptr;
+  if (!ctx->buffer_manager) return VXCORE_ERR_NOT_INITIALIZED;
+  auto *buffer = ctx->buffer_manager->GetBuffer(buffer_id);
+  if (!buffer) return VXCORE_ERR_BUFFER_NOT_FOUND;
+  if (buffer->IsEncrypted()) {
+    const auto error = buffer->GetProtectionError();
+    if (error != VXCORE_OK) return error;
+    if (!buffer->IsContentLoaded()) return VXCORE_ERR_ENCRYPTION_LOCKED;
+  }
+  if (writing && buffer->GetNotebook()) {
+    const auto error = buffer->GetNotebook()->CheckWritable();
+    if (error != VXCORE_OK) return error;
+  }
+  out_provider = buffer->GetProvider();
+  return out_provider ? VXCORE_OK : VXCORE_ERR_UNSUPPORTED;
+}
+
+struct ResourceBytes final {
+  std::vector<uint8_t> value;
+  ~ResourceBytes() { vxcore::NotebookEncryption::WipeBytes(value); }
+};
+
+struct ResourceMetadata final {
+  nlohmann::json value;
+  std::string serialized;
+  ~ResourceMetadata() {
+    vxcore::NotebookEncryption::WipeJson(value);
+    vxcore::NotebookEncryption::WipeString(serialized);
+  }
+};
+
+// Do not put provider exceptions (which may contain names or content) in logs or
+// shared context last_error. Concurrent callers use vxcore_error_message(error).
+template <typename Function>
+VxCoreError ResourceResult(Function &&function) {
+  try {
+    return function();
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const std::length_error &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const nlohmann::json::exception &) {
+    return VXCORE_ERR_JSON_SERIALIZE;
+  } catch (const std::filesystem::filesystem_error &) {
+    return VXCORE_ERR_IO;
+  } catch (const std::ios_base::failure &) {
+    return VXCORE_ERR_IO;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
 }
 
 }  // namespace
 
 VXCORE_API VxCoreError vxcore_buffer_open(VxCoreContextHandle context, const char *notebook_id,
                                           const char *file_path, char **out_id) {
+  if (out_id) {
+    *out_id = nullptr;
+  }
   if (!context || !file_path || !out_id) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -75,11 +146,15 @@ VXCORE_API VxCoreError vxcore_buffer_open(VxCoreContextHandle context, const cha
       }
     }
 
-    std::string id = ctx->buffer_manager->OpenBuffer(nb_id, file_path);
-    if (id.empty()) {
-      return VXCORE_ERR_INVALID_PARAM;
+    std::string id;
+    const auto error = ctx->buffer_manager->OpenBuffer(nb_id, file_path, id);
+    if (error != VXCORE_OK) {
+      return error;
     }
     *out_id = vxcore_strdup(id.c_str());
+    if (!*out_id) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
     vxcore::PersistSession(ctx);
     return VXCORE_OK;
   } catch (const std::exception &e) {
@@ -148,8 +223,15 @@ VXCORE_API VxCoreError vxcore_buffer_open_by_node_id(VxCoreContextHandle context
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    std::string id = ctx->buffer_manager->OpenBuffer(notebook_id, relative_path);
+    std::string id;
+    err = ctx->buffer_manager->OpenBuffer(notebook_id, relative_path, id);
+    if (err != VXCORE_OK) {
+      return err;
+    }
     *out_id = vxcore_strdup(id.c_str());
+    if (!*out_id) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
     vxcore::PersistSession(ctx);
     return VXCORE_OK;
   } catch (const std::exception &e) {
@@ -211,6 +293,7 @@ VXCORE_API VxCoreError vxcore_buffer_get(VxCoreContextHandle context, const char
     json[vxcore::kJsonKeyMetadata] = buffer->GetMetadata();
     json["lastModifiedTime"] = buffer->GetLastModifiedTime();
     json["contentLoaded"] = buffer->IsContentLoaded();
+    AddBufferProtectionInfo(*buffer, json);
     // Note: content field omitted (retrieved separately via get_content APIs)
 
     std::string json_str = json.dump();
@@ -249,6 +332,7 @@ VXCORE_API VxCoreError vxcore_buffer_list(VxCoreContextHandle context, char **ou
       buf_json[vxcore::kJsonKeyMetadata] = buf->GetMetadata();
       buf_json["lastModifiedTime"] = buf->GetLastModifiedTime();
       buf_json["contentLoaded"] = buf->IsContentLoaded();
+      AddBufferProtectionInfo(*buf, buf_json);
       json.push_back(buf_json);
     }
     std::string json_str = json.dump();
@@ -441,7 +525,7 @@ VXCORE_API VxCoreError vxcore_buffer_get_content_raw(VxCoreContextHandle context
 
 VXCORE_API VxCoreError vxcore_buffer_set_content_raw(VxCoreContextHandle context, const char *id,
                                                      const void *data, size_t size) {
-  if (!context || !id || !data) {
+  if (!context || !id || (!data && size != 0)) {
     return VXCORE_ERR_NULL_POINTER;
   }
 
@@ -677,6 +761,20 @@ VXCORE_API VxCoreError vxcore_buffer_insert_asset_raw(VxCoreContextHandle contex
       ctx->last_error = "Buffer provider not available (unsupported notebook type)";
       return VXCORE_ERR_UNSUPPORTED;
     }
+    if (provider->IsEncrypted()) {
+      *out_relative_path = nullptr;
+      return ResourceResult([&]() -> VxCoreError {
+        ResourceBytes bytes;
+        const auto *begin = static_cast<const uint8_t *>(data);
+        bytes.value.assign(begin, begin + data_size);
+        std::string url;
+        const auto error = provider->InsertAssetRaw(asset_name, bytes.value, url);
+        if (error != VXCORE_OK) return error;
+        *out_relative_path = vxcore_strdup(url.c_str());
+        return *out_relative_path ? VXCORE_OK : VXCORE_ERR_OUT_OF_MEMORY;
+      });
+    }
+
 
     std::vector<uint8_t> data_vec(static_cast<const uint8_t *>(data),
                                   static_cast<const uint8_t *>(data) + data_size);
@@ -836,6 +934,86 @@ VXCORE_API VxCoreError vxcore_buffer_get_resource_base_path(VxCoreContextHandle 
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
   }
+}
+
+// ============ Authenticated Buffer Resources ============
+
+VXCORE_API VxCoreError vxcore_buffer_read_resource(VxCoreContextHandle context,
+                                                   const char *buffer_id,
+                                                   const char *resource_url,
+                                                   VxCoreResourceReadCallback callback,
+                                                   void *userdata) {
+  if (!context || !buffer_id || !resource_url || !callback) return VXCORE_ERR_NULL_POINTER;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return ResourceResult([&]() -> VxCoreError {
+    vxcore::IBufferProvider *provider = nullptr;
+    auto error = GetResourceProvider(ctx, buffer_id, provider);
+    if (error != VXCORE_OK) return error;
+    ResourceBytes bytes;
+    error = provider->ReadResource(resource_url, bytes.value);
+    if (error != VXCORE_OK) return error;
+    // Full authentication has completed and no key-registry mutex is held.
+    // The owner wipes/releases the bytes even if a C++ callback throws.
+    callback(bytes.value.empty() ? nullptr : bytes.value.data(), bytes.value.size(), userdata);
+    return VXCORE_OK;
+  });
+}
+
+VXCORE_API VxCoreError vxcore_buffer_export_resource(VxCoreContextHandle context,
+                                                     const char *buffer_id,
+                                                     const char *resource_url,
+                                                     const char *destination_path) {
+  if (!context || !buffer_id || !resource_url || !destination_path) return VXCORE_ERR_NULL_POINTER;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return ResourceResult([&]() -> VxCoreError {
+    vxcore::IBufferProvider *provider = nullptr;
+    const auto error = GetResourceProvider(ctx, buffer_id, provider);
+    if (error != VXCORE_OK) return error;
+    auto *protected_provider = dynamic_cast<vxcore::StandardBufferProvider *>(provider);
+    if (!protected_provider || !protected_provider->IsEncrypted()) return VXCORE_ERR_UNSUPPORTED;
+    return protected_provider->ExportProtectedResource(resource_url, destination_path);
+  });
+}
+
+VXCORE_API VxCoreError vxcore_buffer_list_resources(VxCoreContextHandle context,
+                                                    const char *buffer_id,
+                                                    char **out_resources_json) {
+  if (out_resources_json) *out_resources_json = nullptr;
+  if (!context || !buffer_id || !out_resources_json) return VXCORE_ERR_NULL_POINTER;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return ResourceResult([&]() -> VxCoreError {
+    vxcore::IBufferProvider *provider = nullptr;
+    auto error = GetResourceProvider(ctx, buffer_id, provider);
+    if (error != VXCORE_OK) return error;
+    auto *protected_provider = dynamic_cast<vxcore::StandardBufferProvider *>(provider);
+    if (!protected_provider || !protected_provider->IsEncrypted()) return VXCORE_ERR_UNSUPPORTED;
+    ResourceMetadata resources;
+    error = protected_provider->ListProtectedResources(resources.value);
+    if (error != VXCORE_OK) return error;
+    resources.serialized = resources.value.dump();
+    *out_resources_json = vxcore_strdup(resources.serialized.c_str());
+    return *out_resources_json ? VXCORE_OK : VXCORE_ERR_OUT_OF_MEMORY;
+  });
+}
+
+VXCORE_API VxCoreError vxcore_buffer_write_comment_resource(VxCoreContextHandle context,
+                                                           const char *buffer_id,
+                                                           const void *data, size_t size) {
+  if (!context || !buffer_id || (!data && size)) return VXCORE_ERR_NULL_POINTER;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return ResourceResult([&]() -> VxCoreError {
+    vxcore::IBufferProvider *provider = nullptr;
+    const auto error = GetResourceProvider(ctx, buffer_id, provider, true);
+    if (error != VXCORE_OK) return error;
+    auto *protected_provider = dynamic_cast<vxcore::StandardBufferProvider *>(provider);
+    if (!protected_provider || !protected_provider->IsEncrypted()) return VXCORE_ERR_UNSUPPORTED;
+    ResourceBytes bytes;
+    if (size) {
+      const auto *begin = static_cast<const uint8_t *>(data);
+      bytes.value.assign(begin, begin + size);
+    }
+    return protected_provider->WriteProtectedComments(bytes.value);
+  });
 }
 
 // ============ Buffer Attachment Operations (Filesystem + Metadata) ============

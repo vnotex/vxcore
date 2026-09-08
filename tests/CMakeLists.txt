@@ -111,6 +111,7 @@ add_vxcore_test(test_tag_sync)
 add_vxcore_test(test_filetype)
 add_vxcore_test(test_workspace)
 add_vxcore_test(test_buffer)
+target_link_libraries(test_buffer PRIVATE libgit2package sodium)
 add_vxcore_test(test_buffer_save_read_only)
 add_vxcore_test(test_notebook_mutators_read_only)
 # test_notebook_open_ex: T14 of open-notebook-remote-readonly plan. Verifies
@@ -496,6 +497,13 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/search/search_file_info.cpp
     ${CMAKE_SOURCE_DIR}/src/search/search_query.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/path_provider.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_defaults.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/git/libgit2_init.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/process_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp
@@ -505,7 +513,7 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/content_processor/content_processor.cpp
     ${CMAKE_SOURCE_DIR}/src/core/content_processor/markdown_handler.cpp)
 target_include_directories(test_folder_manager PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
-target_link_libraries(test_folder_manager PRIVATE sqlite3 nlohmann_json cmark)
+target_link_libraries(test_folder_manager PRIVATE sqlite3 nlohmann_json cmark sodium libgit2package)
 add_test(NAME test_folder_manager COMMAND test_folder_manager)
 
 # test_sync_manager_dispatch: T9 of git-sync-backend plan. Hosts MockSyncBackend

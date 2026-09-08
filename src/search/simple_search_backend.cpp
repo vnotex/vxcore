@@ -6,6 +6,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <fstream>
 #include <limits>
@@ -226,6 +227,12 @@ bool ReadSearchText(const std::string &path, const std::vector<std::string> &enc
   std::string bytes(static_cast<size_t>(end), '\0');
   file.seekg(0, std::ios::beg);
   if (!bytes.empty() && !file.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))) {
+    return false;
+  }
+  if (bytes.size() >= 8 &&
+      (std::memcmp(bytes.data(), "VNOTEE1\0", 8) == 0 ||
+       std::memcmp(bytes.data(), "VNEKEY1\0", 8) == 0)) {
+    output.clear();
     return false;
   }
   return DecodeSearchText(bytes, encodings, output);

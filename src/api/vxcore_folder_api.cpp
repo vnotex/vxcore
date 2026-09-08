@@ -612,6 +612,15 @@ VXCORE_API VxCoreError vxcore_node_get_attachments_folder(VxCoreContextHandle co
       return error;
     }
 
+    if (!record) {
+      return VXCORE_ERR_NOT_FOUND;
+    }
+    error = record->CheckPlaintextAttachmentAccess();
+    if (error != VXCORE_OK) {
+      return notebook->GetType() == vxcore::NotebookType::Bundled
+                 ? error : VXCORE_ERR_UNSUPPORTED;
+    }
+
     std::string path = folder_manager->GetAssetsFolder(file_path);
     if (path.empty()) {
       ctx->last_error = "File not found";

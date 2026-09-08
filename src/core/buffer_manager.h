@@ -5,6 +5,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "buffer.h"
@@ -22,10 +23,11 @@ class BufferManager {
   BufferManager(ConfigManager *config_manager, NotebookManager *notebook_manager);
   ~BufferManager();
 
-  // Open a buffer for a file, returns buffer ID (or existing ID if already open)
-  // For notebook files: notebook_id is the notebook ID, file_path is relative to notebook root
-  // For external files: notebook_id is empty, file_path is absolute path
-  std::string OpenBuffer(const std::string &notebook_id, const std::string &file_path);
+  // Open a buffer, authenticating protected candidates before returning an ID.
+  // Plaintext content remains lazy. Session restoration uses LoadBuffers instead.
+  // notebook_id is empty and file_path absolute for external files.
+  VxCoreError OpenBuffer(const std::string &notebook_id, const std::string &file_path,
+                        std::string &out_id);
 
   // Open a virtual buffer for a non-file-backed address, returns buffer ID
   std::string OpenVirtualBuffer(const std::string &address);
@@ -78,6 +80,9 @@ class BufferManager {
   // Close all buffers associated with a notebook
   void CloseBuffersForNotebook(const std::string &notebook_id);
 
+  // Sparse protected-only registry; lock checks never walk ordinary buffers.
+  bool HasProtectedBuffers() const noexcept;
+
   // Get provider for a buffer (returns nullptr if unsupported or not found)
   IBufferProvider *GetProvider(const std::string &buffer_id);
 
@@ -95,11 +100,15 @@ class BufferManager {
  private:
   void LoadBuffers();
   void EmitEvent(const char *event_name, const nlohmann::json &event_data);
+  VxCoreError EnsureProtectedContent(Buffer &buffer);
+  void RefreshFileState(Buffer &buffer, const std::string &path, const std::string &metadata);
+  void UpdateProtectedRegistration(Buffer &buffer);
 
   ConfigManager *config_manager_ = nullptr;
   NotebookManager *notebook_manager_ = nullptr;
   EventManager *event_manager_ = nullptr;
   std::map<std::string, std::unique_ptr<Buffer>> buffers_;
+  std::unique_ptr<std::unordered_set<Buffer *>> protected_buffers_;
   bool shutdown_called_ = false;
 };
 

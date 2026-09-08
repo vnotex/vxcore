@@ -216,6 +216,9 @@ VxCoreError SyncManager::ValidateNotebook(const std::string &notebook_id) {
   if (notebook->GetType() == NotebookType::Raw) {
     return VXCORE_ERR_UNSUPPORTED;
   }
+  if (notebook->IsEncryptionRecoveryRequired()) {
+    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+  }
   return VXCORE_OK;
 }
 

@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -9,6 +12,7 @@
 #include "sync/git/git_defaults.h"
 #include "sync/git/git_error_translator.h"
 #include "sync/git/git_handles.h"
+#include "utils/file_utils.h"
 #include "utils/logger.h"
 
 // ============================================================================
@@ -47,6 +51,53 @@
 namespace vxcore {
 
 namespace {
+
+VxCoreError EnsureEncryptedAttributes(git_repository *repo) {
+  // info/attributes has precedence over user/worktree attributes and survives
+  // checkout. A remote revision cannot turn authenticated envelopes into text
+  // while .gitattributes itself is being merged.
+  const auto path = PathFromUtf8(git_repository_path(repo)) / "info" / "attributes";
+  const auto info = path.parent_path();
+  std::error_code ec;
+  std::filesystem::create_directories(info, ec);
+  if (ec || CheckReparsePoint(PathToUtf8(info)) != ReparseState::kNo) {
+    return VXCORE_ERR_IO;
+  }
+  const bool exists = std::filesystem::exists(path, ec);
+  if (ec) return VXCORE_ERR_IO;
+  std::string bytes;
+  if (exists) {
+    if (CheckReparsePoint(PathToUtf8(path)) != ReparseState::kNo) return VXCORE_ERR_IO;
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    if (!input) return VXCORE_ERR_IO;
+    const auto size = input.tellg();
+    if (size < 0) return VXCORE_ERR_IO;
+    bytes.resize(static_cast<size_t>(size));
+    input.seekg(0);
+    if (!bytes.empty()) input.read(&bytes[0], static_cast<std::streamsize>(bytes.size()));
+    if (!input || input.peek() != std::char_traits<char>::eof() || input.bad()) {
+      return VXCORE_ERR_IO;
+    }
+  }
+  const std::string rule = "*.[vV][nN][eE] -text -diff -merge";
+  std::string last_line;
+  std::istringstream lines(bytes);
+  for (std::string line; std::getline(lines, line);) {
+    const auto first = line.find_first_not_of(" \t\r");
+    if (first != std::string::npos && line[first] != '#') {
+      const auto last = line.find_last_not_of(" \t\r");
+      last_line = line.substr(first, last - first + 1);
+    }
+  }
+  if (last_line != rule) {
+    if (!bytes.empty() && bytes.back() != '\n') bytes.push_back('\n');
+    bytes += rule + "\n";
+    const auto error = WriteFileAtomic(path, bytes);
+    if (error != VXCORE_OK) return error;
+  }
+  git_attr_cache_flush(repo);
+  return VXCORE_OK;
+}
 
 // Workaround for libgit2 WinHTTP credential-callback failures against real
 // GitHub HTTPS. Embeds the PAT directly into the URL so WinHTTP picks up
@@ -245,7 +296,7 @@ VxCoreError GitSyncPipeline::ApplyDefaultGitConfig() {
   if (rc != 0) {
     return TranslateGitError(rc);
   }
-  return VXCORE_OK;
+  return EnsureEncryptedAttributes(repo_);
 }
 
 // T17 helper: build a detached anonymous remote pointing at config_.remote_url
@@ -330,6 +381,11 @@ VxCoreError GitSyncPipeline::StageAll() {
   git_indexPtr idx(raw_idx);
   if (rc != 0) {
     return TranslateGitError(rc);
+  }
+  // Only explicit conflict resolution may select an envelope. Staging the
+  // checkout's copy here would silently turn a pending key conflict into a win.
+  if (git_index_has_conflicts(idx.get())) {
+    return VXCORE_ERR_SYNC_CONFLICT;
   }
 
   struct AddCbCtx {};

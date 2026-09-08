@@ -3,14 +3,18 @@
 #include <vxcore/notebook_json_keys.h>
 
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <new>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <stdexcept>
 
 #include "api/api_utils.h"
 #include "core/buffer_manager.h"
+#include "core/bundled_folder_manager.h"
 #include "core/bundled_notebook.h"
 #include "core/context.h"
 #include "core/event_manager.h"
@@ -22,6 +26,204 @@
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "vxcore/vxcore.h"
+
+namespace {
+
+template <typename Function>
+VxCoreError EncryptionApiResult(Function &&function) {
+  // Do not write context.last_error here: independent worker KDFs may execute
+  // concurrently. Consumers obtain stable public text from vxcore_error_message().
+  try {
+    return function();
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const std::length_error &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const nlohmann::json::exception &) {
+    return VXCORE_ERR_ENCRYPTION_FORMAT;
+  } catch (const std::filesystem::filesystem_error &) {
+    return VXCORE_ERR_IO;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+}  // namespace
+
+VXCORE_API VxCoreError vxcore_encryption_prepare_notebook(
+    VxCoreContextHandle context, const char *notebook_id, const char *source_notebook_id,
+    const void *password, size_t password_size, VxCoreEncryptionSetupHandle *out_setup) {
+  if (out_setup) {
+    *out_setup = nullptr;
+  }
+  if (!context || !notebook_id || !out_setup || (!password && password_size)) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  if (!*notebook_id || (source_notebook_id && !*source_notebook_id)) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return EncryptionApiResult([&]() {
+    vxcore::NotebookManager::EncryptionSetup *setup = nullptr;
+    auto error = ctx->notebook_manager->PrepareNotebookEncryption(
+        notebook_id, source_notebook_id ? source_notebook_id : "", password, password_size, setup);
+    if (error == VXCORE_OK) {
+      *out_setup = reinterpret_cast<VxCoreEncryptionSetupHandle>(setup);
+    }
+    return error;
+  });
+}
+
+VXCORE_API VxCoreError vxcore_encryption_commit_notebook(
+    VxCoreContextHandle context, VxCoreEncryptionSetupHandle setup) {
+  if (!context) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return EncryptionApiResult([&]() {
+    return ctx->notebook_manager->CommitNotebookEncryption(
+        reinterpret_cast<vxcore::NotebookManager::EncryptionSetup *>(setup));
+  });
+}
+
+VXCORE_API void vxcore_encryption_free_setup(
+    VxCoreContextHandle context, VxCoreEncryptionSetupHandle setup) {
+  if (!context || !setup) {
+    return;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  (void)EncryptionApiResult([&]() {
+    ctx->notebook_manager->FreeEncryptionSetup(
+        reinterpret_cast<vxcore::NotebookManager::EncryptionSetup *>(setup));
+    return VXCORE_OK;
+  });
+}
+
+VXCORE_API VxCoreError vxcore_encryption_unlock_notebook(
+    VxCoreContextHandle context, const char *notebook_id,
+    const void *password, size_t password_size) {
+  if (!context || !notebook_id || (!password && password_size)) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  if (!*notebook_id) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return EncryptionApiResult([&]() {
+    return ctx->notebook_manager->UnlockNotebookEncryption(notebook_id, password, password_size);
+  });
+}
+
+VXCORE_API VxCoreError vxcore_encryption_lock_all(VxCoreContextHandle context) {
+  if (!context) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (ctx->buffer_manager && ctx->buffer_manager->HasProtectedBuffers()) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+  return EncryptionApiResult([&]() { return ctx->notebook_manager->LockAllEncryption(); });
+}
+
+VXCORE_API VxCoreError vxcore_encryption_get_status(
+    VxCoreContextHandle context, const char *notebook_id,
+    const char *file_path, char **out_status_json) {
+  if (out_status_json) {
+    *out_status_json = nullptr;
+  }
+  if (!context || !notebook_id || !out_status_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  if (!*notebook_id) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return EncryptionApiResult([&]() {
+    std::string json;
+    auto error = ctx->notebook_manager->GetEncryptionStatus(notebook_id, file_path, json);
+    if (error == VXCORE_OK) {
+      *out_status_json = vxcore_strdup(json.c_str());
+      if (!*out_status_json) {
+        return VXCORE_ERR_OUT_OF_MEMORY;
+      }
+    }
+    return error;
+  });
+}
+
+VXCORE_API VxCoreError vxcore_encryption_protect_note(
+    VxCoreContextHandle context, const char *notebook_id, const char *file_path,
+    const void *rewritten_body, size_t body_size, const char *resource_plan_json,
+    char **out_encrypted_path) {
+  if (out_encrypted_path) {
+    *out_encrypted_path = nullptr;
+  }
+  if (!context || !notebook_id || !file_path || !resource_plan_json ||
+      !out_encrypted_path || (!rewritten_body && body_size)) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return EncryptionApiResult([&]() -> VxCoreError {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      return VXCORE_ERR_NOT_FOUND;
+    }
+    auto *manager = dynamic_cast<vxcore::BundledFolderManager *>(notebook->GetFolderManager());
+    if (!manager) {
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+    // Reserve ABI output before any durable publication.
+    const auto target = notebook->GetCleanRelativePath(file_path) + ".vne";
+    std::unique_ptr<char, decltype(&std::free)> result(vxcore_strdup(target.c_str()), &std::free);
+    if (!result) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+    std::string path;
+    const auto error = manager->ProtectNote(file_path, rewritten_body, body_size,
+                                             resource_plan_json, path);
+    if (error == VXCORE_OK) {
+      *out_encrypted_path = result.release();
+    }
+    return error;
+  });
+}
+
+VXCORE_API VxCoreError vxcore_encryption_create_note(
+    VxCoreContextHandle context, const char *notebook_id, const char *parent_path,
+    const char *name, const char *editor_type, const void *body, size_t body_size,
+    char **out_file_id) {
+  if (out_file_id) {
+    *out_file_id = nullptr;
+  }
+  if (!context || !notebook_id || !parent_path || !name || !editor_type ||
+      !out_file_id || (!body && body_size)) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return EncryptionApiResult([&]() -> VxCoreError {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      return VXCORE_ERR_NOT_FOUND;
+    }
+    auto *manager = dynamic_cast<vxcore::BundledFolderManager *>(notebook->GetFolderManager());
+    if (!manager) {
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+    std::unique_ptr<char, decltype(&std::free)> result(
+        static_cast<char *>(std::malloc(37)), &std::free);
+    if (!result) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+    std::string id;
+    const auto error = manager->CreateEncryptedNote(parent_path, name, editor_type,
+                                                      body, body_size, id);
+    if (error == VXCORE_OK) {
+      std::memcpy(result.get(), id.c_str(), 37);
+      *out_file_id = result.release();
+    }
+    return error;
+  });
+}
 
 struct VxCoreRecycleBinCleanup {
   std::string notebook_id;

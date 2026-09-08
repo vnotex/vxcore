@@ -139,6 +139,17 @@ class BundledFolderManager : public FolderManager {
   // Recovers private cross-notebook transfer publication/removal journals.
   VxCoreError RecoverTransfers(int *out_recovered_count);
 
+  // The caller quiesces views/buffers and holds maintenance then notebook IO.
+  // Old plaintext buffers remain alive until the durable replacement is published.
+  VxCoreError ProtectNote(const std::string &file_path, const void *body, size_t body_size,
+                          const std::string &resource_plan_json, std::string &out_path);
+  VxCoreError CreateEncryptedNote(const std::string &parent_path, const std::string &name,
+                                  const std::string &editor_type, const void *body,
+                                  size_t body_size, std::string &out_id);
+  // Invoked only when existing transfer discovery encounters its encryption child.
+  VxCoreError RecoverEncryptionTransactions(const std::filesystem::path &directory,
+                                           int *out_recovered_count);
+
   // Returns the path to the recycle bin folder
   std::string GetRecycleBinPath() const;
 
@@ -165,7 +176,21 @@ class BundledFolderManager : public FolderManager {
   }
   void TransferInvalidateCache(const std::string &folder_path) { InvalidateCache(folder_path); }
 
+  VxCoreError ContainsEncryptedNotes(const std::string &folder_path, bool &out_contains);
  private:
+  VxCoreError RecycleProtectedNode(const std::string &path, bool folder);
+  VxCoreError MoveProtectedFile(const std::string &path, const std::string &destination_folder);
+  VxCoreError CommitProtectedRelocation(nlohmann::json &journal);
+  VxCoreError CompleteProtectedRelocation(const std::filesystem::path &directory,
+                                          nlohmann::json &journal);
+  VxCoreError NormalizeRecycledAssets(nlohmann::json &journal, const std::string &folder_path,
+                                      const std::filesystem::path &destination);
+  VxCoreError CommitEncryptedNote(const std::string &source_path, const std::string &parent_path,
+                                  const std::string &name, const std::string &editor_type,
+                                  const void *body, size_t body_size,
+                                  const nlohmann::json &plan, std::string &out_result);
+  VxCoreError CompleteEncryptionTransaction(const std::filesystem::path &directory,
+                                            nlohmann::json &journal);
   VxCoreError GetFolderConfig(const std::string &folder_path, FolderConfig **out_config,
                               const std::string *parent_id = nullptr);
   VxCoreError LoadFolderConfig(const std::string &folder_path,
@@ -176,7 +201,8 @@ class BundledFolderManager : public FolderManager {
   // stable storage, then renames it over the live file. Used by the import
   // commit point, where a truncated-then-interrupted in-place rewrite (what
   // SaveFolderConfig does) would destroy the destination parent's index.
-  VxCoreError SaveFolderConfigAtomic(const std::string &folder_path, const FolderConfig &config);
+  VxCoreError SaveFolderConfigAtomic(const std::string &folder_path, const FolderConfig &config,
+                                     bool emit_event = true);
 
   std::string GetConfigPath(const std::string &folder_path) const;
   std::string GetContentPath(const std::string &folder_path) const;

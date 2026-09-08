@@ -36,6 +36,7 @@
 #include "event_names.h"
 #include "metadata_store.h"
 #include "notebook_manager.h"
+#include "sync/git/git_conflict_resolver.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -67,6 +68,7 @@ struct IndexedFile {
   FileRecord destination_record;
   std::string source_assets_root;
   std::string staged_assets_root;
+  bool has_backup = false;
 };
 
 struct IndexedFolder {
@@ -75,8 +77,18 @@ struct IndexedFolder {
   FolderConfig destination_config;
 };
 
+struct ProtectedTransferKeys {
+  std::shared_ptr<const NotebookEncryption::Key> source;
+  std::shared_ptr<const NotebookEncryption::Key> destination;
+  NotebookEncryption::KeyEnvelope source_envelope;
+  NotebookEncryption::KeyEnvelope destination_envelope;
+};
+
 struct PreparedNodeTransferImpl : PreparedNodeTransfer {
   NotebookManager *notebook_manager = nullptr;
+  Notebook *source_override = nullptr;
+  Notebook *destination_override = nullptr;
+  std::unique_ptr<Notebook> bundle_source;
   std::string source_notebook_id;
   std::string source_relative_path;
   std::string destination_notebook_id;
@@ -102,7 +114,46 @@ struct PreparedNodeTransferImpl : PreparedNodeTransfer {
   std::vector<IndexedFile> files;
   std::vector<IndexedFolder> folders;
   std::vector<std::string> tag_paths;
+  std::unique_ptr<ProtectedTransferKeys> protected_keys;
 };
+
+// A bundle is an immutable source, not a session notebook or an indexing job.
+// It deliberately has no metadata database and cannot modify its backing tree.
+class BundleNotebook final : public Notebook {
+ public:
+  BundleNotebook(const std::string &root, NotebookConfig config)
+      : Notebook("", root, NotebookType::Bundled) {
+    config_ = std::move(config);
+    folder_manager_ = std::make_unique<BundledFolderManager>(this);
+    SetReadOnly(true);
+  }
+  std::string GetMetadataFolder() const override {
+    return ConcatenatePaths(root_folder_, "vx_notebook");
+  }
+  std::string GetConfigPath() const override {
+    return ConcatenatePaths(GetMetadataFolder(), "config.json");
+  }
+  VxCoreError UpdateConfig(const NotebookConfig &) override { return VXCORE_ERR_READ_ONLY; }
+  VxCoreError RebuildCache() override { return VXCORE_ERR_READ_ONLY; }
+  std::string GetRecycleBinPath() const override { return {}; }
+  VxCoreError EmptyRecycleBin() override { return VXCORE_ERR_READ_ONLY; }
+};
+
+VxCoreError ValidateTransferEnvelope(Notebook *notebook,
+                                     const NotebookEncryption::KeyEnvelope &expected) {
+  auto error = GitConflictResolver::CheckEncryptionKeyConflict(
+      ConcatenatePaths(notebook->GetMetadataFolder(), "vx_sync"));
+  if (error != VXCORE_OK) return error;
+  NotebookEncryption::KeyEnvelope current;
+  error = NotebookEncryption::ReadKeyEnvelope(
+      PathFromUtf8(notebook->GetMetadataFolder()) / "encryption.vne", current);
+  if (error != VXCORE_OK) return error;
+  std::string current_bytes, expected_bytes;
+  error = NotebookEncryption::EncodeKeyEnvelope(current, current_bytes);
+  if (error == VXCORE_OK) error = NotebookEncryption::EncodeKeyEnvelope(expected, expected_bytes);
+  return error != VXCORE_OK ? error
+      : (current_bytes == expected_bytes ? VXCORE_OK : VXCORE_ERR_ENCRYPTION_LOCKED);
+}
 
 uint64_t FnvAppend(uint64_t hash, const void *data, size_t size) {
   const auto *bytes = static_cast<const unsigned char *>(data);
@@ -396,7 +447,12 @@ bool HasUnsafeComponent(const fs::path &root, const fs::path &path) {
 VxCoreError ResolveAssetsRoot(Notebook *notebook, const std::string &file_path,
                               std::string &out_root) {
   const std::string &configured = notebook->GetConfig().assets_folder;
-  if (configured.empty() || !IsSafeRelativePath(configured, false)) {
+  const auto size = file_path.size();
+  const bool protected_path = size >= 4 && file_path[size - 4] == '.' &&
+      std::tolower(static_cast<unsigned char>(file_path[size - 3])) == 'v' &&
+      std::tolower(static_cast<unsigned char>(file_path[size - 2])) == 'n' &&
+      std::tolower(static_cast<unsigned char>(file_path[size - 1])) == 'e';
+  if (configured.empty() || (!protected_path && !IsSafeRelativePath(configured, false))) {
     return VXCORE_ERR_INVALID_PARAM;
   }
   const auto split = SplitPath(file_path);
@@ -419,6 +475,11 @@ VxCoreError ResolveAssetsRoot(Notebook *notebook, const std::string &file_path,
 }
 
 VxCoreError ValidateAttachments(const FileRecord &record) {
+  const auto protection = record.CheckPlaintextAttachmentAccess();
+  if (protection != VXCORE_OK) {
+    if (protection != VXCORE_ERR_ENCRYPTION_LOCKED) return protection;
+    return record.attachments.empty() ? VXCORE_OK : VXCORE_ERR_ENCRYPTION_FORMAT;
+  }
   for (const auto &attachment : record.attachments) {
     if (!IsSafeRelativePath(attachment, false)) {
       return VXCORE_ERR_INVALID_PARAM;
@@ -437,7 +498,9 @@ VxCoreError ValidateContainedPath(Notebook *notebook, const fs::path &path) {
   return VXCORE_OK;
 }
 
-VxCoreError HashPath(const fs::path &path, const std::string &label, uint64_t &hash) {
+VxCoreError HashPath(const fs::path &path, const std::string &label, uint64_t &hash,
+                     const std::set<std::string> *excluded = nullptr) {
+  if (excluded && excluded->count(CleanFsPath(path))) return VXCORE_OK;
   std::error_code ec;
   const fs::file_status status = fs::symlink_status(path, ec);
   if (ec) {
@@ -477,7 +540,7 @@ VxCoreError HashPath(const fs::path &path, const std::string &label, uint64_t &h
   });
   for (const auto &entry : entries) {
     const std::string child_label = label + "/" + PathToGenericUtf8(entry.filename());
-    const VxCoreError error = HashPath(entry, child_label, hash);
+    const VxCoreError error = HashPath(entry, child_label, hash, excluded);
     if (error != VXCORE_OK) {
       return error;
     }
@@ -486,7 +549,8 @@ VxCoreError HashPath(const fs::path &path, const std::string &label, uint64_t &h
 }
 
 VxCoreError HashSource(const PreparedNodeTransferImpl &transfer, std::string &out_hash) {
-  Notebook *source = transfer.notebook_manager->GetNotebook(transfer.source_notebook_id);
+  Notebook *source = transfer.source_override ? transfer.source_override
+      : transfer.notebook_manager->GetNotebook(transfer.source_notebook_id);
   if (!source) {
     return VXCORE_ERR_NOT_FOUND;
   }
@@ -554,7 +618,19 @@ VxCoreError HashSource(const PreparedNodeTransferImpl &transfer, std::string &ou
       return error;
     }
   }
+  if (!transfer.is_folder && !transfer.files.empty() &&
+      transfer.files.front().source_record.CheckPlaintextAttachmentAccess() != VXCORE_OK) {
+    const auto backup = PathFromUtf8(source->GetAbsolutePath(transfer.source_relative_path) + ".vswp");
+    if (PathExists(PathToUtf8(backup))) {
+      error = HashPath(backup, "backup", hash);
+      if (error != VXCORE_OK) return error;
+    }
+  }
   MetadataStore *store = source->GetMetadataStore();
+  if (!store && transfer.source_override && !transfer.destination_override) {
+    out_hash = HashString(hash);
+    return VXCORE_OK;  // Read-only bundle metadata is authoritative; no local DB exists.
+  }
   if (!store) {
     return VXCORE_ERR_INVALID_STATE;
   }
@@ -1101,7 +1177,18 @@ VxCoreError FingerprintDestination(Notebook *notebook, BundledFolderManager *man
                                    const std::string &path, bool is_folder,
                                    const std::vector<IndexedFile> &files, std::string &out_hash) {
   uint64_t hash = 1469598103934665603ULL;
-  VxCoreError error = HashPath(PathFromUtf8(notebook->GetAbsolutePath(path)), "content", hash);
+  // CopyTree stages owned assets separately. Do not hash those bytes once as
+  // published content and again as assets when the target is a folder.
+  std::set<std::string> excluded;
+  if (is_folder) {
+    for (const auto &file : files) {
+      const auto destination_file = ConcatenatePaths(path, file.relative_path);
+      const auto parent = PathFromUtf8(notebook->GetAbsolutePath(SplitPath(destination_file).first));
+      excluded.insert(CleanFsPath(parent / PathFromUtf8(notebook->GetConfig().assets_folder)));
+    }
+  }
+  VxCoreError error = HashPath(PathFromUtf8(notebook->GetAbsolutePath(path)), "content", hash,
+                               is_folder ? &excluded : nullptr);
   if (error != VXCORE_OK) {
     return error;
   }
@@ -1137,6 +1224,14 @@ VxCoreError FingerprintDestination(Notebook *notebook, BundledFolderManager *man
       }
     }
   }
+  if (!is_folder && !files.empty() &&
+      files.front().destination_record.CheckPlaintextAttachmentAccess() != VXCORE_OK) {
+    const auto backup = PathFromUtf8(notebook->GetAbsolutePath(path) + ".vswp");
+    if (PathExists(PathToUtf8(backup))) {
+      error = HashPath(backup, "backup", hash);
+      if (error != VXCORE_OK) return error;
+    }
+  }
   out_hash = HashString(hash);
   return VXCORE_OK;
 }
@@ -1169,6 +1264,10 @@ VxCoreError FingerprintStagedDestination(const PreparedNodeTransferImpl &transfe
     if (error != VXCORE_OK) {
       return error;
     }
+  }
+  if (!transfer.is_folder && !transfer.files.empty() && transfer.files.front().has_backup) {
+    error = HashPath(staging / kAssetsName / std::to_string(transfer.files.size()), "backup", hash);
+    if (error != VXCORE_OK) return error;
   }
   out_hash = HashString(hash);
   return VXCORE_OK;
@@ -1225,6 +1324,11 @@ bool ValidateJournalAssetPath(Notebook *notebook, const nlohmann::json &asset,
   const std::string id = asset.value("id", std::string());
   if (id.empty() || asset.value("filePath", std::string()) != expected_file_path) {
     return false;
+  }
+  if (asset.value("backup", false)) {
+    const auto expected = PathFromUtf8(notebook->GetAbsolutePath(expected_file_path) + ".vswp");
+    const auto root = PathFromUtf8(notebook->GetRootFolder());
+    return ValidateAbsoluteJournalPath(asset, path_key, root, &expected);
   }
   std::string assets_root;
   if (ResolveAssetsRoot(notebook, expected_file_path, assets_root) != VXCORE_OK) {
@@ -1379,8 +1483,8 @@ SourceRemovalOutcome RemoveSource(PreparedNodeTransferImpl &transfer, std::strin
   if (!source) {
     return recovery_required(VXCORE_ERR_NOT_FOUND, "Source notebook is no longer open");
   }
-  if (source->IsReadOnly()) {
-    return recovery_required(VXCORE_ERR_READ_ONLY, "Source notebook is read-only");
+  if (source->CheckWritable() != VXCORE_OK) {
+    return recovery_required(source->CheckWritable(), "Source notebook cannot be mutated");
   }
   auto *manager = dynamic_cast<BundledFolderManager *>(source->GetFolderManager());
   if (!manager) {
@@ -1454,6 +1558,17 @@ SourceRemovalOutcome RemoveSource(PreparedNodeTransferImpl &transfer, std::strin
            {"id", file.source_record.id},
            {"slot", std::to_string(i)},
            {"quarantine", PathToUtf8(quarantine / "assets" / std::to_string(i))}});
+    }
+    if (!transfer.is_folder &&
+        file.source_record.CheckPlaintextAttachmentAccess() != VXCORE_OK) {
+      const auto backup = PathFromUtf8(PathToUtf8(content_source) + ".vswp");
+      if (PathExists(PathToUtf8(backup))) {
+        const auto slot = std::to_string(transfer.files.size() + i);
+        journal["assets"].push_back({{"source", PathToUtf8(backup)},
+            {"relativePath", file.relative_path}, {"filePath", transfer.source_relative_path},
+            {"id", file.source_record.id}, {"slot", slot}, {"backup", true},
+            {"quarantine", PathToUtf8(quarantine / "assets" / slot)}});
+      }
     }
   }
   const fs::path journal_path = journal_dir / kJournalName;
@@ -1640,10 +1755,11 @@ VxCoreError NodeTransfer::Prepare(
     const std::string &source_relative_path, const std::string &destination_notebook_id,
     const std::string &destination_folder_path, const nlohmann::json &options,
     const NodeTransferProgress &progress, std::unique_ptr<PreparedNodeTransfer> &out_transfer,
-    std::string &out_error) {
+    std::string &out_error, Notebook *source_override, Notebook *destination_override) {
   out_transfer.reset();
   out_error.clear();
-  if (!notebook_manager || source_notebook_id == destination_notebook_id ||
+  if ((!notebook_manager && (!source_override || !destination_override)) ||
+      (source_notebook_id == destination_notebook_id && !source_override) ||
       !IsSafeRelativePath(source_relative_path, false) ||
       !IsSafeRelativePath(destination_folder_path, true) || !options.is_object()) {
     return VXCORE_ERR_INVALID_PARAM;
@@ -1656,17 +1772,24 @@ VxCoreError NodeTransfer::Prepare(
       !options.value("preserveRelativeLinks", true)) {
     return VXCORE_ERR_INVALID_PARAM;
   }
-  Notebook *source = notebook_manager->GetNotebook(source_notebook_id);
-  Notebook *destination = notebook_manager->GetNotebook(destination_notebook_id);
+  Notebook *source = source_override ? source_override : notebook_manager->GetNotebook(source_notebook_id);
+  Notebook *destination = destination_override ? destination_override
+      : notebook_manager->GetNotebook(destination_notebook_id);
   if (!source || !destination) {
     return VXCORE_ERR_NOT_FOUND;
   }
+  if (source_override && operation != "copy") return VXCORE_ERR_INVALID_PARAM;
   if (source->GetType() != NotebookType::Bundled ||
       destination->GetType() != NotebookType::Bundled) {
     return VXCORE_ERR_UNSUPPORTED;
   }
-  if (destination->IsReadOnly() || (operation == "move" && source->IsReadOnly())) {
-    return VXCORE_ERR_READ_ONLY;
+  if (source->IsEncryptionRecoveryRequired()) {
+    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+  }
+  if (destination->CheckWritable() != VXCORE_OK ||
+      (operation == "move" && source->CheckWritable() != VXCORE_OK)) {
+    return destination->CheckWritable() != VXCORE_OK ? destination->CheckWritable()
+                                                     : source->CheckWritable();
   }
   auto *source_manager = dynamic_cast<BundledFolderManager *>(source->GetFolderManager());
   auto *destination_manager = dynamic_cast<BundledFolderManager *>(destination->GetFolderManager());
@@ -1688,6 +1811,8 @@ VxCoreError NodeTransfer::Prepare(
 
   auto transfer = std::make_unique<PreparedNodeTransferImpl>();
   transfer->notebook_manager = notebook_manager;
+  transfer->source_override = source_override;
+  transfer->destination_override = destination_override;
   transfer->source_notebook_id = source_notebook_id;
   transfer->source_relative_path = clean_source;
   transfer->destination_notebook_id = destination_notebook_id;
@@ -1758,6 +1883,11 @@ VxCoreError NodeTransfer::Prepare(
     if (!IsDirectory(source->GetAbsolutePath(clean_source))) {
       return VXCORE_ERR_NODE_NOT_EXISTS;
     }
+    if (source == destination &&
+        IsPathWithin(source->GetAbsolutePath(clean_source),
+                     destination->GetAbsolutePath(clean_destination), false)) {
+      return VXCORE_ERR_INVALID_PARAM;
+    }
     transfer->is_folder = true;
     error = CollectFolder(source_manager, source, *transfer, clean_source, ".", ids);
     if (error != VXCORE_OK) {
@@ -1765,6 +1895,26 @@ VxCoreError NodeTransfer::Prepare(
     }
   }
   ApplyIdentities(*transfer, ids, GetCurrentTimestampMillis());
+  for (const auto &file : transfer->files) {
+    if (file.source_record.CheckPlaintextAttachmentAccess() == VXCORE_OK) continue;
+    if (!source->GetEncryption() || !destination->GetEncryption()) {
+      return VXCORE_ERR_ENCRYPTION_LOCKED;
+    }
+    transfer->protected_keys = std::make_unique<ProtectedTransferKeys>();
+    auto &keys = *transfer->protected_keys;
+    error = source->GetEncryption()->AcquireNotebookKey(keys.source, &keys.source_envelope);
+    if (error == VXCORE_OK) {
+      error = destination->GetEncryption()->AcquireNotebookKey(
+          keys.destination, &keys.destination_envelope);
+    }
+    if (error != VXCORE_OK) return error;
+    error = ValidateTransferEnvelope(source, keys.source_envelope);
+    if (error == VXCORE_OK) {
+      error = ValidateTransferEnvelope(destination, keys.destination_envelope);
+    }
+    if (error != VXCORE_OK) return error;
+    break;
+  }
 
   std::set<std::string> tag_paths;
   for (const auto &file : transfer->files) {
@@ -1814,6 +1964,28 @@ VxCoreError NodeTransfer::Prepare(
   }
   for (size_t i = 0; i < transfer->files.size(); ++i) {
     auto &file = transfer->files[i];
+    if (file.source_record.CheckPlaintextAttachmentAccess() != VXCORE_OK) {
+      const auto &keys = *transfer->protected_keys;
+      file.staged_assets_root = PathToUtf8(staging / kAssetsName / std::to_string(i));
+      const auto source_path = transfer->is_folder
+          ? ConcatenatePaths(clean_source, file.relative_path) : clean_source;
+      const auto target_path = transfer->is_folder
+          ? staged_content / PathFromUtf8(file.relative_path) : staged_content;
+      const auto backup_target = transfer->is_folder
+          ? PathFromUtf8(PathToUtf8(target_path) + ".vswp")
+          : staging / kAssetsName / std::to_string(transfer->files.size() + i);
+      error = NotebookEncryption::TransferNote(
+          PathFromUtf8(source->GetAbsolutePath(source_path)),
+          PathFromUtf8(ConcatenatePaths(file.source_assets_root, file.source_record.id)),
+          keys.source_envelope, *keys.source, target_path,
+          PathFromUtf8(file.staged_assets_root), keys.destination_envelope,
+          *keys.destination, operation == "copy", backup_target, file.has_backup);
+      if (error != VXCORE_OK) {
+        RemoveQuietly(staging);
+        return error;
+      }
+      continue;
+    }
     const std::string source_assets =
         ConcatenatePaths(file.source_assets_root, file.source_record.id);
     if (PathExists(source_assets)) {
@@ -1880,15 +2052,32 @@ VxCoreError NodeTransfer::Commit(NotebookManager *notebook_manager,
     return VXCORE_ERR_INVALID_PARAM;
   }
   PreparedNodeTransferImpl *transfer = prepared.get();
-  Notebook *source = notebook_manager->GetNotebook(transfer->source_notebook_id);
-  Notebook *destination = notebook_manager->GetNotebook(transfer->destination_notebook_id);
+  Notebook *source = transfer->source_override ? transfer->source_override
+      : notebook_manager->GetNotebook(transfer->source_notebook_id);
+  Notebook *destination = transfer->destination_override ? transfer->destination_override
+      : notebook_manager->GetNotebook(transfer->destination_notebook_id);
   if (!source || !destination) {
     Discard(std::move(prepared));
     return VXCORE_ERR_NOT_FOUND;
   }
-  if (destination->IsReadOnly() || (transfer->operation == "move" && source->IsReadOnly())) {
+  if (transfer->protected_keys) {
+    auto error = ValidateTransferEnvelope(source, transfer->protected_keys->source_envelope);
+    if (error == VXCORE_OK) {
+      error = ValidateTransferEnvelope(destination, transfer->protected_keys->destination_envelope);
+    }
+    if (error != VXCORE_OK) {
+      Discard(std::move(prepared));
+      return error;
+    }
+  }
+  if (source->IsEncryptionRecoveryRequired() || destination->CheckWritable() != VXCORE_OK ||
+      (transfer->operation == "move" && source->CheckWritable() != VXCORE_OK)) {
+    const auto error = source->IsEncryptionRecoveryRequired()
+                           ? VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED
+                           : (destination->CheckWritable() != VXCORE_OK
+                                  ? destination->CheckWritable() : source->CheckWritable());
     Discard(std::move(prepared));
-    return VXCORE_ERR_READ_ONLY;
+    return error;
   }
   auto *manager = dynamic_cast<BundledFolderManager *>(destination->GetFolderManager());
   if (!manager) {
@@ -2000,6 +2189,18 @@ VxCoreError NodeTransfer::Commit(NotebookManager *notebook_manager,
                              {"filePath", file_path},
                              {"id", file.destination_record.id},
                              {"slot", std::to_string(i)}});
+    if (!transfer->is_folder && file.has_backup) {
+      const auto slot = std::to_string(transfer->files.size() + i);
+      const auto backup = PathFromUtf8(destination->GetAbsolutePath(file_path) + ".vswp");
+      if (PathExists(PathToUtf8(backup))) {
+        Discard(std::move(prepared));
+        return VXCORE_ERR_ALREADY_EXISTS;
+      }
+      asset_targets.push_back({{"staged", PathToUtf8(staging / kAssetsName / slot)},
+          {"target", PathToUtf8(backup)}, {"relativePath", file.relative_path},
+          {"filePath", file_path}, {"id", file.destination_record.id}, {"slot", slot},
+          {"backup", true}});
+    }
   }
 
   const fs::path journal_path = staging / kJournalName;
@@ -2474,7 +2675,15 @@ VxCoreError NodeTransfer::Recover(Notebook *notebook, int *out_recovered_count) 
     return VXCORE_ERR_IO;
   }
   std::vector<fs::path> entries;
+  int encryption_recovered = 0;
   for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+    if (it->path().filename() == fs::path("encryption")) {
+      const auto error = manager->RecoverEncryptionTransactions(it->path(), &encryption_recovered);
+      if (error != VXCORE_OK) {
+        return error;
+      }
+      continue;
+    }
     if (fs::is_directory(it->path(), ec)) {
       entries.push_back(it->path());
     }
@@ -2532,7 +2741,7 @@ VxCoreError NodeTransfer::Recover(Notebook *notebook, int *out_recovered_count) 
     }
   }
 
-  int recovered = 0;
+  int recovered = encryption_recovered;
   for (size_t i = 0; i < entries.size(); ++i) {
     const fs::path &entry = entries[i];
     if (journals[i].is_null()) {
@@ -2650,4 +2859,82 @@ void NodeTransfer::Discard(std::unique_ptr<PreparedNodeTransfer> transfer) {
   }
 }
 
+
+VxCoreError NodeTransfer::CopyWithinNotebook(
+    Notebook *notebook, const std::string &source_path, const std::string &destination_folder,
+    const std::string &new_name, std::string &out_id, nlohmann::json &out_events) {
+  out_id.clear();
+  if (!notebook) return VXCORE_ERR_INVALID_PARAM;
+  std::unique_ptr<PreparedNodeTransfer> prepared;
+  std::string message;
+  const nlohmann::json options = {{"operation", "copy"}, {"conflictPolicy", "rename"},
+                                  {"timestampPolicy", "reset"}, {"preserveRelativeLinks", true}};
+  auto error = Prepare(nullptr, notebook->GetId(), source_path, notebook->GetId(),
+                       destination_folder, options, {}, prepared, message, notebook, notebook);
+  if (error != VXCORE_OK) return error;
+  if (!new_name.empty()) {
+    if (!IsSafeRelativePath(new_name, false) || SplitPath(new_name).second != new_name) {
+      Discard(std::move(prepared));
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+    auto *snapshot = static_cast<PreparedNodeTransferImpl *>(prepared.get());
+    if (!snapshot->is_folder) {
+      auto record = snapshot->files.front().destination_record;
+      record.name = new_name;
+      if (record.CheckPlaintextAttachmentAccess() == VXCORE_ERR_ENCRYPTION_FORMAT) {
+        Discard(std::move(prepared));
+        return VXCORE_ERR_ENCRYPTION_FORMAT;
+      }
+    }
+    static_cast<PreparedNodeTransferImpl *>(prepared.get())->source_name = new_name;
+  }
+  const auto id = static_cast<PreparedNodeTransferImpl *>(prepared.get())->destination_node_id;
+  NodeTransferCommitResult result;
+  error = Commit(nullptr, std::move(prepared), GenerateUUID(), result, out_events, message);
+  if (result.HasCommittedDestination()) out_id = id;
+  return error;
+}
+
+VxCoreError NodeTransfer::PrepareBundle(
+    NotebookManager *manager, const std::string &bundle_root, const std::string &folder_name,
+    const std::string &destination_id, const std::string &destination_folder,
+    const void *password, size_t password_size, const NodeTransferProgress &progress,
+    std::unique_ptr<PreparedNodeTransfer> &out_transfer, std::string &out_error) {
+  out_transfer.reset();
+  if (!manager || !password || !password_size || !IsSafeRelativePath(folder_name, false) ||
+      SplitPath(folder_name).second != folder_name) return VXCORE_ERR_INVALID_PARAM;
+  auto *destination = manager->GetNotebook(destination_id);
+  if (!destination || !destination->GetEncryption()) return VXCORE_ERR_ENCRYPTION_LOCKED;
+  const auto root = PathFromUtf8(bundle_root);
+  const auto metadata = root / "vx_notebook";
+  if (!root.is_absolute() || HasUnsafeComponent(root, metadata / "config.json") ||
+      HasUnsafeComponent(root, metadata / "encryption.vne")) return VXCORE_ERR_INVALID_PARAM;
+  std::string bytes;
+  auto error = ReadFile(metadata / "config.json", bytes);
+  if (error != VXCORE_OK) return error;
+  const auto config = NotebookConfig::FromJson(nlohmann::json::parse(bytes));
+  if (config.sync_enabled || !IsSafeRelativePath(config.assets_folder, false)) {
+    return VXCORE_ERR_ENCRYPTION_FORMAT;
+  }
+  auto source = std::make_unique<BundleNotebook>(bundle_root, config);
+  NotebookEncryption::KeyEnvelope envelope;
+  error = NotebookEncryption::ReadKeyEnvelope(metadata / "encryption.vne", envelope);
+  if (error != VXCORE_OK) return error;
+  NotebookEncryption::Key master, key;
+  error = NotebookEncryption::UnlockKeys(envelope, config.id, password, password_size, master, key);
+  master.Reset();
+  if (error != VXCORE_OK) return error;
+  NotebookEncryption *encryption = nullptr;
+  error = source->EnsureEncryption(encryption);
+  if (error == VXCORE_OK) error = encryption->InstallNotebookKey(envelope, std::move(key));
+  if (error != VXCORE_OK) return error;
+  const nlohmann::json options = {{"operation", "copy"}, {"conflictPolicy", "rename"},
+                                  {"timestampPolicy", "preserve"}, {"preserveRelativeLinks", true}};
+  error = Prepare(manager, source->GetId(), folder_name, destination_id, destination_folder,
+                  options, progress, out_transfer, out_error, source.get());
+  if (error == VXCORE_OK) {
+    static_cast<PreparedNodeTransferImpl *>(out_transfer.get())->bundle_source = std::move(source);
+  }
+  return error;
+}
 }  // namespace vxcore
