@@ -1141,6 +1141,15 @@ VXCORE_API VxCoreError vxcore_buffer_list_attachments(VxCoreContextHandle contex
                                                       const char *buffer_id,
                                                       char **out_attachments_json);
 
+// List immediate regular files not present in the attachment index, sorted by basename.
+// Does not create the assets directory; a missing directory returns an empty array.
+// Raw notebooks and external buffers return VXCORE_ERR_UNSUPPORTED.
+// out_attachments_json receives owned UTF-8 JSON; free with vxcore_string_free.
+// A non-null output pointer is set to NULL on failure.
+VXCORE_API VxCoreError vxcore_buffer_list_unindexed_attachments(VxCoreContextHandle context,
+                                                                const char *buffer_id,
+                                                                char **out_attachments_json);
+
 // Get absolute path to the buffer's attachments folder.
 // Creates folder lazily if it doesn't exist.
 // (Same folder as assets folder - attachments and assets share location)

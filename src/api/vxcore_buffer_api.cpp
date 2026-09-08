@@ -1002,6 +1002,52 @@ VXCORE_API VxCoreError vxcore_buffer_list_attachments(VxCoreContextHandle contex
   }
 }
 
+VXCORE_API VxCoreError vxcore_buffer_list_unindexed_attachments(VxCoreContextHandle context,
+                                                                const char *buffer_id,
+                                                                char **out_attachments_json) {
+  if (out_attachments_json) {
+    *out_attachments_json = nullptr;
+  }
+  if (!context || !buffer_id || !out_attachments_json) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (!ctx->buffer_manager) {
+    return VXCORE_ERR_NOT_INITIALIZED;
+  }
+
+  try {
+    auto *provider = ctx->buffer_manager->GetProvider(buffer_id);
+    if (!provider) {
+      ctx->last_error = "Buffer provider not available (unsupported notebook type)";
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+
+    std::vector<std::string> filenames;
+    VxCoreError err = provider->ListUnindexedAttachments(filenames);
+    if (err != VXCORE_OK) {
+      ctx->last_error = "Failed to list unindexed attachments";
+      return err;
+    }
+
+    nlohmann::json json_array = nlohmann::json::array();
+    for (const auto &filename : filenames) {
+      json_array.push_back(filename);
+    }
+
+    std::string json_str = json_array.dump();
+    *out_attachments_json = vxcore_strdup(json_str.c_str());
+    return VXCORE_OK;
+  } catch (const nlohmann::json::exception &e) {
+    ctx->last_error = std::string("JSON error: ") + e.what();
+    return VXCORE_ERR_JSON_SERIALIZE;
+  } catch (const std::exception &e) {
+    ctx->last_error = std::string("Exception: ") + e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_buffer_get_attachments_folder(VxCoreContextHandle context,
                                                             const char *buffer_id,
                                                             char **out_path) {

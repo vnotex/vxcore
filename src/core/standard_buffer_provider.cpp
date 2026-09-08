@@ -1,10 +1,12 @@
 // Copyright (c) 2025 VNote
 #include "standard_buffer_provider.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
+#include <unordered_set>
 
 #include "folder.h"
 #include "folder_manager.h"
@@ -373,6 +375,56 @@ VxCoreError StandardBufferProvider::ListAttachments(std::vector<std::string> &ou
     VXCORE_LOG_ERROR("Failed to parse attachments JSON: %s", e.what());
     return VXCORE_ERR_JSON_PARSE;
   }
+}
+
+VxCoreError StandardBufferProvider::ListUnindexedAttachments(
+    std::vector<std::string> &out_filenames) {
+  out_filenames.clear();
+  std::vector<std::string> attachments;
+  const auto err = ListAttachments(attachments);
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  const auto folder = GetAssetsFolderPath();
+  if (folder.empty()) {
+    return VXCORE_ERR_IO;
+  }
+  std::error_code ec;
+  const auto path = PathFromUtf8(folder);
+  const auto status = std::filesystem::status(path, ec);
+  if (status.type() == std::filesystem::file_type::not_found &&
+      (!ec || ec == std::errc::no_such_file_or_directory)) {
+    return VXCORE_OK;
+  }
+  if (ec || !std::filesystem::is_directory(status)) {
+    return VXCORE_ERR_IO;
+  }
+
+  const std::unordered_set<std::string> indexed(attachments.begin(), attachments.end());
+  std::vector<std::string> filenames;
+  std::filesystem::directory_iterator it(path, ec), end;
+  while (!ec && it != end) {
+    const auto entry_status = it->symlink_status(ec);
+    if (ec) {
+      break;
+    }
+    if (std::filesystem::is_regular_file(entry_status)) {
+      auto filename = PathToUtf8(it->path().filename());
+      auto normalized = filename;
+      if (FileRecord::NormalizeAttachmentName(normalized) && normalized == filename &&
+          indexed.find(filename) == indexed.end()) {
+        filenames.push_back(std::move(filename));
+      }
+    }
+    it.increment(ec);
+  }
+  if (ec) {
+    return VXCORE_ERR_IO;
+  }
+  std::sort(filenames.begin(), filenames.end());
+  out_filenames = std::move(filenames);
+  return VXCORE_OK;
 }
 
 std::string StandardBufferProvider::GetAssetsFolderPath() {

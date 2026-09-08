@@ -55,6 +55,8 @@ class StandardBufferProvider : public IBufferProvider {
 
   VxCoreError ListAttachments(std::vector<std::string> &out_filenames) override;
 
+  VxCoreError ListUnindexedAttachments(std::vector<std::string> &out_filenames) override;
+
   VxCoreError GetAttachmentsFolder(std::string &out_path) override;
 
   // Path identity overrides

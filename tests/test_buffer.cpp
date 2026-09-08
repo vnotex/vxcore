@@ -78,6 +78,25 @@ std::string read_file_content(const std::string &path) {
   return buffer;
 }
 
+// Snapshot names, file kinds and bytes without following symlinks.
+static nlohmann::json snapshot_attachment_test_tree(const std::string &path) {
+  const auto root = utf8_to_fs_path(path);
+  auto snapshot = nlohmann::json::object();
+  for (const auto &entry : std::filesystem::recursive_directory_iterator(root)) {
+    const auto name = normalize_path(fs_path_to_utf8(entry.path().lexically_relative(root)));
+    const auto status = entry.symlink_status();
+    auto record = nlohmann::json::object();
+    record["type"] = static_cast<int>(status.type());
+    if (std::filesystem::is_regular_file(status)) {
+      record["content"] = read_file_content(fs_path_to_utf8(entry.path()));
+    } else if (std::filesystem::is_symlink(status)) {
+      record["target"] = fs_path_to_utf8(std::filesystem::read_symlink(entry.path()));
+    }
+    snapshot[name] = std::move(record);
+  }
+  return snapshot;
+}
+
 int test_buffer_open_close() {
   std::cout << "  Running test_buffer_open_close..." << std::endl;
   cleanup_test_dir(get_test_path("test_buffer_open"));
@@ -1491,6 +1510,14 @@ int test_buffer_attachments_raw_notebook_unsupported() {
   ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
   ASSERT_NULL(list_json);
 
+  const auto original_tree = snapshot_attachment_test_tree(get_test_path("test_buf_attach_rawnb"));
+  char sentinel = '\0';
+  list_json = &sentinel;
+  err = vxcore_buffer_list_unindexed_attachments(ctx, buffer_id, &list_json);
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(list_json);
+  ASSERT_EQ(snapshot_attachment_test_tree(get_test_path("test_buf_attach_rawnb")), original_tree);
+
   // Sentinel file: the guard rejects BEFORE any path computation, so delete/rename
   // must not mutate ANY nearby filesystem state. (The real per-file target would be
   // <notebook>/vx_assets/<file-uuid>/..., but the guard short-circuits first, so any
@@ -1500,6 +1527,13 @@ int test_buffer_attachments_raw_notebook_unsupported() {
   std::string staged = assets_dir + "/existing.png";
   write_file(staged, "img");
   ASSERT_TRUE(path_exists(staged));
+
+  const auto populated_tree = snapshot_attachment_test_tree(get_test_path("test_buf_attach_rawnb"));
+  list_json = &sentinel;
+  err = vxcore_buffer_list_unindexed_attachments(ctx, buffer_id, &list_json);
+  ASSERT_EQ(err, VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(list_json);
+  ASSERT_EQ(snapshot_attachment_test_tree(get_test_path("test_buf_attach_rawnb")), populated_tree);
 
   // delete_attachment: rejected, file untouched.
   err = vxcore_buffer_delete_attachment(ctx, buffer_id, "existing.png");
@@ -2231,6 +2265,234 @@ int test_buffer_list_attachments() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_buffer_list_attachments"));
   std::cout << "  ✓ test_buffer_list_attachments passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_list_unindexed_attachments() {
+  std::cout << "  Running test_buffer_list_unindexed_attachments..." << std::endl;
+  const std::string notebook_path = get_test_path("test_buffer_list_unindexed_attachments");
+  const std::string config_path = notebook_path + "/vx_notebook/contents/vx.json";
+  const std::string note_path = notebook_path + "/note.md";
+  const std::string note_content = "# Attachment scan\n![unused](unused.png)\n";
+  cleanup_test_dir(notebook_path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Attachment Scan\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id), VXCORE_OK);
+  write_file(note_path, note_content);
+  ASSERT_EQ(read_file_content(note_path), note_content);
+  char *buffer_id = nullptr;
+  ASSERT_EQ(vxcore_buffer_open(ctx, notebook_id, "note.md", &buffer_id), VXCORE_OK);
+
+  char *folder = nullptr;
+  ASSERT_EQ(vxcore_node_get_attachments_folder(ctx, notebook_id, "note.md", &folder), VXCORE_OK);
+  ASSERT_NOT_NULL(folder);
+  const std::string assets_path = folder;
+  vxcore_string_free(folder);
+  ASSERT_FALSE(path_exists(assets_path));
+  const auto empty_tree = snapshot_attachment_test_tree(notebook_path);
+  char *attachments_json = nullptr;
+  ASSERT_EQ(vxcore_buffer_list_unindexed_attachments(ctx, buffer_id, &attachments_json), VXCORE_OK);
+  ASSERT_NOT_NULL(attachments_json);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json), nlohmann::json::array());
+  vxcore_string_free(attachments_json);
+  ASSERT_FALSE(path_exists(assets_path));
+  ASSERT_EQ(snapshot_attachment_test_tree(notebook_path), empty_tree);
+
+  create_directory(assets_path + "/nested");
+  const std::string unicode_name = "资料 résumé 01.pdf";
+  const auto contents = nlohmann::json::object({{"indexed.pdf", "indexed PDF bytes"},
+                                                {"loose.pdf", "loose PDF bytes"},
+                                                {"unused.png", std::string("PNG\0bytes", 9)},
+                                                {unicode_name, "Unicode filename bytes"},
+                                                {"nested/child.txt", "nested bytes"}});
+  for (auto it = contents.begin(); it != contents.end(); ++it) {
+    write_file(assets_path + "/" + it.key(), it.value().get<std::string>());
+    ASSERT_EQ(read_file_content(assets_path + "/" + it.key()), it.value().get<std::string>());
+  }
+  ASSERT_EQ(vxcore_file_add_attachment(ctx, notebook_id, "note.md", "indexed.pdf"), VXCORE_OK);
+
+  // A file symlink must not become an attachment, even if its target is eligible.
+  std::error_code link_error;
+  std::filesystem::create_symlink(utf8_to_fs_path(assets_path + "/loose.pdf"),
+                                  utf8_to_fs_path(assets_path + "/linked.pdf"), link_error);
+  if (link_error) {
+    bool unavailable = link_error == std::errc::permission_denied ||
+                       link_error == std::errc::operation_not_permitted ||
+                       link_error == std::errc::operation_not_supported;
+#ifdef _WIN32
+    unavailable = unavailable || link_error.value() == ERROR_PRIVILEGE_NOT_HELD;
+#endif
+    ASSERT_TRUE(unavailable);
+    std::cout << "    SKIP file symlink exclusion: platform/privilege unavailable: "
+              << link_error.message() << std::endl;
+  } else {
+    ASSERT_TRUE(std::filesystem::is_symlink(utf8_to_fs_path(assets_path + "/linked.pdf")));
+  }
+
+  const auto original_tree = snapshot_attachment_test_tree(notebook_path);
+  const auto original_assets = snapshot_attachment_test_tree(assets_path);
+  ASSERT_EQ(vxcore_buffer_list_unindexed_attachments(ctx, buffer_id, &attachments_json), VXCORE_OK);
+  ASSERT_NOT_NULL(attachments_json);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json),
+            nlohmann::json::array({"loose.pdf", "unused.png", unicode_name}));
+  vxcore_string_free(attachments_json);
+  ASSERT_EQ(vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json), VXCORE_OK);
+  ASSERT_NOT_NULL(attachments_json);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json), nlohmann::json::array({"indexed.pdf"}));
+  vxcore_string_free(attachments_json);
+  ASSERT_EQ(snapshot_attachment_test_tree(notebook_path), original_tree);
+
+  // Register in place twice: exactly one metadata entry, no copy or suffixed filename.
+  ASSERT_EQ(vxcore_file_add_attachment(ctx, notebook_id, "note.md", "loose.pdf"), VXCORE_OK);
+  const auto registered_tree = snapshot_attachment_test_tree(notebook_path);
+  ASSERT_EQ(vxcore_file_add_attachment(ctx, notebook_id, "note.md", "loose.pdf"), VXCORE_OK);
+  ASSERT_EQ(snapshot_attachment_test_tree(notebook_path), registered_tree);
+  ASSERT_EQ(vxcore_buffer_list_unindexed_attachments(ctx, buffer_id, &attachments_json), VXCORE_OK);
+  ASSERT_NOT_NULL(attachments_json);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json),
+            nlohmann::json::array({"unused.png", unicode_name}));
+  vxcore_string_free(attachments_json);
+  ASSERT_EQ(vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json), VXCORE_OK);
+  ASSERT_NOT_NULL(attachments_json);
+  const auto expected_index = nlohmann::json::array({"indexed.pdf", "loose.pdf"});
+  ASSERT_EQ(nlohmann::json::parse(attachments_json), expected_index);
+  vxcore_string_free(attachments_json);
+  ASSERT_EQ(
+      nlohmann::json::parse(read_file_content(config_path)).at("files").at(0).at("attachments"),
+      expected_index);
+  ASSERT_EQ(snapshot_attachment_test_tree(assets_path), original_assets);
+  ASSERT_EQ(read_file_content(note_path), note_content);
+  ASSERT_EQ(snapshot_attachment_test_tree(notebook_path), registered_tree);
+
+  // The core reports filesystem facts: hidden files and VNote-owned sidecars are not filtered.
+  write_file(assets_path + "/.hidden.txt", "ordinary hidden file");
+  write_file(assets_path + "/comments.json", "{}");
+  write_file(assets_path + "/.gitkeep", "");
+  const auto sidecar_tree = snapshot_attachment_test_tree(notebook_path);
+  ASSERT_EQ(vxcore_buffer_list_unindexed_attachments(ctx, buffer_id, &attachments_json), VXCORE_OK);
+  ASSERT_NOT_NULL(attachments_json);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json),
+            nlohmann::json::array(
+                {".gitkeep", ".hidden.txt", "comments.json", "unused.png", unicode_name}));
+  vxcore_string_free(attachments_json);
+  ASSERT_EQ(snapshot_attachment_test_tree(notebook_path), sidecar_tree);
+
+  ASSERT_EQ(vxcore_buffer_close(ctx, buffer_id), VXCORE_OK);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(notebook_path);
+  std::cout << "  test_buffer_list_unindexed_attachments passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_list_unindexed_attachments_errors() {
+  std::cout << "  Running test_buffer_list_unindexed_attachments_errors..." << std::endl;
+  const std::string notebook_path = get_test_path("test_buffer_list_unindexed_attachments_errors");
+  cleanup_test_dir(notebook_path);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, notebook_path.c_str(), "{\"name\":\"Scan Errors\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id), VXCORE_OK);
+  char *buffer_id = nullptr;
+  ASSERT_EQ(vxcore_buffer_open(ctx, notebook_id, "note.md", &buffer_id), VXCORE_OK);
+  const auto original_tree = snapshot_attachment_test_tree(notebook_path);
+
+  // Start with non-null outputs so failures must actively clear them.
+  char sentinel = '\0';
+  char *attachments_json = &sentinel;
+  ASSERT_EQ(vxcore_buffer_list_unindexed_attachments(nullptr, buffer_id, &attachments_json),
+            VXCORE_ERR_NULL_POINTER);
+  ASSERT_NULL(attachments_json);
+  attachments_json = &sentinel;
+  ASSERT_EQ(vxcore_buffer_list_unindexed_attachments(ctx, nullptr, &attachments_json),
+            VXCORE_ERR_NULL_POINTER);
+  ASSERT_NULL(attachments_json);
+  ASSERT_EQ(vxcore_buffer_list_unindexed_attachments(ctx, buffer_id, nullptr),
+            VXCORE_ERR_NULL_POINTER);
+  attachments_json = &sentinel;
+  ASSERT_EQ(vxcore_buffer_list_unindexed_attachments(ctx, "missing-buffer", &attachments_json),
+            VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(attachments_json);
+  ASSERT_EQ(snapshot_attachment_test_tree(notebook_path), original_tree);
+
+  char *folder = nullptr;
+  ASSERT_EQ(vxcore_node_get_attachments_folder(ctx, notebook_id, "note.md", &folder), VXCORE_OK);
+  ASSERT_NOT_NULL(folder);
+  const std::string assets_path = folder;
+  vxcore_string_free(folder);
+  ASSERT_FALSE(path_exists(assets_path));
+  std::filesystem::create_directories(utf8_to_fs_path(assets_path).parent_path());
+  write_file(assets_path, "not a directory");
+  ASSERT_EQ(read_file_content(assets_path), "not a directory");
+  const auto blocked_tree = snapshot_attachment_test_tree(notebook_path);
+  attachments_json = &sentinel;
+  ASSERT_EQ(vxcore_buffer_list_unindexed_attachments(ctx, buffer_id, &attachments_json),
+            VXCORE_ERR_IO);
+  ASSERT_NULL(attachments_json);
+  ASSERT_EQ(snapshot_attachment_test_tree(notebook_path), blocked_tree);
+
+  ASSERT_EQ(vxcore_buffer_close(ctx, buffer_id), VXCORE_OK);
+  vxcore_string_free(buffer_id);
+  vxcore_string_free(file_id);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(notebook_path);
+  std::cout << "  test_buffer_list_unindexed_attachments_errors passed" << std::endl;
+  return 0;
+}
+
+int test_buffer_list_unindexed_attachments_external_unsupported() {
+  std::cout << "  Running test_buffer_list_unindexed_attachments_external_unsupported..."
+            << std::endl;
+  const std::string fixture_path = get_test_path("test_buffer_unindexed_external");
+  const std::string note_path = fixture_path + "/external.md";
+  cleanup_test_dir(fixture_path);
+  create_directory(fixture_path);
+  write_file(note_path, "External note bytes");
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *buffer_id = nullptr;
+  ASSERT_EQ(vxcore_buffer_open(ctx, nullptr, note_path.c_str(), &buffer_id), VXCORE_OK);
+
+  const auto original_tree = snapshot_attachment_test_tree(fixture_path);
+  char sentinel = '\0';
+  char *attachments_json = &sentinel;
+  ASSERT_EQ(vxcore_buffer_list_unindexed_attachments(ctx, buffer_id, &attachments_json),
+            VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(attachments_json);
+  ASSERT_EQ(snapshot_attachment_test_tree(fixture_path), original_tree);
+
+  // Even when an external attachment directory exists, there is no authoritative index.
+  char *folder = nullptr;
+  ASSERT_EQ(vxcore_buffer_get_attachments_folder(ctx, buffer_id, &folder), VXCORE_OK);
+  ASSERT_NOT_NULL(folder);
+  write_file(std::string(folder) + "/loose.txt", "external attachment bytes");
+  ASSERT_EQ(read_file_content(std::string(folder) + "/loose.txt"), "external attachment bytes");
+  vxcore_string_free(folder);
+  const auto populated_tree = snapshot_attachment_test_tree(fixture_path);
+  attachments_json = &sentinel;
+  ASSERT_EQ(vxcore_buffer_list_unindexed_attachments(ctx, buffer_id, &attachments_json),
+            VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(attachments_json);
+  ASSERT_EQ(snapshot_attachment_test_tree(fixture_path), populated_tree);
+
+  ASSERT_EQ(vxcore_buffer_close(ctx, buffer_id), VXCORE_OK);
+  vxcore_string_free(buffer_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(fixture_path);
+  std::cout << "  test_buffer_list_unindexed_attachments_external_unsupported passed" << std::endl;
   return 0;
 }
 
@@ -4173,6 +4435,9 @@ int main() {
   RUN_TEST(test_buffer_rename_attachment);
   RUN_TEST(test_buffer_legacy_attachment_metadata);
   RUN_TEST(test_buffer_list_attachments);
+  RUN_TEST(test_buffer_list_unindexed_attachments);
+  RUN_TEST(test_buffer_list_unindexed_attachments_errors);
+  RUN_TEST(test_buffer_list_unindexed_attachments_external_unsupported);
   RUN_TEST(test_buffer_get_attachments_folder);
 
   // External File Asset Tests

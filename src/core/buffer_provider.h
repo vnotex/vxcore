@@ -119,6 +119,12 @@ class IBufferProvider {
   // out_filenames: receives list of filenames (not full paths)
   virtual VxCoreError ListAttachments(std::vector<std::string> &out_filenames) = 0;
 
+  // Enumerate immediate regular files absent from the attachment index, without creating folders.
+  virtual VxCoreError ListUnindexedAttachments(std::vector<std::string> &out_filenames) {
+    out_filenames.clear();
+    return VXCORE_ERR_UNSUPPORTED;
+  }
+
   // Get absolute filesystem path to the attachments folder.
   // Creates folder lazily if it doesn't exist.
   // (Same as GetAssetsFolder - attachments and assets share the same folder)
