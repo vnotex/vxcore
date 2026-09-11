@@ -4,7 +4,6 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <istream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -41,17 +40,6 @@ class StandardBufferProvider : public IBufferProvider {
   VxCoreError CheckEncryptedSnapshot(bool &out_matches);
   std::string GetAuthenticatedEditorType() const;
 
-  // Only an authenticated, open note can resolve logical resources. Callers serialize
-  // these operations and note saves using the existing notebook IO gate.
-  // Returned body/resource vectors and resource JSON belong to the caller, which
-  // wipes them using NotebookEncryption helpers after consumption. No method opens
-  // a closed note implicitly. This provider and its notebook must outlive the call.
-  VxCoreError ReadProtectedResource(const std::string &url, std::vector<uint8_t> &out_data);
-  VxCoreError ExportProtectedResource(const std::string &url,
-                                      const std::string &destination_path);
-  VxCoreError WriteProtectedComments(const std::vector<uint8_t> &data);
-  VxCoreError ListProtectedResources(nlohmann::json &out_resources);
-
   // Asset operations (filesystem only, no metadata)
   VxCoreError InsertAssetRaw(const std::string &name, const std::vector<uint8_t> &data,
                              std::string &out_relative_path) override;
@@ -72,9 +60,6 @@ class StandardBufferProvider : public IBufferProvider {
   VxCoreError GetResourceBasePath(std::string &out_path) override;
 
   // Attachment operations (filesystem + metadata)
-  // Protected insertion returns vxasset:<resourceId>; delete/rename take that
-  // logical identity, not a display name. ListAttachments returns display names;
-  // ListProtectedResources supplies their resource IDs without exposing filesystem paths.
   VxCoreError InsertAttachment(const std::string &source_path, std::string &out_filename) override;
 
   VxCoreError DeleteAttachment(const std::string &filename) override;
@@ -98,17 +83,8 @@ class StandardBufferProvider : public IBufferProvider {
   VxCoreError RequireProtectedState(bool writing) const;
   VxCoreError RequireUnchangedSnapshot();
   VxCoreError ResolveProtectedPath(const std::filesystem::path &path) const;
-  VxCoreError ResolveProtectedAssets(std::filesystem::path &out_path, bool create);
-  VxCoreError PublishProtectedManifest(nlohmann::json &manifest);
   VxCoreError ReadEncryptedBackup(std::vector<uint8_t> &out_body, nlohmann::json &out_manifest,
                                    int &out_revision);
-  VxCoreError RefreshEncryptedBackupManifest(const nlohmann::json &manifest);
-  VxCoreError InsertProtectedResource(const std::string &name, const std::string &media_type,
-                                       const std::string &role, std::istream &data,
-                                       std::string &out_url);
-  VxCoreError InsertProtectedFile(const std::string &source_path, const std::string &role,
-                                   std::string &out_url);
-  VxCoreError DeleteProtectedResource(const std::string &identity, bool attachment);
   // True only for notebooks that persist per-file attachment metadata (bundled).
   bool AttachmentsSupported() const;
 
@@ -129,7 +105,7 @@ class StandardBufferProvider : public IBufferProvider {
   std::string file_path_;  // Relative path within notebook
   std::string file_id_;    // Cached file UUID
   bool encrypted_ = false;
-  // 0=ordinary, 1=encrypted Markdown, 2=encrypted text, 3=malformed candidate.
+  // 0=ordinary, 1=encrypted Markdown, 2=encrypted text, 3=encrypted MindMap, 4=malformed.
   uint8_t metadata_mode_ = 0;
   VxCoreError protection_error_ = VXCORE_OK;
   std::unique_ptr<ProtectedState> protected_;

@@ -939,7 +939,8 @@ VxCoreError NotebookManager::GetEncryptionStatus(const std::string &notebook_id,
     }
     if (encrypted) {
       const auto editor = record->metadata.find(kJsonKeyEditorType);
-      if (editor == record->metadata.end() || (*editor != "markdown" && *editor != "text")) {
+      if (editor == record->metadata.end() ||
+          (*editor != "markdown" && *editor != "text" && *editor != "mindmap")) {
         return VXCORE_ERR_ENCRYPTION_FORMAT;
       }
       const auto absolute = PathFromUtf8(notebook->GetAbsolutePath(relative));

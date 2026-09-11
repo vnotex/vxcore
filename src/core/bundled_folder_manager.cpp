@@ -7,6 +7,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <new>
 #include <set>
 #include <sstream>
@@ -27,6 +28,7 @@
 #include "core/content_processor/asset_utils.h"
 #include "core/content_processor/content_processor.h"
 #include "core/event_names.h"
+#include "filetype_config.h"
 #include "metadata_store.h"
 #include "node_transfer.h"
 #include "sync/git/git_conflict_resolver.h"
@@ -987,7 +989,7 @@ VxCoreError BundledFolderManager::ContainsEncryptedNotes(
   auto error = GetFolderConfig(folder_path, &config);
   if (error != VXCORE_OK) return error;
   for (const auto &file : config->files) {
-    const auto protection = file.CheckPlaintextAttachmentAccess();
+    const auto protection = file.CheckProtectionMetadata();
     if (protection == VXCORE_ERR_ENCRYPTION_FORMAT) return protection;
     if (protection == VXCORE_ERR_ENCRYPTION_LOCKED) out_contains = true;
   }
@@ -1196,7 +1198,7 @@ VxCoreError BundledFolderManager::DeleteFile(const std::string &file_path) {
   if (it == config->files.end()) {
     return VXCORE_ERR_NOT_FOUND;
   }
-  const auto protection = it->CheckPlaintextAttachmentAccess();
+  const auto protection = it->CheckProtectionMetadata();
   if (protection != VXCORE_OK) {
     return protection == VXCORE_ERR_ENCRYPTION_LOCKED
         ? RecycleProtectedNode(clean_file_path, false) : protection;
@@ -1512,12 +1514,12 @@ VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
   if (!file) {
     return VXCORE_ERR_NOT_FOUND;
   }
-  const auto protection = file->CheckPlaintextAttachmentAccess();
+  const auto protection = file->CheckProtectionMetadata();
   if (protection != VXCORE_OK) {
     if (protection != VXCORE_ERR_ENCRYPTION_LOCKED) return protection;
     auto renamed = *file;
     renamed.name = new_name;
-    if (renamed.CheckPlaintextAttachmentAccess() != VXCORE_ERR_ENCRYPTION_LOCKED) {
+    if (renamed.CheckProtectionMetadata() != VXCORE_ERR_ENCRYPTION_LOCKED) {
       return VXCORE_ERR_ENCRYPTION_FORMAT;
     }
   }
@@ -1595,7 +1597,7 @@ VxCoreError BundledFolderManager::MoveFile(const std::string &src_file_path,
         file_name.c_str(), src_folder_path.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
-  const auto protection = file->CheckPlaintextAttachmentAccess();
+  const auto protection = file->CheckProtectionMetadata();
   if (protection != VXCORE_OK) {
     return protection == VXCORE_ERR_ENCRYPTION_LOCKED
         ? MoveProtectedFile(clean_src_file_path, clean_dest_folder_path) : protection;
@@ -1781,7 +1783,7 @@ VxCoreError BundledFolderManager::CopyFile(const std::string &src_file_path,
   if (!file) {
     return VXCORE_ERR_NOT_FOUND;
   }
-  const auto protection = file->CheckPlaintextAttachmentAccess();
+  const auto protection = file->CheckProtectionMetadata();
   if (protection != VXCORE_OK) {
     if (protection != VXCORE_ERR_ENCRYPTION_LOCKED) return protection;
     nlohmann::json events;
@@ -3629,11 +3631,6 @@ VxCoreError BundledFolderManager::GetFileAttachments(const std::string &file_pat
     return VXCORE_ERR_NOT_FOUND;
   }
 
-  error = file->CheckPlaintextAttachmentAccess();
-  if (error != VXCORE_OK) {
-    out_attachments_json.clear();
-    return error;
-  }
 
   nlohmann::json attachments_json = file->attachments;
   out_attachments_json = attachments_json.dump();
@@ -4131,29 +4128,6 @@ bool EncryptionMatches(const fs::path &path, const std::string &hash) {
   return EncryptionHashFile(path, actual) == VXCORE_OK && actual == hash;
 }
 
-bool EncryptionOwnedClosure(const fs::path &assets, const std::set<std::string> &sources) {
-  bool exists = false;
-  if (!EncryptionExists(assets, exists) || EncryptionSafePath(assets, true) != VXCORE_OK) {
-    return false;
-  }
-  if (!exists) {
-    return true;
-  }
-  std::error_code ec;
-  for (fs::recursive_directory_iterator it(assets, ec), end; !ec && it != end; it.increment(ec)) {
-    if (EncryptionSafePath(it->path()) != VXCORE_OK) {
-      return false;
-    }
-    if (it->is_directory(ec)) {
-      continue;
-    }
-    if (!it->is_regular_file(ec) || ec ||
-        !sources.count(PathToGenericUtf8(fs::canonical(it->path(), ec))) || ec) {
-      return false;
-    }
-  }
-  return !ec;
-}
 
 #ifndef _WIN32
 bool EncryptionFlushDirectory(const fs::path &path) {
@@ -4226,7 +4200,7 @@ bool EncryptionRemoveStaging(const fs::path &directory) {
   return !ec;
 }
 
-VxCoreError EncryptionCopyCiphertext(const fs::path &source, const fs::path &destination) {
+VxCoreError CopyTransactionFile(const fs::path &source, const fs::path &destination) {
   if (EncryptionSafePath(source) != VXCORE_OK ||
       EncryptionSafePath(destination, true) != VXCORE_OK) {
     return VXCORE_ERR_IO;
@@ -4278,7 +4252,7 @@ bool EncryptionTransformConfig(FolderConfig &config, const EncryptionJson &journ
       return false;
     }
     if (!source.empty() && file.name == PathFilename(source)) {
-      if (record || file.id != id || file.CheckPlaintextAttachmentAccess() != VXCORE_OK) {
+      if (record || file.id != id || file.CheckProtectionMetadata() != VXCORE_OK) {
         return false;
       }
       record = &file;
@@ -4298,14 +4272,6 @@ bool EncryptionTransformConfig(FolderConfig &config, const EncryptionJson &journ
   record->modified_utc = modified;
   record->metadata[kJsonKeyEncrypted] = true;
   record->metadata[kJsonKeyEditorType] = journal.at("editorType");
-  if (record->metadata.contains(kJsonKeyAttachments)) {
-    Encryption::WipeJson(record->metadata[kJsonKeyAttachments]);
-  }
-  record->metadata.erase(kJsonKeyAttachments);
-  for (auto &attachment : record->attachments) {
-    Encryption::WipeString(attachment);
-  }
-  record->attachments.clear();
   config.modified_utc = modified;
   return true;
 }
@@ -4313,42 +4279,47 @@ bool EncryptionTransformConfig(FolderConfig &config, const EncryptionJson &journ
 }  // namespace
 
 VxCoreError BundledFolderManager::ProtectNote(const std::string &file_path, const void *body,
-                                               size_t body_size,
-                                               const std::string &resource_plan_json,
+                                               size_t body_size, const std::string &source_sha256,
+                                               const FileTypesConfig &file_types,
                                                std::string &out_path) {
   out_path.clear();
-  EncryptionPlaintext request;
-  auto &plan = request.manifest;
-  if (!ParseEncryptionJson(resource_plan_json, plan) ||
-      !EncryptionExactKeys(plan, {kJsonKeyEditorType, kJsonKeySourceSha256, kJsonKeyResources}) ||
-      !plan[kJsonKeyEditorType].is_string() || !plan[kJsonKeySourceSha256].is_string() ||
-      !plan[kJsonKeyResources].is_array() ||
-      !EncryptionValidHash(plan[kJsonKeySourceSha256].get<std::string>())) {
-    return VXCORE_ERR_ENCRYPTION_FORMAT;
+  if (!EncryptionValidHash(source_sha256)) {
+    return VXCORE_ERR_INVALID_PARAM;
   }
   const auto path = GetCleanRelativePath(file_path);
   if (!EncryptionRelativePath(path)) {
     return VXCORE_ERR_INVALID_PARAM;
   }
   const auto parts = SplitPath(path);
-  return CommitEncryptedNote(path, parts.first, parts.second,
-                              plan[kJsonKeyEditorType].get<std::string>(),
-                              body, body_size, plan, out_path);
+  const auto dot = parts.second.find_last_of('.');
+  const auto *type = file_types.GetBySuffix(
+      dot == std::string::npos ? parts.second : parts.second.substr(dot + 1));
+  const auto editor = type ? ToLowerString(type->name) : std::string();
+  if (editor != "markdown" && editor != "text" && editor != "mindmap") {
+    return VXCORE_ERR_UNSUPPORTED;
+  }
+  return CommitEncryptedNote(path, parts.first, parts.second, editor,
+                              body, body_size, source_sha256, out_path);
 }
 
 VxCoreError BundledFolderManager::CreateEncryptedNote(
     const std::string &parent_path, const std::string &name, const std::string &editor_type,
-    const void *body, size_t body_size, std::string &out_id) {
+    const void *body, size_t body_size, const FileTypesConfig &file_types, std::string &out_id) {
   out_id.clear();
+  const auto dot = name.find_last_of('.');
+  const auto *type = file_types.GetBySuffix(dot == std::string::npos ? name : name.substr(dot + 1));
+  if (!type || ToLowerString(type->name) != editor_type) {
+    return VXCORE_ERR_UNSUPPORTED;
+  }
   const auto parent = GetCleanRelativePath(parent_path);
   return CommitEncryptedNote("", parent, name, editor_type, body, body_size,
-                              {{kJsonKeyResources, EncryptionJson::array()}}, out_id);
+                              "", out_id);
 }
 
 VxCoreError BundledFolderManager::CommitEncryptedNote(
     const std::string &source_path, const std::string &parent_path, const std::string &name,
     const std::string &editor_type, const void *body, size_t body_size,
-    const EncryptionJson &plan, std::string &out_result) {
+    const std::string &source_sha256, std::string &out_result) {
   out_result.clear();
   if (notebook_->CheckWritable() != VXCORE_OK) {
     return notebook_->CheckWritable();
@@ -4359,7 +4330,7 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
   if ((!body && body_size) || !EncryptionRelativePath(parent_path, true) ||
       !IsSingleName(name) || name == "." || name == ".." ||
       name.find(':') != std::string::npos || name.find('\0') != std::string::npos ||
-      (editor_type != "markdown" && editor_type != "text") ||
+      (editor_type != "markdown" && editor_type != "text" && editor_type != "mindmap") ||
       PathToUtf8(PathFromUtf8(name).extension()) == ".vne") {
     return VXCORE_ERR_INVALID_PARAM;
   }
@@ -4415,7 +4386,7 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
   if (!source_path.empty() && !source_record) {
     return VXCORE_ERR_NOT_FOUND;
   }
-  if (source_record && source_record->CheckPlaintextAttachmentAccess() != VXCORE_OK) {
+  if (source_record && source_record->CheckProtectionMetadata() != VXCORE_OK) {
     return VXCORE_ERR_ENCRYPTION_FORMAT;
   }
   std::string file_id = source_record ? source_record->id : std::string();
@@ -4431,12 +4402,6 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
   }
   if (std::count(node_ids.begin(), node_ids.end(), file_id) != (source_record ? 1 : 0)) {
     return source_record ? VXCORE_ERR_INVALID_STATE : VXCORE_ERR_ALREADY_EXISTS;
-  }
-  const auto assets = PathFromUtf8(GetPublicAssetsFolder(target_path)) / PathFromUtf8(file_id);
-  if (EncryptionSafePath(assets, true) != VXCORE_OK ||
-      !IsPathWithin(PathToUtf8(root), PathToUtf8(assets), false) ||
-      IsPathWithin(PathToUtf8(metadata), PathToUtf8(assets), true)) {
-    return VXCORE_ERR_INVALID_PARAM;
   }
   EncryptionJson preconditions = EncryptionJson::array();
   EncryptionJson cleanup = EncryptionJson::array();
@@ -4460,7 +4425,7 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
   add_source(key_path, key_hash, false);
   if (source_record) {
     const auto source = PathFromUtf8(notebook_->GetAbsolutePath(source_path));
-    const auto hash = plan.at(kJsonKeySourceSha256).get<std::string>();
+    const auto &hash = source_sha256;
     if (!EncryptionMatches(source, hash)) {
       return VXCORE_ERR_FILE_CHANGED_OUTSIDE;
     }
@@ -4479,77 +4444,7 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
     }
   }
   EncryptionPlaintext plaintext;
-  plaintext.manifest = {{kJsonKeyEditorType, editor_type},
-                        {kJsonKeyResources, EncryptionJson::array()}};
-  std::set<std::string> sources;
-  std::set<std::string> resource_ids;
-  std::vector<fs::path> resource_paths;
-  for (const auto &resource : plan.at(kJsonKeyResources)) {
-    if (!EncryptionExactKeys(resource, {kJsonKeyResourceId, kJsonKeySourcePath,
-                                         kJsonKeySourceSha256, kJsonKeyName, kJsonKeyMediaType,
-                                         kJsonKeyRole, kJsonKeyRetainOriginal}) ||
-        !resource[kJsonKeyResourceId].is_string() || !resource[kJsonKeySourcePath].is_string() ||
-        !resource[kJsonKeySourceSha256].is_string() || !resource[kJsonKeyName].is_string() ||
-        !resource[kJsonKeyMediaType].is_string() || !resource[kJsonKeyRole].is_string() ||
-        !resource[kJsonKeyRetainOriginal].is_boolean()) {
-      return VXCORE_ERR_ENCRYPTION_FORMAT;
-    }
-    const auto id = resource[kJsonKeyResourceId].get<std::string>();
-    const auto source_value = resource[kJsonKeySourcePath].get<std::string>();
-    const auto path = PathFromUtf8(source_value);
-    const auto hash = resource[kJsonKeySourceSha256].get<std::string>();
-    const bool retain = resource[kJsonKeyRetainOriginal].get<bool>();
-    if (!Encryption::IsCanonicalUuid(id) || !resource_ids.insert(id).second ||
-        source_value.find('\0') != std::string::npos) {
-      return VXCORE_ERR_ENCRYPTION_FORMAT;
-    }
-    if (!EncryptionMatches(path, hash)) {
-      return VXCORE_ERR_FILE_CHANGED_OUTSIDE;
-    }
-    std::error_code ec;
-    const auto canonical = fs::canonical(path, ec);
-    if (ec || !sources.insert(PathToGenericUtf8(canonical)).second) {
-      return VXCORE_ERR_ENCRYPTION_FORMAT;
-    }
-    if (!retain && (!source_record ||
-                    !IsPathWithin(PathToUtf8(assets), PathToUtf8(path), false) ||
-                    fs::hard_link_count(path, ec) != 1 || ec)) {
-      return VXCORE_ERR_INVALID_PARAM;
-    }
-    // A note body or notebook control file is not an importable asset.
-    if (IsPathWithin(PathToUtf8(metadata), PathToUtf8(path), false) ||
-        (!source_path.empty() &&
-         fs::equivalent(path, PathFromUtf8(notebook_->GetAbsolutePath(source_path)), ec))) {
-      return VXCORE_ERR_INVALID_PARAM;
-    }
-    std::string object_id;
-    if ((error = Encryption::GenerateIdentity(object_id)) != VXCORE_OK) {
-      return error;
-    }
-    plaintext.manifest[kJsonKeyResources].push_back({
-        {kJsonKeyResourceId, id}, {kJsonKeyObjectId, object_id},
-        {kJsonKeyName, resource[kJsonKeyName]}, {kJsonKeyMediaType, resource[kJsonKeyMediaType]},
-        {kJsonKeyRole, resource[kJsonKeyRole]}});
-    resource_paths.push_back(path);
-    if (!add_source(path, hash, !retain)) return VXCORE_ERR_INVALID_PARAM;
-  }
-  // The union cannot be narrowed by a caller omitting an unlisted owned file.
-  if (!EncryptionOwnedClosure(assets, sources)) {
-    return VXCORE_ERR_INVALID_PARAM;
-  }
-  if (source_record) {
-    for (const auto &attachment : source_record->attachments) {
-      if (!EncryptionRelativePath(attachment)) {
-        return VXCORE_ERR_ENCRYPTION_FORMAT;
-      }
-      const auto path = root / PathFromUtf8(attachment);
-      std::error_code ec;
-      if (EncryptionSafePath(path) != VXCORE_OK ||
-          !sources.count(PathToGenericUtf8(fs::canonical(path, ec))) || ec) {
-        return VXCORE_ERR_FILE_CHANGED_OUTSIDE;
-      }
-    }
-  }
+  plaintext.manifest = {{kJsonKeyEditorType, editor_type}};
   if ((error = Encryption::ValidateNoteManifest(plaintext.manifest)) != VXCORE_OK) {
     return error;
   }
@@ -4567,7 +4462,7 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
     return VXCORE_ERR_INVALID_PARAM;
   }
   EncryptionJson journal = {
-      {"version", 1}, {"transactionId", transaction_id}, {"notebookId", notebook_->GetId()},
+      {"version", 2}, {"transactionId", transaction_id}, {"notebookId", notebook_->GetId()},
       {"phase", "prepared"}, {"parentPath", parent_path}, {"sourcePath", source_path},
       {"targetPath", target_path}, {"fileId", file_id}, {"documentId", document_id},
       {"editorType", editor_type}, {"modifiedUtc", GetCurrentTimestampMillis()},
@@ -4604,33 +4499,6 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
       return VXCORE_ERR_IO;
     }
     made_directory = true;
-    for (size_t i = 0; i < resource_paths.size(); ++i) {
-      const auto &resource = plaintext.manifest[kJsonKeyResources][i];
-      Encryption::ObjectHeader header;
-      header.kind = resource[kJsonKeyRole] == "comments" ? "comments" : "asset";
-      header.document_id = document_id;
-      header.object_id = resource[kJsonKeyObjectId].get<std::string>();
-      const auto staged = directory / PathFromUtf8(header.object_id + ".vne");
-      std::ifstream input(resource_paths[i], std::ios::binary);
-      if (!input) {
-        return fail(VXCORE_ERR_IO);
-      }
-      error = Encryption::EncryptObject(staged, header, note_key, input);
-      Encryption::Fingerprint authenticated_hash;
-      if (error == VXCORE_OK) {
-        error = Encryption::VerifyObject(staged, header, note_key, &authenticated_hash);
-      }
-      if (error != VXCORE_OK ||
-          EncryptionHex(authenticated_hash) != plan[kJsonKeyResources][i][kJsonKeySourceSha256]) {
-        return fail(error == VXCORE_OK ? VXCORE_ERR_FILE_CHANGED_OUTSIDE : error);
-      }
-      std::string hash;
-      if ((error = EncryptionHashFile(staged, hash)) != VXCORE_OK) {
-        return fail(error);
-      }
-      journal["objects"].push_back({{"objectId", header.object_id}, {"kind", header.kind},
-                                    {"sha256", hash}});
-    }
     Encryption::ObjectHeader note_header;
     const auto staged_note = directory / "note.vne";
     error = Encryption::WriteNoteSnapshot(staged_note, envelope, *notebook_key, note_key,
@@ -4663,9 +4531,6 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
                              condition["sha256"].get<std::string>())) {
         return fail(VXCORE_ERR_FILE_CHANGED_OUTSIDE);
       }
-    }
-    if (!EncryptionOwnedClosure(assets, sources)) {
-      return fail(VXCORE_ERR_FILE_CHANGED_OUTSIDE);
     }
     if (!source_path.empty()) {
       const auto backup = PathFromUtf8(notebook_->GetAbsolutePath(source_path) + ".vswp");
@@ -4735,7 +4600,7 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
                                       "preconditions", "cleanup"})) {
     return recovery;
   }
-  if (!journal["version"].is_number_integer() || journal["version"] != 1 ||
+  if (!journal["version"].is_number_integer() || journal["version"] != 2 ||
       !journal["modifiedUtc"].is_number_integer() || journal["modifiedUtc"].get<int64_t>() <= 0 ||
       !journal["objects"].is_array() || !journal["preconditions"].is_array() ||
       !journal["cleanup"].is_array()) {
@@ -4768,21 +4633,18 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
       (!source.empty() && (!EncryptionRelativePath(source) || target != source + ".vne")) ||
       CleanPath(SplitPath(target).first) != parent ||
       PathToUtf8(PathFromUtf8(target).extension()) != ".vne" ||
-      (journal["editorType"] != "markdown" && journal["editorType"] != "text") ||
+      (journal["editorType"] != "markdown" && journal["editorType"] != "text" &&
+       journal["editorType"] != "mindmap") ||
       (phase != "prepared" && phase != "publishing" && phase != "committed") ||
       !EncryptionValidHash(before_hash) || !EncryptionValidHash(after_hash) ||
       EncryptionSafePath(directory) != VXCORE_OK ||
       directory.lexically_normal() != expected_directory.lexically_normal()) {
     return recovery;
   }
-  const auto assets = PathFromUtf8(GetPublicAssetsFolder(target)) / PathFromUtf8(file_id);
   const auto target_absolute = PathFromUtf8(notebook_->GetAbsolutePath(target));
   const auto config_path = PathFromUtf8(GetConfigPath(parent));
-  if (EncryptionSafePath(assets, true) != VXCORE_OK ||
-      EncryptionSafePath(target_absolute, true) != VXCORE_OK ||
+  if (EncryptionSafePath(target_absolute, true) != VXCORE_OK ||
       EncryptionSafePath(config_path) != VXCORE_OK ||
-      !IsPathWithin(PathToUtf8(root), PathToUtf8(assets), false) ||
-      IsPathWithin(PathToUtf8(metadata), PathToUtf8(assets), true) ||
       !IsPathWithin(PathToUtf8(root), PathToUtf8(target_absolute), false) ||
       IsPathWithin(PathToUtf8(metadata), PathToUtf8(target_absolute), true)) {
     return recovery;
@@ -4806,8 +4668,8 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
     return recovery;
   }
   auto *record = FindFileRecord(config, PathFilename(target));
-  if (!record || record->id != file_id || record->CheckPlaintextAttachmentAccess() !=
-          VXCORE_ERR_ENCRYPTION_LOCKED || !record->attachments.empty()) {
+  if (!record || record->id != file_id || record->CheckProtectionMetadata() !=
+          VXCORE_ERR_ENCRYPTION_LOCKED) {
     return recovery;
   }
   std::map<std::string, std::string> conditions;
@@ -4839,8 +4701,7 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
     const auto condition = conditions.find(PathToGenericUtf8(fs::weakly_canonical(absolute)));
     if (source.empty() || !EncryptionRelativePath(path) || !cleanup_paths.insert(path).second ||
         condition == conditions.end() || condition->second != hash ||
-        (path != source && path != source + ".vswp" &&
-         !IsPathWithin(PathToUtf8(assets), PathToUtf8(absolute), false)) ||
+        (path != source && path != source + ".vswp") ||
         EncryptionSafePath(absolute, true) != VXCORE_OK) {
       return recovery;
     }
@@ -4855,13 +4716,11 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
   if (key_condition == conditions.end() ||
       !EncryptionMatches(metadata / "encryption.vne", key_condition->second) ||
       (!source.empty() && !cleanup_paths.count(source)) ||
+      conditions.size() != cleanup_paths.size() + 1 ||
       (source.empty() && (conditions.size() != 1 || !cleanup_paths.empty()))) {
     return recovery;
   }
-  std::set<std::string> object_ids;
-  std::set<std::string> object_targets;
-  int notes = 0;
-  int comments = 0;
+  if (journal["objects"].size() != 1) return recovery;
   for (const auto &object : journal["objects"]) {
     if (!EncryptionExactKeys(object, {"objectId", "kind", "sha256"}) ||
         !object["objectId"].is_string() || !object["kind"].is_string() ||
@@ -4871,16 +4730,13 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
     const auto id = object["objectId"].get<std::string>();
     const auto kind = object["kind"].get<std::string>();
     const auto hash = object["sha256"].get<std::string>();
-    if (!Encryption::IsCanonicalUuid(id) || !object_ids.insert(id).second ||
-        !EncryptionValidHash(hash) || (kind != "note" && kind != "asset" && kind != "comments")) {
+    if (!Encryption::IsCanonicalUuid(id) ||
+        !EncryptionValidHash(hash) || kind != "note") {
       return recovery;
     }
-    notes += kind == "note" ? 1 : 0;
-    comments += kind == "comments" ? 1 : 0;
-    const auto live = kind == "note" ? target_absolute : assets / PathFromUtf8(id + ".vne");
+    const auto &live = target_absolute;
     const auto staged = directory / PathFromUtf8(id + ".vne");
-    if (!object_targets.insert(PathToGenericUtf8(live)).second ||
-        cleanup_paths.count(RelativePath(PathToUtf8(root), PathToUtf8(live))) ||
+    if (cleanup_paths.count(RelativePath(PathToUtf8(root), PathToUtf8(live))) ||
         EncryptionSafePath(live, true) != VXCORE_OK) {
       return recovery;
     }
@@ -4896,24 +4752,6 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
         header.kind != kind || header.document_id != document_id || header.object_id != id) {
       return recovery;
     }
-  }
-  if (notes != 1 || comments > 1 || journal["objects"].back()["kind"] != "note") {
-    return recovery;
-  }
-  std::set<std::string> closure;
-  for (const auto &path : object_targets) {
-    std::error_code ec;
-    const auto canonical = fs::weakly_canonical(PathFromUtf8(path), ec);
-    if (ec) {
-      return recovery;
-    }
-    closure.insert(PathToGenericUtf8(canonical));
-  }
-  for (const auto &condition : conditions) {
-    closure.insert(condition.first);
-  }
-  if (!EncryptionOwnedClosure(assets, closure)) {
-    return recovery;
   }
   if (!source.empty()) {
     const auto backup = PathFromUtf8(notebook_->GetAbsolutePath(source) + ".vswp");
@@ -4935,11 +4773,10 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
     #endif
     for (const auto &object : journal["objects"]) {
       const auto id = object["objectId"].get<std::string>();
-      const auto live = object["kind"] == "note" ? target_absolute
-                                                  : assets / PathFromUtf8(id + ".vne");
+      const auto &live = target_absolute;
       bool exists = false;
       if (!EncryptionExists(live, exists) ||
-          (!exists && EncryptionCopyCiphertext(directory / PathFromUtf8(id + ".vne"), live) !=
+          (!exists && CopyTransactionFile(directory / PathFromUtf8(id + ".vne"), live) !=
                           VXCORE_OK) ||
           !EncryptionMatches(live, object["sha256"].get<std::string>())) {
         return recovery;
@@ -4979,7 +4816,7 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
                                                 record->metadata.dump())
                             : store->CreateFile(ToStoreFileRecord(*record, config.id));
     if (!folder_stored || !stored || !store->SetFileTags(file_id, record->tags) ||
-        !store->SetFileAttachments(file_id, {}) || !store->CommitTransaction()) {
+        !store->SetFileAttachments(file_id, record->attachments) || !store->CommitTransaction()) {
       store->RollbackTransaction();
       return recovery;
     }
@@ -5096,7 +4933,7 @@ VxCoreError BundledFolderManager::RecoverEncryptionTransactions(
 namespace {
 
 EncryptionJson NewRelocationJournal(Notebook *notebook) {
-  return {{"operation", "relocate"}, {"version", 1}, {"notebookId", notebook->GetId()},
+  return {{"operation", "relocate"}, {"version", 2}, {"notebookId", notebook->GetId()},
           {"files", EncryptionJson::array()}, {"configs", EncryptionJson::array()},
           {"directories", EncryptionJson::array()}};
 }
@@ -5113,13 +4950,12 @@ VxCoreError AddRelocationFile(EncryptionJson &journal, const fs::path &source,
   const auto error = EncryptionHashFile(source, hash);
   if (error != VXCORE_OK) return error;
   journal["files"].push_back({{"source", PathToUtf8(source)}, {"target", PathToUtf8(target)},
-                              {"sha256", hash}, {"targetSha256", hash}, {"retain", retain},
-                              {"rewriteOld", ""}, {"rewriteNew", ""}});
+                              {"sha256", hash}, {"retain", retain}});
   return VXCORE_OK;
 }
 
 VxCoreError AddRelocationTree(EncryptionJson &journal, const fs::path &source,
-                              const fs::path &target, bool encrypted_objects = false) {
+                              const fs::path &target) {
   if (source.lexically_normal() == target.lexically_normal()) return VXCORE_OK;
   bool exists = false;
   if (!EncryptionExists(source, exists)) return VXCORE_ERR_IO;
@@ -5132,15 +4968,8 @@ VxCoreError AddRelocationTree(EncryptionJson &journal, const fs::path &source,
     if (EncryptionSafePath(it->path()) != VXCORE_OK) return VXCORE_ERR_INVALID_PARAM;
     VxCoreError error;
     if (it->is_directory(ec) && !ec) {
-      error = AddRelocationTree(journal, it->path(), target / it->path().filename(), encrypted_objects);
+      error = AddRelocationTree(journal, it->path(), target / it->path().filename());
     } else if (it->is_regular_file(ec) && !ec) {
-      if (encrypted_objects) {
-        Encryption::ObjectHeader header;
-        if (Encryption::ReadObjectHeader(it->path(), header) != VXCORE_OK ||
-            (header.kind != "asset" && header.kind != "comments")) {
-          return VXCORE_ERR_ENCRYPTION_FORMAT;
-        }
-      }
       error = AddRelocationFile(journal, it->path(), target / it->path().filename());
     } else {
       return VXCORE_ERR_INVALID_PARAM;
@@ -5165,22 +4994,6 @@ VxCoreError AddRelocationConfig(EncryptionJson &journal, const fs::path &path,
   return VXCORE_OK;
 }
 
-VxCoreError RewriteRelocationBody(const fs::path &path, const std::string &old_assets,
-                                  const std::string &new_assets, std::string &out) {
-  auto error = ReadFile(path, out);
-  if (error != VXCORE_OK) return error;
-  if (out.size() >= 8 && out.compare(0, 8, std::string("VNOTEE1\0", 8)) == 0) {
-    return VXCORE_ERR_ENCRYPTION_FORMAT;
-  }
-  const auto name = PathToUtf8(path.filename());
-  const auto dot = name.find_last_of('.');
-  const auto extension = dot == std::string::npos ? std::string() : name.substr(dot + 1);
-  ContentProcessor processor;
-  if (auto *handler = processor.GetHandler(extension)) {
-    out = handler->RewriteAssetLinks(out, old_assets, new_assets);
-  }
-  return VXCORE_OK;
-}
 
 }  // namespace
 
@@ -5201,7 +5014,7 @@ VxCoreError BundledFolderManager::MoveProtectedFile(
       PathFromUtf8(notebook_->GetConfig().assets_folder) / PathFromUtf8(record->id);
   auto journal = NewRelocationJournal(notebook_);
   error = AddRelocationFile(journal, PathFromUtf8(GetContentPath(path)), PathFromUtf8(GetContentPath(target)));
-  if (error == VXCORE_OK) error = AddRelocationTree(journal, old_assets, new_assets, true);
+  if (error == VXCORE_OK) error = AddRelocationTree(journal, old_assets, new_assets);
   const auto backup = PathFromUtf8(GetContentPath(path) + ".vswp");
   bool exists = false;
   if (!EncryptionExists(backup, exists)) return VXCORE_ERR_IO;
@@ -5231,25 +5044,60 @@ VxCoreError BundledFolderManager::RecycleProtectedNode(const std::string &path, 
   if (error != VXCORE_OK) return error;
   auto parent_config = *parent;
   const auto recycle = PathFromUtf8(GetRecycleBinPath()) / PathFromUtf8(GenerateUUID());
-  const auto name = folder ? parts.second : std::string("Recovered");
-  const auto content = recycle / PathFromUtf8(name);
+  // Preserve the original ancestor depth and configured asset prefix. A locked
+  // body must remain byte-exact even when assets_folder contains ".." components.
+  const auto portable_path = folder ? path : parts.first == "." ? "Recovered" : parts.first;
+  const auto content = recycle / PathFromUtf8(portable_path);
   const auto metadata = recycle / "vx_notebook";
   auto journal = NewRelocationJournal(notebook_);
   if (folder) {
-    error = AddRelocationTree(journal, PathFromUtf8(GetContentPath(path)), content);
+    const auto source_content = PathFromUtf8(GetContentPath(path));
+    error = AddRelocationTree(journal, source_content, content);
     if (error == VXCORE_OK) error = AddRelocationTree(journal,
-        PathFromUtf8(GetConfigPath(path)).parent_path(), metadata / "contents" / PathFromUtf8(name));
-    if (error == VXCORE_OK) error = NormalizeRecycledAssets(journal, path, content);
+        PathFromUtf8(GetConfigPath(path)).parent_path(),
+        metadata / "contents" / PathFromUtf8(path));
+    // Assets already inside the selected subtree are copied with it. Other
+    // owned assets retain their notebook-relative paths inside the portable bundle.
+    std::function<VxCoreError(const std::string &)> collect_assets =
+        [&](const std::string &folder_path) -> VxCoreError {
+      FolderConfig *config = nullptr;
+      auto result = GetFolderConfig(folder_path, &config);
+      if (result != VXCORE_OK) return result;
+      for (const auto &record : config->files) {
+        const auto assets = PathFromUtf8(GetAssetsFolder(ConcatenatePaths(folder_path, record.name)));
+        if (!IsPathWithin(notebook_->GetRootFolder(), PathToUtf8(assets), false)) {
+          return VXCORE_ERR_INVALID_PARAM;
+        }
+        if (!IsPathWithin(PathToUtf8(source_content), PathToUtf8(assets), true)) {
+          const auto relative = assets.lexically_normal().lexically_relative(
+              PathFromUtf8(notebook_->GetRootFolder()));
+          result = AddRelocationTree(journal, assets, recycle / relative);
+          if (result != VXCORE_OK) return result;
+        }
+      }
+      for (const auto &child : config->folders) {
+        result = collect_assets(ConcatenatePaths(folder_path, child));
+        if (result != VXCORE_OK) return result;
+      }
+      return VXCORE_OK;
+    };
+    if (error == VXCORE_OK) error = collect_assets(path);
     parent_config.folders.erase(std::remove(parent_config.folders.begin(),
         parent_config.folders.end(), parts.second), parent_config.folders.end());
   } else {
     const auto *record = FindFileRecord(parent_config, parts.second);
     if (!record) return VXCORE_ERR_NOT_FOUND;
-    FolderConfig recovered(name);
+    FolderConfig recovered(PathFilename(portable_path));
     recovered.files.push_back(*record);
-    error = AddRelocationFile(journal, PathFromUtf8(GetContentPath(path)), content / PathFromUtf8(parts.second));
-    if (error == VXCORE_OK) error = AddRelocationTree(journal, PathFromUtf8(GetAssetsFolder(path)),
-        content / "vx_assets" / PathFromUtf8(record->id), true);
+    const auto old_assets = PathFromUtf8(GetAssetsFolder(path)).lexically_normal();
+    const auto new_assets = (content / PathFromUtf8(notebook_->GetConfig().assets_folder) /
+                             PathFromUtf8(record->id)).lexically_normal();
+    if (!IsPathWithin(PathToUtf8(recycle), PathToUtf8(new_assets), false)) {
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+    error = AddRelocationFile(journal, PathFromUtf8(GetContentPath(path)),
+                              content / PathFromUtf8(parts.second));
+    if (error == VXCORE_OK) error = AddRelocationTree(journal, old_assets, new_assets);
     const auto backup = PathFromUtf8(GetContentPath(path) + ".vswp");
     bool exists = false;
     if (!EncryptionExists(backup, exists)) return VXCORE_ERR_IO;
@@ -5257,20 +5105,26 @@ VxCoreError BundledFolderManager::RecycleProtectedNode(const std::string &path, 
       error = AddRelocationFile(journal, backup, content / PathFromUtf8(parts.second + ".vswp"));
     }
     if (error == VXCORE_OK) error = AddRelocationConfig(journal,
-        metadata / "contents" / PathFromUtf8(name) / "vx.json", recovered.ToJson());
+        metadata / "contents" / PathFromUtf8(portable_path) / "vx.json", recovered.ToJson());
     parent_config.files.erase(std::remove_if(parent_config.files.begin(), parent_config.files.end(),
         [&](const FileRecord &file) { return file.name == parts.second; }), parent_config.files.end());
   }
   NotebookConfig portable;
   portable.id = notebook_->GetId();
   portable.name = notebook_->GetConfig().name;
-  portable.assets_folder = "vx_assets";
+  portable.assets_folder = notebook_->GetConfig().assets_folder;
   portable.tags = notebook_->GetConfig().tags;
   portable.tags_modified_utc = notebook_->GetConfig().tags_modified_utc;
-  FolderConfig root(".");
-  root.folders.push_back(name);
   if (error == VXCORE_OK) error = AddRelocationConfig(journal, metadata / "config.json", portable.ToJson());
-  if (error == VXCORE_OK) error = AddRelocationConfig(journal, metadata / "contents" / "vx.json", root.ToJson());
+  auto child_path = portable_path;
+  while (error == VXCORE_OK && child_path != ".") {
+    const auto ancestor = SplitPath(child_path);
+    FolderConfig config(ancestor.first == "." ? "." : PathFilename(ancestor.first));
+    config.folders.push_back(ancestor.second);
+    const auto config_path = metadata / "contents" / PathFromUtf8(ancestor.first) / "vx.json";
+    error = AddRelocationConfig(journal, config_path, config.ToJson());
+    child_path = ancestor.first;
+  }
   if (error == VXCORE_OK) error = AddRelocationFile(journal,
       PathFromUtf8(notebook_->GetMetadataFolder()) / "encryption.vne", metadata / "encryption.vne", true);
   parent_config.modified_utc = GetCurrentTimestampMillis();
@@ -5282,53 +5136,6 @@ VxCoreError BundledFolderManager::RecycleProtectedNode(const std::string &path, 
               {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", path}});
   }
   return error;
-}
-VxCoreError BundledFolderManager::NormalizeRecycledAssets(
-    EncryptionJson &journal, const std::string &folder_path, const fs::path &destination) {
-  FolderConfig *config = nullptr;
-  auto error = GetFolderConfig(folder_path, &config);
-  if (error != VXCORE_OK) return error;
-  for (const auto &record : config->files) {
-    const auto note_path = ConcatenatePaths(folder_path, record.name);
-    if (!Encryption::IsCanonicalUuid(record.id)) return VXCORE_ERR_ENCRYPTION_FORMAT;
-    const auto assets = PathFromUtf8(GetAssetsFolder(note_path)).lexically_normal();
-    const auto target_assets = destination / "vx_assets" / PathFromUtf8(record.id);
-    const auto protection = record.CheckPlaintextAttachmentAccess();
-    if (protection != VXCORE_OK && protection != VXCORE_ERR_ENCRYPTION_LOCKED) return protection;
-    auto under_assets = [&](const EncryptionJson &entry) {
-      const auto source = PathFromUtf8(entry.at("source").get<std::string>());
-      const auto relative = source.lexically_relative(assets);
-      return !relative.empty() && *relative.begin() != "..";
-    };
-    auto &files = journal["files"];
-    files.erase(std::remove_if(files.begin(), files.end(), under_assets), files.end());
-    auto &directories = journal["directories"];
-    directories.erase(std::remove_if(directories.begin(), directories.end(), under_assets), directories.end());
-    error = AddRelocationTree(journal, assets, target_assets, protection != VXCORE_OK);
-    if (error != VXCORE_OK) return error;
-    if (protection == VXCORE_OK && notebook_->GetConfig().assets_folder != "vx_assets") {
-      const auto source = GetContentPath(note_path);
-      const auto old_assets = RelativePath(GetContentPath(folder_path), PathToUtf8(assets));
-      const auto new_assets = ConcatenatePaths("vx_assets", record.id);
-      std::string rewritten;
-      error = RewriteRelocationBody(PathFromUtf8(source), old_assets, new_assets, rewritten);
-      if (error != VXCORE_OK) return error;
-      const auto hash = EncryptionHashBytes(rewritten);
-      for (auto &file : journal["files"]) {
-        if (file["source"] == source) {
-          file["rewriteOld"] = old_assets;
-          file["rewriteNew"] = new_assets;
-          file["targetSha256"] = hash;
-          break;
-        }
-      }
-    }
-  }
-  for (const auto &child : config->folders) {
-    error = NormalizeRecycledAssets(journal, ConcatenatePaths(folder_path, child), destination / PathFromUtf8(child));
-    if (error != VXCORE_OK) return error;
-  }
-  return VXCORE_OK;
 }
 
 
@@ -5355,7 +5162,7 @@ VxCoreError BundledFolderManager::CompleteProtectedRelocation(
     const fs::path &directory, EncryptionJson &journal) {
   const auto failed = VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
   if (!EncryptionExactKeys(journal, {"operation", "version", "notebookId", "files", "configs", "directories"}) ||
-      journal["version"] != 1 || journal["notebookId"] != notebook_->GetId() ||
+      journal["version"] != 2 || journal["notebookId"] != notebook_->GetId() ||
       !journal["files"].is_array() || !journal["configs"].is_array() ||
       !journal["directories"].is_array()) return failed;
   const auto safe = [&](const fs::path &path) {
@@ -5365,19 +5172,16 @@ VxCoreError BundledFolderManager::CompleteProtectedRelocation(
   };
   std::set<std::string> targets;
   for (const auto &file : journal["files"]) {
-    if (!EncryptionExactKeys(file, {"source", "target", "sha256", "targetSha256", "retain", "rewriteOld", "rewriteNew"}) ||
+    if (!EncryptionExactKeys(file, {"source", "target", "sha256", "retain"}) ||
         !file["source"].is_string() || !file["target"].is_string() ||
-        !file["sha256"].is_string() || !file["targetSha256"].is_string() ||
-        !file["retain"].is_boolean() || !file["rewriteOld"].is_string() ||
-        !file["rewriteNew"].is_string()) return failed;
+        !file["sha256"].is_string() || !file["retain"].is_boolean()) return failed;
     const auto source = PathFromUtf8(file["source"].get<std::string>());
     const auto target = PathFromUtf8(file["target"].get<std::string>());
     const auto hash = file["sha256"].get<std::string>();
     if (!safe(source) || !safe(target) || !targets.insert(PathToUtf8(target)).second) return failed;
     bool exists = false;
     if (!EncryptionExists(target, exists) ||
-        (exists ? (!EncryptionMatches(target, file["targetSha256"].get<std::string>()) &&
-                   !EncryptionMatches(target, hash)) : !EncryptionMatches(source, hash))) return failed;
+        (exists ? !EncryptionMatches(target, hash) : !EncryptionMatches(source, hash))) return failed;
   }
   for (const auto &config : journal["configs"]) {
     if (!EncryptionExactKeys(config, {"path", "before", "after", "sha256"})) return failed;
@@ -5400,17 +5204,10 @@ VxCoreError BundledFolderManager::CompleteProtectedRelocation(
   }
   for (const auto &file : journal["files"]) {
     const auto target = PathFromUtf8(file["target"].get<std::string>());
-    const auto final_hash = file["targetSha256"].get<std::string>();
-    if (EncryptionMatches(target, final_hash)) continue;
-    if (!EncryptionMatches(target, file["sha256"].get<std::string>()) &&
-        EncryptionCopyCiphertext(PathFromUtf8(file["source"].get<std::string>()), target) != VXCORE_OK) return failed;
-    if (!file["rewriteOld"].get_ref<const std::string &>().empty()) {
-      std::string rewritten;
-      if (RewriteRelocationBody(target, file["rewriteOld"].get<std::string>(),
-          file["rewriteNew"].get<std::string>(), rewritten) != VXCORE_OK ||
-          EncryptionHashBytes(rewritten) != final_hash || WriteFileAtomic(target, rewritten) != VXCORE_OK) return failed;
-    }
-    if (!EncryptionMatches(target, final_hash)) return failed;
+    const auto hash = file["sha256"].get<std::string>();
+    if (EncryptionMatches(target, hash)) continue;
+    if (CopyTransactionFile(PathFromUtf8(file["source"].get<std::string>()), target) !=
+        VXCORE_OK || !EncryptionMatches(target, hash)) return failed;
   }
   for (const auto &config : journal["configs"]) {
     const auto path = PathFromUtf8(config["path"].get<std::string>());

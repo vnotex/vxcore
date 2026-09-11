@@ -475,11 +475,8 @@ VxCoreError ResolveAssetsRoot(Notebook *notebook, const std::string &file_path,
 }
 
 VxCoreError ValidateAttachments(const FileRecord &record) {
-  const auto protection = record.CheckPlaintextAttachmentAccess();
-  if (protection != VXCORE_OK) {
-    if (protection != VXCORE_ERR_ENCRYPTION_LOCKED) return protection;
-    return record.attachments.empty() ? VXCORE_OK : VXCORE_ERR_ENCRYPTION_FORMAT;
-  }
+  const auto protection = record.CheckProtectionMetadata();
+  if (protection != VXCORE_OK && protection != VXCORE_ERR_ENCRYPTION_LOCKED) return protection;
   for (const auto &attachment : record.attachments) {
     if (!IsSafeRelativePath(attachment, false)) {
       return VXCORE_ERR_INVALID_PARAM;
@@ -619,7 +616,7 @@ VxCoreError HashSource(const PreparedNodeTransferImpl &transfer, std::string &ou
     }
   }
   if (!transfer.is_folder && !transfer.files.empty() &&
-      transfer.files.front().source_record.CheckPlaintextAttachmentAccess() != VXCORE_OK) {
+      transfer.files.front().source_record.CheckProtectionMetadata() != VXCORE_OK) {
     const auto backup = PathFromUtf8(source->GetAbsolutePath(transfer.source_relative_path) + ".vswp");
     if (PathExists(PathToUtf8(backup))) {
       error = HashPath(backup, "backup", hash);
@@ -814,11 +811,6 @@ VxCoreError SelectDestinationName(BundledFolderManager *manager, const std::stri
     return VXCORE_ERR_NOT_FOUND;
   }
   const fs::path content_parent = PathFromUtf8(manager->TransferGetContentPath(parent_path));
-  NameComparerProbe probe;
-  VxCoreError error = CreateNameComparerProbe(content_parent, probe.path);
-  if (error != VXCORE_OK) {
-    return error;
-  }
   std::vector<std::string> occupied;
   for (const auto &folder : parent->folders) {
     occupied.push_back(folder);
@@ -843,6 +835,13 @@ VxCoreError SelectDestinationName(BundledFolderManager *manager, const std::stri
   }
   if (ec) {
     return VXCORE_ERR_IO;
+  }
+  // Collect existing names before creating our scratch directory, so it cannot
+  // become its own occupied child (or unnecessarily double the probe path length).
+  NameComparerProbe probe;
+  VxCoreError error = CreateNameComparerProbe(content_parent, probe.path);
+  if (error != VXCORE_OK) {
+    return error;
   }
   for (const auto &occupied_name : occupied) {
     ec.clear();
@@ -1225,7 +1224,7 @@ VxCoreError FingerprintDestination(Notebook *notebook, BundledFolderManager *man
     }
   }
   if (!is_folder && !files.empty() &&
-      files.front().destination_record.CheckPlaintextAttachmentAccess() != VXCORE_OK) {
+      files.front().destination_record.CheckProtectionMetadata() != VXCORE_OK) {
     const auto backup = PathFromUtf8(notebook->GetAbsolutePath(path) + ".vswp");
     if (PathExists(PathToUtf8(backup))) {
       error = HashPath(backup, "backup", hash);
@@ -1560,7 +1559,7 @@ SourceRemovalOutcome RemoveSource(PreparedNodeTransferImpl &transfer, std::strin
            {"quarantine", PathToUtf8(quarantine / "assets" / std::to_string(i))}});
     }
     if (!transfer.is_folder &&
-        file.source_record.CheckPlaintextAttachmentAccess() != VXCORE_OK) {
+        file.source_record.CheckProtectionMetadata() != VXCORE_OK) {
       const auto backup = PathFromUtf8(PathToUtf8(content_source) + ".vswp");
       if (PathExists(PathToUtf8(backup))) {
         const auto slot = std::to_string(transfer.files.size() + i);
@@ -1896,7 +1895,7 @@ VxCoreError NodeTransfer::Prepare(
   }
   ApplyIdentities(*transfer, ids, GetCurrentTimestampMillis());
   for (const auto &file : transfer->files) {
-    if (file.source_record.CheckPlaintextAttachmentAccess() == VXCORE_OK) continue;
+    if (file.source_record.CheckProtectionMetadata() == VXCORE_OK) continue;
     if (!source->GetEncryption() || !destination->GetEncryption()) {
       return VXCORE_ERR_ENCRYPTION_LOCKED;
     }
@@ -1964,28 +1963,6 @@ VxCoreError NodeTransfer::Prepare(
   }
   for (size_t i = 0; i < transfer->files.size(); ++i) {
     auto &file = transfer->files[i];
-    if (file.source_record.CheckPlaintextAttachmentAccess() != VXCORE_OK) {
-      const auto &keys = *transfer->protected_keys;
-      file.staged_assets_root = PathToUtf8(staging / kAssetsName / std::to_string(i));
-      const auto source_path = transfer->is_folder
-          ? ConcatenatePaths(clean_source, file.relative_path) : clean_source;
-      const auto target_path = transfer->is_folder
-          ? staged_content / PathFromUtf8(file.relative_path) : staged_content;
-      const auto backup_target = transfer->is_folder
-          ? PathFromUtf8(PathToUtf8(target_path) + ".vswp")
-          : staging / kAssetsName / std::to_string(transfer->files.size() + i);
-      error = NotebookEncryption::TransferNote(
-          PathFromUtf8(source->GetAbsolutePath(source_path)),
-          PathFromUtf8(ConcatenatePaths(file.source_assets_root, file.source_record.id)),
-          keys.source_envelope, *keys.source, target_path,
-          PathFromUtf8(file.staged_assets_root), keys.destination_envelope,
-          *keys.destination, operation == "copy", backup_target, file.has_backup);
-      if (error != VXCORE_OK) {
-        RemoveQuietly(staging);
-        return error;
-      }
-      continue;
-    }
     const std::string source_assets =
         ConcatenatePaths(file.source_assets_root, file.source_record.id);
     if (PathExists(source_assets)) {
@@ -1996,6 +1973,46 @@ VxCoreError NodeTransfer::Prepare(
         RemoveQuietly(staging);
         return error;
       }
+    }
+    if (file.source_record.CheckProtectionMetadata() != VXCORE_OK) {
+      const auto &keys = *transfer->protected_keys;
+      const auto source_path = transfer->is_folder
+          ? ConcatenatePaths(clean_source, file.relative_path) : clean_source;
+      const auto target_path = transfer->is_folder
+          ? staged_content / PathFromUtf8(file.relative_path) : staged_content;
+      const auto backup_target = transfer->is_folder
+          ? PathFromUtf8(PathToUtf8(target_path) + ".vswp")
+          : staging / kAssetsName / std::to_string(transfer->files.size() + i);
+      ContentProcessor processor;
+      const auto old_assets = ConcatenatePaths(source->GetConfig().assets_folder, file.source_record.id);
+      const auto new_assets = ConcatenatePaths(destination->GetConfig().assets_folder, file.destination_record.id);
+      const auto rewrite_body = [&](std::vector<uint8_t> &body, const std::string &editor) {
+        auto *handler = processor.GetHandler(editor == "markdown" ? "md" : "");
+        if (!handler || body.empty() || old_assets == new_assets) return false;
+        struct WipedText {
+          std::string text;
+          std::string rewritten;
+          ~WipedText() {
+            NotebookEncryption::WipeString(text);
+            NotebookEncryption::WipeString(rewritten);
+          }
+        } plaintext;
+        plaintext.text.assign(reinterpret_cast<const char *>(body.data()), body.size());
+        plaintext.rewritten = handler->RewriteAssetLinks(plaintext.text, old_assets, new_assets);
+        if (plaintext.rewritten == plaintext.text) return false;
+        NotebookEncryption::WipeBytes(body);
+        body.assign(plaintext.rewritten.begin(), plaintext.rewritten.end());
+        return true;
+      };
+      error = NotebookEncryption::TransferNote(
+          PathFromUtf8(source->GetAbsolutePath(source_path)),
+          keys.source_envelope, *keys.source, target_path, keys.destination_envelope,
+          *keys.destination, operation == "copy", backup_target, file.has_backup, rewrite_body);
+      if (error != VXCORE_OK) {
+        RemoveQuietly(staging);
+        return error;
+      }
+      continue;
     }
     const fs::path staged_file =
         transfer->is_folder ? staged_content / PathFromUtf8(file.relative_path) : staged_content;
@@ -2174,9 +2191,7 @@ VxCoreError NodeTransfer::Commit(NotebookManager *notebook_manager,
       Discard(std::move(prepared));
       return error;
     }
-    if (file.staged_assets_root.empty()) {
-      continue;
-    }
+    if (!file.staged_assets_root.empty()) {
     const fs::path target = PathFromUtf8(ConcatenatePaths(assets_root, file.destination_record.id));
     std::error_code ec;
     if (fs::exists(target, ec) || ec) {
@@ -2189,6 +2204,7 @@ VxCoreError NodeTransfer::Commit(NotebookManager *notebook_manager,
                              {"filePath", file_path},
                              {"id", file.destination_record.id},
                              {"slot", std::to_string(i)}});
+    }
     if (!transfer->is_folder && file.has_backup) {
       const auto slot = std::to_string(transfer->files.size() + i);
       const auto backup = PathFromUtf8(destination->GetAbsolutePath(file_path) + ".vswp");
@@ -2881,7 +2897,7 @@ VxCoreError NodeTransfer::CopyWithinNotebook(
     if (!snapshot->is_folder) {
       auto record = snapshot->files.front().destination_record;
       record.name = new_name;
-      if (record.CheckPlaintextAttachmentAccess() == VXCORE_ERR_ENCRYPTION_FORMAT) {
+      if (record.CheckProtectionMetadata() == VXCORE_ERR_ENCRYPTION_FORMAT) {
         Discard(std::move(prepared));
         return VXCORE_ERR_ENCRYPTION_FORMAT;
       }

@@ -14,9 +14,7 @@
 #include <sodium.h>
 #include <streambuf>
 #include <stdexcept>
-#include <string_view>
 #include <utility>
-#include <unordered_map>
 
 #include "db/sqlite_metadata_store.h"
 #include "event_manager.h"
@@ -30,17 +28,6 @@
 
 namespace vxcore {
 
-void Notebook::NotifyEncryptedManifestSaved(const std::string &file_path) noexcept {
-  try {
-    if (event_manager_) {
-      event_manager_->Emit(events::kFileSaved, {{kJsonKeyNotebookId, GetId()}, {"path", file_path}});
-    }
-  } catch (...) {
-    // Publication is already durable; a throwing listener cannot undo the file or
-    // cause its caller to retry a mutation that succeeded.
-    VXCORE_LOG_ERROR("Encrypted manifest committed; mutation listener failed");
-  }
-}
 
 namespace {
 
@@ -194,16 +181,10 @@ bool CarriesNoteKey(const Encryption::ObjectHeader &header) {
 }
 
 void ValidateObject(const Encryption::ObjectHeader &header) {
-  Require(CarriesNoteKey(header) || header.kind == "asset" || header.kind == "comments");
+  Require(CarriesNoteKey(header));
   Require(Encryption::IsCanonicalUuid(header.document_id));
   Require(Encryption::IsCanonicalUuid(header.object_id));
-  if (CarriesNoteKey(header)) {
-    Require(Encryption::IsCanonicalUuid(header.notebook_key_id));
-  } else {
-    Require(header.notebook_key_id.empty());
-    Require(header.note_key.nonce == std::array<unsigned char, 24>{});
-    Require(header.note_key.ciphertext == std::array<unsigned char, 48>{});
-  }
+  Require(Encryption::IsCanonicalUuid(header.notebook_key_id));
 }
 
 std::string ObjectAad(const Encryption::ObjectHeader &header) {
@@ -219,11 +200,9 @@ std::string SerializeObject(const Encryption::ObjectHeader &header) {
   ValidateObject(header);
   Json json = {{kJsonKeyVersion, 1}, {kJsonKeyKind, header.kind}, {kJsonKeyDocumentId, header.document_id},
                {kJsonKeyObjectId, header.object_id}};
-  if (CarriesNoteKey(header)) {
-    json[kJsonKeyNotebookKeyId] = header.notebook_key_id;
-    json[kJsonKeyKeyNonce] = Base64(header.note_key.nonce);
-    json[kJsonKeyWrappedNoteKey] = Base64(header.note_key.ciphertext);
-  }
+  json[kJsonKeyNotebookKeyId] = header.notebook_key_id;
+  json[kJsonKeyKeyNonce] = Base64(header.note_key.nonce);
+  json[kJsonKeyWrappedNoteKey] = Base64(header.note_key.ciphertext);
   auto text = json.dump();
   Require(text.size() <= Encryption::kMaxHeaderBytes);
   return text;
@@ -234,15 +213,12 @@ Encryption::ObjectHeader ParseObject(const unsigned char *bytes, size_t size) {
   Require(json.contains(kJsonKeyKind) && json[kJsonKeyKind].is_string());
   Encryption::ObjectHeader header;
   header.kind = json[kJsonKeyKind].get<std::string>();
-  if (CarriesNoteKey(header)) {
-    ExactKeys(json, {kJsonKeyVersion, kJsonKeyKind, kJsonKeyDocumentId, kJsonKeyObjectId, kJsonKeyNotebookKeyId, kJsonKeyKeyNonce,
-                     kJsonKeyWrappedNoteKey});
-    header.notebook_key_id = UuidField(json, kJsonKeyNotebookKeyId);
-    DecodeBase64(json[kJsonKeyKeyNonce], header.note_key.nonce);
-    DecodeBase64(json[kJsonKeyWrappedNoteKey], header.note_key.ciphertext);
-  } else {
-    ExactKeys(json, {kJsonKeyVersion, kJsonKeyKind, kJsonKeyDocumentId, kJsonKeyObjectId});
-  }
+  Require(CarriesNoteKey(header));
+  ExactKeys(json, {kJsonKeyVersion, kJsonKeyKind, kJsonKeyDocumentId, kJsonKeyObjectId,
+                   kJsonKeyNotebookKeyId, kJsonKeyKeyNonce, kJsonKeyWrappedNoteKey});
+  header.notebook_key_id = UuidField(json, kJsonKeyNotebookKeyId);
+  DecodeBase64(json[kJsonKeyKeyNonce], header.note_key.nonce);
+  DecodeBase64(json[kJsonKeyWrappedNoteKey], header.note_key.ciphertext);
   Require(IsInteger(json[kJsonKeyVersion], 1));
   header.document_id = UuidField(json, kJsonKeyDocumentId);
   header.object_id = UuidField(json, kJsonKeyObjectId);
@@ -374,74 +350,38 @@ void HashStorageHeader(crypto_hash_sha256_state &state, const unsigned char *byt
   crypto_hash_sha256_update(&state, bytes, size);
 }
 
-bool ValidResourceName(const std::string &name) {
-  if (name.empty() || name == "." || name == "..") {
-    return false;
-  }
-  return std::none_of(name.begin(), name.end(), [](unsigned char byte) {
-    return byte < 32 || byte == 127 || byte == '/' || byte == '\\';
-  });
-}
 
 void ValidateManifest(const Json &manifest) {
-  ExactKeys(manifest, {kJsonKeyEditorType, kJsonKeyResources});
-  const auto &editor = manifest.at(kJsonKeyEditorType);
-  Require(editor.is_string() && (editor == "markdown" || editor == "text"));
-  const auto &resources = manifest.at(kJsonKeyResources);
-  Require(resources.is_array());
-  std::set<std::string> resource_ids;
-  std::set<std::string> object_ids;
-  std::set<std::string_view> attachment_names;
-  bool has_comments = false;
-  for (const auto &resource : resources) {
-    ExactKeys(resource, {kJsonKeyResourceId, kJsonKeyObjectId, kJsonKeyName,
-                         kJsonKeyMediaType, kJsonKeyRole});
-    Require(resource_ids.insert(UuidField(resource, kJsonKeyResourceId)).second);
-    Require(object_ids.insert(UuidField(resource, kJsonKeyObjectId)).second);
-    Require(resource.at(kJsonKeyName).is_string());
-    const auto &name = resource.at(kJsonKeyName).get_ref<const std::string &>();
-    Require(ValidResourceName(name));
-    Require(resource.at(kJsonKeyMediaType).is_string());
-    const auto &media_type = resource.at(kJsonKeyMediaType).get_ref<const std::string &>();
-    const auto slash = media_type.find('/');
-    Require(slash != std::string::npos && slash != 0 && slash + 1 < media_type.size() &&
-            media_type.size() <= 255 && media_type.find('/', slash + 1) == std::string::npos);
-    Require(std::all_of(media_type.begin(), media_type.end(), [](unsigned char byte) {
-      return (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
-             (byte >= '0' && byte <= '9') || byte == '/' || byte == '!' || byte == '#' ||
-             byte == '$' || byte == '&' || byte == '^' || byte == '_' || byte == '.' ||
-             byte == '+' || byte == '-';
-    }));
-    const auto &role = resource.at(kJsonKeyRole);
-    Require(role.is_string() && (role == "image" || role == "attachment" || role == "comments"));
-    if (role == "comments") {
-      Require(!has_comments);
-      has_comments = true;
-    } else if (role == "attachment") {
-      Require(attachment_names.insert(name).second);
-    }
+  // Only an empty legacy resources field is compatible. Reject old encrypted-asset
+  // snapshots explicitly rather than silently dropping their referenced ciphertext.
+  if (manifest.contains(kJsonKeyResources)) {
+    ExactKeys(manifest, {kJsonKeyEditorType, kJsonKeyResources});
+    Require(manifest.at(kJsonKeyResources).is_array() && manifest.at(kJsonKeyResources).empty());
+  } else {
+    ExactKeys(manifest, {kJsonKeyEditorType});
   }
+  const auto &editor = manifest.at(kJsonKeyEditorType);
+  Require(editor.is_string() &&
+          (editor == "markdown" || editor == "text" || editor == "mindmap"));
 }
 
 Json ParseManifest(const unsigned char *bytes, size_t size) {
-  // Resource objects are the only nested objects; rejecting duplicate keys must
-  // happen during parsing, before a JSON object can silently replace a field.
-  std::array<std::set<std::string>, 3> keys;
+  // Reject duplicate keys before JSON parsing can silently replace a field.
+  std::set<std::string> keys;
   auto callback = [&keys](int depth, Json::parse_event_t event, Json &value) {
     if (event == Json::parse_event_t::object_start) {
-      Require(depth == 0 || depth == 2);
-      keys[static_cast<size_t>(depth)].clear();
+      Require(depth == 0);
     } else if (event == Json::parse_event_t::array_start) {
       Require(depth == 1);
     } else if (event == Json::parse_event_t::key) {
-      Require((depth == 1 || depth == 3) &&
-              keys[static_cast<size_t>(depth - 1)].insert(value.get<std::string>()).second);
+      Require(depth == 1 && keys.insert(value.get<std::string>()).second);
     }
     return true;
   };
   SecretJson parsed;
   parsed.value = Json::parse(bytes, bytes + size, callback);
   ValidateManifest(parsed.value);
+  parsed.value.erase(kJsonKeyResources);
   return std::move(parsed.value);
 }
 
@@ -1102,8 +1042,7 @@ VxCoreError NotebookEncryption::ReadObject(const std::filesystem::path &path,
 }
 
 VxCoreError NotebookEncryption::VerifyObject(const std::filesystem::path &path,
-                                             const ObjectHeader &expected, const Key &data_key,
-                                             Fingerprint *out_plaintext_fingerprint) {
+                                             const ObjectHeader &expected, const Key &data_key) {
   return CryptoResult([&]() -> VxCoreError {
     ValidateObject(expected);
     if (!data_key.IsValid()) {
@@ -1121,22 +1060,8 @@ VxCoreError NotebookEncryption::VerifyObject(const std::filesystem::path &path,
     }
     const auto header = ParseObject(bytes.data(), header_size);
     Require(SameObject(header, expected));
-    crypto_hash_sha256_state hash{};
-    if (out_plaintext_fingerprint) {
-      crypto_hash_sha256_init(&hash);
-    }
-    error = DecryptRecords(input, header, data_key,
-                          [&](const unsigned char *data, size_t size) {
-      if (out_plaintext_fingerprint) {
-        crypto_hash_sha256_update(&hash, data, size);
-      }
-      return VXCORE_OK;
-    });
-    if (error == VXCORE_OK && out_plaintext_fingerprint) {
-      crypto_hash_sha256_final(&hash, out_plaintext_fingerprint->data());
-    }
-    sodium_memzero(&hash, sizeof(hash));
-    return error;
+    return DecryptRecords(input, header, data_key,
+                          [](const unsigned char *, size_t) { return VXCORE_OK; });
   });
 }
 
@@ -1153,50 +1078,17 @@ VxCoreError NotebookEncryption::FingerprintBytes(const void *bytes, size_t size,
   return VXCORE_OK;
 }
 
-VxCoreError NotebookEncryption::ExportObject(const std::filesystem::path &path,
-                                             const ObjectHeader &expected, const Key &data_key,
-                                             const std::filesystem::path &destination) {
-  return CryptoResult([&]() -> VxCoreError {
-    ValidateObject(expected);
-    if (!data_key.IsValid()) {
-      return VXCORE_ERR_ENCRYPTION_LOCKED;
-    }
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-      return VXCORE_ERR_IO;
-    }
-    std::array<unsigned char, kMaxHeaderBytes> bytes{};
-    uint32_t header_size = 0;
-    auto error = ReadStorageHeader(input, kObjectMagic, bytes, header_size);
-    if (error != VXCORE_OK) {
-      return error;
-    }
-    const auto header = ParseObject(bytes.data(), header_size);
-    Require(SameObject(header, expected));
-    AtomicFileWriter writer(destination);
-    error = writer.Open();
-    if (error == VXCORE_OK) {
-      error = DecryptRecords(input, header, data_key,
-                             [&](const unsigned char *data, size_t size) {
-                               return writer.Write(data, size);
-                             });
-    }
-    return error == VXCORE_OK ? writer.Commit() : error;
-  });
-}
 
-VxCoreError NotebookEncryption::TransferObject(
-    const std::filesystem::path &source, const ObjectHeader &expected, const Key &source_key,
-    const std::filesystem::path &destination, const ObjectHeader &replacement,
-    const Key &destination_key, bool reencrypt) {
+VxCoreError NotebookEncryption::RewrapSnapshot(
+    const std::filesystem::path &source, const ObjectHeader &expected, const Key &note_key,
+    const std::filesystem::path &destination, const ObjectHeader &replacement) {
   return CryptoResult([&]() -> VxCoreError {
     ValidateObject(expected);
     const auto json = SerializeObject(replacement);
-    if (!source_key.IsValid() || !destination_key.IsValid()) {
+    if (!note_key.IsValid()) {
       return VXCORE_ERR_ENCRYPTION_LOCKED;
     }
-    if (!reencrypt && (!KeysEqual(source_key, destination_key) ||
-        ObjectAad(expected) != ObjectAad(replacement))) {
+    if (ObjectAad(expected) != ObjectAad(replacement)) {
       return VXCORE_ERR_INVALID_PARAM;
     }
     std::ifstream input(source, std::ios::binary);
@@ -1210,55 +1102,20 @@ VxCoreError NotebookEncryption::TransferObject(
     error = writer.Open();
     if (error == VXCORE_OK) error = WriteStorageHeader(writer, kObjectMagic, json);
     if (error != VXCORE_OK) return error;
-    if (!reencrypt) {
-      error = DecryptRecords(input, expected, source_key,
-          [](const unsigned char *, size_t) { return VXCORE_OK; },
-          [&](const unsigned char *data, size_t size) { return writer.Write(data, size); });
-      input.close();
-      return error == VXCORE_OK ? writer.Commit() : error;
-    }
-    StreamState stream;
-    if (!stream.state) return VXCORE_ERR_OUT_OF_MEMORY;
-    std::array<unsigned char, crypto_secretstream_xchacha20poly1305_HEADERBYTES> stream_header{};
-    if (crypto_secretstream_xchacha20poly1305_init_push(
-            stream.state, stream_header.data(), destination_key.data_) != 0) {
-      return VXCORE_ERR_NOT_INITIALIZED;
-    }
-    error = writer.Write(stream_header.data(), stream_header.size());
-    if (error != VXCORE_OK) return error;
-    const auto aad = ObjectAad(replacement);
-    std::array<unsigned char, kRecordBytes + kStreamOverhead> ciphertext{};
-    bool final_written = false;
-    auto push = [&](const unsigned char *data, size_t size) -> VxCoreError {
-      const bool final = size < kRecordBytes;
-      unsigned long long count = 0;
-      const auto tag = static_cast<unsigned char>(
-          final ? crypto_secretstream_xchacha20poly1305_TAG_FINAL
-                : crypto_secretstream_xchacha20poly1305_TAG_MESSAGE);
-      if (crypto_secretstream_xchacha20poly1305_push(
-              stream.state, ciphertext.data(), &count, data, size,
-              reinterpret_cast<const unsigned char *>(aad.data()), aad.size(), tag) != 0) {
-        return VXCORE_ERR_NOT_INITIALIZED;
-      }
-      const auto length = Little32(static_cast<uint32_t>(count));
-      auto result = writer.Write(length.data(), length.size());
-      if (result == VXCORE_OK) result = writer.Write(ciphertext.data(), static_cast<size_t>(count));
-      final_written = final;
-      return result;
-    };
-    error = DecryptRecords(input, expected, source_key, push);
-    if (error == VXCORE_OK && !final_written) error = push(nullptr, 0);
+    error = DecryptRecords(input, expected, note_key,
+        [](const unsigned char *, size_t) { return VXCORE_OK; },
+        [&](const unsigned char *data, size_t size) { return writer.Write(data, size); });
     input.close();
     return error == VXCORE_OK ? writer.Commit() : error;
   });
 }
 
 VxCoreError NotebookEncryption::TransferNote(
-    const std::filesystem::path &source, const std::filesystem::path &source_assets,
-    const KeyEnvelope &source_envelope, const Key &source_notebook_key,
-    const std::filesystem::path &destination, const std::filesystem::path &destination_assets,
+    const std::filesystem::path &source, const KeyEnvelope &source_envelope,
+    const Key &source_notebook_key, const std::filesystem::path &destination,
     const KeyEnvelope &destination_envelope, const Key &destination_notebook_key, bool copy,
-    const std::filesystem::path &backup_destination, bool &out_has_backup) {
+    const std::filesystem::path &backup_destination, bool &out_has_backup,
+    const BodyTransform &transform_body) {
   out_has_backup = false;
   return CryptoResult([&]() -> VxCoreError {
     ValidateEnvelope(source_envelope);
@@ -1275,6 +1132,8 @@ VxCoreError NotebookEncryption::TransferNote(
     SecretJson manifest;
     error = ReadNoteSnapshot(source, header, source_key, body.value, manifest.value);
     if (error != VXCORE_OK) return error;
+    const auto &editor = manifest.value.at(kJsonKeyEditorType).get_ref<const std::string &>();
+    const bool body_changed = transform_body && transform_body(body.value, editor);
     Key copied_key;
     std::string document_id = header.document_id;
     if (copy) {
@@ -1286,43 +1145,6 @@ VxCoreError NotebookEncryption::TransferNote(
     std::error_code ec;
     std::filesystem::create_directories(destination.parent_path(), ec);
     if (ec) return VXCORE_ERR_IO;
-    std::filesystem::create_directories(destination_assets, ec);
-    if (ec) return VXCORE_ERR_IO;
-    std::unordered_map<std::string, std::string> transferred_objects;
-    auto transfer_resources = [&](Json &resources) -> VxCoreError {
-    for (auto &resource : resources.at(kJsonKeyResources)) {
-      ObjectHeader resource_header;
-      resource_header.kind = resource.at(kJsonKeyRole) == "comments" ? "comments" : "asset";
-      resource_header.document_id = header.document_id;
-      resource_header.object_id = resource.at(kJsonKeyObjectId).get<std::string>();
-      const auto identity = resource_header.kind + ":" + resource_header.object_id;
-      const auto previous = transferred_objects.find(identity);
-      if (previous != transferred_objects.end()) {
-        resource[kJsonKeyObjectId] = previous->second;
-        continue;
-      }
-      auto replacement = resource_header;
-      replacement.document_id = document_id;
-      if (copy) {
-        error = GenerateIdentity(replacement.object_id);
-        if (error != VXCORE_OK) return error;
-      }
-      const auto source_path = source_assets / PathFromUtf8(resource_header.object_id + ".vne");
-      if (CheckReparsePoint(PathToUtf8(source_path)) != ReparseState::kNo ||
-          !IsPathWithin(PathToUtf8(source_assets), PathToUtf8(source_path), false)) {
-        return VXCORE_ERR_INVALID_PARAM;
-      }
-      error = TransferObject(source_path, resource_header, source_key,
-          destination_assets / PathFromUtf8(replacement.object_id + ".vne"),
-          replacement, destination_key, copy);
-      if (error != VXCORE_OK) return error;
-      transferred_objects.emplace(identity, replacement.object_id);
-      resource[kJsonKeyObjectId] = replacement.object_id;
-    }
-    return VXCORE_OK;
-    };
-    error = transfer_resources(manifest.value);
-    if (error != VXCORE_OK) return error;
     const auto source_backup = PathFromUtf8(PathToUtf8(source) + ".vswp");
     const bool has_backup = std::filesystem::exists(source_backup, ec);
     if (ec) return VXCORE_ERR_IO;
@@ -1344,31 +1166,34 @@ VxCoreError NotebookEncryption::TransferNote(
       int revision = 0;
       error = ReadNoteSnapshot(source_backup, backup_header, source_key, backup_body.value,
                                backup_manifest.value, nullptr, &revision);
-      if (error == VXCORE_OK) error = transfer_resources(backup_manifest.value);
       if (error != VXCORE_OK) return error;
-      if (copy) {
+      Require(backup_manifest.value.at(kJsonKeyEditorType) == editor);
+      const bool backup_changed = transform_body && transform_body(backup_body.value, editor);
+      std::filesystem::create_directories(backup_destination.parent_path(), ec);
+      if (ec) return VXCORE_ERR_IO;
+      if (copy || backup_changed) {
         error = WriteNoteSnapshot(backup_destination, destination_envelope,
-            destination_notebook_key, copied_key, document_id, backup_body.value,
+            destination_notebook_key, destination_key, document_id, backup_body.value,
             backup_manifest.value, nullptr, nullptr, revision);
       } else {
         auto wrapped_backup = backup_header;
         error = WrapNoteKey(destination_envelope.notebook_id, destination_envelope.notebook_key_id,
                             destination_notebook_key, source_key, wrapped_backup);
-        if (error == VXCORE_OK) error = TransferObject(source_backup, backup_header, source_key,
-            backup_destination, wrapped_backup, source_key, false);
+        if (error == VXCORE_OK) error = RewrapSnapshot(source_backup, backup_header, source_key,
+            backup_destination, wrapped_backup);
       }
       if (error != VXCORE_OK) return error;
       out_has_backup = true;
     }
-    if (copy) {
+    if (copy || body_changed) {
       return WriteNoteSnapshot(destination, destination_envelope, destination_notebook_key,
-                               copied_key, document_id, body.value, manifest.value);
+                               destination_key, document_id, body.value, manifest.value);
     }
     auto replacement = header;
     error = WrapNoteKey(destination_envelope.notebook_id, destination_envelope.notebook_key_id,
                         destination_notebook_key, source_key, replacement);
     return error == VXCORE_OK
-        ? TransferObject(source, header, source_key, destination, replacement, source_key, false)
+        ? RewrapSnapshot(source, header, source_key, destination, replacement)
         : error;
   });
 }
@@ -1412,17 +1237,6 @@ void NotebookEncryption::WipeJson(nlohmann::json &json) noexcept {
   json.clear();
 }
 
-VxCoreError NotebookEncryption::EncryptObjectBytes(const std::filesystem::path &path,
-                                                   const ObjectHeader &header, const Key &data_key,
-                                                   const void *bytes, size_t size) {
-  if (!bytes && size) {
-    return VXCORE_ERR_INVALID_PARAM;
-  }
-  const SegmentedInput::Segment segment{bytes, size};
-  SegmentedInput buffer(&segment, 1);
-  std::istream input(&buffer);
-  return EncryptObject(path, header, data_key, input);
-}
 
 VxCoreError NotebookEncryption::FingerprintObject(const std::filesystem::path &path,
                                                   Fingerprint &out_fingerprint) {
@@ -1480,7 +1294,7 @@ VxCoreError NotebookEncryption::WriteNoteSnapshot(
     ValidateManifest(manifest);
     Require(IsCanonicalUuid(document_id) && backup_revision >= -1);
     SecretString serialized;
-    serialized.value = manifest.dump();
+    serialized.value = Json{{kJsonKeyEditorType, manifest.at(kJsonKeyEditorType)}}.dump();
     Require(serialized.value.size() <= std::numeric_limits<uint32_t>::max());
     ObjectHeader header;
     header.kind = backup_revision >= 0 ? "backup" : "note";

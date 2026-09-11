@@ -131,7 +131,7 @@ VXCORE_API const char *vxcore_error_message(VxCoreError error) {
     case VXCORE_ERR_ENCRYPTION_AUTH_FAILED:
       return "Unable to unlock: incorrect password or damaged key data";
     case VXCORE_ERR_ENCRYPTION_FORMAT:
-      return "Invalid or damaged encrypted data";
+      return "Invalid or unsupported encrypted data; legacy encrypted assets are not supported";
     case VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED:
       return "Encryption recovery is required";
     default:

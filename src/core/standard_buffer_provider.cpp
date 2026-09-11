@@ -8,7 +8,6 @@
 #include <new>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
-#include <streambuf>
 #include <unordered_set>
 #include <vxcore/notebook_json_keys.h>
 
@@ -61,108 +60,23 @@ struct BodyCandidate final {
   ~BodyCandidate() { Encryption::WipeBytes(value); }
 };
 
-struct NameCandidate final {
-  std::string value;
-  ~NameCandidate() { Encryption::WipeString(value); }
-};
-
-struct AttachmentNames final {
-  std::vector<std::string> value;
-  ~AttachmentNames() {
-    for (auto &name : value) Encryption::WipeString(name);
-  }
-};
-
-class BorrowedInput final : public std::streambuf {
- public:
-  explicit BorrowedInput(const std::vector<uint8_t> &bytes) {
-    if (!bytes.empty()) {
-      auto *begin = reinterpret_cast<char *>(const_cast<uint8_t *>(bytes.data()));
-      setg(begin, begin, begin + bytes.size());
-    }
-  }
-};
-
-const char *MediaTypeForName(const std::string &name) {
-  const auto dot = name.rfind('.');
-  if (dot == std::string::npos) {
-    return "application/octet-stream";
-  }
-  NameCandidate suffix;
-  suffix.value = name.substr(dot);
-  auto &extension = suffix.value;
-  std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char byte) {
-    return static_cast<char>(byte >= 'A' && byte <= 'Z' ? byte + ('a' - 'A') : byte);
-  });
-  if (extension == ".png") return "image/png";
-  if (extension == ".jpg" || extension == ".jpeg") return "image/jpeg";
-  if (extension == ".gif") return "image/gif";
-  if (extension == ".webp") return "image/webp";
-  if (extension == ".bmp") return "image/bmp";
-  if (extension == ".svg") return "image/svg+xml";
-  if (extension == ".avif") return "image/avif";
-  if (extension == ".txt" || extension == ".md") return "text/plain";
-  if (extension == ".pdf") return "application/pdf";
-  if (extension == ".json") return "application/json";
-  return "application/octet-stream";
+bool IsAssetName(const std::string &name) {
+  return IsSingleName(name) && name != "." && name != ".." &&
+         name.find('\0') == std::string::npos;
 }
 
-std::string UniqueAttachmentName(const Json &resources, const std::string &name,
-                                  const std::string &excluded_id = {}) {
-  auto used = [&](const std::string &candidate) {
-    return std::any_of(resources.begin(), resources.end(), [&](const Json &resource) {
-      return resource.at(kJsonKeyRole) == "attachment" && resource.at(kJsonKeyName) == candidate &&
-             resource.at(kJsonKeyResourceId) != excluded_id;
-    });
-  };
-  if (!used(name)) {
-    return name;
-  }
-  const auto dot = name.rfind('.');
-  const auto split = dot == std::string::npos ? name.size() : dot;
-  NameCandidate candidate;
-  candidate.value.reserve(name.size() + 22);
-  for (uint64_t counter = 1;; ++counter) {
-    Encryption::WipeString(candidate.value);
-    candidate.value.assign(name.data(), split);
-    candidate.value += '_';
-    candidate.value += std::to_string(counter);
-    candidate.value.append(name, split, std::string::npos);
-    if (!used(candidate.value)) {
-      return std::move(candidate.value);
-    }
-  }
-}
-
-const Json *FindResource(const Json &manifest, const std::string &url) {
-  constexpr size_t prefix_size = 8;
-  if (url.compare(0, prefix_size, "vxasset:") != 0 ||
-      !Encryption::IsCanonicalUuid(url.substr(prefix_size))) {
-    return nullptr;
-  }
-  const auto &resources = manifest.at(kJsonKeyResources);
-  for (const auto &resource : resources) {
-    const auto &id = resource.at(kJsonKeyResourceId).get_ref<const std::string &>();
-    if (url.compare(prefix_size, std::string::npos, id) == 0) {
-      return &resource;
-    }
-  }
-  return nullptr;
-}
 }  // namespace
 
 struct StandardBufferProvider::ProtectedState final {
   // DKs do not implicitly retain their parent. Keep this lease until every note
-  // operation, manifest, and committed body owned by this provider is destroyed.
+  // operation and authenticated manifest owned by this provider is destroyed.
   std::shared_ptr<const Encryption::Key> notebook_key;
   Encryption::KeyEnvelope envelope;
   Encryption::Key note_key;
   Encryption::ObjectHeader header;
   Encryption::Fingerprint fingerprint{};
   Json manifest;
-  std::vector<uint8_t> committed_body;
   ~ProtectedState() {
-    Encryption::WipeBytes(committed_body);
     Encryption::WipeJson(manifest);
   }
 };
@@ -200,11 +114,11 @@ void StandardBufferProvider::SetFilePath(const std::string &path) {
   if (encrypted_) {
     if (notebook_->GetType() != NotebookType::Bundled) {
       protection_error_ = VXCORE_ERR_UNSUPPORTED;
-    } else if (!suffix || metadata_mode_ == 0 || metadata_mode_ == 3) {
+    } else if (!suffix || metadata_mode_ == 0 || metadata_mode_ == 4) {
       protection_error_ = VXCORE_ERR_ENCRYPTION_FORMAT;
     } else if (protected_ &&
                protected_->manifest.at(kJsonKeyEditorType) !=
-                   (metadata_mode_ == 1 ? "markdown" : "text")) {
+                   (metadata_mode_ == 1 ? "markdown" : metadata_mode_ == 2 ? "text" : "mindmap")) {
       protection_error_ = VXCORE_ERR_ENCRYPTION_FORMAT;
     }
   }
@@ -219,11 +133,12 @@ void StandardBufferProvider::SetFileState(const std::string &path, const nlohman
   const bool marked = has_marker && (malformed || marker->get<bool>());
   metadata_mode_ = 0;
   if (marked) {
-    metadata_mode_ = 3;
+    metadata_mode_ = 4;
     const auto editor = metadata.find(kJsonKeyEditorType);
     if (!malformed && editor != metadata.end() && editor->is_string()) {
       if (*editor == "markdown") metadata_mode_ = 1;
       else if (*editor == "text") metadata_mode_ = 2;
+      else if (*editor == "mindmap") metadata_mode_ = 3;
     }
   }
   SetFilePath(path);
@@ -271,24 +186,6 @@ VxCoreError StandardBufferProvider::ResolveProtectedPath(const std::filesystem::
   return VXCORE_OK;
 }
 
-VxCoreError StandardBufferProvider::ResolveProtectedAssets(std::filesystem::path &out_path,
-                                                           bool create) {
-  if (!Encryption::IsCanonicalUuid(file_id_)) return VXCORE_ERR_ENCRYPTION_FORMAT;
-  const auto assets = GetAssetsFolderPath();
-  if (assets.empty()) return VXCORE_ERR_IO;
-  const auto path = PathFromUtf8(assets).lexically_normal();
-  if (PathToUtf8(path.filename()) != file_id_) return VXCORE_ERR_ENCRYPTION_FORMAT;
-  auto error = ResolveProtectedPath(path);
-  if (error != VXCORE_OK) return error;
-  std::error_code ec;
-  if (create) fs::create_directories(path, ec);
-  if (ec) return VXCORE_ERR_IO;
-  if (fs::exists(path, ec) && !fs::is_directory(path, ec)) return VXCORE_ERR_IO;
-  if (ec) return VXCORE_ERR_IO;
-  error = ResolveProtectedPath(path);
-  if (error == VXCORE_OK) out_path = path;
-  return error;
-}
 
 VxCoreError StandardBufferProvider::LoadEncryptedContent(std::vector<uint8_t> &out_body) {
   return ProtectedResult([&]() -> VxCoreError {
@@ -317,16 +214,15 @@ VxCoreError StandardBufferProvider::LoadEncryptedContent(std::vector<uint8_t> &o
     if (protected_ && !Encryption::KeysEqual(protected_->note_key, candidate->note_key)) {
       return VXCORE_ERR_ENCRYPTION_AUTH_FAILED;
     }
+    BodyCandidate body;
     error = Encryption::ReadNoteSnapshot(path, candidate->header, candidate->note_key,
-                                         candidate->committed_body, candidate->manifest,
+                                         body.value, candidate->manifest,
                                          &candidate->fingerprint);
     if (error != VXCORE_OK) return error;
     if (candidate->manifest.at(kJsonKeyEditorType) !=
-        (metadata_mode_ == 1 ? "markdown" : "text")) {
+        (metadata_mode_ == 1 ? "markdown" : metadata_mode_ == 2 ? "text" : "mindmap")) {
       return VXCORE_ERR_ENCRYPTION_FORMAT;
     }
-    BodyCandidate body;
-    body.value = candidate->committed_body;
     Encryption::WipeBytes(out_body);
     out_body.swap(body.value);
     protected_.swap(candidate);
@@ -366,8 +262,6 @@ VxCoreError StandardBufferProvider::SaveEncryptedContent(const std::vector<uint8
     if (error != VXCORE_OK) return error;
     error = RequireUnchangedSnapshot();
     if (error != VXCORE_OK) return error;
-    BodyCandidate committed;
-    committed.value = body;  // Allocated before publication; only protected notes keep this copy.
     Encryption::ObjectHeader header;
     Encryption::Fingerprint fingerprint{};
     error = Encryption::WriteNoteSnapshot(
@@ -375,7 +269,6 @@ VxCoreError StandardBufferProvider::SaveEncryptedContent(const std::vector<uint8
         *protected_->notebook_key, protected_->note_key, protected_->header.document_id,
         body, protected_->manifest, &header, &fingerprint);
     if (error != VXCORE_OK) return error;
-    protected_->committed_body.swap(committed.value);
     protected_->header = std::move(header);
     protected_->fingerprint = fingerprint;
     return VXCORE_OK;
@@ -423,28 +316,6 @@ VxCoreError StandardBufferProvider::ReadEncryptedBackup(std::vector<uint8_t> &ou
              ? VXCORE_OK : VXCORE_ERR_ENCRYPTION_FORMAT;
 }
 
-VxCoreError StandardBufferProvider::RefreshEncryptedBackupManifest(const nlohmann::json &manifest) {
-  const auto path = PathFromUtf8(notebook_->GetAbsolutePath(file_path_) + ".vswp");
-  auto error = ResolveProtectedPath(path);
-  if (error != VXCORE_OK) return error;
-  std::error_code ec;
-  const bool exists = fs::exists(path, ec);
-  if (ec) return VXCORE_ERR_IO;
-  if (!exists) return VXCORE_OK;  // None policy must not gain a backup as a side effect.
-  if (!fs::is_regular_file(path, ec) || ec) return VXCORE_ERR_IO;
-  BodyCandidate body;
-  ManifestCandidate previous_manifest;
-  int revision = 0;
-  error = ReadEncryptedBackup(body.value, previous_manifest.value, revision);
-  if (error != VXCORE_OK) return error;
-  // Publish a complete dirty snapshot before the live manifest. If the later live
-  // write fails, this ahead-of-live backup remains recoverable; this is not a
-  // cross-file transaction, and no dirty body/revision is inferred or replaced.
-  return Encryption::WriteNoteSnapshot(path, protected_->envelope, *protected_->notebook_key,
-                                        protected_->note_key, protected_->header.document_id,
-                                        body.value, manifest, nullptr, nullptr, revision);
-}
-
 VxCoreError StandardBufferProvider::RecoverEncryptedBackup(std::vector<uint8_t> &out_body,
                                                           int &out_revision) {
   return ProtectedResult([&]() -> VxCoreError {
@@ -458,8 +329,6 @@ VxCoreError StandardBufferProvider::RecoverEncryptedBackup(std::vector<uint8_t> 
     int revision = 0;
     error = ReadEncryptedBackup(body.value, manifest.value, revision);
     if (error != VXCORE_OK) return error;
-    BodyCandidate committed;
-    committed.value = body.value;
     Encryption::ObjectHeader header;
     Encryption::Fingerprint fingerprint{};
     error = RequireUnchangedSnapshot();
@@ -469,7 +338,6 @@ VxCoreError StandardBufferProvider::RecoverEncryptedBackup(std::vector<uint8_t> 
         *protected_->notebook_key, protected_->note_key, protected_->header.document_id,
         body.value, manifest.value, &header, &fingerprint);
     if (error != VXCORE_OK) return error;
-    protected_->committed_body.swap(committed.value);
     protected_->manifest.swap(manifest.value);
     protected_->header = std::move(header);
     protected_->fingerprint = fingerprint;
@@ -485,213 +353,13 @@ VxCoreError StandardBufferProvider::RecoverEncryptedBackup(std::vector<uint8_t> 
   });
 }
 
-VxCoreError StandardBufferProvider::PublishProtectedManifest(nlohmann::json &manifest) {
-  auto error = Encryption::ValidateNoteManifest(manifest);
-  if (error != VXCORE_OK) return error;
-  error = RequireUnchangedSnapshot();
-  if (error != VXCORE_OK) return error;
-  error = RefreshEncryptedBackupManifest(manifest);
-  if (error != VXCORE_OK) return error;
-  error = RequireUnchangedSnapshot();
-  if (error != VXCORE_OK) return error;
-  Encryption::ObjectHeader header;
-  Encryption::Fingerprint fingerprint{};
-  error = Encryption::WriteNoteSnapshot(
-      PathFromUtf8(notebook_->GetAbsolutePath(file_path_)), protected_->envelope,
-      *protected_->notebook_key, protected_->note_key, protected_->header.document_id,
-      protected_->committed_body, manifest, &header, &fingerprint);
-  if (error != VXCORE_OK) return error;
-  protected_->manifest.swap(manifest);
-  protected_->header = std::move(header);
-  protected_->fingerprint = fingerprint;
-  notebook_->NotifyEncryptedManifestSaved(file_path_);
-  return VXCORE_OK;
-}
-
-VxCoreError StandardBufferProvider::InsertProtectedResource(
-    const std::string &name, const std::string &media_type, const std::string &role,
-    std::istream &data, std::string &out_url) {
-  auto error = RequireProtectedState(true);
-  if (error != VXCORE_OK) return error;
-  error = RequireUnchangedSnapshot();
-  if (error != VXCORE_OK) return error;
-  ManifestCandidate manifest;
-  manifest.value = protected_->manifest;
-  auto &resources = manifest.value.at(kJsonKeyResources);
-  std::string resource_id;
-  std::string object_id;
-  error = Encryption::GenerateIdentity(resource_id);
-  if (error == VXCORE_OK) error = Encryption::GenerateIdentity(object_id);
-  if (error != VXCORE_OK) return error;
-  NameCandidate display_name;
-  display_name.value = role == "attachment" ? UniqueAttachmentName(resources, name) : name;
-  if (role == "comments") {
-    for (auto it = resources.begin(); it != resources.end(); ++it) {
-      if (it->at(kJsonKeyRole) == "comments") {
-        resource_id = it->at(kJsonKeyResourceId).get<std::string>();
-        Encryption::WipeJson(*it);
-        resources.erase(it);
-        break;
-      }
-    }
-  }
-  resources.push_back(Json::object());
-  auto &resource = resources.back();
-  resource[kJsonKeyResourceId] = resource_id;
-  resource[kJsonKeyObjectId] = object_id;
-  resource[kJsonKeyName] = display_name.value;
-  resource[kJsonKeyMediaType] = media_type;
-  resource[kJsonKeyRole] = role;
-  error = Encryption::ValidateNoteManifest(manifest.value);
-  if (error != VXCORE_OK) return error;
-  std::string url = "vxasset:" + resource_id;
-  fs::path assets;
-  error = ResolveProtectedAssets(assets, true);
-  if (error != VXCORE_OK) return error;
-  const auto destination = assets / PathFromUtf8(object_id + ".vne");
-  std::error_code ec;
-  if (fs::exists(destination, ec)) return VXCORE_ERR_ALREADY_EXISTS;
-  if (ec) return VXCORE_ERR_IO;
-  Encryption::ObjectHeader header;
-  header.kind = role == "comments" ? "comments" : "asset";
-  header.document_id = protected_->header.document_id;
-  header.object_id = object_id;
-  error = Encryption::EncryptObject(destination, header, protected_->note_key, data);
-  if (error != VXCORE_OK) return error;
-  // Immutable objects are retained even on failed publication: old saved manifests,
-  // backups and conflicts may still select their versions.
-  error = PublishProtectedManifest(manifest.value);
-  if (error == VXCORE_OK) out_url.swap(url);
-  return error;
-}
-
-VxCoreError StandardBufferProvider::InsertProtectedFile(const std::string &source_path,
-                                                       const std::string &role,
-                                                       std::string &out_url) {
-  return ProtectedResult([&]() -> VxCoreError {
-    auto error = RequireProtectedState(true);
-    if (error != VXCORE_OK) return error;
-    const auto source = PathFromUtf8(source_path);
-    if (source_path.empty() || !source.is_absolute()) return VXCORE_ERR_INVALID_PARAM;
-    if (CheckReparsePoint(source_path) != ReparseState::kNo) return VXCORE_ERR_INVALID_PARAM;
-    std::error_code ec;
-    if (!fs::is_regular_file(source, ec)) return ec ? VXCORE_ERR_IO : VXCORE_ERR_NOT_FOUND;
-    std::ifstream input;
-    input.rdbuf()->pubsetbuf(nullptr, 0);
-    input.open(source, std::ios::binary);
-    if (!input) return VXCORE_ERR_IO;
-    NameCandidate name;
-    name.value = PathToUtf8(source.filename());
-    return InsertProtectedResource(name.value, MediaTypeForName(name.value), role, input, out_url);
-  });
-}
-
-VxCoreError StandardBufferProvider::DeleteProtectedResource(const std::string &identity,
-                                                           bool attachment) {
-  return ProtectedResult([&]() -> VxCoreError {
-    auto error = RequireProtectedState(true);
-    if (error != VXCORE_OK) return error;
-    ManifestCandidate manifest;
-    manifest.value = protected_->manifest;
-    auto &resources = manifest.value.at(kJsonKeyResources);
-    for (auto it = resources.begin(); it != resources.end(); ++it) {
-      const auto &role = it->at(kJsonKeyRole);
-      const auto &id = it->at(kJsonKeyResourceId).get_ref<const std::string &>();
-      const bool matches = identity == "vxasset:" + id;
-      if (matches && (attachment ? role == "attachment" : role != "comments")) {
-        Encryption::WipeJson(*it);
-        resources.erase(it);
-        return PublishProtectedManifest(manifest.value);
-      }
-    }
-    return VXCORE_ERR_NOT_FOUND;
-  });
-}
-
-VxCoreError StandardBufferProvider::ReadProtectedResource(const std::string &url,
-                                                         std::vector<uint8_t> &out_data) {
-  Encryption::WipeBytes(out_data);
-  return ProtectedResult([&]() -> VxCoreError {
-    auto error = RequireProtectedState(false);
-    if (error != VXCORE_OK) return error;
-    const auto *resource = FindResource(protected_->manifest, url);
-    if (!resource) return VXCORE_ERR_NOT_FOUND;
-    fs::path assets;
-    error = ResolveProtectedAssets(assets, false);
-    if (error != VXCORE_OK) return error;
-    Encryption::ObjectHeader header;
-    header.kind = resource->at(kJsonKeyRole) == "comments" ? "comments" : "asset";
-    header.document_id = protected_->header.document_id;
-    header.object_id = resource->at(kJsonKeyObjectId).get<std::string>();
-    const auto path = assets / PathFromUtf8(header.object_id + ".vne");
-    error = ResolveProtectedPath(path);
-    if (error != VXCORE_OK) return error;
-    Encryption::SecureBytes bytes;
-    error = Encryption::ReadObject(path, header, protected_->note_key,
-                                   std::numeric_limits<size_t>::max(), bytes);
-    if (error != VXCORE_OK) return error;
-    if (bytes.Size()) out_data.assign(bytes.Data(), bytes.Data() + bytes.Size());
-    return VXCORE_OK;
-  });
-}
-
-VxCoreError StandardBufferProvider::ExportProtectedResource(const std::string &url,
-                                                           const std::string &destination_path) {
-  return ProtectedResult([&]() -> VxCoreError {
-    auto error = RequireProtectedState(false);
-    if (error != VXCORE_OK) return error;
-    const auto destination = PathFromUtf8(destination_path);
-    if (destination_path.empty() || !destination.is_absolute() ||
-        IsPathWithin(notebook_->GetRootFolder(), destination_path, true)) {
-      return VXCORE_ERR_INVALID_PARAM;
-    }
-    const auto *resource = FindResource(protected_->manifest, url);
-    if (!resource) return VXCORE_ERR_NOT_FOUND;
-    fs::path assets;
-    error = ResolveProtectedAssets(assets, false);
-    if (error != VXCORE_OK) return error;
-    Encryption::ObjectHeader header;
-    header.kind = resource->at(kJsonKeyRole) == "comments" ? "comments" : "asset";
-    header.document_id = protected_->header.document_id;
-    header.object_id = resource->at(kJsonKeyObjectId).get<std::string>();
-    const auto path = assets / PathFromUtf8(header.object_id + ".vne");
-    error = ResolveProtectedPath(path);
-    return error == VXCORE_OK ? Encryption::ExportObject(path, header, protected_->note_key, destination)
-                             : error;
-  });
-}
-
-VxCoreError StandardBufferProvider::WriteProtectedComments(const std::vector<uint8_t> &data) {
-  return ProtectedResult([&]() -> VxCoreError {
-    BorrowedInput buffer(data);
-    std::istream input(&buffer);
-    std::string url;
-    return InsertProtectedResource("comments.json", "application/json", "comments", input, url);
-  });
-}
-
-VxCoreError StandardBufferProvider::ListProtectedResources(nlohmann::json &out_resources) {
-  Encryption::WipeJson(out_resources);
-  return ProtectedResult([&]() -> VxCoreError {
-    const auto error = RequireProtectedState(false);
-    if (error != VXCORE_OK) return error;
-    out_resources = protected_->manifest.at(kJsonKeyResources);
-    return VXCORE_OK;
-  });
-}
-
 VxCoreError StandardBufferProvider::InsertAssetRaw(const std::string &name,
                                                    const std::vector<uint8_t> &data,
                                                    std::string &out_relative_path) {
-  if (encrypted_) {
-    return ProtectedResult([&]() -> VxCoreError {
-      BorrowedInput buffer(data);
-      std::istream input(&buffer);
-      return InsertProtectedResource(name, MediaTypeForName(name), "image", input, out_relative_path);
-    });
-  }
-  if (name.empty()) {
-    VXCORE_LOG_ERROR("Asset name cannot be empty");
+  const auto writable = notebook_->CheckWritable();
+  if (writable != VXCORE_OK) return writable;
+  if (!IsAssetName(name)) {
+    VXCORE_LOG_ERROR("Asset name must be a single filename");
     return VXCORE_ERR_INVALID_PARAM;
   }
 
@@ -709,6 +377,9 @@ VxCoreError StandardBufferProvider::InsertAssetRaw(const std::string &name,
 
   // Construct absolute path for the asset
   std::string asset_abs_path = CleanPath(assets_folder_path + "/" + unique_name);
+  if (!IsPathWithin(assets_folder_path, asset_abs_path, false)) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
 
   // Write binary data to file
   try {
@@ -750,7 +421,8 @@ VxCoreError StandardBufferProvider::InsertAssetRaw(const std::string &name,
 
 VxCoreError StandardBufferProvider::InsertAsset(const std::string &source_path,
                                                 std::string &out_relative_path) {
-  if (encrypted_) return InsertProtectedFile(source_path, "image", out_relative_path);
+  const auto writable = notebook_->CheckWritable();
+  if (writable != VXCORE_OK) return writable;
   if (source_path.empty()) {
     VXCORE_LOG_ERROR("Source path cannot be empty");
     return VXCORE_ERR_INVALID_PARAM;
@@ -774,12 +446,16 @@ VxCoreError StandardBufferProvider::InsertAsset(const std::string &source_path,
   // Extract filename from source path
   std::filesystem::path src_path = PathFromUtf8(source_path);
   std::string filename = PathToUtf8(src_path.filename());
+  if (!IsAssetName(filename)) return VXCORE_ERR_INVALID_PARAM;
 
   // Generate unique name if collision
   std::string unique_name = GetUniqueAssetName(filename, assets_folder_path);
 
   // Construct destination path
   std::string dest_path = CleanPath(assets_folder_path + "/" + unique_name);
+  if (!IsPathWithin(assets_folder_path, dest_path, false)) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
 
   // Copy file
   try {
@@ -808,19 +484,15 @@ VxCoreError StandardBufferProvider::InsertAsset(const std::string &source_path,
 }
 
 VxCoreError StandardBufferProvider::DeleteAsset(const std::string &relative_path) {
-  if (encrypted_) return DeleteProtectedResource(relative_path, false);
-  if (relative_path.empty()) {
-    VXCORE_LOG_ERROR("Relative path cannot be empty");
-    return VXCORE_ERR_INVALID_PARAM;
-  }
-
-  // Convert relative path to absolute path
-  std::string notebook_root = notebook_->GetRootFolder();
-  std::string abs_path = CleanPath(notebook_root + "/" + relative_path);
+  auto error = notebook_->CheckWritable();
+  if (error != VXCORE_OK) return error;
+  std::string abs_path;
+  error = GetAssetAbsolutePath(relative_path, abs_path);
+  if (error != VXCORE_OK) return error;
 
   // Check existence first
   try {
-    if (!std::filesystem::exists(PathFromUtf8(abs_path))) {
+    if (!std::filesystem::is_regular_file(PathFromUtf8(abs_path))) {
       VXCORE_LOG_WARN("Asset file does not exist: %s", abs_path.c_str());
       return VXCORE_ERR_NOT_FOUND;
     }
@@ -857,7 +529,6 @@ VxCoreError StandardBufferProvider::DeleteAsset(const std::string &relative_path
 
 VxCoreError StandardBufferProvider::InsertAttachment(const std::string &source_path,
                                                      std::string &out_filename) {
-  if (encrypted_) return InsertProtectedFile(source_path, "attachment", out_filename);
   if (!AttachmentsSupported()) {
     return VXCORE_ERR_UNSUPPORTED;
   }
@@ -891,11 +562,12 @@ VxCoreError StandardBufferProvider::InsertAttachment(const std::string &source_p
 }
 
 VxCoreError StandardBufferProvider::DeleteAttachment(const std::string &filename) {
-  if (encrypted_) return DeleteProtectedResource(filename, true);
   if (!AttachmentsSupported()) {
     return VXCORE_ERR_UNSUPPORTED;
   }
 
+  const auto writable = notebook_->CheckWritable();
+  if (writable != VXCORE_OK) return writable;
   if (!IsSingleName(filename) || filename == "." || filename == ".." ||
       filename.find(':') != std::string::npos || filename.find('\0') != std::string::npos) {
     VXCORE_LOG_ERROR("Attachment must be a basename");
@@ -904,10 +576,12 @@ VxCoreError StandardBufferProvider::DeleteAttachment(const std::string &filename
 
   // Build relative path from filename
   std::string assets_folder_path = GetAssetsFolderPath();
+  if (assets_folder_path.empty()) return VXCORE_ERR_INVALID_PARAM;
   std::string notebook_root = notebook_->GetRootFolder();
 
   // Compute relative path for the attachment
   std::string abs_path = CleanPath(assets_folder_path + "/" + filename);
+  if (!IsPathWithin(assets_folder_path, abs_path, false)) return VXCORE_ERR_INVALID_PARAM;
   std::string relative_path;
   try {
     std::filesystem::path abs = PathFromUtf8(abs_path);
@@ -942,33 +616,12 @@ VxCoreError StandardBufferProvider::DeleteAttachment(const std::string &filename
 VxCoreError StandardBufferProvider::RenameAttachment(const std::string &old_filename,
                                                      const std::string &new_filename,
                                                      std::string &out_new_filename) {
-  if (encrypted_) {
-    return ProtectedResult([&]() -> VxCoreError {
-      const auto error = RequireProtectedState(true);
-      if (error != VXCORE_OK) return error;
-      ManifestCandidate manifest;
-      manifest.value = protected_->manifest;
-      auto &resources = manifest.value.at(kJsonKeyResources);
-      for (auto &resource : resources) {
-        const auto &id = resource.at(kJsonKeyResourceId).get_ref<const std::string &>();
-        if (resource.at(kJsonKeyRole) == "attachment" &&
-            old_filename == "vxasset:" + id) {
-          NameCandidate name;
-          name.value = UniqueAttachmentName(resources, new_filename, id);
-          Encryption::WipeJson(resource[kJsonKeyName]);
-          resource[kJsonKeyName] = name.value;
-          const auto result = PublishProtectedManifest(manifest.value);
-          if (result == VXCORE_OK) out_new_filename.swap(name.value);
-          return result;
-        }
-      }
-      return VXCORE_ERR_NOT_FOUND;
-    });
-  }
   if (!AttachmentsSupported()) {
     return VXCORE_ERR_UNSUPPORTED;
   }
 
+  const auto writable = notebook_->CheckWritable();
+  if (writable != VXCORE_OK) return writable;
   if (!IsSingleName(old_filename) || !IsSingleName(new_filename) || old_filename == "." ||
       old_filename == ".." || new_filename == "." || new_filename == ".." ||
       old_filename.find(':') != std::string::npos || new_filename.find(':') != std::string::npos ||
@@ -979,9 +632,11 @@ VxCoreError StandardBufferProvider::RenameAttachment(const std::string &old_file
   }
 
   std::string assets_folder_path = GetAssetsFolderPath();
+  if (assets_folder_path.empty()) return VXCORE_ERR_INVALID_PARAM;
 
   // Build old absolute path
   std::string old_abs_path = CleanPath(assets_folder_path + "/" + old_filename);
+  if (!IsPathWithin(assets_folder_path, old_abs_path, false)) return VXCORE_ERR_INVALID_PARAM;
 
   if (!std::filesystem::exists(PathFromUtf8(old_abs_path))) {
     VXCORE_LOG_ERROR("Attachment does not exist: %s", old_abs_path.c_str());
@@ -993,6 +648,7 @@ VxCoreError StandardBufferProvider::RenameAttachment(const std::string &old_file
 
   // Build new absolute path
   std::string new_abs_path = CleanPath(assets_folder_path + "/" + unique_name);
+  if (!IsPathWithin(assets_folder_path, new_abs_path, false)) return VXCORE_ERR_INVALID_PARAM;
 
   try {
     // Rename the file
@@ -1020,27 +676,6 @@ VxCoreError StandardBufferProvider::RenameAttachment(const std::string &old_file
 }
 
 VxCoreError StandardBufferProvider::ListAttachments(std::vector<std::string> &out_filenames) {
-  if (encrypted_) {
-    for (auto &name : out_filenames) Encryption::WipeString(name);
-    out_filenames.clear();
-    return ProtectedResult([&]() -> VxCoreError {
-      const auto error = RequireProtectedState(false);
-      if (error != VXCORE_OK) return error;
-      AttachmentNames names;
-      const auto &resources = protected_->manifest.at(kJsonKeyResources);
-      const auto count = std::count_if(resources.begin(), resources.end(), [](const Json &resource) {
-        return resource.at(kJsonKeyRole) == "attachment";
-      });
-      names.value.reserve(static_cast<size_t>(count));
-      for (const auto &resource : resources) {
-        if (resource.at(kJsonKeyRole) == "attachment") {
-          names.value.emplace_back(resource.at(kJsonKeyName).get_ref<const std::string &>());
-        }
-      }
-      out_filenames.swap(names.value);
-      return VXCORE_OK;
-    });
-  }
   if (!AttachmentsSupported()) {
     return VXCORE_ERR_UNSUPPORTED;
   }
@@ -1131,8 +766,8 @@ std::string StandardBufferProvider::GetAssetsFolderPath() {
     return "";
   }
 
-  std::string assets_folder = folder_manager->GetAssetsFolder(file_path_);
-  return assets_folder;
+  // The configured assets folder may be outside the notebook for legacy notebooks.
+  return folder_manager->GetAssetsFolder(file_path_);
 }
 
 bool StandardBufferProvider::AttachmentsSupported() const {
@@ -1140,10 +775,6 @@ bool StandardBufferProvider::AttachmentsSupported() const {
 }
 
 VxCoreError StandardBufferProvider::GetAssetsFolder(std::string &out_path) {
-  if (encrypted_) {
-    out_path.clear();
-    return protection_error_ == VXCORE_OK ? VXCORE_ERR_UNSUPPORTED : protection_error_;
-  }
   std::string path = GetAssetsFolderPath();
   if (path.empty()) {
     return VXCORE_ERR_UNKNOWN;
@@ -1170,32 +801,33 @@ VxCoreError StandardBufferProvider::GetAttachmentsFolder(std::string &out_path) 
 
 VxCoreError StandardBufferProvider::GetAssetAbsolutePath(const std::string &relative_path,
                                                          std::string &out_abs_path) {
-  if (encrypted_) {
-    out_abs_path.clear();
-    return protection_error_ == VXCORE_OK ? VXCORE_ERR_UNSUPPORTED : protection_error_;
-  }
-  if (relative_path.empty()) {
+  out_abs_path.clear();
+  const auto relative = PathFromUtf8(relative_path);
+  if (relative.empty() || relative.has_root_path() ||
+      relative_path.find('\0') != std::string::npos) {
     return VXCORE_ERR_INVALID_PARAM;
   }
-
-  std::string notebook_root = notebook_->GetRootFolder();
-  out_abs_path = CleanPath(notebook_root + "/" + relative_path);
+  const auto &root = notebook_->GetRootFolder();
+  auto path = PathToUtf8(PathFromUtf8(root) / relative);
+  if (!IsPathWithin(root, path, false) &&
+      !IsPathWithin(GetAssetsFolderPath(), path, false)) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  out_abs_path = std::move(path);
   return VXCORE_OK;
 }
 
 VxCoreError StandardBufferProvider::ReadResource(const std::string &resource_url,
                                                 std::vector<uint8_t> &out_data) {
-  if (encrypted_) return ReadProtectedResource(resource_url, out_data);
   out_data.clear();
   try {
-    const auto relative = PathFromUtf8(resource_url);
-    if (relative.empty() || relative.has_root_path() ||
-        resource_url.find('\0') != std::string::npos) {
+    std::string absolute_path;
+    const auto error = GetAssetAbsolutePath(resource_url, absolute_path);
+    if (error != VXCORE_OK) return error;
+    if (!IsPathWithin(notebook_->GetRootFolder(), absolute_path, false)) {
       return VXCORE_ERR_INVALID_PARAM;
     }
-    const auto &root = notebook_->GetRootFolder();
-    const auto path = PathFromUtf8(root) / relative;
-    if (!IsPathWithin(root, PathToUtf8(path), false)) return VXCORE_ERR_INVALID_PARAM;
+    const auto path = PathFromUtf8(absolute_path);
     std::error_code ec;
     if (!fs::is_regular_file(path, ec)) return ec ? VXCORE_ERR_IO : VXCORE_ERR_NOT_FOUND;
     std::ifstream input(path, std::ios::binary | std::ios::ate);
@@ -1227,11 +859,9 @@ VxCoreError StandardBufferProvider::ReadResource(const std::string &resource_url
 }
 
 VxCoreError StandardBufferProvider::GetResourceBasePath(std::string &out_path) {
-  if (encrypted_) {
-    out_path.clear();
-    return protection_error_ == VXCORE_OK ? VXCORE_ERR_UNSUPPORTED : protection_error_;
-  }
-  std::string abs_path = CleanPath(notebook_->GetRootFolder() + "/" + file_path_);
+  std::string abs_path;
+  const auto error = GetAssetAbsolutePath(file_path_, abs_path);
+  if (error != VXCORE_OK) return error;
   std::filesystem::path p = PathFromUtf8(abs_path);
   out_path = CleanFsPath(p.parent_path());
   return VXCORE_OK;
@@ -1246,6 +876,8 @@ VxCoreError StandardBufferProvider::EnsureAssetsFolderExists() {
 
   try {
     if (!std::filesystem::exists(PathFromUtf8(assets_folder))) {
+      const auto writable = notebook_->CheckWritable();
+      if (writable != VXCORE_OK) return writable;
       if (!std::filesystem::create_directories(PathFromUtf8(assets_folder))) {
         VXCORE_LOG_ERROR("Failed to create assets folder: %s", assets_folder.c_str());
         return VXCORE_ERR_IO;

@@ -14,6 +14,7 @@ namespace vxcore {
 
 class Notebook;
 class NodeTransfer;
+struct FileTypesConfig;
 
 class BundledFolderManager : public FolderManager {
  public:
@@ -142,10 +143,12 @@ class BundledFolderManager : public FolderManager {
   // The caller quiesces views/buffers and holds maintenance then notebook IO.
   // Old plaintext buffers remain alive until the durable replacement is published.
   VxCoreError ProtectNote(const std::string &file_path, const void *body, size_t body_size,
-                          const std::string &resource_plan_json, std::string &out_path);
+                          const std::string &source_sha256, const FileTypesConfig &file_types,
+                          std::string &out_path);
   VxCoreError CreateEncryptedNote(const std::string &parent_path, const std::string &name,
                                   const std::string &editor_type, const void *body,
-                                  size_t body_size, std::string &out_id);
+                                  size_t body_size, const FileTypesConfig &file_types,
+                                  std::string &out_id);
   // Invoked only when existing transfer discovery encounters its encryption child.
   VxCoreError RecoverEncryptionTransactions(const std::filesystem::path &directory,
                                            int *out_recovered_count);
@@ -183,12 +186,10 @@ class BundledFolderManager : public FolderManager {
   VxCoreError CommitProtectedRelocation(nlohmann::json &journal);
   VxCoreError CompleteProtectedRelocation(const std::filesystem::path &directory,
                                           nlohmann::json &journal);
-  VxCoreError NormalizeRecycledAssets(nlohmann::json &journal, const std::string &folder_path,
-                                      const std::filesystem::path &destination);
   VxCoreError CommitEncryptedNote(const std::string &source_path, const std::string &parent_path,
                                   const std::string &name, const std::string &editor_type,
                                   const void *body, size_t body_size,
-                                  const nlohmann::json &plan, std::string &out_result);
+                                  const std::string &source_sha256, std::string &out_result);
   VxCoreError CompleteEncryptionTransaction(const std::filesystem::path &directory,
                                             nlohmann::json &journal);
   VxCoreError GetFolderConfig(const std::string &folder_path, FolderConfig **out_config,

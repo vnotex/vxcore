@@ -144,13 +144,8 @@ inline constexpr const char *kJsonKeyDocumentId = "documentId";
 inline constexpr const char *kJsonKeyObjectId = "objectId";
 inline constexpr const char *kJsonKeyKeyNonce = "keyNonce";
 inline constexpr const char *kJsonKeyWrappedNoteKey = "wrappedNoteKey";
+// Reader-only compatibility with persisted empty legacy manifests.
 inline constexpr const char *kJsonKeyResources = "resources";
-inline constexpr const char *kJsonKeyResourceId = "resourceId";
-inline constexpr const char *kJsonKeyMediaType = "mediaType";
-inline constexpr const char *kJsonKeyRole = "role";
-inline constexpr const char *kJsonKeySourceSha256 = "sourceSha256";
-inline constexpr const char *kJsonKeySourcePath = "sourcePath";
-inline constexpr const char *kJsonKeyRetainOriginal = "retainOriginal";
 
 }  // namespace vxcore
 

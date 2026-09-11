@@ -45,7 +45,7 @@ FileRecord FileRecord::FromJson(const nlohmann::json &json) {
   return record;
 }
 
-VxCoreError FileRecord::CheckPlaintextAttachmentAccess() const {
+VxCoreError FileRecord::CheckProtectionMetadata() const {
   const auto size = name.size();
   const bool suffix = size >= 4 && name[size - 4] == '.' &&
       (name[size - 3] == 'v' || name[size - 3] == 'V') &&
@@ -69,7 +69,7 @@ VxCoreError FileRecord::CheckPlaintextAttachmentAccess() const {
   }
   const auto editor = metadata.find(kJsonKeyEditorType);
   if (editor == metadata.end() || editor->is_string() == false ||
-      (*editor != "markdown" && *editor != "text")) {
+      (*editor != "markdown" && *editor != "text" && *editor != "mindmap")) {
     return VXCORE_ERR_ENCRYPTION_FORMAT;
   }
   return VXCORE_ERR_ENCRYPTION_LOCKED;

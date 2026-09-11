@@ -89,9 +89,9 @@ struct FileRecord {
   nlohmann::json ToJson() const;
   nlohmann::json ToJsonWithType() const;
 
-  // Metadata-only attachment APIs cannot authorize protected plaintext access.
-  // Uses this already-loaded record only; protected callers must use an open buffer.
-  VxCoreError CheckPlaintextAttachmentAccess() const;
+  // Metadata classifier only: OK for ordinary notes, ENCRYPTION_LOCKED for valid
+  // protected notes, ENCRYPTION_FORMAT for inconsistent markers. Assets stay plaintext.
+  VxCoreError CheckProtectionMetadata() const;
 };
 
 // Folder record contains all infomation about the folder itself including metadata.

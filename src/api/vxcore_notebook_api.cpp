@@ -16,6 +16,7 @@
 #include "core/buffer_manager.h"
 #include "core/bundled_folder_manager.h"
 #include "core/bundled_notebook.h"
+#include "core/config_manager.h"
 #include "core/context.h"
 #include "core/event_manager.h"
 #include "core/event_names.h"
@@ -153,13 +154,13 @@ VXCORE_API VxCoreError vxcore_encryption_get_status(
 
 VXCORE_API VxCoreError vxcore_encryption_protect_note(
     VxCoreContextHandle context, const char *notebook_id, const char *file_path,
-    const void *rewritten_body, size_t body_size, const char *resource_plan_json,
+    const void *body, size_t body_size, const char *source_sha256,
     char **out_encrypted_path) {
   if (out_encrypted_path) {
     *out_encrypted_path = nullptr;
   }
-  if (!context || !notebook_id || !file_path || !resource_plan_json ||
-      !out_encrypted_path || (!rewritten_body && body_size)) {
+  if (!context || !notebook_id || !file_path || !source_sha256 ||
+      !out_encrypted_path || (!body && body_size)) {
     return VXCORE_ERR_NULL_POINTER;
   }
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
@@ -179,8 +180,8 @@ VXCORE_API VxCoreError vxcore_encryption_protect_note(
       return VXCORE_ERR_OUT_OF_MEMORY;
     }
     std::string path;
-    const auto error = manager->ProtectNote(file_path, rewritten_body, body_size,
-                                             resource_plan_json, path);
+    const auto error = manager->ProtectNote(file_path, body, body_size, source_sha256,
+                                             ctx->config_manager->GetConfig().file_types, path);
     if (error == VXCORE_OK) {
       *out_encrypted_path = result.release();
     }
@@ -216,7 +217,8 @@ VXCORE_API VxCoreError vxcore_encryption_create_note(
     }
     std::string id;
     const auto error = manager->CreateEncryptedNote(parent_path, name, editor_type,
-                                                      body, body_size, id);
+                                                      body, body_size,
+                                                      ctx->config_manager->GetConfig().file_types, id);
     if (error == VXCORE_OK) {
       std::memcpy(result.get(), id.c_str(), 37);
       *out_file_id = result.release();

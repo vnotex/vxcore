@@ -189,26 +189,26 @@ VXCORE_API VxCoreError vxcore_encryption_get_status(
     VxCoreContextHandle context, const char *notebook_id,
     const char *file_path, char **out_status_json);
 
-// Transactional protection of an existing managed Markdown/text note. The caller
-// captures its current body (which may be dirty), freezes all views and drains saves,
-// comments and backups before holding maintenance then notebook IO. Unlock/setup/KDF
+// Transactional body-only protection of an existing managed Markdown, text or MindMap
+// note. The caller captures its current body (which may be dirty), freezes all views
+// and drains saves/backups before holding maintenance then notebook IO. Unlock/setup/KDF
 // must already be complete. Existing QUIESCED plaintext buffers may remain alive;
 // close/recreate them only after success. The UUID is preserved; ".vne" is appended.
-// Plan: {editorType,sourceSha256,resources:[{resourceId,sourcePath,sourceSha256,
-// name,mediaType,role,retainOriginal}]}. Hashes are lowercase SHA-256; sourcePath
-// entries are absolute canonical regular files. The caller confirms retained copies
-// and verifies its reference-scan checkpoints under the lease. No plaintext staging.
+// source_sha256 is the required lowercase SHA-256 of the original on-disk note,
+// checked before conversion. Core selects the editor from the configured FileType.
+// body is preserved byte-for-byte. Assets, attachments, comments and their metadata
+// are ordinary plaintext and are neither scanned nor changed. No plaintext staging.
 // A failure after preparation returns ENCRYPTION_RECOVERY_REQUIRED and blocks further
 // notebook mutation/sync until keyless startup recovery completes. Outputs are NULL
 // on failure; successful strings are released with vxcore_string_free().
 VXCORE_API VxCoreError vxcore_encryption_protect_note(
     VxCoreContextHandle context, const char *notebook_id, const char *file_path,
-    const void *rewritten_body, size_t body_size, const char *resource_plan_json,
+    const void *body, size_t body_size, const char *source_sha256,
     char **out_encrypted_path);
 
 // Same maintenance/IO/key preconditions. Publishes an encrypted note without ever
 // creating an empty/plaintext indexed file. name is the original visible filename
-// (without ".vne"); editor_type is "markdown" or "text". Returns its new stable UUID.
+// (without ".vne"); editor_type is "markdown", "text" or "mindmap". Returns its new stable UUID.
 VXCORE_API VxCoreError vxcore_encryption_create_note(
     VxCoreContextHandle context, const char *notebook_id, const char *parent_path,
     const char *name, const char *editor_type, const void *body, size_t body_size,
@@ -1113,9 +1113,8 @@ VXCORE_API VxCoreError vxcore_buffer_get_backup_path(VxCoreContextHandle context
                                                      char **out_path);
 
 // ============ Buffer Asset Operations (No Attachment Tracking) ============
-// Ordinary assets only touch the filesystem, not attachment metadata.
-// Protected assets are encrypted immediately and published through the open note's
-// authenticated manifest. They never create a plaintext asset file.
+// Assets only touch ordinary plaintext files, not attachment metadata.
+// Note-body protection never changes asset paths, bytes or metadata.
 // Use these for embedding inline content (images, diagrams) that don't need tracking.
 
 // Insert binary data as an asset file (NO attachment tracking).
@@ -1129,13 +1128,12 @@ VXCORE_API VxCoreError vxcore_buffer_get_backup_path(VxCoreContextHandle context
 // out_relative_path: Receives the relative path for embedding in content
 //                    (e.g., "vx_assets/<uuid>/screenshot.png" for notebook files,
 //                     or "<filename>_assets/screenshot.png" for external files)
-//                    For protected buffers: "vxasset:<resourceId>" instead of a path.
 //                    Caller must free with vxcore_string_free.
 // Returns VXCORE_ERR_BUFFER_NOT_FOUND if buffer doesn't exist.
 // Supported for bundled AND raw notebooks (assets are metadata-free file writes
 // into the notebook's assets folder). Attachment/tag operations remain
 // unsupported for raw notebooks.
-// Protected operations require an already authenticated, loaded bundled buffer.
+// Asset operations never load the owning note body or acquire encryption keys.
 // Returns VXCORE_ERR_IO on filesystem error.
 VXCORE_API VxCoreError vxcore_buffer_insert_asset_raw(VxCoreContextHandle context,
                                                       const char *buffer_id, const char *asset_name,
@@ -1148,7 +1146,6 @@ VXCORE_API VxCoreError vxcore_buffer_insert_asset_raw(VxCoreContextHandle contex
 //
 // source_path: Absolute path to source file
 // out_relative_path: Receives the relative path for embedding in content
-//                    For protected buffers: "vxasset:<resourceId>" instead of a path.
 //                    Caller must free with vxcore_string_free.
 VXCORE_API VxCoreError vxcore_buffer_insert_asset(VxCoreContextHandle context,
                                                   const char *buffer_id, const char *source_path,
@@ -1158,15 +1155,12 @@ VXCORE_API VxCoreError vxcore_buffer_insert_asset(VxCoreContextHandle context,
 // Does NOT touch attachment metadata.
 //
 // relative_path: Path as returned by vxcore_buffer_insert_asset*
-// Protected deletion takes the logical URL and removes its manifest entry without
-// deleting immutable ciphertext that an older snapshot may still reference.
 // Returns VXCORE_ERR_NOT_FOUND if asset doesn't exist.
 VXCORE_API VxCoreError vxcore_buffer_delete_asset(VxCoreContextHandle context,
                                                   const char *buffer_id, const char *relative_path);
 
 // Get absolute path to the buffer's assets folder.
 // Creates folder lazily if it doesn't exist.
-// Protected buffers return VXCORE_ERR_UNSUPPORTED; this is not a decrypted-file API.
 //
 // out_path: Receives absolute filesystem path.
 //           Caller must free with vxcore_string_free.
@@ -1176,70 +1170,47 @@ VXCORE_API VxCoreError vxcore_buffer_get_assets_folder(VxCoreContextHandle conte
 // Get the resource base path for a buffer.
 // This is the base path for resolving relative resource URLs (images, etc.) in the file's content.
 // For regular files, this is the parent directory of the file.
-// Protected buffers return VXCORE_ERR_UNSUPPORTED; use the resource boundary below.
 // out_path: Receives absolute filesystem path.
 //           Caller must free with vxcore_string_free.
 VXCORE_API VxCoreError vxcore_buffer_get_resource_base_path(VxCoreContextHandle context,
                                                             const char *buffer_id, char **out_path);
 
-// ============ Authenticated Buffer Resources ============
+// ============ Buffer Resources (Plaintext Files) ============
 // These synchronous calls borrow an existing buffer; none implicitly opens or loads
-// a closed/session-restored note. Keep the buffer/context alive and serialize resource
-// calls with saves/manifest updates using the notebook IO gate. No API exposes keys.
+// a closed/session-restored note or acquires encryption keys. Keep the buffer/context
+// alive and serialize resource calls using the notebook IO gate.
 
-// Receives borrowed binary bytes only after the complete resource is authenticated.
+// Receives borrowed ordinary file bytes after the complete resource has been read.
 // Called exactly once on success, including (NULL, 0) for a zero-byte resource.
-// No callback occurs on lookup/read/authentication failure. The bytes are valid only
-// during this call and are wiped/released afterward. Copy bytes needed by the caller.
-// The callback runs outside the key-registry mutex, must NOT re-enter vxcore, retain
-// the pointer, or throw an exception.
+// No callback occurs on lookup/read failure. Bytes are valid only during this call
+// and released afterward. Copy bytes needed by the caller. The callback must NOT
+// re-enter vxcore, retain the pointer, or throw an exception.
 typedef void (*VxCoreResourceReadCallback)(const void *data, size_t size, void *userdata);
 
-// resource_url: For protected notes, exactly "vxasset:<resourceId>" from the open
-// authenticated manifest; display names and filesystem paths are never resolved.
-// For ordinary buffers, a local relative insertion-result path, canonically contained
-// within the notebook root or (for external files) the file's parent directory.
-// Read-only notebooks remain readable. No network requests or plaintext fallback.
+// resource_url: A local relative insertion-result path, canonically contained within
+// the notebook root or (for external files) the file's parent directory.
+// Read-only notebooks and protected notes with unloaded bodies remain readable.
+// No network requests, logical resource IDs or decryption of file bytes.
 VXCORE_API VxCoreError vxcore_buffer_read_resource(VxCoreContextHandle context,
                                                    const char *buffer_id,
                                                    const char *resource_url,
                                                    VxCoreResourceReadCallback callback,
                                                    void *userdata);
 
-// Explicit plaintext release from an authenticated protected resource only.
-// The caller must obtain user consent and choose an absolute destination outside the
-// protected notebook (canonical aliases inside it are rejected). Bounded streaming
-// writes a temporary sibling at that destination and publishes only after complete
-// FINAL/EOF authentication. On failure, any existing destination remains unchanged.
-// Read-only source notebooks are supported; ordinary buffers return UNSUPPORTED.
+// Copies an ordinary resource file to the caller's absolute destination outside the
+// source notebook (canonical aliases inside it are rejected). The source uses the
+// same containment and byte-exact reading as vxcore_buffer_read_resource, independent
+// of note-body protection. Read-only source notebooks and external buffers are supported.
+// Writes a temporary sibling and publishes atomically; on failure an existing
+// destination remains unchanged. Its parent directory must already exist.
 VXCORE_API VxCoreError vxcore_buffer_export_resource(VxCoreContextHandle context,
                                                      const char *buffer_id,
                                                      const char *resource_url,
                                                      const char *destination_path);
 
-// Lists the open protected note's authenticated resources, not general buffer metadata.
-// Result is an array of {resourceId, objectId, name, mediaType, role}; resourceId is a
-// raw UUID, and read/export/delete URLs are formed as "vxasset:<resourceId>".
-// role is "image", "attachment", or "comments". Names are decrypted display names.
-// Locked/unloaded protected notes return ENCRYPTION_LOCKED, never an empty success.
-// Ordinary buffers return UNSUPPORTED (their existing attachment list is unchanged).
-// out_resources_json is NULL on every failure; caller frees success with vxcore_string_free.
-VXCORE_API VxCoreError vxcore_buffer_list_resources(VxCoreContextHandle context,
-                                                    const char *buffer_id,
-                                                    char **out_resources_json);
-
-// Atomically updates the sole comments-role resource and authenticated manifest of
-// an open protected note. Does not create FileRecord attachments or plaintext
-// comments.json. data is the caller's serialized comment set; an empty set must be
-// serialized normally, not treated as a missing store. data may be NULL only at size 0.
-// Requires a writable notebook and the caller's existing IO gate. Ordinary buffers
-// return UNSUPPORTED; locked/unloaded protected notes return ENCRYPTION_LOCKED.
-VXCORE_API VxCoreError vxcore_buffer_write_comment_resource(VxCoreContextHandle context,
-                                                           const char *buffer_id,
-                                                           const void *data, size_t size);
-
 // ============ Buffer Attachment Operations (Filesystem + Metadata) ============
 // Attachment operations modify both filesystem and attachment metadata.
+// Note-body protection does not encrypt attachment files, names, paths or metadata.
 // Use these for files that need to be tracked (downloadable attachments).
 
 // Copy a file to attachments folder and add to attachment list.
@@ -1249,9 +1220,6 @@ VXCORE_API VxCoreError vxcore_buffer_write_comment_resource(VxCoreContextHandle 
 // source_path: Absolute path to source file
 // out_filename: Receives just the filename (not full path)
 //               Caller must free with vxcore_string_free.
-// Protected insertion encrypts immediately, updates the authenticated manifest, and
-// returns "vxasset:<resourceId>" instead of a filename. Obtain its display name from
-// vxcore_buffer_list_resources; no plaintext FileRecord attachment name is stored.
 // Returns VXCORE_ERR_UNSUPPORTED for raw notebooks (attachments require vx.json
 // metadata); no filesystem side effects occur on rejection.
 VXCORE_API VxCoreError vxcore_buffer_insert_attachment(VxCoreContextHandle context,
@@ -1262,7 +1230,6 @@ VXCORE_API VxCoreError vxcore_buffer_insert_attachment(VxCoreContextHandle conte
 // Delete an attachment file and remove from attachment list.
 //
 // filename: Just the filename (not full path)
-// For protected buffers: "vxasset:<resourceId>", not the display name.
 // Returns VXCORE_ERR_NOT_FOUND if attachment doesn't exist.
 // Returns VXCORE_ERR_UNSUPPORTED for raw notebooks (attachments require vx.json
 // metadata); no filesystem side effects occur on rejection.
@@ -1276,9 +1243,6 @@ VXCORE_API VxCoreError vxcore_buffer_delete_attachment(VxCoreContextHandle conte
 // new_filename: New filename
 // out_new_filename: Receives the actual new filename (may differ if collision)
 //                   Caller must free with vxcore_string_free.
-// For protected buffers, old_filename is "vxasset:<resourceId>"; new_filename and
-// out_new_filename are display names. Only the manifest name changes; the logical ID
-// and immutable ciphertext remain unchanged.
 // Returns VXCORE_ERR_UNSUPPORTED for raw notebooks (attachments require vx.json
 // metadata); no filesystem side effects occur on rejection.
 VXCORE_API VxCoreError vxcore_buffer_rename_attachment(VxCoreContextHandle context,
@@ -1291,9 +1255,6 @@ VXCORE_API VxCoreError vxcore_buffer_rename_attachment(VxCoreContextHandle conte
 // For notebook files: returns FileRecord.attachments
 // For external files: returns filesystem listing (no metadata)
 // Returns JSON array of filenames (not full paths).
-// Protected buffers return authenticated attachment display names only. Use
-// vxcore_buffer_list_resources to pair names with opaque resource IDs.
-// Locked/unloaded protected notes return ENCRYPTION_LOCKED rather than names/empty success.
 //
 // out_attachments_json: Receives JSON array (e.g., ["doc.pdf", "data.zip", ...])
 //                       Caller must free with vxcore_string_free.
@@ -1315,7 +1276,6 @@ VXCORE_API VxCoreError vxcore_buffer_list_unindexed_attachments(VxCoreContextHan
 // Get absolute path to the buffer's attachments folder.
 // Creates folder lazily if it doesn't exist.
 // (Same folder as assets folder - attachments and assets share location)
-// Protected buffers return VXCORE_ERR_UNSUPPORTED; use explicit resource export instead.
 //
 // out_path: Receives absolute filesystem path.
 //           Caller must free with vxcore_string_free.

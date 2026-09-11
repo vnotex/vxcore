@@ -136,7 +136,7 @@ class NotebookEncryption final {
     std::string kind;
     std::string document_id;
     std::string object_id;
-    // Present only on note/backup objects. Resources cannot carry a wrapped key.
+    // Every supported object is a note or backup carrying its wrapped document key.
     std::string notebook_key_id;
     WrappedKey note_key;
   };
@@ -185,22 +185,13 @@ class NotebookEncryption final {
   static VxCoreError EncryptObject(const std::filesystem::path &path, const ObjectHeader &header,
                                    const Key &data_key, std::istream &plaintext,
                                    Fingerprint *out_fingerprint = nullptr);
-  static VxCoreError EncryptObjectBytes(const std::filesystem::path &path,
-                                        const ObjectHeader &header, const Key &data_key,
-                                        const void *bytes, size_t size);
   // All failures clear out_plaintext. No plaintext is returned before FINAL and EOF.
   static VxCoreError ReadObject(const std::filesystem::path &path, const ObjectHeader &expected,
                                 const Key &data_key, size_t max_bytes, SecureBytes &out_plaintext,
                                 Fingerprint *out_fingerprint = nullptr);
-  // Conversion staging verification: authenticate FINAL/EOF with bounded memory,
-  // discard plaintext, and optionally hash the authenticated plaintext stream.
+  // Conversion staging verification authenticates FINAL/EOF with bounded memory.
   static VxCoreError VerifyObject(const std::filesystem::path &path,
-                                  const ObjectHeader &expected, const Key &data_key,
-                                  Fingerprint *out_plaintext_fingerprint = nullptr);
-  // Explicit plaintext release only: stages at the chosen destination, then publishes
-  // after complete authentication. Caller enforces export consent/destination policy.
-  static VxCoreError ExportObject(const std::filesystem::path &path, const ObjectHeader &expected,
-                                  const Key &data_key, const std::filesystem::path &destination);
+                                  const ObjectHeader &expected, const Key &data_key);
   static VxCoreError FingerprintObject(const std::filesystem::path &path,
                                        Fingerprint &out_fingerprint);
   static VxCoreError FingerprintBytes(const void *bytes, size_t size, Fingerprint &out_fingerprint);
@@ -223,16 +214,17 @@ class NotebookEncryption final {
       std::vector<uint8_t> &out_body, nlohmann::json &out_manifest,
       Fingerprint *out_fingerprint = nullptr, int *out_revision = nullptr);
 
-  // Transfer staging contains ciphertext only. Copy generates an independent
-  // document/DK and immutable objects; Move authenticates and copies the payload
-  // unchanged, replacing only its NK envelope. Caller owns publication/recovery,
-  // safe path checks, and both notebook-key leases through commit/discard.
+  // Transfer owns only note/backup bodies and key envelopes, never asset files.
+  // A caller may rewrite links using the ordinary content handler; true indicates
+  // a changed body. Unchanged moves preserve payload bytes and only rewrap the DK.
+  // Caller owns publication/recovery and both notebook-key leases through commit.
+  using BodyTransform = std::function<bool(std::vector<uint8_t> &, const std::string &)>;
   static VxCoreError TransferNote(
-      const std::filesystem::path &source, const std::filesystem::path &source_assets,
-      const KeyEnvelope &source_envelope, const Key &source_notebook_key,
-      const std::filesystem::path &destination, const std::filesystem::path &destination_assets,
+      const std::filesystem::path &source, const KeyEnvelope &source_envelope,
+      const Key &source_notebook_key, const std::filesystem::path &destination,
       const KeyEnvelope &destination_envelope, const Key &destination_notebook_key,
-      bool copy, const std::filesystem::path &backup_destination, bool &out_has_backup);
+      bool copy, const std::filesystem::path &backup_destination, bool &out_has_backup,
+      const BodyTransform &transform_body);
 
   // Install only after authenticated preparation/unlock AND successful publication.
   // The caller serializes owner creation/teardown just like other Notebook operations,
@@ -261,10 +253,9 @@ class NotebookEncryption final {
   static VxCoreError DecryptRecords(std::istream &input, const ObjectHeader &header,
                                     const Key &data_key, const PlaintextSink &sink,
                                     const PlaintextSink &ciphertext_sink = {});
-  static VxCoreError TransferObject(
-      const std::filesystem::path &source, const ObjectHeader &expected, const Key &source_key,
-      const std::filesystem::path &destination, const ObjectHeader &replacement,
-      const Key &destination_key, bool reencrypt);
+  static VxCoreError RewrapSnapshot(
+      const std::filesystem::path &source, const ObjectHeader &expected, const Key &note_key,
+      const std::filesystem::path &destination, const ObjectHeader &replacement);
 
   mutable std::mutex mutex_;
   KeyEnvelope envelope_;
@@ -358,9 +349,6 @@ class Notebook {
   std::string GetCleanRelativePath(const std::string &path) const;
 
   std::string GetAbsolutePath(const std::string &relative_path) const;
-  // Immediate encrypted manifest commits use the same durable-file mutation fact as
-  // BufferManager body saves, without putting resource display names into metadata.
-  void NotifyEncryptedManifestSaved(const std::string &file_path) noexcept;
 
  protected:
   Notebook(const std::string &local_data_folder, const std::string &root_folder, NotebookType type);

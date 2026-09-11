@@ -755,32 +755,41 @@ The C ABI in `include/vxcore/vxcore.h` owns setup handles per context. Prepare c
 files and runs outside the caller's notebook IO gate; commit rechecks identity and
 writability under maintenance exclusion and the gate, consumes the handle, and never
 replaces an existing key file. Unlock authenticates only the key envelope, not every
-closed note. Lock All requires protected buffers, resource leases, and prepared setups to
+closed note. Lock All requires protected buffers, key leases, and prepared setups to
 have been released; an outstanding owner must prevent successful key release.
 
-Encrypted notes use `.vne` envelopes and authenticated manifests selecting immutable
-resource versions. Body, resource kind, document/key identity, stream FINAL and exact EOF
-are checked before exposing plaintext. Missing keys, unsupported formats, malformed or
-mismatched objects and recovery-required journals fail closed, never as an empty editable
-note or a plaintext save. Resources are loaded on demand; text-only saves reuse existing
-resource ciphertext. Protected backups, recycle/restore and transfer retain protection.
+Encrypted Markdown, Text and MindMap notes use `.vne` envelopes containing only the
+note body and authenticated `editorType`. Document/key identity, stream FINAL and exact
+EOF are checked before exposing plaintext. Images, attachments and comment sidecars
+remain normal plaintext files, with their ordinary paths, names and attachment metadata.
+Generic resource reads/exports never decrypt asset bytes or open a protected body.
+The reader accepts an old empty `resources` array only; any nonempty legacy encrypted
+resource manifest is an unsupported format, not something to drop or migrate.
+Protected backups, recycle/restore and transfer retain note-body protection.
 
-`vxcore_encryption_protect_note` stages and verifies the complete resource closure before
-publication. Its journal permits keyless recovery after interruption and blocks mutation
-and sync until recovery completes. Keep shared/external originals and warn; remove only
-exclusively owned plaintext after publication. New protected notes publish ciphertext
-from the initial write, including templates. Plaintext and raw/external paths retain the
-existing behavior and IO schedule.
+`vxcore_encryption_protect_note` requires the caller's SHA-256 of the selected original
+note file, resolves its editor from configured FileTypes, and stages only note ciphertext.
+It rechecks the source, key envelope and folder config before publishing, preserves the
+FileRecord UUID and attachment metadata, and removes only the replaced note/backup after
+publication. Its version-2 journal permits keyless recovery and blocks mutation/sync until
+recovery completes. Old asset-conversion journals remain untouched and require recovery;
+never silently finish their destructive asset cleanup. New protected notes publish
+ciphertext from the first body write. Raw/external notes cannot be protected.
 
 Git sync needs no unlock. Preserve `*.vne -text -diff -merge` in new and initialized existing
 repositories and resolve encrypted conflicts as complete binary envelopes, never a text
-merge. Keep all immutable objects needed by the selected manifest. A key-envelope conflict
-blocks protected access. Copies get fresh document keys/identity; cross-notebook moves
-rewrap the document key and require both notebooks initialized and unlocked. The VNote
-caller still owns `NodeTransferService` leases, comment durability and IO-gate ordering.
+merge. Asset files continue through the normal plaintext sync/transfer paths. A key-envelope
+conflict blocks protected body access. Copies get fresh document keys/identity;
+cross-notebook moves require both notebooks initialized and unlocked and rewrap the
+document key. Standard Markdown link rewrites affect only the protected body when ordinary
+asset paths change. Locked recycle preserves configured asset prefixes and ancestor paths,
+so it does not need to decrypt or rewrite a body. The VNote caller still owns transfer
+leases, comment durability and IO-gate ordering.
 
-Security limits: visible filenames/folders/tags are not authenticated secret metadata;
-valid old ciphertext may be replayed. Existing Git history, remote versions, backups,
-shared assets and external source files may retain plaintext. Backups must include
-`vx_notebook/encryption.vne` as well as notes and encrypted objects. Losing that envelope
-or the password is not repairable by initializing a new key over existing ciphertext.
+Security limits: filenames/folders/tags, image files, attachments and comment sidecars
+are not encrypted. Warn users before protection; inline Base64 images are protected only
+because their bytes are part of the note body. Valid old ciphertext may be replayed.
+Existing Git history, remote versions and external backups may retain plaintext.
+Backups must include `vx_notebook/encryption.vne`, notes and the ordinary asset files.
+Losing that envelope or the password cannot be repaired by initializing a new key over
+existing ciphertext.

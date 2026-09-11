@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <filesystem>
 #include <new>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -15,8 +16,8 @@
 #include "core/metadata_store.h"
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
-#include "core/standard_buffer_provider.h"
 #include "utils/base64.h"
+#include "utils/file_utils.h"
 #include "vxcore/vxcore.h"
 
 namespace {
@@ -51,40 +52,17 @@ void AddBufferProtectionInfo(const vxcore::Buffer &buffer, nlohmann::json &json)
   }
 }
 
-// Resource calls borrow an existing buffer only. In particular, session-restored
-// protected buffers must not be loaded just to list or read their resources.
-VxCoreError GetResourceProvider(vxcore::VxCoreContext *ctx, const char *buffer_id,
-                               vxcore::IBufferProvider *&out_provider, bool writing = false) {
-  out_provider = nullptr;
+// Resource calls borrow an existing buffer only, without loading its note body or
+// acquiring keys. A session-restored protected note can still use plaintext assets.
+VxCoreError GetResourceBuffer(vxcore::VxCoreContext *ctx, const char *buffer_id,
+                             vxcore::Buffer *&out_buffer) {
+  out_buffer = nullptr;
   if (!ctx->buffer_manager) return VXCORE_ERR_NOT_INITIALIZED;
-  auto *buffer = ctx->buffer_manager->GetBuffer(buffer_id);
-  if (!buffer) return VXCORE_ERR_BUFFER_NOT_FOUND;
-  if (buffer->IsEncrypted()) {
-    const auto error = buffer->GetProtectionError();
-    if (error != VXCORE_OK) return error;
-    if (!buffer->IsContentLoaded()) return VXCORE_ERR_ENCRYPTION_LOCKED;
-  }
-  if (writing && buffer->GetNotebook()) {
-    const auto error = buffer->GetNotebook()->CheckWritable();
-    if (error != VXCORE_OK) return error;
-  }
-  out_provider = buffer->GetProvider();
-  return out_provider ? VXCORE_OK : VXCORE_ERR_UNSUPPORTED;
+  out_buffer = ctx->buffer_manager->GetBuffer(buffer_id);
+  if (!out_buffer) return VXCORE_ERR_BUFFER_NOT_FOUND;
+  return out_buffer->GetProvider() ? VXCORE_OK : VXCORE_ERR_UNSUPPORTED;
 }
 
-struct ResourceBytes final {
-  std::vector<uint8_t> value;
-  ~ResourceBytes() { vxcore::NotebookEncryption::WipeBytes(value); }
-};
-
-struct ResourceMetadata final {
-  nlohmann::json value;
-  std::string serialized;
-  ~ResourceMetadata() {
-    vxcore::NotebookEncryption::WipeJson(value);
-    vxcore::NotebookEncryption::WipeString(serialized);
-  }
-};
 
 // Do not put provider exceptions (which may contain names or content) in logs or
 // shared context last_error. Concurrent callers use vxcore_error_message(error).
@@ -96,8 +74,6 @@ VxCoreError ResourceResult(Function &&function) {
     return VXCORE_ERR_OUT_OF_MEMORY;
   } catch (const std::length_error &) {
     return VXCORE_ERR_OUT_OF_MEMORY;
-  } catch (const nlohmann::json::exception &) {
-    return VXCORE_ERR_JSON_SERIALIZE;
   } catch (const std::filesystem::filesystem_error &) {
     return VXCORE_ERR_IO;
   } catch (const std::ios_base::failure &) {
@@ -761,21 +737,6 @@ VXCORE_API VxCoreError vxcore_buffer_insert_asset_raw(VxCoreContextHandle contex
       ctx->last_error = "Buffer provider not available (unsupported notebook type)";
       return VXCORE_ERR_UNSUPPORTED;
     }
-    if (provider->IsEncrypted()) {
-      *out_relative_path = nullptr;
-      return ResourceResult([&]() -> VxCoreError {
-        ResourceBytes bytes;
-        const auto *begin = static_cast<const uint8_t *>(data);
-        bytes.value.assign(begin, begin + data_size);
-        std::string url;
-        const auto error = provider->InsertAssetRaw(asset_name, bytes.value, url);
-        if (error != VXCORE_OK) return error;
-        *out_relative_path = vxcore_strdup(url.c_str());
-        return *out_relative_path ? VXCORE_OK : VXCORE_ERR_OUT_OF_MEMORY;
-      });
-    }
-
-
     std::vector<uint8_t> data_vec(static_cast<const uint8_t *>(data),
                                   static_cast<const uint8_t *>(data) + data_size);
     std::string relative_path;
@@ -936,7 +897,7 @@ VXCORE_API VxCoreError vxcore_buffer_get_resource_base_path(VxCoreContextHandle 
   }
 }
 
-// ============ Authenticated Buffer Resources ============
+// ============ Buffer Resources (Plaintext Files) ============
 
 VXCORE_API VxCoreError vxcore_buffer_read_resource(VxCoreContextHandle context,
                                                    const char *buffer_id,
@@ -946,15 +907,13 @@ VXCORE_API VxCoreError vxcore_buffer_read_resource(VxCoreContextHandle context,
   if (!context || !buffer_id || !resource_url || !callback) return VXCORE_ERR_NULL_POINTER;
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
   return ResourceResult([&]() -> VxCoreError {
-    vxcore::IBufferProvider *provider = nullptr;
-    auto error = GetResourceProvider(ctx, buffer_id, provider);
+    vxcore::Buffer *buffer = nullptr;
+    auto error = GetResourceBuffer(ctx, buffer_id, buffer);
     if (error != VXCORE_OK) return error;
-    ResourceBytes bytes;
-    error = provider->ReadResource(resource_url, bytes.value);
+    std::vector<uint8_t> bytes;
+    error = buffer->GetProvider()->ReadResource(resource_url, bytes);
     if (error != VXCORE_OK) return error;
-    // Full authentication has completed and no key-registry mutex is held.
-    // The owner wipes/releases the bytes even if a C++ callback throws.
-    callback(bytes.value.empty() ? nullptr : bytes.value.data(), bytes.value.size(), userdata);
+    callback(bytes.empty() ? nullptr : bytes.data(), bytes.size(), userdata);
     return VXCORE_OK;
   });
 }
@@ -966,53 +925,23 @@ VXCORE_API VxCoreError vxcore_buffer_export_resource(VxCoreContextHandle context
   if (!context || !buffer_id || !resource_url || !destination_path) return VXCORE_ERR_NULL_POINTER;
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
   return ResourceResult([&]() -> VxCoreError {
-    vxcore::IBufferProvider *provider = nullptr;
-    const auto error = GetResourceProvider(ctx, buffer_id, provider);
+    vxcore::Buffer *buffer = nullptr;
+    auto error = GetResourceBuffer(ctx, buffer_id, buffer);
     if (error != VXCORE_OK) return error;
-    auto *protected_provider = dynamic_cast<vxcore::StandardBufferProvider *>(provider);
-    if (!protected_provider || !protected_provider->IsEncrypted()) return VXCORE_ERR_UNSUPPORTED;
-    return protected_provider->ExportProtectedResource(resource_url, destination_path);
-  });
-}
-
-VXCORE_API VxCoreError vxcore_buffer_list_resources(VxCoreContextHandle context,
-                                                    const char *buffer_id,
-                                                    char **out_resources_json) {
-  if (out_resources_json) *out_resources_json = nullptr;
-  if (!context || !buffer_id || !out_resources_json) return VXCORE_ERR_NULL_POINTER;
-  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
-  return ResourceResult([&]() -> VxCoreError {
-    vxcore::IBufferProvider *provider = nullptr;
-    auto error = GetResourceProvider(ctx, buffer_id, provider);
-    if (error != VXCORE_OK) return error;
-    auto *protected_provider = dynamic_cast<vxcore::StandardBufferProvider *>(provider);
-    if (!protected_provider || !protected_provider->IsEncrypted()) return VXCORE_ERR_UNSUPPORTED;
-    ResourceMetadata resources;
-    error = protected_provider->ListProtectedResources(resources.value);
-    if (error != VXCORE_OK) return error;
-    resources.serialized = resources.value.dump();
-    *out_resources_json = vxcore_strdup(resources.serialized.c_str());
-    return *out_resources_json ? VXCORE_OK : VXCORE_ERR_OUT_OF_MEMORY;
-  });
-}
-
-VXCORE_API VxCoreError vxcore_buffer_write_comment_resource(VxCoreContextHandle context,
-                                                           const char *buffer_id,
-                                                           const void *data, size_t size) {
-  if (!context || !buffer_id || (!data && size)) return VXCORE_ERR_NULL_POINTER;
-  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
-  return ResourceResult([&]() -> VxCoreError {
-    vxcore::IBufferProvider *provider = nullptr;
-    const auto error = GetResourceProvider(ctx, buffer_id, provider, true);
-    if (error != VXCORE_OK) return error;
-    auto *protected_provider = dynamic_cast<vxcore::StandardBufferProvider *>(provider);
-    if (!protected_provider || !protected_provider->IsEncrypted()) return VXCORE_ERR_UNSUPPORTED;
-    ResourceBytes bytes;
-    if (size) {
-      const auto *begin = static_cast<const uint8_t *>(data);
-      bytes.value.assign(begin, begin + size);
+    const auto destination = vxcore::PathFromUtf8(destination_path);
+    if (!destination.is_absolute()) return VXCORE_ERR_INVALID_PARAM;
+    const auto *notebook = buffer->GetNotebook();
+    if (notebook && vxcore::IsPathWithin(notebook->GetRootFolder(), destination_path, true)) {
+      return VXCORE_ERR_INVALID_PARAM;
     }
-    return protected_provider->WriteProtectedComments(bytes.value);
+    std::vector<uint8_t> bytes;
+    error = buffer->GetProvider()->ReadResource(resource_url, bytes);
+    if (error != VXCORE_OK) return error;
+    vxcore::AtomicFileWriter writer(destination);
+    error = writer.Open();
+    if (error == VXCORE_OK) error = writer.Write(bytes.data(), bytes.size());
+    if (error == VXCORE_OK) error = writer.Commit();
+    return error;
   });
 }
 
