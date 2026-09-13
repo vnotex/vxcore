@@ -4072,34 +4072,54 @@ bool EncryptionRelativePath(const std::string &value, bool root_allowed = false)
   return PathToGenericUtf8(path.lexically_normal()) == value;
 }
 
-// Inspect every existing ancestor, not only the leaf: Windows junctions and
-// other reparse points are disallowed as well as POSIX symlinks.
-VxCoreError EncryptionSafePath(const fs::path &path, bool allow_missing = false) {
-  if (path.empty() || !path.is_absolute()) {
+// Aliases above the notebook are allowed, but the root and every descendant
+// must be link-free. External paths (configured recycle destinations) retain
+// filesystem-root-to-leaf inspection, including Windows junction/reparse checks.
+VxCoreError EncryptionSafePath(const fs::path &notebook_root, const fs::path &path,
+                               bool allow_missing = false) {
+  if (notebook_root.empty() || !notebook_root.is_absolute() || path.empty() ||
+      !path.is_absolute()) {
     return VXCORE_ERR_INVALID_PARAM;
   }
-  fs::path current = path.root_path();
-  for (const auto &part : path.relative_path()) {
-    if (part == "..") {
-      return VXCORE_ERR_INVALID_PARAM;
+  // Reject traversal before normalization or an early missing-descendant success.
+  for (const auto *input : {&notebook_root, &path}) {
+    for (const auto &part : *input) {
+      if (part == "..") return VXCORE_ERR_INVALID_PARAM;
     }
-    if (part == ".") {
-      continue;
-    }
-    current /= part;
+  }
+  auto root = notebook_root.lexically_normal();
+  if (root.filename().empty() && root != root.root_path()) root = root.parent_path();
+  const auto candidate = path.lexically_normal();
+  const auto mismatch = std::mismatch(root.begin(), root.end(), candidate.begin(), candidate.end());
+  const bool within = mismatch.first == root.end();
+  const auto inspect = [](const fs::path &current, bool require_directory) -> VxCoreError {
     std::error_code ec;
     const auto status = fs::symlink_status(current, ec);
     if (ec == std::errc::no_such_file_or_directory ||
-        status.type() == fs::file_type::not_found) {
-      return allow_missing ? VXCORE_OK : VXCORE_ERR_NODE_NOT_EXISTS;
+        (!ec && status.type() == fs::file_type::not_found)) {
+      return VXCORE_ERR_NODE_NOT_EXISTS;
     }
-    if (ec) {
-      return VXCORE_ERR_IO;
-    }
+    if (ec) return VXCORE_ERR_IO;
+    if (fs::is_symlink(status)) return VXCORE_ERR_INVALID_PARAM;
     const auto reparse = CheckReparsePoint(PathToUtf8(current));
     if (reparse != ReparseState::kNo) {
       return reparse == ReparseState::kYes ? VXCORE_ERR_INVALID_PARAM : VXCORE_ERR_IO;
     }
+    if (require_directory && !fs::is_directory(status)) return VXCORE_ERR_INVALID_PARAM;
+    return VXCORE_OK;
+  };
+  const auto root_error = inspect(root, true);
+  if (root_error != VXCORE_OK) return root_error;
+  fs::path current = within ? root : candidate.root_path();
+  const auto suffix = within ? candidate.lexically_relative(root) : candidate.relative_path();
+  for (const auto &part : suffix) {
+    if (part == "." || part.empty()) continue;
+    current /= part;
+    const auto error = inspect(current, false);
+    if (error == VXCORE_ERR_NODE_NOT_EXISTS) {
+      return allow_missing ? VXCORE_OK : error;
+    }
+    if (error != VXCORE_OK) return error;
   }
   return VXCORE_OK;
 }
@@ -4116,8 +4136,9 @@ bool EncryptionExists(const fs::path &path, bool &exists) {
   return !ec;
 }
 
-bool EncryptionMatches(const fs::path &path, const std::string &hash) {
-  if (!EncryptionValidHash(hash) || EncryptionSafePath(path) != VXCORE_OK) {
+bool EncryptionMatches(const fs::path &notebook_root, const fs::path &path,
+                       const std::string &hash) {
+  if (!EncryptionValidHash(hash) || EncryptionSafePath(notebook_root, path) != VXCORE_OK) {
     return false;
   }
   std::error_code ec;
@@ -4159,14 +4180,15 @@ bool EncryptionFlushAncestors(fs::path directory, const fs::path &root) {
 
 // Only our ciphertext staging is recursively removed. Never use this on live
 // sources: cleanup below removes each hash-checked regular file separately.
-bool EncryptionRemoveStaging(const fs::path &directory) {
-  if (EncryptionSafePath(directory) != VXCORE_OK) {
+bool EncryptionRemoveStaging(const fs::path &notebook_root, const fs::path &directory) {
+  if (EncryptionSafePath(notebook_root, directory) != VXCORE_OK) {
     return false;
   }
   std::error_code ec;
   std::vector<fs::path> children;
   for (fs::directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec)) {
-    if (EncryptionSafePath(it->path()) != VXCORE_OK || !it->is_regular_file(ec) || ec) {
+    if (EncryptionSafePath(notebook_root, it->path()) != VXCORE_OK || !it->is_regular_file(ec) ||
+        ec) {
       return false;
     }
     if (it->path().filename() != fs::path("journal.json")) {
@@ -4200,9 +4222,10 @@ bool EncryptionRemoveStaging(const fs::path &directory) {
   return !ec;
 }
 
-VxCoreError CopyTransactionFile(const fs::path &source, const fs::path &destination) {
-  if (EncryptionSafePath(source) != VXCORE_OK ||
-      EncryptionSafePath(destination, true) != VXCORE_OK) {
+VxCoreError CopyTransactionFile(const fs::path &notebook_root, const fs::path &source,
+                                const fs::path &destination) {
+  if (EncryptionSafePath(notebook_root, source) != VXCORE_OK ||
+      EncryptionSafePath(notebook_root, destination, true) != VXCORE_OK) {
     return VXCORE_ERR_IO;
   }
   std::error_code ec;
@@ -4350,7 +4373,7 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
   Encryption::KeyEnvelope persisted_envelope;
   std::string active_key_bytes;
   std::string persisted_key_bytes;
-  if (EncryptionSafePath(key_path) != VXCORE_OK ||
+  if (EncryptionSafePath(root, key_path) != VXCORE_OK ||
       Encryption::ReadKeyEnvelope(key_path, persisted_envelope) != VXCORE_OK ||
       Encryption::EncodeKeyEnvelope(envelope, active_key_bytes) != VXCORE_OK ||
       Encryption::EncodeKeyEnvelope(persisted_envelope, persisted_key_bytes) != VXCORE_OK ||
@@ -4360,8 +4383,8 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
   const auto config_path = PathFromUtf8(GetConfigPath(parent_path));
   const auto target_path = ConcatenatePaths(parent_path, name + ".vne");
   const auto target = PathFromUtf8(notebook_->GetAbsolutePath(target_path));
-  if (EncryptionSafePath(config_path) != VXCORE_OK ||
-      EncryptionSafePath(target, true) != VXCORE_OK ||
+  if (EncryptionSafePath(root, config_path) != VXCORE_OK ||
+      EncryptionSafePath(root, target, true) != VXCORE_OK ||
       !IsPathWithin(PathToUtf8(root), PathToUtf8(target), false) ||
       IsPathWithin(PathToUtf8(metadata), PathToUtf8(target), true)) {
     return VXCORE_ERR_INVALID_PARAM;
@@ -4426,7 +4449,7 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
   if (source_record) {
     const auto source = PathFromUtf8(notebook_->GetAbsolutePath(source_path));
     const auto &hash = source_sha256;
-    if (!EncryptionMatches(source, hash)) {
+    if (!EncryptionMatches(root, source, hash)) {
       return VXCORE_ERR_FILE_CHANGED_OUTSIDE;
     }
     if (!add_source(source, hash, true)) return VXCORE_ERR_INVALID_PARAM;
@@ -4436,7 +4459,7 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
     }
     if (exists) {
       std::string backup_hash;
-      if (EncryptionSafePath(backup) != VXCORE_OK ||
+      if (EncryptionSafePath(root, backup) != VXCORE_OK ||
           EncryptionHashFile(backup, backup_hash) != VXCORE_OK) {
         return VXCORE_ERR_IO;
       }
@@ -4457,7 +4480,7 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
     return error;
   }
   const auto directory = metadata / "vx_transfer" / "encryption" / PathFromUtf8(transaction_id);
-  if (EncryptionSafePath(directory, true) != VXCORE_OK ||
+  if (EncryptionSafePath(root, directory, true) != VXCORE_OK ||
       !IsPathWithin(PathToUtf8(root), PathToUtf8(directory), false)) {
     return VXCORE_ERR_INVALID_PARAM;
   }
@@ -4486,7 +4509,7 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
       notebook_->SetEncryptionRecoveryRequired(true);
       return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
     }
-    if (made_directory && !EncryptionRemoveStaging(directory)) {
+    if (made_directory && !EncryptionRemoveStaging(root, directory)) {
       notebook_->SetEncryptionRecoveryRequired(true);
       return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
     }
@@ -4523,11 +4546,11 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
                                   {"kind", "note"}, {"sha256", note_hash}});
     // Recheck every captured source and the complete metadata identity immediately
     // before preparation, while originals still exist and no live target is touched.
-    if (!EncryptionMatches(config_path, journal["beforeConfigSha256"].get<std::string>())) {
+    if (!EncryptionMatches(root, config_path, journal["beforeConfigSha256"].get<std::string>())) {
       return fail(VXCORE_ERR_FILE_CHANGED_OUTSIDE);
     }
     for (const auto &condition : journal["preconditions"]) {
-      if (!EncryptionMatches(PathFromUtf8(condition["path"].get<std::string>()),
+      if (!EncryptionMatches(root, PathFromUtf8(condition["path"].get<std::string>()),
                              condition["sha256"].get<std::string>())) {
         return fail(VXCORE_ERR_FILE_CHANGED_OUTSIDE);
       }
@@ -4637,14 +4660,14 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
        journal["editorType"] != "mindmap") ||
       (phase != "prepared" && phase != "publishing" && phase != "committed") ||
       !EncryptionValidHash(before_hash) || !EncryptionValidHash(after_hash) ||
-      EncryptionSafePath(directory) != VXCORE_OK ||
+      EncryptionSafePath(root, directory) != VXCORE_OK ||
       directory.lexically_normal() != expected_directory.lexically_normal()) {
     return recovery;
   }
   const auto target_absolute = PathFromUtf8(notebook_->GetAbsolutePath(target));
   const auto config_path = PathFromUtf8(GetConfigPath(parent));
-  if (EncryptionSafePath(target_absolute, true) != VXCORE_OK ||
-      EncryptionSafePath(config_path) != VXCORE_OK ||
+  if (EncryptionSafePath(root, target_absolute, true) != VXCORE_OK ||
+      EncryptionSafePath(root, config_path) != VXCORE_OK ||
       !IsPathWithin(PathToUtf8(root), PathToUtf8(target_absolute), false) ||
       IsPathWithin(PathToUtf8(metadata), PathToUtf8(target_absolute), true)) {
     return recovery;
@@ -4685,7 +4708,7 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
     if (path.find('\0') != std::string::npos || !PathFromUtf8(path).is_absolute() ||
         ec || !EncryptionValidHash(hash) ||
         !conditions.emplace(PathToGenericUtf8(canonical), hash).second ||
-        (!published && !EncryptionMatches(PathFromUtf8(path), hash))) {
+        (!published && !EncryptionMatches(root, PathFromUtf8(path), hash))) {
       return recovery;
     }
   }
@@ -4702,19 +4725,19 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
     if (source.empty() || !EncryptionRelativePath(path) || !cleanup_paths.insert(path).second ||
         condition == conditions.end() || condition->second != hash ||
         (path != source && path != source + ".vswp") ||
-        EncryptionSafePath(absolute, true) != VXCORE_OK) {
+        EncryptionSafePath(root, absolute, true) != VXCORE_OK) {
       return recovery;
     }
     bool exists = false;
     if (!EncryptionExists(absolute, exists) ||
-        (exists && !EncryptionMatches(absolute, hash)) || (!exists && !published)) {
+        (exists && !EncryptionMatches(root, absolute, hash)) || (!exists && !published)) {
       return recovery;
     }
   }
   const auto key_condition = conditions.find(
       PathToGenericUtf8(fs::weakly_canonical(metadata / "encryption.vne")));
   if (key_condition == conditions.end() ||
-      !EncryptionMatches(metadata / "encryption.vne", key_condition->second) ||
+      !EncryptionMatches(root, metadata / "encryption.vne", key_condition->second) ||
       (!source.empty() && !cleanup_paths.count(source)) ||
       conditions.size() != cleanup_paths.size() + 1 ||
       (source.empty() && (conditions.size() != 1 || !cleanup_paths.empty()))) {
@@ -4737,13 +4760,13 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
     const auto &live = target_absolute;
     const auto staged = directory / PathFromUtf8(id + ".vne");
     if (cleanup_paths.count(RelativePath(PathToUtf8(root), PathToUtf8(live))) ||
-        EncryptionSafePath(live, true) != VXCORE_OK) {
+        EncryptionSafePath(root, live, true) != VXCORE_OK) {
       return recovery;
     }
     bool live_exists = false;
     if (!EncryptionExists(live, live_exists) ||
-        (live_exists && !EncryptionMatches(live, hash)) ||
-        (!live_exists && (published || !EncryptionMatches(staged, hash)))) {
+        (live_exists && !EncryptionMatches(root, live, hash)) ||
+        (!live_exists && (published || !EncryptionMatches(root, staged, hash)))) {
       return recovery;
     }
     // Keyless recovery trusts only exactly the previously authenticated ciphertext.
@@ -4776,9 +4799,9 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
       const auto &live = target_absolute;
       bool exists = false;
       if (!EncryptionExists(live, exists) ||
-          (!exists && CopyTransactionFile(directory / PathFromUtf8(id + ".vne"), live) !=
-                          VXCORE_OK) ||
-          !EncryptionMatches(live, object["sha256"].get<std::string>())) {
+          (!exists &&
+           CopyTransactionFile(root, directory / PathFromUtf8(id + ".vne"), live) != VXCORE_OK) ||
+          !EncryptionMatches(root, live, object["sha256"].get<std::string>())) {
         return recovery;
       }
       #ifndef _WIN32
@@ -4787,7 +4810,7 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
       }
       #endif
     }
-    if (!EncryptionMatches(config_path, before_hash) ||
+    if (!EncryptionMatches(root, config_path, before_hash) ||
         SaveFolderConfigAtomic(parent, config, false) != VXCORE_OK) {
       return recovery;
     }
@@ -4831,7 +4854,7 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
       return recovery;
     }
     if (exists) {
-      if (!EncryptionMatches(absolute, entry["sha256"].get<std::string>())) {
+      if (!EncryptionMatches(root, absolute, entry["sha256"].get<std::string>())) {
         return recovery;
       }
       std::error_code ec;
@@ -4855,7 +4878,7 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
     return recovery;
   }
   #endif
-  if (!EncryptionRemoveStaging(directory)) {
+  if (!EncryptionRemoveStaging(root, directory)) {
     // A failed directory flush after unlinking the journal is uncertainty, not
     // rollback. Re-establish committed recovery evidence whenever storage allows.
     std::error_code ec;
@@ -4870,6 +4893,7 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
 
 VxCoreError BundledFolderManager::RecoverEncryptionTransactions(
     const fs::path &directory, int *out_recovered_count) {
+  const auto root = PathFromUtf8(notebook_->GetRootFolder());
   if (out_recovered_count) {
     *out_recovered_count = 0;
   }
@@ -4878,13 +4902,13 @@ VxCoreError BundledFolderManager::RecoverEncryptionTransactions(
     const auto expected = PathFromUtf8(notebook_->GetMetadataFolder()) /
                           "vx_transfer" / "encryption";
     if (directory.lexically_normal() != expected.lexically_normal() ||
-        EncryptionSafePath(directory) != VXCORE_OK) {
+        EncryptionSafePath(root, directory) != VXCORE_OK) {
       return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
     }
     std::error_code ec;
     std::vector<fs::path> transactions;
     for (fs::directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec)) {
-      if (EncryptionSafePath(it->path()) != VXCORE_OK || !it->is_directory(ec) || ec ||
+      if (EncryptionSafePath(root, it->path()) != VXCORE_OK || !it->is_directory(ec) || ec ||
           !Encryption::IsCanonicalUuid(PathToUtf8(it->path().filename()))) {
         return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
       }
@@ -4903,14 +4927,14 @@ VxCoreError BundledFolderManager::RecoverEncryptionTransactions(
       if (!exists) {
         // No prepared intent: this directory contains ciphertext only, with
         // every original still live (or a completed transaction's empty residue).
-        if (!EncryptionRemoveStaging(transaction)) {
+        if (!EncryptionRemoveStaging(root, transaction)) {
           return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
         }
         continue;
       }
       std::string bytes;
       EncryptionJson journal;
-      if (EncryptionSafePath(journal_path) != VXCORE_OK ||
+      if (EncryptionSafePath(root, journal_path) != VXCORE_OK ||
           fs::file_size(journal_path, ec) > kEncryptionJournalLimit || ec ||
           ReadFile(journal_path, bytes) != VXCORE_OK || !ParseEncryptionJson(bytes, journal) ||
           CompleteEncryptionTransaction(transaction, journal) != VXCORE_OK) {
@@ -4938,11 +4962,12 @@ EncryptionJson NewRelocationJournal(Notebook *notebook) {
           {"directories", EncryptionJson::array()}};
 }
 
-VxCoreError AddRelocationFile(EncryptionJson &journal, const fs::path &source,
-                              const fs::path &target, bool retain = false) {
+VxCoreError AddRelocationFile(const fs::path &notebook_root, EncryptionJson &journal,
+                              const fs::path &source, const fs::path &target, bool retain = false) {
   if (source.lexically_normal() == target.lexically_normal()) return VXCORE_OK;
-  if (EncryptionSafePath(source) != VXCORE_OK ||
-      EncryptionSafePath(target, true) != VXCORE_OK) return VXCORE_ERR_INVALID_PARAM;
+  if (EncryptionSafePath(notebook_root, source) != VXCORE_OK ||
+      EncryptionSafePath(notebook_root, target, true) != VXCORE_OK)
+    return VXCORE_ERR_INVALID_PARAM;
   bool exists = false;
   if (!EncryptionExists(target, exists)) return VXCORE_ERR_IO;
   if (exists) return VXCORE_ERR_ALREADY_EXISTS;
@@ -4954,23 +4979,23 @@ VxCoreError AddRelocationFile(EncryptionJson &journal, const fs::path &source,
   return VXCORE_OK;
 }
 
-VxCoreError AddRelocationTree(EncryptionJson &journal, const fs::path &source,
-                              const fs::path &target) {
+VxCoreError AddRelocationTree(const fs::path &notebook_root, EncryptionJson &journal,
+                              const fs::path &source, const fs::path &target) {
   if (source.lexically_normal() == target.lexically_normal()) return VXCORE_OK;
   bool exists = false;
   if (!EncryptionExists(source, exists)) return VXCORE_ERR_IO;
   if (!exists) return VXCORE_OK;
-  if (EncryptionSafePath(source) != VXCORE_OK) return VXCORE_ERR_INVALID_PARAM;
+  if (EncryptionSafePath(notebook_root, source) != VXCORE_OK) return VXCORE_ERR_INVALID_PARAM;
   std::error_code ec;
   if (!fs::is_directory(source, ec) || ec) return VXCORE_ERR_INVALID_PARAM;
   journal["directories"].push_back({{"source", PathToUtf8(source)}, {"target", PathToUtf8(target)}});
   for (fs::directory_iterator it(source, ec), end; !ec && it != end; it.increment(ec)) {
-    if (EncryptionSafePath(it->path()) != VXCORE_OK) return VXCORE_ERR_INVALID_PARAM;
+    if (EncryptionSafePath(notebook_root, it->path()) != VXCORE_OK) return VXCORE_ERR_INVALID_PARAM;
     VxCoreError error;
     if (it->is_directory(ec) && !ec) {
-      error = AddRelocationTree(journal, it->path(), target / it->path().filename());
+      error = AddRelocationTree(notebook_root, journal, it->path(), target / it->path().filename());
     } else if (it->is_regular_file(ec) && !ec) {
-      error = AddRelocationFile(journal, it->path(), target / it->path().filename());
+      error = AddRelocationFile(notebook_root, journal, it->path(), target / it->path().filename());
     } else {
       return VXCORE_ERR_INVALID_PARAM;
     }
@@ -4999,6 +5024,7 @@ VxCoreError AddRelocationConfig(EncryptionJson &journal, const fs::path &path,
 
 VxCoreError BundledFolderManager::MoveProtectedFile(
     const std::string &path, const std::string &destination_folder) {
+  const auto root = PathFromUtf8(notebook_->GetRootFolder());
   const auto parts = SplitPath(path);
   if (parts.first == destination_folder) return VXCORE_OK;
   FolderConfig *source = nullptr, *destination = nullptr;
@@ -5013,13 +5039,15 @@ VxCoreError BundledFolderManager::MoveProtectedFile(
   const auto new_assets = PathFromUtf8(GetContentPath(destination_folder)) /
       PathFromUtf8(notebook_->GetConfig().assets_folder) / PathFromUtf8(record->id);
   auto journal = NewRelocationJournal(notebook_);
-  error = AddRelocationFile(journal, PathFromUtf8(GetContentPath(path)), PathFromUtf8(GetContentPath(target)));
-  if (error == VXCORE_OK) error = AddRelocationTree(journal, old_assets, new_assets);
+  error = AddRelocationFile(root, journal, PathFromUtf8(GetContentPath(path)),
+                            PathFromUtf8(GetContentPath(target)));
+  if (error == VXCORE_OK) error = AddRelocationTree(root, journal, old_assets, new_assets);
   const auto backup = PathFromUtf8(GetContentPath(path) + ".vswp");
   bool exists = false;
   if (!EncryptionExists(backup, exists)) return VXCORE_ERR_IO;
   if (error == VXCORE_OK && exists) {
-    error = AddRelocationFile(journal, backup, PathFromUtf8(GetContentPath(target) + ".vswp"));
+    error =
+        AddRelocationFile(root, journal, backup, PathFromUtf8(GetContentPath(target) + ".vswp"));
   }
   auto source_config = *source;
   auto destination_config = *destination;
@@ -5038,6 +5066,7 @@ VxCoreError BundledFolderManager::MoveProtectedFile(
 }
 
 VxCoreError BundledFolderManager::RecycleProtectedNode(const std::string &path, bool folder) {
+  const auto root = PathFromUtf8(notebook_->GetRootFolder());
   const auto parts = SplitPath(path);
   FolderConfig *parent = nullptr;
   auto error = GetFolderConfig(parts.first, &parent);
@@ -5052,10 +5081,10 @@ VxCoreError BundledFolderManager::RecycleProtectedNode(const std::string &path, 
   auto journal = NewRelocationJournal(notebook_);
   if (folder) {
     const auto source_content = PathFromUtf8(GetContentPath(path));
-    error = AddRelocationTree(journal, source_content, content);
-    if (error == VXCORE_OK) error = AddRelocationTree(journal,
-        PathFromUtf8(GetConfigPath(path)).parent_path(),
-        metadata / "contents" / PathFromUtf8(path));
+    error = AddRelocationTree(root, journal, source_content, content);
+    if (error == VXCORE_OK)
+      error = AddRelocationTree(root, journal, PathFromUtf8(GetConfigPath(path)).parent_path(),
+                                metadata / "contents" / PathFromUtf8(path));
     // Assets already inside the selected subtree are copied with it. Other
     // owned assets retain their notebook-relative paths inside the portable bundle.
     std::function<VxCoreError(const std::string &)> collect_assets =
@@ -5069,9 +5098,8 @@ VxCoreError BundledFolderManager::RecycleProtectedNode(const std::string &path, 
           return VXCORE_ERR_INVALID_PARAM;
         }
         if (!IsPathWithin(PathToUtf8(source_content), PathToUtf8(assets), true)) {
-          const auto relative = assets.lexically_normal().lexically_relative(
-              PathFromUtf8(notebook_->GetRootFolder()));
-          result = AddRelocationTree(journal, assets, recycle / relative);
+          const auto relative = assets.lexically_normal().lexically_relative(root);
+          result = AddRelocationTree(root, journal, assets, recycle / relative);
           if (result != VXCORE_OK) return result;
         }
       }
@@ -5095,14 +5123,15 @@ VxCoreError BundledFolderManager::RecycleProtectedNode(const std::string &path, 
     if (!IsPathWithin(PathToUtf8(recycle), PathToUtf8(new_assets), false)) {
       return VXCORE_ERR_INVALID_PARAM;
     }
-    error = AddRelocationFile(journal, PathFromUtf8(GetContentPath(path)),
+    error = AddRelocationFile(root, journal, PathFromUtf8(GetContentPath(path)),
                               content / PathFromUtf8(parts.second));
-    if (error == VXCORE_OK) error = AddRelocationTree(journal, old_assets, new_assets);
+    if (error == VXCORE_OK) error = AddRelocationTree(root, journal, old_assets, new_assets);
     const auto backup = PathFromUtf8(GetContentPath(path) + ".vswp");
     bool exists = false;
     if (!EncryptionExists(backup, exists)) return VXCORE_ERR_IO;
     if (error == VXCORE_OK && exists) {
-      error = AddRelocationFile(journal, backup, content / PathFromUtf8(parts.second + ".vswp"));
+      error =
+          AddRelocationFile(root, journal, backup, content / PathFromUtf8(parts.second + ".vswp"));
     }
     if (error == VXCORE_OK) error = AddRelocationConfig(journal,
         metadata / "contents" / PathFromUtf8(portable_path) / "vx.json", recovered.ToJson());
@@ -5125,8 +5154,10 @@ VxCoreError BundledFolderManager::RecycleProtectedNode(const std::string &path, 
     error = AddRelocationConfig(journal, config_path, config.ToJson());
     child_path = ancestor.first;
   }
-  if (error == VXCORE_OK) error = AddRelocationFile(journal,
-      PathFromUtf8(notebook_->GetMetadataFolder()) / "encryption.vne", metadata / "encryption.vne", true);
+  if (error == VXCORE_OK)
+    error = AddRelocationFile(root, journal,
+                              PathFromUtf8(notebook_->GetMetadataFolder()) / "encryption.vne",
+                              metadata / "encryption.vne", true);
   parent_config.modified_utc = GetCurrentTimestampMillis();
   if (error == VXCORE_OK) error = AddRelocationConfig(journal,
       PathFromUtf8(GetConfigPath(parts.first)), parent_config.ToJson());
@@ -5140,16 +5171,17 @@ VxCoreError BundledFolderManager::RecycleProtectedNode(const std::string &path, 
 
 
 VxCoreError BundledFolderManager::CommitProtectedRelocation(EncryptionJson &journal) {
+  const auto root = PathFromUtf8(notebook_->GetRootFolder());
   const auto directory = PathFromUtf8(notebook_->GetMetadataFolder()) / "vx_transfer" /
       "encryption" / PathFromUtf8(GenerateUUID());
   std::error_code ec;
-  if (EncryptionSafePath(directory, true) != VXCORE_OK) return VXCORE_ERR_INVALID_PARAM;
+  if (EncryptionSafePath(root, directory, true) != VXCORE_OK) return VXCORE_ERR_INVALID_PARAM;
   fs::create_directories(directory, ec);
   if (ec) return VXCORE_ERR_IO;
   const auto bytes = journal.dump();
   if (bytes.size() > kEncryptionJournalLimit ||
       WriteFileAtomic(directory / "journal.json", bytes) != VXCORE_OK) {
-    EncryptionRemoveStaging(directory);
+    EncryptionRemoveStaging(root, directory);
     return VXCORE_ERR_IO;
   }
   notebook_->SetEncryptionRecoveryRequired(true);
@@ -5160,13 +5192,14 @@ VxCoreError BundledFolderManager::CommitProtectedRelocation(EncryptionJson &jour
 
 VxCoreError BundledFolderManager::CompleteProtectedRelocation(
     const fs::path &directory, EncryptionJson &journal) {
+  const auto root = PathFromUtf8(notebook_->GetRootFolder());
   const auto failed = VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
   if (!EncryptionExactKeys(journal, {"operation", "version", "notebookId", "files", "configs", "directories"}) ||
       journal["version"] != 2 || journal["notebookId"] != notebook_->GetId() ||
       !journal["files"].is_array() || !journal["configs"].is_array() ||
       !journal["directories"].is_array()) return failed;
   const auto safe = [&](const fs::path &path) {
-    return path.is_absolute() && EncryptionSafePath(path, true) == VXCORE_OK &&
+    return path.is_absolute() && EncryptionSafePath(root, path, true) == VXCORE_OK &&
         (IsPathWithin(notebook_->GetRootFolder(), PathToUtf8(path), false) ||
          IsPathWithin(GetRecycleBinPath(), PathToUtf8(path), false));
   };
@@ -5181,7 +5214,8 @@ VxCoreError BundledFolderManager::CompleteProtectedRelocation(
     if (!safe(source) || !safe(target) || !targets.insert(PathToUtf8(target)).second) return failed;
     bool exists = false;
     if (!EncryptionExists(target, exists) ||
-        (exists ? !EncryptionMatches(target, hash) : !EncryptionMatches(source, hash))) return failed;
+        (exists ? !EncryptionMatches(root, target, hash) : !EncryptionMatches(root, source, hash)))
+      return failed;
   }
   for (const auto &config : journal["configs"]) {
     if (!EncryptionExactKeys(config, {"path", "before", "after", "sha256"})) return failed;
@@ -5192,7 +5226,9 @@ VxCoreError BundledFolderManager::CompleteProtectedRelocation(
     if (!safe(path) || !targets.insert(PathToUtf8(path)).second ||
         EncryptionHashBytes(after) != hash || !EncryptionExists(path, exists)) return failed;
     const auto before = config.at("before").get<std::string>();
-    if (exists ? (!EncryptionMatches(path, hash) && !EncryptionMatches(path, before)) : !before.empty()) return failed;
+    if (exists ? (!EncryptionMatches(root, path, hash) && !EncryptionMatches(root, path, before))
+               : !before.empty())
+      return failed;
   }
   for (const auto &entry : journal["directories"]) {
     if (!EncryptionExactKeys(entry, {"source", "target"})) return failed;
@@ -5205,15 +5241,17 @@ VxCoreError BundledFolderManager::CompleteProtectedRelocation(
   for (const auto &file : journal["files"]) {
     const auto target = PathFromUtf8(file["target"].get<std::string>());
     const auto hash = file["sha256"].get<std::string>();
-    if (EncryptionMatches(target, hash)) continue;
-    if (CopyTransactionFile(PathFromUtf8(file["source"].get<std::string>()), target) !=
-        VXCORE_OK || !EncryptionMatches(target, hash)) return failed;
+    if (EncryptionMatches(root, target, hash)) continue;
+    if (CopyTransactionFile(root, PathFromUtf8(file["source"].get<std::string>()), target) !=
+            VXCORE_OK ||
+        !EncryptionMatches(root, target, hash))
+      return failed;
   }
   for (const auto &config : journal["configs"]) {
     const auto path = PathFromUtf8(config["path"].get<std::string>());
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
-    if (ec || (!EncryptionMatches(path, config["sha256"].get<std::string>()) &&
+    if (ec || (!EncryptionMatches(root, path, config["sha256"].get<std::string>()) &&
         WriteFileAtomic(path, config["after"].get<std::string>()) != VXCORE_OK)) return failed;
   }
   config_cache_.clear();
@@ -5224,7 +5262,7 @@ VxCoreError BundledFolderManager::CompleteProtectedRelocation(
     bool exists = false;
     if (!EncryptionExists(source, exists)) return failed;
     if (exists) {
-      if (!EncryptionMatches(source, file["sha256"].get<std::string>())) return failed;
+      if (!EncryptionMatches(root, source, file["sha256"].get<std::string>())) return failed;
       std::error_code ec;
       if (!fs::remove(source, ec) || ec) return failed;
     }
@@ -5236,7 +5274,7 @@ VxCoreError BundledFolderManager::CompleteProtectedRelocation(
     fs::remove(path, ec);  // Empty directories only; unrelated contents are never removed.
     if (ec && ec != std::errc::no_such_file_or_directory) return failed;
   }
-  return EncryptionRemoveStaging(directory) ? VXCORE_OK : failed;
+  return EncryptionRemoveStaging(root, directory) ? VXCORE_OK : failed;
 }
 
 }  // namespace vxcore

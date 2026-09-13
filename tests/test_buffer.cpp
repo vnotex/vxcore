@@ -18,6 +18,10 @@
 
 #include "core/context.h"
 #include "test_utils.h"
+#ifdef _WIN32
+#include <winioctl.h>
+#endif
+#include "test_reparse_utils.h"
 #include "vxcore/vxcore.h"
 
 // Simple base64 encoder for test purposes (RFC 4648)
@@ -200,16 +204,34 @@ struct EncryptionTestContext {
   ~EncryptionTestContext() { vxcore_context_destroy(value); }
 };
 
+struct EncryptionTestDirectoryLink {
+  std::string path;
+  ~EncryptionTestDirectoryLink() {
+    if (!path.empty()) vxcore_test::remove_reparse_dir(path);
+  }
+};
+
 struct EncryptionFixture {
   BufferTestTempDirectory directory;
+  EncryptionTestDirectoryLink link;
   EncryptionTestContext context;
   EncryptionTestString notebook_id;
   std::string path;
   VxCoreError error = VXCORE_ERR_IO;
 
-  EncryptionFixture() {
+  explicit EncryptionFixture(bool use_aliased_parent = false) {
     if (directory.valid() == false) return;
     path = get_test_path("notebook");
+    if (use_aliased_parent) {
+      const auto real = directory.path() / "real";
+      const auto alias = directory.path() / "alias";
+      std::error_code ec;
+      if (!std::filesystem::create_directory(real, ec) || ec) return;
+      const auto alias_utf8 = fs_path_to_utf8(alias);
+      if (!vxcore_test::create_junction(fs_path_to_utf8(real), alias_utf8)) return;
+      link.path = alias_utf8;
+      path = fs_path_to_utf8(alias / "notebook");
+    }
     error = vxcore_context_create(nullptr, &context.value);
     if (error != VXCORE_OK) return;
     error = vxcore_notebook_create(context.value, path.c_str(), "{\"name\":\"Encryption Test\"}",
@@ -5232,6 +5254,186 @@ struct EncryptionSnapshotFixture {
   }
 };
 
+int test_encryption_note_through_aliased_parent() {
+  EncryptionFixture fixture(true);
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  const auto notebook = fixture.notebook_id.value;
+  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+  const std::string body = "# PRIVATE_ALIAS_BODY\r\n";
+  EncryptionTestString file;
+  ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "alias.md", "markdown",
+                                          body.data(), body.size(), &file.value),
+            VXCORE_OK);
+  ASSERT_NOT_NULL(file.value);
+  ASSERT_FALSE(path_exists(fixture.path + "/alias.md"));
+  const auto alias_path = fixture.path + "/alias.md.vne";
+  const auto ciphertext = read_file_content(alias_path);
+  ASSERT_EQ(ciphertext.substr(0, 8), std::string("VNOTEE1\0", 8));
+  ASSERT_EQ(ciphertext.find("PRIVATE_ALIAS_BODY"), std::string::npos);
+  ASSERT_EQ(assert_encrypted_body_roundtrip(fixture, file.value, alias_path, body,
+                                            "# alias saved\r\n", "# alias backup\r\n"),
+            0);
+
+  EncryptionTestString source, protected_path;
+  ASSERT_EQ(vxcore_file_create(context, notebook, "", "source.md", &source.value), VXCORE_OK);
+  const std::string original = "source body\r\n";
+  const std::string protected_body = "protected source\r\n";
+  const auto source_path = fixture.path + "/source.md";
+  write_file(source_path, original);
+  write_file(source_path + ".vswp", "source backup\r\n");
+  const auto source_hash = encryption_sha256(original);
+  ASSERT_EQ(vxcore_encryption_protect_note(context, notebook, "source.md", protected_body.data(),
+                                           protected_body.size(), source_hash.c_str(),
+                                           &protected_path.value),
+            VXCORE_OK);
+  ASSERT_NOT_NULL(protected_path.value);
+  ASSERT_EQ(std::string(protected_path.value), "source.md.vne");
+  ASSERT_FALSE(path_exists(source_path));
+  ASSERT_FALSE(path_exists(source_path + ".vswp"));
+  const auto protected_absolute = source_path + ".vne";
+  // Opening by the original ID verifies that protection preserved the UUID.
+  ASSERT_EQ(
+      assert_encrypted_body_roundtrip(fixture, source.value, protected_absolute, protected_body,
+                                      "protected saved\r\n", "protected backup\r\n"),
+      0);
+
+  EncryptionTestString folder;
+  ASSERT_EQ(vxcore_folder_create(context, notebook, "", "Moved", &folder.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_node_move(context, notebook, "alias.md.vne", "Moved"), VXCORE_OK);
+  ASSERT_FALSE(path_exists(alias_path));
+  const auto moved_path = fixture.path + "/Moved/alias.md.vne";
+  const auto moved_ciphertext = read_file_content(moved_path);
+  ASSERT_EQ(moved_ciphertext.substr(0, 8), std::string("VNOTEE1\0", 8));
+  ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
+  ASSERT_EQ(vxcore_node_delete(context, notebook, "Moved/alias.md.vne"), VXCORE_OK);
+  ASSERT_FALSE(path_exists(moved_path));
+  EncryptionTestString recycle;
+  ASSERT_EQ(vxcore_notebook_get_recycle_bin_path(context, notebook, &recycle.value), VXCORE_OK);
+  int recycled = 0;
+  for (const auto &entry : std::filesystem::directory_iterator(utf8_to_fs_path(recycle.value))) {
+    const auto recovered = entry.path() / "Moved" / "alias.md.vne";
+    if (!std::filesystem::exists(recovered)) continue;
+    ++recycled;
+    ASSERT_EQ(read_file_content(fs_path_to_utf8(recovered)), moved_ciphertext);
+    const auto metadata_path = entry.path() / "vx_notebook" / "contents" / "Moved" / "vx.json";
+    const auto metadata = nlohmann::json::parse(read_file_content(fs_path_to_utf8(metadata_path)));
+    ASSERT_EQ(metadata["files"][0]["id"], std::string(file.value));
+  }
+  ASSERT_EQ(recycled, 1);
+
+  const auto live_ciphertext = read_file_content(protected_absolute);
+  ASSERT_EQ(vxcore_notebook_close(context, notebook), VXCORE_OK);
+  const auto residue = utf8_to_fs_path(fixture.path) / "vx_notebook" / "vx_transfer" /
+                       "encryption" / "00000000-0000-4000-8000-000000000001";
+  std::error_code ec;
+  ASSERT_TRUE(std::filesystem::create_directory(residue, ec));
+  ASSERT_FALSE(ec);
+  write_file(fs_path_to_utf8(residue / "orphan.vne"), live_ciphertext);
+  ASSERT_EQ(read_file_content(fs_path_to_utf8(residue / "orphan.vne")), live_ciphertext);
+  EncryptionTestString reopened;
+  ASSERT_EQ(vxcore_notebook_open(context, fixture.path.c_str(), &reopened.value), VXCORE_OK);
+  ASSERT_FALSE(std::filesystem::exists(residue));
+  ASSERT_EQ(read_file_content(protected_absolute), live_ciphertext);
+  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, reopened.value, kEncryptionPassword.data(),
+                                              kEncryptionPassword.size()),
+            VXCORE_OK);
+  EncryptionTestString after_recovery;
+  const std::string recovered_body = "after recovery\r\n";
+  ASSERT_EQ(vxcore_encryption_create_note(context, reopened.value, "", "after-recovery.md",
+                                          "markdown", recovered_body.data(), recovered_body.size(),
+                                          &after_recovery.value),
+            VXCORE_OK);
+  ASSERT_NOT_NULL(after_recovery.value);
+  return 0;
+}
+
+int test_encryption_rejects_links_within_notebook() {
+  enum class LinkedAncestor { Content, Metadata, Staging };
+  for (const auto ancestor :
+       {LinkedAncestor::Content, LinkedAncestor::Metadata, LinkedAncestor::Staging}) {
+    EncryptionFixture fixture;
+    ASSERT_EQ(fixture.error, VXCORE_OK);
+    const auto context = fixture.context.value;
+    const auto notebook = fixture.notebook_id.value;
+    ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+    const auto root = utf8_to_fs_path(fixture.path);
+    const auto target = fixture.directory.path() / "link-target";
+    const auto staging = root / "vx_notebook" / "vx_transfer" / "encryption";
+    auto config = root / "vx_notebook" / "contents" / "vx.json";
+    std::filesystem::path link;
+    const char *parent = "";
+    std::error_code ec;
+    if (ancestor == LinkedAncestor::Content) {
+      EncryptionTestString folder;
+      ASSERT_EQ(vxcore_folder_create(context, notebook, "", "Linked", &folder.value), VXCORE_OK);
+      parent = "Linked";
+      config = config.parent_path() / "Linked" / "vx.json";
+      link = root / "Linked";
+      std::filesystem::rename(link, target, ec);
+    } else if (ancestor == LinkedAncestor::Metadata) {
+      // Move only folder configs, never the metadata directory of an open notebook.
+      link = root / "vx_notebook" / "contents";
+      std::filesystem::rename(link, target, ec);
+      config = target / "vx.json";
+    } else {
+      ASSERT_TRUE(std::filesystem::create_directory(target, ec));
+      ASSERT_FALSE(ec);
+      std::filesystem::create_directories(staging.parent_path(), ec);
+      link = staging;
+    }
+    ASSERT_FALSE(ec);
+    const auto link_utf8 = fs_path_to_utf8(link);
+    ASSERT_TRUE(vxcore_test::create_junction(fs_path_to_utf8(target), link_utf8));
+    fixture.link.path = link_utf8;
+    // Snapshot the physical target, not a tree containing the installed link.
+    const auto before = encryption_file_tree(fs_path_to_utf8(target));
+    const auto key_bytes = read_file_content(fixture.key_path());
+    const auto config_bytes = read_file_content(fs_path_to_utf8(config));
+    EncryptionTestString rejected;
+    const auto error = vxcore_encryption_create_note(context, notebook, parent, "blocked.md",
+                                                     "markdown", "", 0, &rejected.value);
+    ASSERT_EQ(error, VXCORE_ERR_INVALID_PARAM);
+    ASSERT_NULL(rejected.value);
+    ASSERT(encryption_file_tree(fs_path_to_utf8(target)) == before);
+    ASSERT_EQ(read_file_content(fixture.key_path()), key_bytes);
+    ASSERT_EQ(read_file_content(fs_path_to_utf8(config)), config_bytes);
+    ASSERT_FALSE(std::filesystem::exists(root / parent / "blocked.md"));
+    ASSERT_FALSE(std::filesystem::exists(root / parent / "blocked.md.vne"));
+    if (ancestor == LinkedAncestor::Staging) {
+      ASSERT_TRUE(std::filesystem::is_empty(target));
+    } else {
+      ASSERT_FALSE(std::filesystem::exists(staging));
+    }
+  }
+
+  EncryptionFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  ASSERT_EQ(initialize_test_encryption(context, fixture.notebook_id.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_close(context, fixture.notebook_id.value), VXCORE_OK);
+  const auto link = fs_path_to_utf8(fixture.directory.path() / "root-link");
+  ASSERT_TRUE(vxcore_test::create_junction(fixture.path, link));
+  fixture.link.path = link;
+  const auto before = encryption_file_tree(fixture.path);
+  const auto key_bytes = read_file_content(fixture.key_path());
+  const auto config_path = fixture.path + "/vx_notebook/contents/vx.json";
+  const auto config_bytes = read_file_content(config_path);
+  EncryptionTestString reopened;
+  ASSERT_EQ(vxcore_notebook_open(context, link.c_str(), &reopened.value), VXCORE_OK);
+  // The existing identity preflight rejects a link at the notebook root on unlock.
+  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, reopened.value, kEncryptionPassword.data(),
+                                              kEncryptionPassword.size()),
+            VXCORE_ERR_INVALID_STATE);
+  ASSERT(encryption_file_tree(fixture.path) == before);
+  ASSERT_EQ(read_file_content(fixture.key_path()), key_bytes);
+  ASSERT_EQ(read_file_content(config_path), config_bytes);
+  ASSERT_FALSE(path_exists(fixture.path + "/blocked.md"));
+  ASSERT_FALSE(path_exists(fixture.path + "/blocked.md.vne"));
+  ASSERT_FALSE(path_exists(fixture.path + "/vx_notebook/vx_transfer/encryption"));
+  return 0;
+}
+
 int test_encryption_create_note_transaction() {
   EncryptionFixture fixture;
   ASSERT_EQ(fixture.error, VXCORE_OK);
@@ -6008,6 +6210,8 @@ int main() {
   RUN_TEST(test_plaintext_buffer_independent_of_key_file);
   RUN_TEST(test_buffer_hidden_encryption_magic_fails_closed);
   RUN_TEST(test_encryption_status_rejects_malformed_candidates);
+  RUN_TEST(test_encryption_note_through_aliased_parent);
+  RUN_TEST(test_encryption_rejects_links_within_notebook);
   RUN_TEST(test_encryption_create_note_transaction);
   RUN_TEST(test_key_conflict_blocks_cached_protected_body);
   RUN_TEST(test_encryption_protect_body_only);
