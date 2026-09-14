@@ -46,11 +46,18 @@ struct GitCredentialPayload {
 //   - payload is null
 //   - PAT is empty
 //   - GIT_CREDENTIAL_USERPASS_PLAINTEXT is not in allowed_types
-// Otherwise creates a userpass credential with username "x-access-token"
-// (GitHub/GitLab/Gitea convention) and the PAT as the password.
+// Otherwise uses username_from_url when non-empty (required by hosts such as
+// Gitee), falling back to "x-access-token", with the PAT as the password.
 int GitSyncBackendCredentialCb(git_credential **out, const char *url,
                                 const char *username_from_url,
                                 unsigned int allowed_types, void *payload);
+
+// WinHTTP preemptive Basic auth: retain an explicit URL username, or use
+// "x-access-token" when absent, and URL-encode the PAT as the password.
+// Non-HTTPS URLs, empty PATs and existing passwords are left unchanged.
+// The result is secret: use only for an in-memory remote instance, NEVER
+// persist it to remote.origin.url / notebook config or include it in logs.
+std::string MaybeEmbedPatInUrl(const std::string &url, const std::string &pat);
 
 // Helper that constructs a per-call GitCredentialPayload snapshot from a
 // credential provider (Wave 6.3 F4.4 of sync-backend-phase4) and returns a

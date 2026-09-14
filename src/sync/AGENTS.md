@@ -309,9 +309,21 @@ which keeps editor swap files and the gitdir itself out of every commit.
 
 | Method | How |
 |--------|-----|
-| HTTPS PAT | `SyncCredentials::personal_access_token` is sent as the password with username `x-access-token` (GitHub/GitLab/Gitea convention) |
+| HTTPS PAT | `SyncCredentials::personal_access_token` is sent as the password with the explicit remote URL username, or `x-access-token` when absent |
 | Anonymous | If no PAT is set, libgit2 falls back to no credentials (works for public-read remotes) |
 | SSH | NOT SUPPORTED in v1 — libssh2 is intentionally not linked |
+
+Gitee requires the PAT owner's **account login**, not `x-access-token` and not
+necessarily the repository owner. VNote's **Git username** field edits the
+non-secret username component of the remote URL, for example
+`https://contributor@gitee.com/team/notes.git`. The PAT remains separate in the
+OS keychain; never put it in a persisted URL.
+
+Both `GitSyncBackendCredentialCb` and the WinHTTP preemptive-auth helper
+`MaybeEmbedPatInUrl` (in `git/git_credential_callback.cpp`) must preserve this
+username. The helper adds a URL-encoded PAT only to the in-memory remote instance
+used by `RemoteHasRefs`, `FetchOrigin`, and `PushOrigin`; it must never change
+`remote.origin.url` on disk. Username-less GitHub URLs retain `x-access-token`.
 
 ### Commit Author
 

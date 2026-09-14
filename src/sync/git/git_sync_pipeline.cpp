@@ -99,34 +99,6 @@ VxCoreError EnsureEncryptedAttributes(git_repository *repo) {
   return VXCORE_OK;
 }
 
-// Workaround for libgit2 WinHTTP credential-callback failures against real
-// GitHub HTTPS. Embeds the PAT directly into the URL so WinHTTP picks up
-// Basic auth via URL userinfo parsing instead of relying on credential
-// callback negotiation. NEVER logs the result.
-//
-// Returns the input URL unchanged when:
-//   - PAT is empty
-//   - URL is not https://
-//   - URL already contains userinfo (won't double-embed)
-//
-// NOTE: assumes the GitHub PAT character set ([A-Za-z0-9_]); URL-encode
-// the PAT if generalizing this to providers whose secrets may contain
-// '@', ':', '/', '?', '#', or '%'.
-//
-// The returned URL stays in-process only — it is only used as the in-memory
-// remote instance URL for one libgit2 operation; never persisted to disk.
-static std::string MaybeEmbedPatInUrl(const std::string &url, const std::string &pat) {
-  if (pat.empty()) return url;
-  if (url.compare(0, 8, "https://") != 0) return url;
-  const size_t scheme_end = 8;  // length of "https://"
-  const size_t first_slash = url.find('/', scheme_end);
-  const size_t at_pos = url.find('@', scheme_end);
-  if (at_pos != std::string::npos && (first_slash == std::string::npos || at_pos < first_slash)) {
-    return url;  // already has userinfo
-  }
-  return std::string("https://x-access-token:") + pat + "@" + url.substr(scheme_end);
-}
-
 // Drive a libgit2 rebase replay loop that has already been initialised
 // (`git_rebase_init` performed, `rebase` non-null) and whose signature is
 // owned by the caller. Steps repeatedly until either (a) `git_rebase_next`

@@ -6,6 +6,7 @@
 // owned exclusively by this binary.
 
 #include <git2.h>
+#include <git2/sys/credential.h>
 
 #include <iostream>
 #include <string>
@@ -34,9 +35,46 @@ int test_git_credential_pat_used_when_set() {
       GIT_CREDENTIAL_USERPASS_PLAINTEXT, &payload);
   ASSERT_EQ(rc, 0);
   ASSERT_NOT_NULL(cred);
+  ASSERT_EQ(std::string(git_credential_get_username(cred)), "x-access-token");
+  const auto *userpass = reinterpret_cast<git_credential_userpass_plaintext *>(cred);
+  ASSERT_EQ(std::string(userpass->password), creds.personal_access_token);
   git_credential_free(cred);
 
   std::cout << "  ✓ test_git_credential_pat_used_when_set passed" << std::endl;
+  return 0;
+}
+
+int test_git_credential_uses_token_owner_username() {
+  vxcore::LibGit2Init init;
+  vxcore::GitCredentialPayload payload{"test-token"};
+  git_credential *cred = nullptr;
+  // A collaborator's login is not the repository owner's path component.
+  const int rc = vxcore::GitSyncBackendCredentialCb(
+      &cred, "https://contributor@gitee.com/team/notes.git", "contributor",
+      GIT_CREDENTIAL_USERPASS_PLAINTEXT, &payload);
+  ASSERT_EQ(rc, 0);
+  ASSERT_NOT_NULL(cred);
+  ASSERT_EQ(std::string(git_credential_get_username(cred)), "contributor");
+  const auto *userpass = reinterpret_cast<git_credential_userpass_plaintext *>(cred);
+  ASSERT_EQ(std::string(userpass->password), "test-token");
+  git_credential_free(cred);
+  return 0;
+}
+
+int test_git_preemptive_auth_preserves_account_and_encodes_token() {
+  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("https://contributor@gitee.com/team/notes.git", "token"),
+            "https://contributor:token@gitee.com/team/notes.git");
+  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("https://github.com/team/notes.git", "token"),
+            "https://x-access-token:token@github.com/team/notes.git");
+  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("https://user%40mail.test@host/repo.git", "a@:/?#%"),
+            "https://user%40mail.test:a%40%3A%2F%3F%23%25@host/repo.git");
+  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("https://host/path@repo.git", "token"),
+            "https://x-access-token:token@host/path@repo.git");
+  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("https://user:existing@host/repo.git", "token"),
+            "https://user:existing@host/repo.git");
+  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("https://user@host/repo.git", ""),
+            "https://user@host/repo.git");
+  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("file:///repo.git", "token"), "file:///repo.git");
   return 0;
 }
 
@@ -153,6 +191,8 @@ int test_git_error_translate_network() {
 
 int main() {
   RUN_TEST(test_git_credential_pat_used_when_set);
+  RUN_TEST(test_git_credential_uses_token_owner_username);
+  RUN_TEST(test_git_preemptive_auth_preserves_account_and_encodes_token);
   RUN_TEST(test_git_credential_anonymous_returns_passthrough);
   RUN_TEST(test_git_error_translate_notfound);
   RUN_TEST(test_git_error_translate_network);

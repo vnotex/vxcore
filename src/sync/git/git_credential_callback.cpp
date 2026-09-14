@@ -12,17 +12,54 @@ int GitSyncBackendCredentialCb(git_credential **out, const char *url,
                                 const char *username_from_url,
                                 unsigned int allowed_types, void *payload) {
   (void)url;
-  (void)username_from_url;
   auto *pl = static_cast<GitCredentialPayload *>(payload);
   if (pl == nullptr) {
     return GIT_PASSTHROUGH;
   }
   if (!pl->personal_access_token.empty() &&
       (allowed_types & GIT_CREDENTIAL_USERPASS_PLAINTEXT) != 0) {
+    const char *username = username_from_url && *username_from_url
+                               ? username_from_url
+                               : "x-access-token";
     return git_credential_userpass_plaintext_new(
-        out, "x-access-token", pl->personal_access_token.c_str());
+        out, username, pl->personal_access_token.c_str());
   }
   return GIT_PASSTHROUGH;
+}
+
+std::string MaybeEmbedPatInUrl(const std::string &url, const std::string &pat) {
+  if (pat.empty() || url.compare(0, 8, "https://") != 0) return url;
+  const size_t scheme_end = 8;
+  const size_t authority_end = url.find_first_of("/?#", scheme_end);
+  const size_t at_pos = url.find('@', scheme_end);
+  const bool has_userinfo = at_pos != std::string::npos &&
+                            (authority_end == std::string::npos || at_pos < authority_end);
+  if (has_userinfo && url.find(':', scheme_end) < at_pos) {
+    return url;  // Do not replace an explicit password.
+  }
+
+  std::string result;
+  result.reserve(url.size() + pat.size() * 3 + 16);
+  if (has_userinfo && at_pos > scheme_end) {
+    result.append(url, 0, at_pos);  // Preserve the URL-encoded account login.
+  } else {
+    result = "https://x-access-token";
+  }
+  result += ':';
+  constexpr char hex[] = "0123456789ABCDEF";
+  for (unsigned char ch : pat) {
+    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+        (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' || ch == '~') {
+      result += static_cast<char>(ch);
+    } else {
+      result += '%';
+      result += hex[ch >> 4];
+      result += hex[ch & 15];
+    }
+  }
+  result += '@';
+  result.append(url, has_userinfo ? at_pos + 1 : scheme_end, std::string::npos);
+  return result;
 }
 
 RemoteCallbacksBundle MakeRemoteCallbacks(ICredentialProvider *provider,
