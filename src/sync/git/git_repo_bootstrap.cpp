@@ -18,6 +18,18 @@ namespace vxcore {
 
 namespace {
 
+std::string WithoutHttpsUsername(const std::string &url) {
+  if (url.compare(0, 8, "https://") != 0) return url;
+  const auto authority_end = url.find_first_of("/?#", 8);
+  const auto at = url.find('@', 8);
+  if (at == std::string::npos ||
+      (authority_end != std::string::npos && at >= authority_end) ||
+      url.find(':', 8) < at) {
+    return url;
+  }
+  return url.substr(0, 8) + url.substr(at + 1);
+}
+
 // File-scope notify_cb wired into BootstrapFromEmptyRemote's checkout. Pure
 // observability -- does NOT change semantics. If a future remote shape causes
 // a real conflict, each conflicting path is logged via VXCORE_LOG_WARN
@@ -168,10 +180,17 @@ VxCoreError OpenExistingRepo(const std::string &root_folder,
 
   const char *remote_url = git_remote_url(remote.get());
   if (remote_url == nullptr || config.remote_url != remote_url) {
-    VXCORE_LOG_ERROR(
-        "GitSyncBackend::Initialize: origin URL mismatch (existing='%s' config='%s')",
-        remote_url ? remote_url : "(null)", config.remote_url.c_str());
-    return VXCORE_ERR_INVALID_PARAM;
+    if (remote_url == nullptr ||
+        WithoutHttpsUsername(config.remote_url) != WithoutHttpsUsername(remote_url)) {
+      VXCORE_LOG_ERROR(
+          "GitSyncBackend::Initialize: origin URL mismatch (existing='%s' config='%s')",
+          remote_url ? remote_url : "(null)", config.remote_url.c_str());
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+    // Authentication identity changed, not the repository. Preserve all local
+    // refs, objects, index and rebase state; persist only the non-secret URL.
+    rc = git_remote_set_url(repo.get(), "origin", config.remote_url.c_str());
+    if (rc != 0) return TranslateGitError(rc);
   }
 
   remote.reset();

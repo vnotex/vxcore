@@ -123,6 +123,35 @@ int test_git_init_reopens_existing_repo() {
   return 0;
 }
 
+int test_git_init_updates_username_without_replacing_repository() {
+  const std::string root = get_test_path("git_init_username");
+  cleanup_test_dir(root);
+  vxcore::LibGit2Init init;
+  seed_notebook_with_existing_repo(root, "https://gitee.com/team/notes.git");
+  vxcore::SyncConfig config;
+  config.backend = "git";
+  config.remote_url = "https://contributor@gitee.com/team/notes.git";
+  {
+    vxcore::GitSyncBackend backend;
+    ASSERT_EQ(backend.Initialize(root, config), VXCORE_OK);
+  }
+  git_repository *repo = nullptr;
+  ASSERT_EQ(git_repository_open(&repo, (root + "/vx_notebook/vx_sync").c_str()), 0);
+  git_remote *remote = nullptr;
+  ASSERT_EQ(git_remote_lookup(&remote, repo, "origin"), 0);
+  ASSERT_EQ(std::string(git_remote_url(remote)), config.remote_url);
+  git_remote_free(remote);
+  git_repository_free(repo);
+  {
+    // A different repository is still rejected, even with the same login.
+    config.remote_url = "https://contributor@gitee.com/team/other.git";
+    vxcore::GitSyncBackend backend;
+    ASSERT_EQ(backend.Initialize(root, config), VXCORE_ERR_INVALID_PARAM);
+  }
+  cleanup_test_dir(root);
+  return 0;
+}
+
 int test_git_init_rejects_url_mismatch() {
   std::cout << "  Running test_git_init_rejects_url_mismatch..." << std::endl;
 
@@ -729,6 +758,7 @@ int test_git_sync_preserves_existing_gitignore() {
 
 int main() {
   RUN_TEST(test_git_init_reopens_existing_repo);
+  RUN_TEST(test_git_init_updates_username_without_replacing_repository);
   RUN_TEST(test_git_init_rejects_url_mismatch);
   RUN_TEST(test_git_init_rejects_both_non_empty);
   RUN_TEST(test_git_init_rejects_corrupt_repo);

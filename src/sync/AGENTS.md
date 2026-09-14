@@ -325,6 +325,11 @@ username. The helper adds a URL-encoded PAT only to the in-memory remote instanc
 used by `RemoteHasRefs`, `FetchOrigin`, and `PushOrigin`; it must never change
 `remote.origin.url` on disk. Username-less GitHub URLs retain `x-access-token`.
 
+`OpenExistingRepo` accepts an HTTPS username-only change by updating origin's
+non-secret URL in place, retaining refs, objects, index and rebase state. A
+repository-location change is still rejected; never treat a path, host, query,
+fragment or embedded-password change as a username-only rebind.
+
 ### Commit Author
 
 Defaults to `"VNote Sync" <sync@vnote.local>`. Callers may override per-sync via
