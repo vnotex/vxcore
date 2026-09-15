@@ -632,7 +632,9 @@ VxCoreError BundledFolderManager::GetFolderMetadata(const std::string &folder_pa
 
 VxCoreError BundledFolderManager::RenameFolder(const std::string &folder_path,
                                                const std::string &new_name) {
-  if (notebook_ && notebook_->CheckWritable() != VXCORE_OK) { return notebook_->CheckWritable(); }
+  if (notebook_ && notebook_->CheckWritable() != VXCORE_OK) {
+    return notebook_->CheckWritable();
+  }
   VXCORE_LOG_INFO("RenameFolder: folder_path=%s, new_name=%s", folder_path.c_str(),
                   new_name.c_str());
   VXCORE_LOG_DEBUG("RenameFolder: new_name bytes=[%s] len=%zu", new_name.c_str(), new_name.size());
@@ -684,15 +686,27 @@ VxCoreError BundledFolderManager::RenameFolder(const std::string &folder_path,
     return error;
   }
 
+  const fs::path old_config_dir = old_config_path_fs.parent_path();
+  const fs::path new_config_dir = new_config_path_fs.parent_path();
+  bool content_renamed = false;
   try {
     fs::rename(old_content_path_fs, new_content_path_fs);
+    content_renamed = true;
 
-    if (fs::exists(old_config_path_fs)) {
-      fs::create_directories(new_config_path_fs.parent_path());
-      fs::rename(old_config_path_fs, new_config_path_fs);
-      fs::remove_all(old_config_path_fs.parent_path());
+    // Descendant folder configs live beneath this directory too.
+    fs::rename(old_config_dir, new_config_dir);
+  } catch (const std::exception &e) {
+    VXCORE_LOG_ERROR("RenameFolder: failed to rename %s to %s: %s", clean_folder_path.c_str(),
+                     new_folder_path.c_str(), e.what());
+    if (content_renamed) {
+      std::error_code rollback_error;
+      fs::rename(new_content_path_fs, old_content_path_fs, rollback_error);
+      if (rollback_error) {
+        VXCORE_LOG_ERROR("RenameFolder: failed to restore content from %s to %s: %s",
+                         new_content_path.c_str(), old_content_path.c_str(),
+                         rollback_error.message().c_str());
+      }
     }
-  } catch (const std::exception &) {
     return VXCORE_ERR_IO;
   }
 
@@ -718,8 +732,19 @@ VxCoreError BundledFolderManager::RenameFolder(const std::string &folder_path,
     }
   }
 
-  InvalidateCache(clean_folder_path);
-  InvalidateCache(new_folder_path);
+  // Cached descendants must not remain accessible through the old path.
+  const auto is_in_subtree = [](const std::string &path, const std::string &root) {
+    return path == root || (path.size() > root.size() && path[root.size()] == '/' &&
+                            path.compare(0, root.size(), root) == 0);
+  };
+  for (auto cached = config_cache_.begin(); cached != config_cache_.end();) {
+    if (is_in_subtree(cached->first, clean_folder_path) ||
+        is_in_subtree(cached->first, new_folder_path)) {
+      cached = config_cache_.erase(cached);
+    } else {
+      ++cached;
+    }
+  }
 
   VXCORE_LOG_INFO("RenameFolder successful: folder renamed from %s to %s",
                   clean_folder_path.c_str(), new_folder_path.c_str());

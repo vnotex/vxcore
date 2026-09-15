@@ -603,35 +603,194 @@ int test_nested_folder_operations() {
 
 int test_folder_rename() {
   std::cout << "  Running test_folder_rename..." << std::endl;
-  cleanup_test_dir(get_test_path("test_folder_rename_nb"));
+  const std::string root_path = get_test_path("test_folder_rename_nb");
+  cleanup_test_dir(root_path);
 
   VxCoreContextHandle ctx = nullptr;
-  VxCoreError err = vxcore_context_create(nullptr, &ctx);
-  ASSERT_EQ(err, VXCORE_OK);
-
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
   char *notebook_id = nullptr;
-  err =
-      vxcore_notebook_create(ctx, get_test_path("test_folder_rename_nb").c_str(),
-                             "{\"name\":\"Test Notebook\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
-  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_create(ctx, root_path.c_str(), "{\"name\":\"Test Notebook\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_tag_create(ctx, notebook_id, "important"), VXCORE_OK);
 
-  char *folder_id = nullptr;
-  err = vxcore_folder_create(ctx, notebook_id, ".", "old_name", &folder_id);
-  ASSERT_EQ(err, VXCORE_OK);
-  vxcore_string_free(folder_id);
+  struct Node {
+    std::string path;
+    bool is_folder;
+    std::string id;
+    nlohmann::json config;
+  } nodes[] = {{"old_name", true, {}, {}},
+               {"old_name/child", true, {}, {}},
+               {"old_name/child/grandchild", true, {}, {}},
+               {"old_name/intro.md", false, {}, {}},
+               {"old_name/child/grandchild/note.md", false, {}, {}}};
+  for (auto &node : nodes) {
+    const auto separator = node.path.rfind('/');
+    const auto parent = separator == std::string::npos ? "." : node.path.substr(0, separator);
+    const auto name = node.path.substr(separator == std::string::npos ? 0 : separator + 1);
+    char *id = nullptr;
+    const auto error =
+        node.is_folder ? vxcore_folder_create(ctx, notebook_id, parent.c_str(), name.c_str(), &id)
+                       : vxcore_file_create(ctx, notebook_id, parent.c_str(), name.c_str(), &id);
+    ASSERT_EQ(error, VXCORE_OK);
+    node.id = id;
+    vxcore_string_free(id);
+    const nlohmann::json metadata = {{"origin", node.path}};
+    ASSERT_EQ(
+        vxcore_node_update_metadata(ctx, notebook_id, node.path.c_str(), metadata.dump().c_str()),
+        VXCORE_OK);
+    if (!node.is_folder) {
+      ASSERT_EQ(vxcore_file_tag(ctx, notebook_id, node.path.c_str(), "important"), VXCORE_OK);
+      ASSERT(WriteTestFile(root_path + "/" + node.path, "body: " + node.path));
+    }
+  }
 
-  ASSERT(path_exists(get_test_path("test_folder_rename_nb") + "/old_name"));
+  // Warm all descendant configs before the rename, then check both cache and disk reloads.
+  for (auto &node : nodes) {
+    char *config_json = nullptr;
+    ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, node.path.c_str(), &config_json), VXCORE_OK);
+    node.config = nlohmann::json::parse(config_json);
+    vxcore_string_free(config_json);
+  }
+  const std::string old_name = "old_name";
+  const std::string new_name = "new_name";
+  ASSERT_EQ(vxcore_node_rename(ctx, notebook_id, old_name.c_str(), new_name.c_str()), VXCORE_OK);
 
-  err = vxcore_node_rename(ctx, notebook_id, "old_name", "new_name");
-  ASSERT_EQ(err, VXCORE_OK);
+  for (int pass = 0; pass < 2; ++pass) {
+    if (pass == 1) {
+      ASSERT_EQ(vxcore_notebook_close(ctx, notebook_id), VXCORE_OK);
+      vxcore_string_free(notebook_id);
+      notebook_id = nullptr;
+      ASSERT_EQ(vxcore_notebook_open(ctx, root_path.c_str(), &notebook_id), VXCORE_OK);
+      // Close deletes the local SQLite cache; repopulate it from the renamed
+      // metadata tree before resolving IDs (normal folder reads do this lazily).
+      ASSERT_EQ(vxcore_notebook_rebuild_cache(ctx, notebook_id), VXCORE_OK);
+    }
+    ASSERT_FALSE(path_exists(root_path + "/" + old_name));
+    ASSERT(path_exists(root_path + "/" + new_name));
+    for (const auto &node : nodes) {
+      const std::string new_path = new_name + node.path.substr(old_name.size());
+      char *resolved_path = nullptr;
+      ASSERT_EQ(vxcore_node_get_path_by_id(ctx, notebook_id, node.id.c_str(), &resolved_path),
+                VXCORE_OK);
+      ASSERT_EQ(std::string(resolved_path), new_path);
+      vxcore_string_free(resolved_path);
 
-  ASSERT(!path_exists(get_test_path("test_folder_rename_nb") + "/old_name"));
-  ASSERT(path_exists(get_test_path("test_folder_rename_nb") + "/new_name"));
+      char *config_json = nullptr;
+      ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, node.path.c_str(), &config_json),
+                VXCORE_ERR_NOT_FOUND);
+      ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, new_path.c_str(), &config_json),
+                VXCORE_OK);
+      const auto config = nlohmann::json::parse(config_json);
+      vxcore_string_free(config_json);
+      ASSERT_EQ(config["id"].get<std::string>(), node.id);
+      ASSERT_EQ(config["name"].get<std::string>(),
+                node.path == old_name ? new_name : node.config["name"].get<std::string>());
+      ASSERT(config["metadata"] == node.config["metadata"]);
+      ASSERT(config["createdUtc"] == node.config["createdUtc"]);
+      if (node.is_folder) {
+        ASSERT(config["folders"] == node.config["folders"]);
+      } else {
+        ASSERT(config["tags"] == node.config["tags"]);
+        std::ifstream file(PathFromUtf8ForTest(root_path + "/" + new_path), std::ios::binary);
+        const std::string content((std::istreambuf_iterator<char>(file)),
+                                  std::istreambuf_iterator<char>());
+        ASSERT_EQ(content, "body: " + node.path);
+      }
+    }
+    ASSERT_FALSE(RootListingContainsFolder(ctx, notebook_id, old_name));
+    ASSERT(RootListingContainsFolder(ctx, notebook_id, new_name));
+  }
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
-  cleanup_test_dir(get_test_path("test_folder_rename_nb"));
-  std::cout << "  âœ“ test_folder_rename passed" << std::endl;
+  cleanup_test_dir(root_path);
+  std::cout << "  test_folder_rename passed" << std::endl;
+  return 0;
+}
+
+int test_folder_rename_metadata_collision_rolls_back() {
+  std::cout << "  Running test_folder_rename_metadata_collision_rolls_back..." << std::endl;
+  const std::string root_path = get_test_path("test_folder_rename_collision_nb");
+  cleanup_test_dir(root_path);
+
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root_path.c_str(), "{\"name\":\"Test Notebook\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  char *id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "source", &id), VXCORE_OK);
+  vxcore_string_free(id);
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, "source", "child", &id), VXCORE_OK);
+  vxcore_string_free(id);
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, "source/child", "note.md", &id), VXCORE_OK);
+  vxcore_string_free(id);
+  ASSERT_EQ(vxcore_node_update_metadata(ctx, notebook_id, "source/child/note.md",
+                                        R"({"priority":"keep"})"),
+            VXCORE_OK);
+  ASSERT(WriteTestFile(root_path + "/source/child/note.md", "original note content"));
+
+  // A nonempty directory blocks both directory rename and the old vx.json-only rename.
+  const std::string collision_path = root_path + "/vx_notebook/contents/destination/vx.json";
+  create_directory(collision_path);
+  ASSERT(WriteTestFile(collision_path + "/keep.txt", "unrelated metadata"));
+
+  const char *paths[] = {".", "source", "source/child", "source/child/note.md"};
+  nlohmann::json original_configs = nlohmann::json::object();
+  for (const char *path : paths) {
+    char *config_json = nullptr;
+    ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, path, &config_json), VXCORE_OK);
+    original_configs[path] = nlohmann::json::parse(config_json);
+    vxcore_string_free(config_json);
+  }
+
+  ASSERT_EQ(vxcore_node_rename(ctx, notebook_id, "source", "destination"), VXCORE_ERR_IO);
+  for (int pass = 0; pass < 2; ++pass) {
+    if (pass == 1) {
+      ASSERT_EQ(vxcore_notebook_close(ctx, notebook_id), VXCORE_OK);
+      vxcore_string_free(notebook_id);
+      notebook_id = nullptr;
+      ASSERT_EQ(vxcore_notebook_open(ctx, root_path.c_str(), &notebook_id), VXCORE_OK);
+    }
+    ASSERT_FALSE(path_exists(root_path + "/destination"));
+    {
+      std::ifstream file(PathFromUtf8ForTest(root_path + "/source/child/note.md"),
+                         std::ios::binary);
+      const std::string content((std::istreambuf_iterator<char>(file)),
+                                std::istreambuf_iterator<char>());
+      ASSERT_EQ(content, std::string("original note content"));
+    }
+    {
+      std::ifstream file(PathFromUtf8ForTest(collision_path + "/keep.txt"), std::ios::binary);
+      const std::string content((std::istreambuf_iterator<char>(file)),
+                                std::istreambuf_iterator<char>());
+      ASSERT_EQ(content, std::string("unrelated metadata"));
+    }
+    for (const char *path : paths) {
+      char *config_json = nullptr;
+      ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, path, &config_json), VXCORE_OK);
+      const auto config = nlohmann::json::parse(config_json);
+      vxcore_string_free(config_json);
+      ASSERT(config == original_configs[path]);
+      if (std::string(path) != ".") {
+        char *resolved_path = nullptr;
+        const std::string node_id = config["id"].get<std::string>();
+        ASSERT_EQ(vxcore_node_get_path_by_id(ctx, notebook_id, node_id.c_str(), &resolved_path),
+                  VXCORE_OK);
+        ASSERT_EQ(std::string(resolved_path), std::string(path));
+        vxcore_string_free(resolved_path);
+      }
+    }
+    ASSERT(RootListingContainsFolder(ctx, notebook_id, "source"));
+    ASSERT_FALSE(RootListingContainsFolder(ctx, notebook_id, "destination"));
+  }
+
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root_path);
+  std::cout << "  test_folder_rename_metadata_collision_rolls_back passed" << std::endl;
   return 0;
 }
 
@@ -10336,6 +10495,7 @@ int main() {
   RUN_TEST(test_file_delete);
   RUN_TEST(test_nested_folder_operations);
   RUN_TEST(test_folder_rename);
+  RUN_TEST(test_folder_rename_metadata_collision_rolls_back);
   RUN_TEST(test_folder_move);
   RUN_TEST(test_folder_copy);
   RUN_TEST(test_file_rename);
