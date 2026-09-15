@@ -79,6 +79,8 @@ inline constexpr const char *kJsonKeyDescription = "description";
 inline constexpr const char *kJsonKeyAssetsFolder = "assetsFolder";
 inline constexpr const char *kJsonKeyRecycleBinFolder = "recycleBinFolder";
 inline constexpr const char *kJsonKeyMetadata = "metadata";
+// Optional line-ending override nested in notebook metadata.
+inline constexpr const char *kJsonKeyLineEnding = "lineEnding";
 inline constexpr const char *kJsonKeyTags = "tags";
 inline constexpr const char *kJsonKeyTagsModifiedUtc = "tagsModifiedUtc";
 inline constexpr const char *kJsonKeyIgnored = "ignored";

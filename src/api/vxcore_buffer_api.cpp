@@ -1,11 +1,11 @@
 #include <stdlib.h>
 #include <string.h>
+#include <vxcore/notebook_json_keys.h>
 
 #include <filesystem>
 #include <new>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
-#include <vxcore/notebook_json_keys.h>
 
 #include "api/api_utils.h"
 #include "core/buffer.h"
@@ -16,6 +16,9 @@
 #include "core/metadata_store.h"
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
+#include "sync/git/git_error_translator.h"
+#include "sync/git/git_handles.h"
+#include "sync/git/libgit2_init.h"
 #include "utils/base64.h"
 #include "utils/file_utils.h"
 #include "vxcore/vxcore.h"
@@ -81,6 +84,57 @@ VxCoreError ResourceResult(Function &&function) {
   } catch (...) {
     return VXCORE_ERR_UNKNOWN;
   }
+}
+
+VxCoreError ResolveGitLineEndingOverride(const std::string &full_path,
+                                         VxCoreLineEnding &out_ending) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const auto target = fs::weakly_canonical(vxcore::PathFromUtf8(full_path), ec);
+  if (ec) return VXCORE_ERR_IO;
+
+  auto directory = target.parent_path();
+  while (!directory.empty()) {
+    // symlink_status also sees a dangling marker: never fall through to an outer repo.
+    const auto marker = fs::symlink_status(directory / ".git", ec);
+    if (ec && ec != std::errc::no_such_file_or_directory) return VXCORE_ERR_IO;
+    if (fs::exists(marker)) break;
+    const auto parent = directory.parent_path();
+    if (parent == directory) return VXCORE_OK;
+    directory = parent;
+  }
+  if (directory.empty()) return VXCORE_OK;
+
+  vxcore::LibGit2Init init;
+  if (!vxcore::LibGit2Init::ok()) return VXCORE_ERR_GIT_INIT_FAILED;
+  git_repository *raw_repo = nullptr;
+  const auto directory_utf8 = vxcore::PathToUtf8(directory);
+  int result = git_repository_open_ext(&raw_repo, directory_utf8.c_str(),
+                                       GIT_REPOSITORY_OPEN_NO_SEARCH, nullptr);
+  vxcore::git_repositoryPtr repo(raw_repo);
+  if (result < 0) return vxcore::TranslateGitError(result);
+  const char *workdir = git_repository_workdir(repo.get());
+  if (git_repository_is_bare(repo.get()) || !workdir) return VXCORE_ERR_INVALID_PARAM;
+  const auto root = fs::weakly_canonical(vxcore::PathFromUtf8(workdir), ec);
+  if (ec) return VXCORE_ERR_IO;
+  const auto relative = target.lexically_relative(root);
+  if (relative.empty() || relative.is_absolute() || *relative.begin() == "..") {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  const auto relative_utf8 = vxcore::PathToGenericUtf8(relative);
+  const char *names[] = {"text", "eol"};
+  const char *values[2] = {};
+  result = git_attr_get_many(values, repo.get(), GIT_ATTR_CHECK_FILE_THEN_INDEX,
+                             relative_utf8.c_str(), 2, names);
+  if (result < 0) return vxcore::TranslateGitError(result);
+  if (GIT_ATTR_IS_FALSE(values[0]) || !GIT_ATTR_HAS_VALUE(values[1])) return VXCORE_OK;
+  if (strcmp(values[1], "lf") == 0) {
+    out_ending = VXCORE_LINE_ENDING_LF;
+  } else if (strcmp(values[1], "crlf") == 0) {
+    out_ending = VXCORE_LINE_ENDING_CRLF;
+  }
+  return VXCORE_OK;
 }
 
 }  // namespace
@@ -282,6 +336,38 @@ VXCORE_API VxCoreError vxcore_buffer_get(VxCoreContextHandle context, const char
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
   }
+}
+
+VXCORE_API VxCoreError vxcore_buffer_get_line_ending_override(VxCoreContextHandle context,
+                                                              const char *id,
+                                                              VxCoreLineEnding *out_ending) {
+  if (out_ending) *out_ending = VXCORE_LINE_ENDING_UNSPECIFIED;
+  if (!context || !id || !out_ending) return VXCORE_ERR_NULL_POINTER;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return ResourceResult([&]() -> VxCoreError {
+    if (!ctx->buffer_manager) return VXCORE_ERR_NOT_INITIALIZED;
+    auto *buffer = ctx->buffer_manager->GetBuffer(id);
+    if (!buffer) return VXCORE_ERR_BUFFER_NOT_FOUND;
+    if (buffer->IsVirtual()) return VXCORE_OK;
+    const auto *notebook = buffer->GetNotebook();
+    if (notebook && notebook->GetType() == vxcore::NotebookType::Bundled) {
+      const auto &metadata = notebook->GetConfig().metadata;
+      const auto ending = metadata.find(vxcore::kJsonKeyLineEnding);
+      if (ending != metadata.end() && ending->is_string()) {
+        const auto &value = ending->get_ref<const std::string &>();
+        if (value == "lf")
+          *out_ending = VXCORE_LINE_ENDING_LF;
+        else if (value == "crlf")
+          *out_ending = VXCORE_LINE_ENDING_CRLF;
+        else if (value == "cr")
+          *out_ending = VXCORE_LINE_ENDING_CR;
+      }
+      return VXCORE_OK;
+    }
+    if (buffer->IsEncrypted()) return VXCORE_OK;
+    const auto path = buffer->ResolveFullPath();
+    return path.empty() ? VXCORE_OK : ResolveGitLineEndingOverride(path, *out_ending);
+  });
 }
 
 VXCORE_API VxCoreError vxcore_buffer_list(VxCoreContextHandle context, char **out_json) {

@@ -6098,6 +6098,685 @@ int test_encrypted_note_transfer_plaintext_assets() {
   return 0;
 }
 
+namespace {
+
+// Keep normal Git precedence enabled while excluding the developer's Git setup.
+class LineEndingGitEnvironment {
+ public:
+  int Initialize(const std::filesystem::path &root) {
+    const auto initialized = git_libgit2_init();
+    if (initialized < 0) return initialized;
+    initialized_ = true;
+    config_path = fs_path_to_utf8(root / "git-config");
+    std::error_code ec;
+    std::filesystem::create_directories(utf8_to_fs_path(config_path), ec);
+    if (ec) return -1;
+    for (const auto level : {GIT_CONFIG_LEVEL_SYSTEM, GIT_CONFIG_LEVEL_GLOBAL, GIT_CONFIG_LEVEL_XDG,
+                             GIT_CONFIG_LEVEL_PROGRAMDATA}) {
+      git_buf path = GIT_BUF_INIT;
+      const auto error = git_libgit2_opts(GIT_OPT_GET_SEARCH_PATH, level, &path);
+      if (error == 0) search_paths_.emplace_back(level, path.ptr ? path.ptr : "");
+      git_buf_dispose(&path);
+      if (error != 0) return error;
+      if (git_libgit2_opts(GIT_OPT_SET_SEARCH_PATH, level, config_path.c_str()) != 0) return -1;
+    }
+    for (const auto *name : {"HOME", "USERPROFILE", "XDG_CONFIG_HOME"}) {
+      if (SetEnvironment(name, config_path.c_str()) != 0) return -1;
+    }
+    for (const auto *name :
+         {"GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_ATTR_NOSYSTEM",
+          "GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CEILING_DIRECTORIES",
+          "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}) {
+      if (SetEnvironment(name, nullptr) != 0) return -1;
+    }
+    return 0;
+  }
+
+  ~LineEndingGitEnvironment() {
+    for (auto it = environment_.rbegin(); it != environment_.rend(); ++it) {
+#ifdef _WIN32
+      _wputenv_s(it->name.c_str(), it->value.c_str());
+#else
+      if (it->present)
+        setenv(it->name.c_str(), it->value.c_str(), 1);
+      else
+        unsetenv(it->name.c_str());
+#endif
+    }
+    for (const auto &path : search_paths_) {
+      git_libgit2_opts(GIT_OPT_SET_SEARCH_PATH, path.first, path.second.c_str());
+    }
+    if (initialized_) git_libgit2_shutdown();
+  }
+
+  std::string config_path;
+
+ private:
+  struct EnvironmentValue {
+#ifdef _WIN32
+    std::wstring name;
+    std::wstring value;
+#else
+    std::string name;
+    std::string value;
+    bool present = false;
+#endif
+  };
+
+  int SetEnvironment(const char *name, const char *value) {
+#ifdef _WIN32
+    const auto wide_name = utf8_to_fs_path(name).native();
+    const auto *old = _wgetenv(wide_name.c_str());
+    environment_.push_back({wide_name, old ? old : L""});
+    const auto wide_value = value ? utf8_to_fs_path(value).native() : std::wstring();
+    return _wputenv_s(wide_name.c_str(), wide_value.c_str());
+#else
+    const auto *old = std::getenv(name);
+    environment_.push_back({name, old ? old : "", old != nullptr});
+    return value ? setenv(name, value, 1) : unsetenv(name);
+#endif
+  }
+
+  std::vector<EnvironmentValue> environment_;
+  std::vector<std::pair<int, std::string>> search_paths_;
+  bool initialized_ = false;
+};
+
+struct LineEndingFixture {
+  BufferTestTempDirectory directory;
+  LineEndingGitEnvironment git_environment;
+  EncryptionTestContext context;
+  std::string root;
+  VxCoreError error = VXCORE_ERR_IO;
+
+  LineEndingFixture() {
+    if (!directory.valid()) return;
+    if (git_environment.Initialize(directory.path()) != 0) return;
+    root = fs_path_to_utf8(directory.path() / "files");
+    std::error_code ec;
+    std::filesystem::create_directory(utf8_to_fs_path(root), ec);
+    if (ec) return;
+    error = vxcore_context_create(nullptr, &context.value);
+  }
+};
+
+int assert_line_ending(VxCoreContextHandle context, const char *buffer_id,
+                       VxCoreLineEnding expected) {
+  VxCoreLineEnding ending = VXCORE_LINE_ENDING_CR;
+  const auto error = vxcore_buffer_get_line_ending_override(context, buffer_id, &ending);
+  ASSERT_EQ(error, VXCORE_OK);
+  ASSERT_EQ(ending, expected);
+  return 0;
+}
+
+int read_line_ending_notebook_config(VxCoreContextHandle context, const char *notebook_id,
+                                     nlohmann::json &config) {
+  EncryptionTestString json;
+  ASSERT_EQ(vxcore_notebook_get_config(context, notebook_id, &json.value), VXCORE_OK);
+  ASSERT_NOT_NULL(json.value);
+  config = nlohmann::json::parse(json.value, nullptr, false);
+  ASSERT(config.is_object());
+  return 0;
+}
+
+int stage_line_ending_attributes(git_repository *repository, const std::string &attributes) {
+  git_index *raw_index = nullptr;
+  ASSERT_EQ(git_repository_index(&raw_index, repository), 0);
+  std::unique_ptr<git_index, decltype(&git_index_free)> index(raw_index, git_index_free);
+  git_index_entry entry{};
+  entry.mode = GIT_FILEMODE_BLOB;
+  entry.path = ".gitattributes";
+  ASSERT_EQ(git_index_add_from_buffer(index.get(), &entry, attributes.data(), attributes.size()),
+            0);
+  ASSERT_EQ(git_index_write(index.get()), 0);
+  return 0;
+}
+
+void count_line_ending_config_event(const char *, const char *, void *userdata) {
+  ++*static_cast<int *>(userdata);
+}
+
+// Always restore the real config, including when an assertion exits the test.
+struct LineEndingConfigWriteBlocker {
+  std::filesystem::path config;
+  std::filesystem::path saved;
+  bool moved = false;
+  bool blocked = false;
+
+  explicit LineEndingConfigWriteBlocker(const std::string &path)
+      : config(utf8_to_fs_path(path)), saved(utf8_to_fs_path(path + ".saved")) {
+    std::error_code ec;
+    std::filesystem::rename(config, saved, ec);
+    if (ec) return;
+    moved = true;
+    blocked = std::filesystem::create_directory(config, ec) && !ec;
+  }
+
+  ~LineEndingConfigWriteBlocker() {
+    if (!moved) return;
+    std::error_code ec;
+    if (blocked) std::filesystem::remove(config, ec);
+    std::filesystem::rename(saved, config, ec);
+  }
+};
+
+}  // namespace
+
+int test_buffer_line_ending_bundled_metadata() {
+  LineEndingFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  EncryptionTestGitRepository repository;
+  ASSERT_EQ(git_repository_init(&repository.value, fixture.root.c_str(), 0), 0);
+  write_file(fixture.root + "/.gitattributes", "* text eol=crlf\n");
+  const auto notebook_path = fixture.root + "/notebook";
+  EncryptionTestString notebook, file, buffer;
+  ASSERT_EQ(vxcore_notebook_create(
+                context, notebook_path.c_str(),
+                "{\"name\":\"Line endings\",\"metadata\":{\"future\":{\"nested\":[1,\"keep\"]}}}",
+                VXCORE_NOTEBOOK_BUNDLED, &notebook.value),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_file_create(context, notebook.value, ".", "note.md", &file.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open(context, notebook.value, "note.md", &buffer.value), VXCORE_OK);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+
+  nlohmann::json config;
+  ASSERT_EQ(read_line_ending_notebook_config(context, notebook.value, config), 0);
+  const auto unrelated = config["metadata"]["future"];
+  const std::pair<nlohmann::json, VxCoreLineEnding> values[] = {
+      {"lf", VXCORE_LINE_ENDING_LF},
+      {"crlf", VXCORE_LINE_ENDING_CRLF},
+      {"cr", VXCORE_LINE_ENDING_CR},
+      {nullptr, VXCORE_LINE_ENDING_UNSPECIFIED},
+      {true, VXCORE_LINE_ENDING_UNSPECIFIED},
+      {1, VXCORE_LINE_ENDING_UNSPECIFIED},
+      {nlohmann::json::array({"lf"}), VXCORE_LINE_ENDING_UNSPECIFIED},
+      {nlohmann::json::object({{"style", "lf"}}), VXCORE_LINE_ENDING_UNSPECIFIED},
+      {"", VXCORE_LINE_ENDING_UNSPECIFIED},
+      {"LF", VXCORE_LINE_ENDING_UNSPECIFIED},
+      {"platform", VXCORE_LINE_ENDING_UNSPECIFIED}};
+  int revision = -1;
+  ASSERT_EQ(vxcore_buffer_get_revision(context, buffer.value, &revision), VXCORE_OK);
+  for (const auto &value : values) {
+    config["metadata"]["lineEnding"] = value.first;
+    ASSERT_EQ(vxcore_notebook_update_config(context, notebook.value, config.dump().c_str()),
+              VXCORE_OK);
+    const auto before = snapshot_attachment_test_tree(fixture.root);
+    ASSERT_EQ(assert_line_ending(context, buffer.value, value.second), 0);
+    ASSERT(snapshot_attachment_test_tree(fixture.root) == before);
+    int current_revision = -1;
+    ASSERT_EQ(vxcore_buffer_get_revision(context, buffer.value, &current_revision), VXCORE_OK);
+    ASSERT_EQ(current_revision, revision);
+  }
+
+  config["metadata"]["lineEnding"] = "crlf";
+  ASSERT_EQ(vxcore_notebook_update_config(context, notebook.value, config.dump().c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_close(context, buffer.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_close(context, notebook.value), VXCORE_OK);
+  EncryptionTestString reopened, reopened_buffer;
+  ASSERT_EQ(vxcore_notebook_open(context, notebook_path.c_str(), &reopened.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open(context, reopened.value, "note.md", &reopened_buffer.value),
+            VXCORE_OK);
+  ASSERT_EQ(assert_line_ending(context, reopened_buffer.value, VXCORE_LINE_ENDING_CRLF), 0);
+  ASSERT_EQ(read_line_ending_notebook_config(context, reopened.value, config), 0);
+  ASSERT(config["metadata"]["future"] == unrelated);
+  ASSERT_EQ(config["metadata"]["lineEnding"], "crlf");
+
+  config["metadata"].erase("lineEnding");
+  ASSERT_EQ(vxcore_notebook_update_config(context, reopened.value, config.dump().c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(assert_line_ending(context, reopened_buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  ASSERT_EQ(vxcore_buffer_close(context, reopened_buffer.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_close(context, reopened.value), VXCORE_OK);
+  EncryptionTestString inherited, inherited_buffer;
+  ASSERT_EQ(vxcore_notebook_open(context, notebook_path.c_str(), &inherited.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open(context, inherited.value, "note.md", &inherited_buffer.value),
+            VXCORE_OK);
+  ASSERT_EQ(assert_line_ending(context, inherited_buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  ASSERT_EQ(read_line_ending_notebook_config(context, inherited.value, config), 0);
+  ASSERT_FALSE(config["metadata"].contains("lineEnding"));
+  ASSERT(config["metadata"]["future"] == unrelated);
+  return 0;
+}
+
+int test_buffer_line_ending_config_publication() {
+  LineEndingFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  EncryptionTestString notebook, file, buffer;
+  ASSERT_EQ(vxcore_notebook_create(
+                context, fixture.root.c_str(),
+                "{\"name\":\"Publication\",\"metadata\":{\"lineEnding\":\"lf\",\"keep\":42}}",
+                VXCORE_NOTEBOOK_BUNDLED, &notebook.value),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_file_create(context, notebook.value, ".", "note.md", &file.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open(context, notebook.value, "note.md", &buffer.value), VXCORE_OK);
+  int events = 0;
+  ASSERT_EQ(
+      vxcore_on_event(context, "notebook.config_changed", count_line_ending_config_event, &events),
+      VXCORE_OK);
+  nlohmann::json config;
+  ASSERT_EQ(read_line_ending_notebook_config(context, notebook.value, config), 0);
+  config["metadata"]["lineEnding"] = "crlf";
+  ASSERT_EQ(vxcore_notebook_update_config(context, notebook.value, config.dump().c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(events, 1);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_CRLF), 0);
+  const auto config_path = fixture.root + "/vx_notebook/config.json";
+  const auto original_bytes = read_file_content(config_path);
+  auto rejected = config;
+  rejected["metadata"]["lineEnding"] = "cr";
+  rejected["name"] = "Rejected publication";
+  {
+    LineEndingConfigWriteBlocker blocker(config_path);
+    ASSERT_TRUE(blocker.blocked);
+    const auto before = snapshot_attachment_test_tree(fixture.root);
+    const auto error =
+        vxcore_notebook_update_config(context, notebook.value, rejected.dump().c_str());
+    ASSERT_NE(error, VXCORE_OK);
+    ASSERT_EQ(events, 1);
+    ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_CRLF), 0);
+    nlohmann::json after;
+    ASSERT_EQ(read_line_ending_notebook_config(context, notebook.value, after), 0);
+    ASSERT(after == config);
+    ASSERT(snapshot_attachment_test_tree(fixture.root) == before);
+  }
+  ASSERT_EQ(read_file_content(config_path), original_bytes);
+  ASSERT_EQ(vxcore_notebook_set_read_only(context, notebook.value, true), VXCORE_OK);
+  const auto read_only_events = events;
+  const auto before = snapshot_attachment_test_tree(fixture.root);
+  ASSERT_EQ(vxcore_notebook_update_config(context, notebook.value, rejected.dump().c_str()),
+            VXCORE_ERR_READ_ONLY);
+  ASSERT_EQ(events, read_only_events);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_CRLF), 0);
+  ASSERT(snapshot_attachment_test_tree(fixture.root) == before);
+  ASSERT_EQ(vxcore_notebook_set_read_only(context, notebook.value, false), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_close(context, buffer.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_close(context, notebook.value), VXCORE_OK);
+  EncryptionTestString reopened, reopened_buffer;
+  ASSERT_EQ(vxcore_notebook_open(context, fixture.root.c_str(), &reopened.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open(context, reopened.value, "note.md", &reopened_buffer.value),
+            VXCORE_OK);
+  ASSERT_EQ(assert_line_ending(context, reopened_buffer.value, VXCORE_LINE_ENDING_CRLF), 0);
+  ASSERT_EQ(vxcore_off_event(context, "notebook.config_changed", count_line_ending_config_event),
+            VXCORE_OK);
+  return 0;
+}
+
+int test_buffer_line_ending_git_precedence() {
+  LineEndingFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  EncryptionTestGitRepository repository;
+  ASSERT_EQ(git_repository_init(&repository.value, fixture.root.c_str(), 0), 0);
+  write_file(fixture.root + "/.gitattributes", "* text=auto eol=lf\r\n");
+  const auto raw_path = fixture.root + "/raw";
+  const auto nested_path = raw_path + "/nested";
+  create_directory(nested_path);
+  write_file(nested_path + "/.gitattributes",
+             "*.md eol=crlf\r\n"
+             "last.md eol=crlf\r\nlast.md eol=lf\r\n"
+             "inherit.md !eol\r\nnottext.md -text\r\nbinary.md binary\r\n"
+             "boolean.md eol\r\nfalse.md -eol\r\ninvalid.md eol=cr\r\nupper.md eol=LF\r\n"
+             "textonly.md !eol text\r\nautoonly.md !eol text=auto\r\nlegacy.md !eol crlf\r\n"
+             "unspecified-text.md !text eol=crlf\r\n");
+  EncryptionTestString notebook, root_buffer, raw_buffer;
+  ASSERT_EQ(
+      vxcore_notebook_create(context, raw_path.c_str(),
+                             "{\"name\":\"Raw inside Git\",\"metadata\":{\"lineEnding\":\"cr\"}}",
+                             VXCORE_NOTEBOOK_RAW, &notebook.value),
+      VXCORE_OK);
+  write_file(fixture.root + "/outside.md", "external\n");
+  write_file(raw_path + "/root.md", "raw\n");
+  ASSERT_EQ(vxcore_buffer_open(context, nullptr, (fixture.root + "/outside.md").c_str(),
+                               &root_buffer.value),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open(context, notebook.value, "root.md", &raw_buffer.value), VXCORE_OK);
+  ASSERT_EQ(assert_line_ending(context, root_buffer.value, VXCORE_LINE_ENDING_LF), 0);
+  ASSERT_EQ(assert_line_ending(context, raw_buffer.value, VXCORE_LINE_ENDING_LF), 0);
+  const std::pair<const char *, VxCoreLineEnding> cases[] = {
+      {u8"caf\u00e9 note.md", VXCORE_LINE_ENDING_CRLF},
+      {"last.md", VXCORE_LINE_ENDING_LF},
+      {"inherit.md", VXCORE_LINE_ENDING_UNSPECIFIED},
+      {"nottext.md", VXCORE_LINE_ENDING_UNSPECIFIED},
+      {"binary.md", VXCORE_LINE_ENDING_UNSPECIFIED},
+      {"boolean.md", VXCORE_LINE_ENDING_UNSPECIFIED},
+      {"false.md", VXCORE_LINE_ENDING_UNSPECIFIED},
+      {"invalid.md", VXCORE_LINE_ENDING_UNSPECIFIED},
+      {"upper.md", VXCORE_LINE_ENDING_UNSPECIFIED},
+      {"textonly.md", VXCORE_LINE_ENDING_UNSPECIFIED},
+      {"autoonly.md", VXCORE_LINE_ENDING_UNSPECIFIED},
+      {"legacy.md", VXCORE_LINE_ENDING_UNSPECIFIED},
+      {"unspecified-text.md", VXCORE_LINE_ENDING_CRLF}};
+  for (const auto &entry : cases) {
+    const auto relative = std::string("nested/") + entry.first;
+    write_file(raw_path + "/" + relative, "content\r\n");
+    EncryptionTestString buffer;
+    ASSERT_EQ(vxcore_buffer_open(context, notebook.value, relative.c_str(), &buffer.value),
+              VXCORE_OK);
+    const auto before = snapshot_attachment_test_tree(fixture.root);
+    ASSERT_EQ(assert_line_ending(context, buffer.value, entry.second), 0);
+    ASSERT(snapshot_attachment_test_tree(fixture.root) == before);
+  }
+  // text=auto does not authorize loading the body or guessing whether it is binary.
+  write_file(nested_path + "/opaque.md", std::string("A\0B\n", 4));
+  EncryptionTestString opaque;
+  ASSERT_EQ(vxcore_buffer_open(context, notebook.value, "nested/opaque.md", &opaque.value),
+            VXCORE_OK);
+  int revision = -1;
+  ASSERT_EQ(vxcore_buffer_get_revision(context, opaque.value, &revision), VXCORE_OK);
+  ASSERT_EQ(assert_line_ending(context, opaque.value, VXCORE_LINE_ENDING_CRLF), 0);
+  int after_revision = -1;
+  ASSERT_EQ(vxcore_buffer_get_revision(context, opaque.value, &after_revision), VXCORE_OK);
+  ASSERT_EQ(after_revision, revision);
+  return 0;
+}
+
+int test_buffer_line_ending_git_refresh_and_index() {
+  LineEndingFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  EncryptionTestGitRepository repository;
+  ASSERT_EQ(git_repository_init(&repository.value, fixture.root.c_str(), 0), 0);
+  const auto attributes = fixture.root + "/.gitattributes";
+  const auto note = fixture.root + "/note.md";
+  write_file(note, "body\n");
+  EncryptionTestString buffer;
+  ASSERT_EQ(vxcore_buffer_open(context, nullptr, note.c_str(), &buffer.value), VXCORE_OK);
+  const auto before = snapshot_attachment_test_tree(fixture.root);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  ASSERT(snapshot_attachment_test_tree(fixture.root) == before);
+  ASSERT_FALSE(path_exists(fixture.root + "/.git/index"));
+  write_file(attributes, "* text eol=crlf\n");
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_CRLF), 0);
+  write_file(attributes, "* text eol=lf\n");
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_LF), 0);
+  ASSERT(std::filesystem::remove(utf8_to_fs_path(attributes)));
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+
+  ASSERT_EQ(stage_line_ending_attributes(repository.value, "* text eol=lf\n"), 0);
+  write_file(attributes, "* text eol=crlf\n");
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_CRLF), 0);
+  // Explicitly clear the indexed rule in the higher-precedence working-tree file.
+  write_file(attributes, "* !eol\n");
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  ASSERT(std::filesystem::remove(utf8_to_fs_path(attributes)));
+  const auto indexed_before = snapshot_attachment_test_tree(fixture.root);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_LF), 0);
+  ASSERT(snapshot_attachment_test_tree(fixture.root) == indexed_before);
+  const auto info = fixture.root + "/.git/info/attributes";
+  write_file(info, "* eol=crlf\n");
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_CRLF), 0);
+  write_file(info, "* -text\n");
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  ASSERT(std::filesystem::remove(utf8_to_fs_path(info)));
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_LF), 0);
+  git_index *raw_index = nullptr;
+  ASSERT_EQ(git_repository_index(&raw_index, repository.value), 0);
+  std::unique_ptr<git_index, decltype(&git_index_free)> index(raw_index, git_index_free);
+  ASSERT_EQ(git_index_read(index.get(), 1), 0);
+  ASSERT_EQ(git_index_remove_bypath(index.get(), ".gitattributes"), 0);
+  ASSERT_EQ(git_index_write(index.get()), 0);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  return 0;
+}
+
+int test_buffer_line_ending_git_global_and_system() {
+  LineEndingFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  const auto config_dir = fixture.git_environment.config_path;
+  const auto system_attributes = config_dir + "/gitattributes";
+  const auto global_attributes = config_dir + "/custom-attributes";
+  const auto global_config_path = config_dir + "/.gitconfig";
+  write_file(system_attributes, "* text eol=lf\n");
+  write_file(global_attributes, "* text eol=crlf\n");
+  write_file(global_config_path, "");
+  {
+    git_config *raw_config = nullptr;
+    ASSERT_EQ(git_config_open_ondisk(&raw_config, global_config_path.c_str()), 0);
+    std::unique_ptr<git_config, decltype(&git_config_free)> config(raw_config, git_config_free);
+    ASSERT_EQ(git_config_set_string(config.get(), "core.attributesfile",
+                                    normalize_path(global_attributes).c_str()),
+              0);
+  }
+  EncryptionTestGitRepository repository;
+  ASSERT_EQ(git_repository_init(&repository.value, fixture.root.c_str(), 0), 0);
+  write_file(fixture.root + "/note.md", "body\n");
+  EncryptionTestString buffer;
+  ASSERT_EQ(
+      vxcore_buffer_open(context, nullptr, (fixture.root + "/note.md").c_str(), &buffer.value),
+      VXCORE_OK);
+  const auto before = snapshot_attachment_test_tree(fixture.root);
+  const auto config_before = snapshot_attachment_test_tree(config_dir);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_CRLF), 0);
+  ASSERT(snapshot_attachment_test_tree(fixture.root) == before);
+  ASSERT(snapshot_attachment_test_tree(config_dir) == config_before);
+  write_file(global_attributes, "");
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_LF), 0);
+  write_file(global_attributes, "* text eol=crlf\n");
+  const auto attributes = fixture.root + "/.gitattributes";
+  write_file(attributes, "* text eol=lf\n");
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_LF), 0);
+  write_file(fixture.root + "/.git/info/attributes", "* eol=crlf\n");
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_CRLF), 0);
+  ASSERT(std::filesystem::remove(utf8_to_fs_path(fixture.root + "/.git/info/attributes")));
+  ASSERT(std::filesystem::remove(utf8_to_fs_path(attributes)));
+  ASSERT(std::filesystem::remove(utf8_to_fs_path(global_config_path)));
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_LF), 0);
+  ASSERT(std::filesystem::remove(utf8_to_fs_path(system_attributes)));
+  // Git's conversion defaults are not an eol attribute and cannot override editor policy.
+  git_config *raw_config = nullptr;
+  ASSERT_EQ(git_repository_config(&raw_config, repository.value), 0);
+  std::unique_ptr<git_config, decltype(&git_config_free)> config(raw_config, git_config_free);
+  ASSERT_EQ(git_config_set_bool(config.get(), "core.autocrlf", 1), 0);
+  ASSERT_EQ(git_config_set_string(config.get(), "core.eol", "crlf"), 0);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  return 0;
+}
+
+int test_buffer_line_ending_git_nearest_root() {
+  LineEndingFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  EncryptionTestGitRepository outer, nested;
+  ASSERT_EQ(git_repository_init(&outer.value, fixture.root.c_str(), 0), 0);
+  write_file(fixture.root + "/.gitattributes", "* text eol=crlf\n");
+  const auto nested_path = fixture.root + "/nested";
+  create_directory(nested_path);
+  write_file(nested_path + "/note.md", "body\n");
+  EncryptionTestString buffer;
+  ASSERT_EQ(vxcore_buffer_open(context, nullptr, (nested_path + "/note.md").c_str(), &buffer.value),
+            VXCORE_OK);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_CRLF), 0);
+  ASSERT_EQ(git_repository_init(&nested.value, nested_path.c_str(), 0), 0);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  write_file(nested_path + "/.gitattributes", "* text eol=lf\n");
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_LF), 0);
+  ASSERT(std::filesystem::remove(utf8_to_fs_path(nested_path + "/.gitattributes")));
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+
+  const auto invalid_path = fixture.root + "/invalid";
+  create_directory(invalid_path);
+  write_file(invalid_path + "/note.md", "body\n");
+  EncryptionTestString invalid;
+  ASSERT_EQ(
+      vxcore_buffer_open(context, nullptr, (invalid_path + "/note.md").c_str(), &invalid.value),
+      VXCORE_OK);
+  for (const auto *marker : {"not a gitfile\n", "gitdir: missing-target\n"}) {
+    write_file(invalid_path + "/.git", marker);
+    const auto before = snapshot_attachment_test_tree(fixture.root);
+    VxCoreLineEnding ending = VXCORE_LINE_ENDING_CRLF;
+    const auto error = vxcore_buffer_get_line_ending_override(context, invalid.value, &ending);
+    ASSERT_NE(error, VXCORE_OK);
+    ASSERT_EQ(ending, VXCORE_LINE_ENDING_UNSPECIFIED);
+    ASSERT(snapshot_attachment_test_tree(fixture.root) == before);
+  }
+  ASSERT(std::filesystem::remove(utf8_to_fs_path(invalid_path + "/.git")));
+  create_directory(invalid_path + "/.git");
+  VxCoreLineEnding ending = VXCORE_LINE_ENDING_CRLF;
+  const auto error = vxcore_buffer_get_line_ending_override(context, invalid.value, &ending);
+  ASSERT_NE(error, VXCORE_OK);
+  ASSERT_EQ(ending, VXCORE_LINE_ENDING_UNSPECIFIED);
+  ASSERT(std::filesystem::remove(utf8_to_fs_path(invalid_path + "/.git")));
+  EncryptionTestDirectoryLink dangling;
+  dangling.path = invalid_path + "/.git";
+  ASSERT_TRUE(vxcore_test::create_junction(fixture.root + "/missing-git-directory", dangling.path));
+  ending = VXCORE_LINE_ENDING_CRLF;
+  const auto dangling_error =
+      vxcore_buffer_get_line_ending_override(context, invalid.value, &ending);
+  ASSERT_NE(dangling_error, VXCORE_OK);
+  ASSERT_EQ(ending, VXCORE_LINE_ENDING_UNSPECIFIED);
+  return 0;
+}
+
+int test_buffer_line_ending_gitfile_and_alias() {
+  LineEndingFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  EncryptionTestGitRepository outer, repository;
+  ASSERT_EQ(git_repository_init(&outer.value, fixture.root.c_str(), 0), 0);
+  write_file(fixture.root + "/.gitattributes", "* text eol=crlf\n");
+  const auto workdir = fixture.root + "/worktree";
+  const auto gitdir = fs_path_to_utf8(fixture.directory.path() / "separate.git");
+  create_directory(workdir);
+  git_repository_init_options options = GIT_REPOSITORY_INIT_OPTIONS_INIT;
+  options.flags = GIT_REPOSITORY_INIT_MKPATH | GIT_REPOSITORY_INIT_RELATIVE_GITLINK;
+  options.workdir_path = workdir.c_str();
+  ASSERT_EQ(git_repository_init_ext(&repository.value, gitdir.c_str(), &options), 0);
+  ASSERT(std::filesystem::is_regular_file(utf8_to_fs_path(workdir + "/.git")));
+  write_file(workdir + "/.gitattributes", "* text eol=lf\n");
+  write_file(workdir + "/note.md", "body\n");
+  EncryptionTestString buffer;
+  ASSERT_EQ(vxcore_buffer_open(context, nullptr, (workdir + "/note.md").c_str(), &buffer.value),
+            VXCORE_OK);
+  const auto before = snapshot_attachment_test_tree(fixture.root);
+  const auto git_before = snapshot_attachment_test_tree(gitdir);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_LF), 0);
+  ASSERT(snapshot_attachment_test_tree(fixture.root) == before);
+  ASSERT(snapshot_attachment_test_tree(gitdir) == git_before);
+  // A now-missing body still resolves its parent's repository, without loading it.
+  ASSERT(std::filesystem::remove(utf8_to_fs_path(workdir + "/note.md")));
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_LF), 0);
+  write_file(workdir + "/note.md", "body\n");
+
+  const auto misplaced = fixture.root + "/misplaced";
+  create_directory(misplaced);
+  write_file(misplaced + "/.git",
+             "gitdir: " + normalize_path(git_repository_path(repository.value)) + "\n");
+  write_file(misplaced + "/note.md", "body\n");
+  EncryptionTestString outside_workdir;
+  ASSERT_EQ(vxcore_buffer_open(context, nullptr, (misplaced + "/note.md").c_str(),
+                               &outside_workdir.value),
+            VXCORE_OK);
+  VxCoreLineEnding ending = VXCORE_LINE_ENDING_CRLF;
+  ASSERT_EQ(vxcore_buffer_get_line_ending_override(context, outside_workdir.value, &ending),
+            VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(ending, VXCORE_LINE_ENDING_UNSPECIFIED);
+
+  create_directory(workdir + "/subdirectory");
+  write_file(workdir + "/subdirectory/note.md", "body\n");
+  EncryptionTestDirectoryLink link;
+  link.path = fixture.root + "/alias";
+  ASSERT_TRUE(vxcore_test::create_junction(workdir + "/subdirectory", link.path));
+  EncryptionTestString alias_buffer;
+  ASSERT_EQ(
+      vxcore_buffer_open(context, nullptr, (link.path + "/note.md").c_str(), &alias_buffer.value),
+      VXCORE_OK);
+  ASSERT_EQ(assert_line_ending(context, alias_buffer.value, VXCORE_LINE_ENDING_LF), 0);
+  return 0;
+}
+
+int test_buffer_line_ending_query_contract() {
+  LineEndingFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  const auto note = fixture.root + "/note.md";
+  write_file(note, "body\n");
+  EncryptionTestString buffer, virtual_buffer;
+  ASSERT_EQ(vxcore_buffer_open(context, nullptr, note.c_str(), &buffer.value), VXCORE_OK);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  write_file(fixture.root + "/.gitattributes", "* text eol=crlf\n");
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  const auto raw_path = fixture.root + "/raw";
+  create_directory(raw_path);
+  write_file(raw_path + "/note.md", "body\n");
+  EncryptionTestString raw_notebook, raw_buffer;
+  ASSERT_EQ(
+      vxcore_notebook_create(context, raw_path.c_str(),
+                             "{\"name\":\"Raw without Git\",\"metadata\":{\"lineEnding\":\"lf\"}}",
+                             VXCORE_NOTEBOOK_RAW, &raw_notebook.value),
+      VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open(context, raw_notebook.value, "note.md", &raw_buffer.value),
+            VXCORE_OK);
+  ASSERT_EQ(assert_line_ending(context, raw_buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  ASSERT_EQ(vxcore_buffer_open_virtual(context, "vx://line-ending-test", &virtual_buffer.value),
+            VXCORE_OK);
+  ASSERT_EQ(assert_line_ending(context, virtual_buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  VxCoreLineEnding ending = VXCORE_LINE_ENDING_CR;
+  ASSERT_EQ(vxcore_buffer_get_line_ending_override(nullptr, buffer.value, &ending),
+            VXCORE_ERR_NULL_POINTER);
+  ASSERT_EQ(ending, VXCORE_LINE_ENDING_UNSPECIFIED);
+  ending = VXCORE_LINE_ENDING_CR;
+  ASSERT_EQ(vxcore_buffer_get_line_ending_override(context, nullptr, &ending),
+            VXCORE_ERR_NULL_POINTER);
+  ASSERT_EQ(ending, VXCORE_LINE_ENDING_UNSPECIFIED);
+  ASSERT_EQ(vxcore_buffer_get_line_ending_override(context, buffer.value, nullptr),
+            VXCORE_ERR_NULL_POINTER);
+  ending = VXCORE_LINE_ENDING_CR;
+  ASSERT_EQ(vxcore_buffer_get_line_ending_override(context, "unknown-buffer-id", &ending),
+            VXCORE_ERR_BUFFER_NOT_FOUND);
+  ASSERT_EQ(ending, VXCORE_LINE_ENDING_UNSPECIFIED);
+  // A bare repository has no .git marker and must not consume attributes.
+  EncryptionTestGitRepository bare;
+  const auto bare_path = fixture.root + "/bare.git";
+  create_directory(bare_path);
+  ASSERT_EQ(git_repository_init(&bare.value, bare_path.c_str(), 1), 0);
+  write_file(bare_path + "/.gitattributes", "* text eol=crlf\n");
+  write_file(bare_path + "/note.md", "body\n");
+  EncryptionTestString bare_buffer;
+  ASSERT_EQ(
+      vxcore_buffer_open(context, nullptr, (bare_path + "/note.md").c_str(), &bare_buffer.value),
+      VXCORE_OK);
+  const auto before = snapshot_attachment_test_tree(fixture.root);
+  ASSERT_EQ(assert_line_ending(context, bare_buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  ASSERT(snapshot_attachment_test_tree(fixture.root) == before);
+  return 0;
+}
+
+int test_buffer_line_ending_encrypted_notebook() {
+  LineEndingFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  EncryptionTestGitRepository repository;
+  ASSERT_EQ(git_repository_init(&repository.value, fixture.root.c_str(), 0), 0);
+  write_file(fixture.root + "/.gitattributes", "* text eol=crlf\n");
+  EncryptionTestString notebook, note, buffer;
+  const auto notebook_path = fixture.root + "/protected";
+  ASSERT_EQ(vxcore_notebook_create(
+                context, notebook_path.c_str(),
+                "{\"name\":\"Protected endings\",\"metadata\":{\"lineEnding\":\"lf\"}}",
+                VXCORE_NOTEBOOK_BUNDLED, &notebook.value),
+            VXCORE_OK);
+  ASSERT_EQ(initialize_test_encryption(context, notebook.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_encryption_create_note(context, notebook.value, "", "note.md", "markdown", "", 0,
+                                          &note.value),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open_by_node_id(context, note.value, &buffer.value), VXCORE_OK);
+  // Open protected buffers retain a key lease; querying policy must not rewrite the envelope.
+  const auto before = snapshot_attachment_test_tree(fixture.root);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_LF), 0);
+  ASSERT(snapshot_attachment_test_tree(fixture.root) == before);
+  nlohmann::json config;
+  ASSERT_EQ(read_line_ending_notebook_config(context, notebook.value, config), 0);
+  config["metadata"].erase("lineEnding");
+  ASSERT_EQ(vxcore_notebook_update_config(context, notebook.value, config.dump().c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(assert_line_ending(context, buffer.value, VXCORE_LINE_ENDING_UNSPECIFIED), 0);
+  return 0;
+}
+
 int main() {
   BufferTestTempDirectory test_directory;
   ASSERT_TRUE(test_directory.valid());
@@ -6121,6 +6800,17 @@ int main() {
   RUN_TEST(test_buffer_external_change_content_aware);
   RUN_TEST(test_buffer_is_modified);
   RUN_TEST(test_buffer_get_revision);
+
+  // Read-only line-ending override facts and atomic policy publication.
+  RUN_TEST(test_buffer_line_ending_bundled_metadata);
+  RUN_TEST(test_buffer_line_ending_config_publication);
+  RUN_TEST(test_buffer_line_ending_git_precedence);
+  RUN_TEST(test_buffer_line_ending_git_refresh_and_index);
+  RUN_TEST(test_buffer_line_ending_git_global_and_system);
+  RUN_TEST(test_buffer_line_ending_git_nearest_root);
+  RUN_TEST(test_buffer_line_ending_gitfile_and_alias);
+  RUN_TEST(test_buffer_line_ending_query_contract);
+  RUN_TEST(test_buffer_line_ending_encrypted_notebook);
 
   // Buffer Backup Tests
   RUN_TEST(test_buffer_write_backup);

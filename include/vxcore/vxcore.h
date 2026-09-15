@@ -1031,6 +1031,13 @@ VXCORE_API VxCoreError vxcore_buffer_close(VxCoreContextHandle context, const ch
 VXCORE_API VxCoreError vxcore_buffer_get(VxCoreContextHandle context, const char *id,
                                          char **out_json);
 
+// Query a source-specified text line-ending override without loading the body.
+// Bundled notebook metadata takes precedence; raw/external files use Git attributes.
+// UNSPECIFIED preserves editor output. Output is initialized even on failure.
+VXCORE_API VxCoreError vxcore_buffer_get_line_ending_override(VxCoreContextHandle context,
+                                                              const char *id,
+                                                              VxCoreLineEnding *out_ending);
+
 // List all open buffers.
 // Returns JSON array of BufferRecord objects (caller must free with vxcore_string_free).
 VXCORE_API VxCoreError vxcore_buffer_list(VxCoreContextHandle context, char **out_json);

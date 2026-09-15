@@ -2,6 +2,7 @@
 
 #include <vxcore/notebook_json_keys.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -356,16 +357,25 @@ VxCoreError BundledNotebook::UpdateConfig(const NotebookConfig &config) {
 
   assert(config_.id == config.id);
 
-  config_ = config;
-
   try {
-    std::ofstream file(PathFromUtf8(GetConfigPath()));
-    if (!file.is_open()) {
-      return VXCORE_ERR_IO;
+    // Copy before publication: callers may pass config_ itself during creation/tag updates.
+    auto candidate = config;
+    auto serialized = candidate.ToJson().dump(2);
+#ifdef _WIN32
+    // Preserve the previous text-mode stream's formatting newlines on Windows.
+    // JSON string newlines are escaped and must remain untouched.
+    std::string windows_serialized;
+    windows_serialized.reserve(serialized.size() +
+                               std::count(serialized.cbegin(), serialized.cend(), '\n'));
+    for (const char ch : serialized) {
+      if (ch == '\n') windows_serialized += '\r';
+      windows_serialized += ch;
     }
-
-    nlohmann::json json = config_.ToJson();
-    file << json.dump(2);
+    serialized = std::move(windows_serialized);
+#endif
+    const auto error = WriteFileAtomic(PathFromUtf8(GetConfigPath()), serialized);
+    if (error != VXCORE_OK) return error;
+    config_ = std::move(candidate);
 
     // Nullptr guard: event_manager_ is inherited from Notebook (T2). It is
     // nullptr during BundledNotebook::Create's InitOnCreation pass (before

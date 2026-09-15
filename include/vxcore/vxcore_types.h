@@ -75,6 +75,14 @@ typedef enum {
   VXCORE_BUFFER_SAVE_FAILED = 3
 } VxCoreBufferState;
 
+// Source-specified override; UNSPECIFIED preserves the editor's existing output.
+typedef enum {
+  VXCORE_LINE_ENDING_UNSPECIFIED = 0,
+  VXCORE_LINE_ENDING_LF = 1,
+  VXCORE_LINE_ENDING_CRLF = 2,
+  VXCORE_LINE_ENDING_CR = 3
+} VxCoreLineEnding;
+
 typedef enum { VXCORE_DATA_APP = 0, VXCORE_DATA_LOCAL = 1 } VxCoreDataLocation;
 
 typedef struct VxCoreContext *VxCoreContextHandle;
