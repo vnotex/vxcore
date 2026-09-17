@@ -5491,6 +5491,37 @@ int test_encryption_create_note_transaction() {
   return 0;
 }
 
+int test_encryption_with_empty_sync_directory() {
+  EncryptionFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  const auto notebook = fixture.notebook_id.value;
+  const auto git_path = utf8_to_fs_path(fixture.path) / "vx_notebook" / "vx_sync";
+  ASSERT_TRUE(std::filesystem::create_directory(git_path));
+
+  EncryptionTestString status;
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value), VXCORE_OK);
+  ASSERT(nlohmann::json::parse(status.value) == expected_encryption_status(false, false));
+  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+
+  EncryptionTestString file, converted;
+  ASSERT_EQ(vxcore_file_create(context, notebook, "", "source.md", &file.value), VXCORE_OK);
+  const std::string body = "PRIVATE_EMPTY_SYNC_BODY_7e9d\r\n";
+  const auto source = fixture.path + "/source.md";
+  write_file(source, body);
+  const auto hash = encryption_sha256(body);
+  ASSERT_EQ(vxcore_encryption_protect_note(context, notebook, "source.md", body.data(),
+      body.size(), hash.c_str(), &converted.value), VXCORE_OK);
+  ASSERT_EQ(std::string(converted.value), "source.md.vne");
+  ASSERT_FALSE(path_exists(source));
+  const auto encrypted_path = fixture.path + "/" + converted.value;
+  ASSERT_EQ(assert_encrypted_body_roundtrip(fixture, file.value, encrypted_path, body,
+      body + "saved", body + "recovered"), 0);
+  ASSERT_EQ(read_file_content(encrypted_path).find(body), std::string::npos);
+  ASSERT_TRUE(std::filesystem::is_empty(git_path));
+  return 0;
+}
+
 int test_key_conflict_blocks_cached_protected_body() {
   EncryptionFixture fixture;
   ASSERT_EQ(fixture.error, VXCORE_OK);
@@ -5536,6 +5567,25 @@ int test_key_conflict_blocks_cached_protected_body() {
   ASSERT_EQ(git_index_write(index.get()), 0);
   ASSERT_EQ(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size), VXCORE_OK);
   ASSERT_EQ(std::string(static_cast<const char *>(data), size), body);
+  // A corrupt index or incomplete repository must not be mistaken for no sync.
+  const std::string index_path = git_index_path(index.get());
+  write_file(index_path, "invalid git index");
+  ASSERT_EQ(read_file_content(index_path), "invalid git index");
+  data = reinterpret_cast<const void *>(1);
+  size = 1;
+  ASSERT_NE(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size), VXCORE_OK);
+  ASSERT_NULL(data);
+  ASSERT_EQ(size, size_t(0));
+  ASSERT_TRUE(std::filesystem::remove(
+      utf8_to_fs_path(git_repository_path(repository.value)) / "HEAD"));
+  EncryptionTestString status;
+  ASSERT_NE(vxcore_encryption_get_status(context, notebook, nullptr, &status.value), VXCORE_OK);
+  ASSERT_NULL(status.value);
+  data = reinterpret_cast<const void *>(1);
+  size = 1;
+  ASSERT_NE(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size), VXCORE_OK);
+  ASSERT_NULL(data);
+  ASSERT_EQ(size, size_t(0));
   return 0;
 }
 
@@ -6903,6 +6953,7 @@ int main() {
   RUN_TEST(test_encryption_note_through_aliased_parent);
   RUN_TEST(test_encryption_rejects_links_within_notebook);
   RUN_TEST(test_encryption_create_note_transaction);
+  RUN_TEST(test_encryption_with_empty_sync_directory);
   RUN_TEST(test_key_conflict_blocks_cached_protected_body);
   RUN_TEST(test_encryption_protect_body_only);
   RUN_TEST(test_encryption_protect_configured_editors);

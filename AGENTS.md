@@ -779,7 +779,11 @@ ciphertext from the first body write. Raw/external notes cannot be protected.
 Git sync needs no unlock. Preserve `*.vne -text -diff -merge` in new and initialized existing
 repositories and resolve encrypted conflicts as complete binary envelopes, never a text
 merge. Asset files continue through the normal plaintext sync/transfer paths. A key-envelope
-conflict blocks protected body access. Copies get fresh document keys/identity;
+conflict blocks protected body access. Encryption preflight permits an absent or empty
+`vx_notebook/vx_sync` directory without creating a repository. A nonempty invalid repository
+or unreadable index must still fail closed; never ignore all Git `NOT_FOUND` errors.
+Coverage: `tests/test_buffer.cpp` (empty-directory roundtrip and key-conflict/corruption guards).
+Copies get fresh document keys/identity;
 cross-notebook moves require both notebooks initialized and unlocked and rewrap the
 document key. Standard Markdown link rewrites affect only the protected body when ordinary
 asset paths change. Locked recycle preserves configured asset prefixes and ancestor paths,

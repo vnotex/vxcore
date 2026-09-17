@@ -48,9 +48,16 @@ GitConflictResolver::GitConflictResolver(git_repository *repo, const std::string
 
 VxCoreError GitConflictResolver::CheckEncryptionKeyConflict(const std::string &git_dir) {
   std::error_code ec;
-  const bool exists = std::filesystem::exists(PathFromUtf8(git_dir), ec);
+  const auto path = PathFromUtf8(git_dir);
+  const bool exists = std::filesystem::exists(path, ec);
   if (ec) return VXCORE_ERR_IO;
   if (!exists) return VXCORE_OK;
+  // An empty sync directory has no repository or conflicts. Do not ignore
+  // repository-open errors for nonempty directories: they may hold a damaged index.
+  const bool empty_directory = std::filesystem::is_directory(path, ec) &&
+                               std::filesystem::is_empty(path, ec);
+  if (ec) return VXCORE_ERR_IO;
+  if (empty_directory) return VXCORE_OK;
 
   LibGit2Init init;
   if (!LibGit2Init::ok()) return VXCORE_ERR_IO;
