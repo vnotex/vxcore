@@ -708,7 +708,7 @@ VxCoreError Buffer::CheckExternalChanges(const std::string &full_path) {
     // Real external modification: content differs. Leave last_modified_time_
     // UNTOUCHED so repeated checks keep flagging until the user resolves it.
     state_ = VXCORE_BUFFER_FILE_CHANGED;
-    VXCORE_LOG_WARN("File changed externally: %s", full_path.c_str());
+    VXCORE_LOG_DEBUG("File changed externally: %s", full_path.c_str());
     return is_encrypted_ ? protection_error_ : VXCORE_OK;
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Exception checking file changes for %s: %s", full_path.c_str(), e.what());

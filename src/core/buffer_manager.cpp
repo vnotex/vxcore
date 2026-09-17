@@ -493,7 +493,7 @@ VxCoreError BufferManager::ReloadBuffer(const std::string &id) {
     return error;
   }
 
-  VXCORE_LOG_INFO("Reloaded buffer: id=%s, %zu bytes", id.c_str(), buffer->GetContent().size());
+  VXCORE_LOG_DEBUG("Reloaded buffer: id=%s, %zu bytes", id.c_str(), buffer->GetContent().size());
   return VXCORE_OK;
 }
 
