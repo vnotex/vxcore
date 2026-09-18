@@ -5522,6 +5522,32 @@ int test_encryption_with_empty_sync_directory() {
   return 0;
 }
 
+int test_encryption_sync_state_error_is_distinct() {
+  EncryptionFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  const auto notebook = fixture.notebook_id.value;
+  const auto stray = utf8_to_fs_path(fixture.path) / "vx_notebook" / "vx_sync" / "stray.txt";
+  ASSERT_TRUE(std::filesystem::create_directory(stray.parent_path()));
+  write_file(fs_path_to_utf8(stray), "preserve this leftover");
+  const auto before = encryption_file_tree(fixture.path);
+
+  EncryptionTestString status;
+  ASSERT_EQ(vxcore_encryption_get_status(context, "missing-notebook", nullptr, &status.value),
+            VXCORE_ERR_NOT_FOUND);
+  ASSERT_NULL(status.value);
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value),
+            VXCORE_ERR_ENCRYPTION_SYNC_STATE);
+  ASSERT_NULL(status.value);
+  VxCoreEncryptionSetupHandle setup = nullptr;
+  ASSERT_EQ(vxcore_encryption_prepare_notebook(context, notebook, nullptr,
+      kEncryptionPassword.data(), kEncryptionPassword.size(), &setup),
+      VXCORE_ERR_ENCRYPTION_SYNC_STATE);
+  ASSERT_NULL(setup);
+  ASSERT(encryption_file_tree(fixture.path) == before);
+  return 0;
+}
+
 int test_key_conflict_blocks_cached_protected_body() {
   EncryptionFixture fixture;
   ASSERT_EQ(fixture.error, VXCORE_OK);
@@ -5573,17 +5599,20 @@ int test_key_conflict_blocks_cached_protected_body() {
   ASSERT_EQ(read_file_content(index_path), "invalid git index");
   data = reinterpret_cast<const void *>(1);
   size = 1;
-  ASSERT_NE(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size),
+            VXCORE_ERR_ENCRYPTION_SYNC_STATE);
   ASSERT_NULL(data);
   ASSERT_EQ(size, size_t(0));
   ASSERT_TRUE(std::filesystem::remove(
       utf8_to_fs_path(git_repository_path(repository.value)) / "HEAD"));
   EncryptionTestString status;
-  ASSERT_NE(vxcore_encryption_get_status(context, notebook, nullptr, &status.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value),
+            VXCORE_ERR_ENCRYPTION_SYNC_STATE);
   ASSERT_NULL(status.value);
   data = reinterpret_cast<const void *>(1);
   size = 1;
-  ASSERT_NE(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size),
+            VXCORE_ERR_ENCRYPTION_SYNC_STATE);
   ASSERT_NULL(data);
   ASSERT_EQ(size, size_t(0));
   return 0;
@@ -6954,6 +6983,7 @@ int main() {
   RUN_TEST(test_encryption_rejects_links_within_notebook);
   RUN_TEST(test_encryption_create_note_transaction);
   RUN_TEST(test_encryption_with_empty_sync_directory);
+  RUN_TEST(test_encryption_sync_state_error_is_distinct);
   RUN_TEST(test_key_conflict_blocks_cached_protected_body);
   RUN_TEST(test_encryption_protect_body_only);
   RUN_TEST(test_encryption_protect_configured_editors);

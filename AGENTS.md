@@ -782,6 +782,9 @@ merge. Asset files continue through the normal plaintext sync/transfer paths. A 
 conflict blocks protected body access. Encryption preflight permits an absent or empty
 `vx_notebook/vx_sync` directory without creating a repository. A nonempty invalid repository
 or unreadable index must still fail closed; never ignore all Git `NOT_FOUND` errors.
+Inspection failures return `VXCORE_ERR_ENCRYPTION_SYNC_STATE`, distinct from a missing notebook
+(`NOT_FOUND`) and a confirmed key conflict (`SYNC_CONFLICT`). Keep the raw Git cause in logs;
+Qt adds notebook locations and localized recovery guidance without shared `context.last_error`.
 Coverage: `tests/test_buffer.cpp` (empty-directory roundtrip and key-conflict/corruption guards).
 Copies get fresh document keys/identity;
 cross-notebook moves require both notebooks initialized and unlocked and rewrap the

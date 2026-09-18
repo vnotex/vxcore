@@ -134,6 +134,10 @@ VXCORE_API const char *vxcore_error_message(VxCoreError error) {
       return "Invalid or unsupported encrypted data; legacy encrypted assets are not supported";
     case VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED:
       return "Encryption recovery is required";
+    case VXCORE_ERR_ENCRYPTION_SYNC_STATE:
+      return "Cannot check encryption key conflicts in the notebook's local Git sync data "
+             "(vx_notebook/vx_sync). Check folder permissions and repair the local sync "
+             "repository before retrying. Do not delete encryption.vne or Git history.";
     default:
       return "Unknown error";
   }

@@ -50,29 +50,33 @@ VxCoreError GitConflictResolver::CheckEncryptionKeyConflict(const std::string &g
   std::error_code ec;
   const auto path = PathFromUtf8(git_dir);
   const bool exists = std::filesystem::exists(path, ec);
-  if (ec) return VXCORE_ERR_IO;
+  if (ec) return VXCORE_ERR_ENCRYPTION_SYNC_STATE;
   if (!exists) return VXCORE_OK;
   // An empty sync directory has no repository or conflicts. Do not ignore
   // repository-open errors for nonempty directories: they may hold a damaged index.
   const bool empty_directory = std::filesystem::is_directory(path, ec) &&
                                std::filesystem::is_empty(path, ec);
-  if (ec) return VXCORE_ERR_IO;
+  if (ec) return VXCORE_ERR_ENCRYPTION_SYNC_STATE;
   if (empty_directory) return VXCORE_OK;
 
   LibGit2Init init;
-  if (!LibGit2Init::ok()) return VXCORE_ERR_IO;
+  if (!LibGit2Init::ok()) return VXCORE_ERR_ENCRYPTION_SYNC_STATE;
+  const auto inspection_failed = [](int error) {
+    TranslateGitError(error);  // Retain libgit2's precise cause in the log.
+    return VXCORE_ERR_ENCRYPTION_SYNC_STATE;
+  };
   git_repository *repo_raw = nullptr;
   int rc = git_repository_open_ext(&repo_raw, git_dir.c_str(), GIT_REPOSITORY_OPEN_NO_SEARCH,
                                     nullptr);
   git_repositoryPtr repo(repo_raw);
-  if (rc != 0) return TranslateGitError(rc);
+  if (rc != 0) return inspection_failed(rc);
 
   git_index *index_raw = nullptr;
   rc = git_repository_index(&index_raw, repo.get());
   git_indexPtr index(index_raw);
-  if (rc != 0) return TranslateGitError(rc);
+  if (rc != 0) return inspection_failed(rc);
   rc = git_index_read(index.get(), true);
-  if (rc != 0) return TranslateGitError(rc);
+  if (rc != 0) return inspection_failed(rc);
   for (int stage = 1; stage <= 3; ++stage) {
     if (git_index_get_bypath(index.get(), "vx_notebook/encryption.vne", stage)) {
       return VXCORE_ERR_SYNC_CONFLICT;

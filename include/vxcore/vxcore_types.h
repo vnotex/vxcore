@@ -63,6 +63,8 @@ typedef enum {
   VXCORE_ERR_ENCRYPTION_AUTH_FAILED = 33,
   VXCORE_ERR_ENCRYPTION_FORMAT = 34,
   VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED = 35,
+  // The local sync state cannot be inspected for encryption-key conflicts.
+  VXCORE_ERR_ENCRYPTION_SYNC_STATE = 36,
   VXCORE_ERR_UNKNOWN = 999
 } VxCoreError;
 
