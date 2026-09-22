@@ -206,6 +206,25 @@ VXCORE_API VxCoreError vxcore_encryption_protect_note(
     const void *body, size_t body_size, const char *source_sha256,
     char **out_encrypted_path);
 
+// Transactionally remove body protection from a managed note, preserving its UUID and
+// all assets/metadata except the encryption markers. The target is the current path
+// minus its final case-insensitive ".vne" suffix; neither it nor its backup may exist.
+// The caller MUST explicitly confirm plaintext storage, freeze views and drain saves
+// before holding maintenance then notebook IO. Unlock must already be complete; this
+// never initializes or removes notebook keys. Quiesced buffers remain alive until success.
+// source_sha256 is the required lowercase SHA-256 of the encrypted on-disk source.
+// The source is fully authenticated even with an override: NULL body with size 0 uses
+// persisted bytes; non-NULL body with size 0 explicitly writes an empty body. NULL with
+// nonzero size is invalid. Bytes are preserved exactly. A pending source backup requires
+// an explicit authoritative body. Only the confirmed final body is staged privately.
+// After durable preparation, failures return ENCRYPTION_RECOVERY_REQUIRED and block
+// mutation/sync until keyless startup recovery completes. Output is NULL on failure;
+// free the successful normal-note path with vxcore_string_free().
+VXCORE_API VxCoreError vxcore_encryption_unprotect_note(
+    VxCoreContextHandle context, const char *notebook_id, const char *file_path,
+    const void *body, size_t body_size, const char *source_sha256,
+    char **out_plaintext_path);
+
 // Same maintenance/IO/key preconditions. Publishes an encrypted note without ever
 // creating an empty/plaintext indexed file. name is the original visible filename
 // (without ".vne"); editor_type is "markdown", "text" or "mindmap". Returns its new stable UUID.

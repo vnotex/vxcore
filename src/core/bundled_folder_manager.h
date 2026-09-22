@@ -141,10 +141,15 @@ class BundledFolderManager : public FolderManager {
   VxCoreError RecoverTransfers(int *out_recovered_count);
 
   // The caller quiesces views/buffers and holds maintenance then notebook IO.
-  // Old plaintext buffers remain alive until the durable replacement is published.
+  // Old buffers remain alive until the durable replacement is published.
   VxCoreError ProtectNote(const std::string &file_path, const void *body, size_t body_size,
                           const std::string &source_sha256, const FileTypesConfig &file_types,
                           std::string &out_path);
+  // Requires explicit caller confirmation of plaintext storage. nullptr/0 uses the
+  // authenticated persisted body; a nonnull pointer supplies even an empty override.
+  VxCoreError UnprotectNote(const std::string &file_path, const void *body, size_t body_size,
+                            const std::string &source_sha256, const FileTypesConfig &file_types,
+                            std::string &out_path);
   VxCoreError CreateEncryptedNote(const std::string &parent_path, const std::string &name,
                                   const std::string &editor_type, const void *body,
                                   size_t body_size, const FileTypesConfig &file_types,

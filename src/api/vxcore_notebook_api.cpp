@@ -189,6 +189,50 @@ VXCORE_API VxCoreError vxcore_encryption_protect_note(
   });
 }
 
+VXCORE_API VxCoreError vxcore_encryption_unprotect_note(
+    VxCoreContextHandle context, const char *notebook_id, const char *file_path,
+    const void *body, size_t body_size, const char *source_sha256,
+    char **out_plaintext_path) {
+  if (out_plaintext_path) {
+    *out_plaintext_path = nullptr;
+  }
+  if (!context || !notebook_id || !file_path || !source_sha256 ||
+      !out_plaintext_path || (!body && body_size)) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  if (!*notebook_id || !*file_path) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return EncryptionApiResult([&]() -> VxCoreError {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      return VXCORE_ERR_NOT_FOUND;
+    }
+    auto *manager = dynamic_cast<vxcore::BundledFolderManager *>(notebook->GetFolderManager());
+    if (!manager) {
+      return VXCORE_ERR_UNSUPPORTED;
+    }
+    // Reserve ABI output before mutation; the manager validates the exact suffix/path.
+    auto target = notebook->GetCleanRelativePath(file_path);
+    if (target.size() < 4) {
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+    target.resize(target.size() - 4);
+    std::unique_ptr<char, decltype(&std::free)> result(vxcore_strdup(target.c_str()), &std::free);
+    if (!result) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+    std::string path;
+    const auto error = manager->UnprotectNote(file_path, body, body_size, source_sha256,
+                                              ctx->config_manager->GetConfig().file_types, path);
+    if (error == VXCORE_OK) {
+      *out_plaintext_path = result.release();
+    }
+    return error;
+  });
+}
+
 VXCORE_API VxCoreError vxcore_encryption_create_note(
     VxCoreContextHandle context, const char *notebook_id, const char *parent_path,
     const char *name, const char *editor_type, const void *body, size_t body_size,
