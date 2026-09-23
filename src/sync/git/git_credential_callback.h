@@ -3,7 +3,9 @@
 
 #include <git2.h>
 
+#include <cstddef>
 #include <string>
+#include <utility>
 
 #include "sync/sync_cancellation.h"
 
@@ -14,7 +16,7 @@ struct SyncCredentials;
 class ICredentialProvider;
 
 // Payload carried into libgit2 credential callbacks. Holds only the data
-// the callback actually reads (PAT). Per-call snapshot — lifetime must
+// the callback reads (PAT), cancellation and diagnostic state. Lifetime must
 // span the entire libgit2 operation (fetch/push/ls-remote).
 //
 // Wave 6.3 (F4.4): the payload is built ONCE per libgit2 operation by
@@ -39,6 +41,8 @@ struct GitCredentialPayload {
   // Non-owning. Set to nullptr (default) when no cancellation token is
   // wired -- the progress callbacks then treat it as "never cancelled".
   SyncCancellation *cancellation = nullptr;
+  // Per-network-call count; diagnostics never acquire another credential snapshot.
+  std::size_t callback_attempts = 0;
 };
 
 // libgit2 credential callback (function-pointer signature). Reads PAT from
@@ -76,6 +80,18 @@ std::string MaybeEmbedPatInUrl(const std::string &url, const std::string &pat);
 // contract — each call gets a fresh copy, not a shared reference. Calling
 // the provider on the libgit2 thread is explicitly avoided.
 struct RemoteCallbacksBundle {
+  RemoteCallbacksBundle() = default;
+  RemoteCallbacksBundle(const RemoteCallbacksBundle &) = delete;
+  RemoteCallbacksBundle &operator=(const RemoteCallbacksBundle &) = delete;
+  RemoteCallbacksBundle &operator=(RemoteCallbacksBundle &&) = delete;
+
+  // Named return-value optimization is optional. Keep libgit2's self-pointer
+  // bound to this payload when the factory result is moved instead.
+  RemoteCallbacksBundle(RemoteCallbacksBundle &&other) noexcept
+      : callbacks(other.callbacks), payload(std::move(other.payload)) {
+    callbacks.payload = &payload;
+  }
+
   git_remote_callbacks callbacks;
   GitCredentialPayload payload;
 };

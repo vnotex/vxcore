@@ -10,7 +10,9 @@
 
 #include <iostream>
 #include <string>
+#include <utility>
 
+#include "sync/credential_provider.h"
 #include "sync/git/git_error_translator.h"
 #include "sync/git/git_sync_backend.h"
 #include "sync/git/git_credential_callback.h"
@@ -58,6 +60,46 @@ int test_git_credential_uses_token_owner_username() {
   const auto *userpass = reinterpret_cast<git_credential_userpass_plaintext *>(cred);
   ASSERT_EQ(std::string(userpass->password), "test-token");
   git_credential_free(cred);
+  return 0;
+}
+
+int test_git_callbacks_survive_bundle_move() {
+  vxcore::LibGit2Init init;
+  struct Provider : vxcore::ICredentialProvider {
+    const std::string token = std::string(80, 't');
+    bool GetCredentials(const std::string &, const std::string &,
+                        vxcore::SyncCredentials *out) override {
+      if (out == nullptr) return false;
+      out->personal_access_token = token;
+      return true;
+    }
+  } provider;
+  vxcore::SyncCancellation cancellation;
+  auto source = vxcore::MakeRemoteCallbacks(&provider, "https://example.invalid/repo.git",
+                                            &cancellation);
+  auto moved = std::move(source);
+  // Keep the source alive but distinguish its credentials and cancellation.
+  // A stale payload pointer must not silently use the moved-from object.
+  source.payload.personal_access_token = "replacement-token";
+  source.payload.cancellation = nullptr;
+  git_credential *credential = nullptr;
+  const int rc = moved.callbacks.credentials(
+      &credential, "https://example.invalid/repo.git", nullptr,
+      GIT_CREDENTIAL_USERPASS_PLAINTEXT, moved.callbacks.payload);
+  ASSERT_EQ(rc, 0);
+  ASSERT_NOT_NULL(credential);
+  const auto *userpass = reinterpret_cast<git_credential_userpass_plaintext *>(credential);
+  const std::string username = git_credential_get_username(credential);
+  const std::string password = userpass->password;
+  git_credential_free(credential);
+  ASSERT_EQ(username, "x-access-token");
+  ASSERT_EQ(password, provider.token);
+
+  git_indexer_progress stats{};
+  ASSERT_EQ(moved.callbacks.transfer_progress(&stats, moved.callbacks.payload), 0);
+  cancellation.Cancel();
+  ASSERT_NE(moved.callbacks.transfer_progress(&stats, moved.callbacks.payload), 0);
+  ASSERT_NE(moved.callbacks.push_transfer_progress(1, 1, 1, moved.callbacks.payload), 0);
   return 0;
 }
 
@@ -192,6 +234,7 @@ int test_git_error_translate_network() {
 int main() {
   RUN_TEST(test_git_credential_pat_used_when_set);
   RUN_TEST(test_git_credential_uses_token_owner_username);
+  RUN_TEST(test_git_callbacks_survive_bundle_move);
   RUN_TEST(test_git_preemptive_auth_preserves_account_and_encodes_token);
   RUN_TEST(test_git_credential_anonymous_returns_passthrough);
   RUN_TEST(test_git_error_translate_notfound);

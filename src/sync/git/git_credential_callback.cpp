@@ -3,6 +3,7 @@
 #include <cstddef>
 
 #include "sync/credential_provider.h"
+#include "sync/git/git_sync_log.h"
 #include "sync/sync_cancellation.h"
 #include "sync/sync_types.h"
 
@@ -16,15 +17,28 @@ int GitSyncBackendCredentialCb(git_credential **out, const char *url,
   if (pl == nullptr) {
     return GIT_PASSTHROUGH;
   }
-  if (!pl->personal_access_token.empty() &&
-      (allowed_types & GIT_CREDENTIAL_USERPASS_PLAINTEXT) != 0) {
-    const char *username = username_from_url && *username_from_url
-                               ? username_from_url
-                               : "x-access-token";
-    return git_credential_userpass_plaintext_new(
+  const std::size_t attempt = ++pl->callback_attempts;
+  const bool has_url_username = username_from_url && *username_from_url;
+  const bool has_pat = !pl->personal_access_token.empty();
+  int rc = GIT_PASSTHROUGH;
+  if (has_pat && (allowed_types & GIT_CREDENTIAL_USERPASS_PLAINTEXT) != 0) {
+    const char *username = has_url_username ? username_from_url : "x-access-token";
+    rc = git_credential_userpass_plaintext_new(
         out, username, pl->personal_access_token.c_str());
   }
-  return GIT_PASSTHROUGH;
+  if (attempt <= 3) {
+    Logger::GetInstance().Log(
+        rc == 0 || rc == GIT_PASSTHROUGH ? LogLevel::kInfo : LogLevel::kWarn,
+        __FILE__, __LINE__,
+        "GitSync worker=%llu event=credential_callback attempt=%zu allowed_types=%u "
+        "username_source=%s pat_present=%d code=%d",
+        GitSyncLog::WorkerId(), attempt, allowed_types,
+        has_url_username ? "url" : "default", has_pat ? 1 : 0, rc);
+  } else if (attempt == 4) {
+    VXCORE_LOG_INFO("GitSync worker=%llu event=credential_callback_suppressed limit=3",
+                    GitSyncLog::WorkerId());
+  }
+  return rc;
 }
 
 std::string MaybeEmbedPatInUrl(const std::string &url, const std::string &pat) {
@@ -78,6 +92,20 @@ RemoteCallbacksBundle MakeRemoteCallbacks(ICredentialProvider *provider,
       bundle.payload.personal_access_token = snapshot.personal_access_token;
     }
   }
+  // Inspect delimiters only; never extract or log the URL's username.
+  const auto scheme = remote_url.find("://");
+  const auto authority_begin = scheme == std::string::npos ? 0 : scheme + 3;
+  const auto authority_end = remote_url.find_first_of("/?#", authority_begin);
+  const auto at = remote_url.find('@', authority_begin);
+  const bool has_url_username = at != std::string::npos && at > authority_begin &&
+      (authority_end == std::string::npos || at < authority_end) &&
+      remote_url[authority_begin] != ':';
+  VXCORE_LOG_INFO(
+      "GitSync worker=%llu event=credential_setup provider_present=%d pat_present=%d "
+      "url_username_present=%d",
+      GitSyncLog::WorkerId(), provider != nullptr ? 1 : 0,
+      bundle.payload.personal_access_token.empty() ? 0 : 1, has_url_username ? 1 : 0);
+
   // W12.1: optional cancellation token rides in the same payload as the
   // credential snapshot (libgit2 dispatches one payload pointer to all
   // callbacks in a git_remote_callbacks struct).

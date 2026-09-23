@@ -16,6 +16,7 @@
 #include "sync/git/git_error_translator.h"
 #include "sync/git/git_handles.h"
 #include "sync/git/git_repo_bootstrap.h"
+#include "sync/git/git_sync_log.h"
 #include "sync/git/git_sync_pipeline.h"
 #include "sync/git/gitkeep_sweeper.h"
 #include "sync/git/libgit2_init.h"
@@ -106,13 +107,14 @@ std::shared_ptr<ICredentialProvider> GitSyncBackend::GetCredsProviderSnapshot() 
 
 VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
                                        const SyncConfig &config) {
+  GitSyncLog log("initialize", this);
   std::lock_guard<std::mutex> lock(op_mutex_);
 
   // Idempotent: a second Initialize on an already-initialized backend is a
   // no-op. Re-validating against config_ would risk rejecting a benign repeat
   // call (e.g. SyncManager re-enabling), so we just return OK.
   if (initialized_) {
-    return VXCORE_OK;
+    return log.Finish(VXCORE_OK);
   }
 
   root_folder_ = root_folder;
@@ -137,7 +139,7 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
         "(directory exists but HEAD missing) — refusing to proceed; "
         "inspect/remove the directory manually",
         git_dir_.c_str());
-    return VXCORE_ERR_UNKNOWN;
+    return log.Finish(VXCORE_ERR_UNKNOWN);
   }
 
   RebindCoreWorktree(root_folder);
@@ -150,7 +152,7 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
     if (err == VXCORE_OK) {
       initialized_ = true;
     }
-    return err;
+    return log.Finish(err);
   }
 
   // T17 both-non-empty guard.
@@ -179,7 +181,7 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
           "GitSyncBackend::Initialize: both notebook root '%s' and remote '%s' "
           "are non-empty — refusing to proceed; empty one side and retry",
           root_folder_.c_str(), config_.remote_url.c_str());
-      return VXCORE_ERR_INVALID_PARAM;
+      return log.Finish(VXCORE_ERR_INVALID_PARAM);
     }
 
     // T15: clone-into-empty branch.
@@ -190,7 +192,7 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
       if (err == VXCORE_OK) {
         initialized_ = true;
       }
-      return err;
+      return log.Finish(err);
     }
 
     // T16: init+push branch.
@@ -201,11 +203,11 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
       if (err == VXCORE_OK) {
         initialized_ = true;
       }
-      return err;
+      return log.Finish(err);
     }
   }
 
-  return VXCORE_ERR_NOT_IMPLEMENTED;
+  return log.Finish(VXCORE_ERR_NOT_IMPLEMENTED);
 }
 
 // T13 of open-notebook-remote-readonly plan: clone wrapper around
@@ -232,8 +234,9 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
 //     libgit2 call is in flight on this instance).
 VxCoreError GitSyncBackend::Clone(const std::string &target_dir,
                                   const SyncConfig &config) {
+  GitSyncLog log("clone", this);
   if (config.remote_url.empty()) {
-    return VXCORE_ERR_INVALID_PARAM;
+    return log.Finish(VXCORE_ERR_INVALID_PARAM);
   }
 
   // Snapshot the provider — matches Initialize's pattern exactly.
@@ -268,7 +271,7 @@ VxCoreError GitSyncBackend::Clone(const std::string &target_dir,
     repo = nullptr;
   }
 
-  return err;
+  return log.Finish(err);
 }
 
 VxCoreError GitSyncBackend::Sync(SyncProgressCallback callback, void *userdata) {
@@ -342,10 +345,8 @@ VxCoreError GitSyncBackend::DoStageAndCommitLocked(SyncProgressCallback callback
   const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           std::chrono::system_clock::now().time_since_epoch())
                           .count();
-  VXCORE_LOG_DEBUG("GitSyncBackend::DoStageAndCommitLocked: step=commit starting");
   err = pipeline.CommitIndex(std::string("VNote sync ") + std::to_string(now_ms),
                              out_did_commit);
-  VXCORE_LOG_DEBUG("GitSyncBackend::DoStageAndCommitLocked: step=commit rc=%d", err);
   return err;
 }
 
@@ -368,21 +369,24 @@ VxCoreError GitSyncBackend::DoFetchRebasePushLocked(SyncProgressCallback callbac
   pipeline.SetCancellation(cancellation_snapshot);
 
   // F5.10 / Task 11.1: retry loop preserved bit-for-bit from the legacy Sync().
+  const auto worker = GitSyncLog::WorkerId();
   VxCoreError err = VXCORE_OK;
   bool pushed = false;
   for (int attempt = 1; attempt <= retry_policy_.max_attempts; ++attempt) {
     if (attempt > 1) {
       auto delay = compute_delay(attempt, retry_policy_, retry_rng_);
-      VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: backoff before attempt=%d "
-                       "delay_ms=%lld",
-                       attempt, static_cast<long long>(delay.count()));
+      VXCORE_LOG_INFO(
+          "GitSync worker=%llu context=%p phase=push-retry event=backoff "
+          "attempt=%d limit=%d delay_ms=%lld",
+          worker, static_cast<void *>(repo_), attempt, retry_policy_.max_attempts,
+          static_cast<long long>(delay.count()));
       std::this_thread::sleep_for(delay);
     }
-    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=push attempt=%d", attempt);
+    VXCORE_LOG_INFO("GitSync worker=%llu context=%p phase=push-retry event=attempt "
+                    "attempt=%d limit=%d",
+                    worker, static_cast<void *>(repo_), attempt, retry_policy_.max_attempts);
     ReportProgress(callback, userdata, SyncState::kFetching, "Fetching", 0.40f);
-    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=fetch starting");
     err = pipeline.FetchOrigin();
-    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=fetch rc=%d", err);
     if (err != VXCORE_OK) {
       return err;
     }
@@ -390,9 +394,7 @@ VxCoreError GitSyncBackend::DoFetchRebasePushLocked(SyncProgressCallback callbac
     ReportProgress(callback, userdata, SyncState::kAnalyzing, "Analyzing", 0.50f);
 
     ReportProgress(callback, userdata, SyncState::kMerging, "Rebasing", 0.70f);
-    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=rebase starting");
     err = pipeline.RebaseOntoOrigin();
-    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=rebase rc=%d", err);
     if (err == VXCORE_ERR_SYNC_CONFLICT) {
       return VXCORE_ERR_SYNC_CONFLICT;
     }
@@ -401,9 +403,7 @@ VxCoreError GitSyncBackend::DoFetchRebasePushLocked(SyncProgressCallback callbac
     }
 
     ReportProgress(callback, userdata, SyncState::kPushing, "Pushing", 0.90f);
-    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=push starting");
     err = pipeline.PushOrigin();
-    VXCORE_LOG_DEBUG("GitSyncBackend::DoFetchRebasePushLocked: step=push rc=%d", err);
     if (err == VXCORE_OK) {
       pushed = true;
       break;

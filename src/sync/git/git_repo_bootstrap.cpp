@@ -10,6 +10,7 @@
 #include "sync/git/git_defaults.h"
 #include "sync/git/git_error_translator.h"
 #include "sync/git/git_handles.h"
+#include "sync/git/git_sync_log.h"
 #include "sync/git/git_sync_pipeline.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
@@ -228,6 +229,7 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
     }
   }
 
+  GitSyncLog fetch_log("bootstrap-fetch", repo.get());
   git_remotePtr remote;
   int rc;
   {
@@ -236,7 +238,7 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
     remote.reset(raw);
   }
   if (rc != 0) {
-    return TranslateGitError(rc);
+    return fetch_log.Finish(TranslateGitError(rc));
   }
 
   git_fetch_options fopts = GIT_FETCH_OPTIONS_INIT;
@@ -245,11 +247,15 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
 
   rc = git_remote_fetch(remote.get(), /*refspecs=*/nullptr, &fopts,
                         "vnote initial fetch");
+  fetch_log.CredentialSummary(bundle.payload.callback_attempts, rc);
   remote.reset();
   if (rc != 0) {
-    return TranslateGitError(rc);
+    return fetch_log.Finish(TranslateGitError(rc));
   }
 
+  fetch_log.Finish(VXCORE_OK);
+
+  GitSyncLog checkout_log("bootstrap-checkout", repo.get());
   git_referencePtr origin_ref;
   {
     git_reference *raw = nullptr;
@@ -268,7 +274,7 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
     WriteIfMissing(root_folder + "/.gitignore", BuildGitignoreContent(config));
     WriteIfMissing(root_folder + "/.gitattributes", kDefaultGitattributes);
     *out_repo = repo.release();
-    return VXCORE_OK;
+    return checkout_log.Finish(VXCORE_OK);
   }
 
   git_objectPtr target;
@@ -278,7 +284,7 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
     target.reset(raw);
   }
   if (rc != 0) {
-    return TranslateGitError(rc);
+    return checkout_log.Finish(TranslateGitError(rc));
   }
 
   git_checkout_options copts = GIT_CHECKOUT_OPTIONS_INIT;
@@ -287,7 +293,7 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
   copts.notify_cb = LogCheckoutConflictCb;
   rc = git_checkout_tree(repo.get(), target.get(), &copts);
   if (rc != 0) {
-    return TranslateGitError(rc);
+    return checkout_log.Finish(TranslateGitError(rc));
   }
 
   WriteIfMissing(root_folder + "/.gitignore", BuildGitignoreContent(config));
@@ -306,14 +312,14 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
     local_ref.reset(raw);
   }
   if (rc != 0) {
-    return TranslateGitError(rc);
+    return checkout_log.Finish(TranslateGitError(rc));
   }
   local_ref.reset();
 
   ScrubGitlink(root_folder, "Initialize(clone)");
 
   *out_repo = repo.release();
-  return VXCORE_OK;
+  return checkout_log.Finish(VXCORE_OK);
 }
 
 VxCoreError BootstrapToEmptyRemote(const std::string &root_folder,
