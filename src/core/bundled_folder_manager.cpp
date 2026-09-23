@@ -4329,6 +4329,33 @@ struct EncryptionPlaintext final {
   }
 };
 
+// Conversion changes one hash-checked parent config, not the notebook's identity namespace.
+// Reject local duplicates and foreign cached owners without loading unrelated folder configs.
+bool EncryptionOwnsNoteIdentity(Notebook &notebook, const FolderConfig &config,
+                                const std::string &parent_path, const std::string &file_id,
+                                const std::string &source_name, const std::string &target_name,
+                                int expected_count) {
+  if (config.id == file_id ||
+      std::count_if(config.files.begin(), config.files.end(), [&](const FileRecord &file) {
+        return file.id == file_id;
+      }) != expected_count) {
+    return false;
+  }
+  if (auto *store = notebook.GetMetadataStore()) {
+    if (store->GetFolder(file_id) || store->GetFile(config.id)) return false;
+    if (store->GetFolder(config.id)) {
+      const auto stored_path = store->GetFolderPath(config.id);
+      const auto expected_path = parent_path.empty() ? "." : CleanPath(parent_path);
+      if ((stored_path.empty() ? "." : CleanPath(stored_path)) != expected_path) return false;
+    }
+    if (const auto file = store->GetFile(file_id)) {
+      if (expected_count == 0 || file->folder_id != config.id ||
+          (file->name != source_name && file->name != target_name)) return false;
+    }
+  }
+  return true;
+}
+
 // No config copies or attachment names are journaled. Rebuild the exact
 // postcondition from the still-live, hash-checked precondition config.
 bool EncryptionTransformConfig(FolderConfig &config, const EncryptionJson &journal) {
@@ -4498,9 +4525,7 @@ VxCoreError BundledFolderManager::UnprotectNote(
     return VXCORE_ERR_INVALID_STATE;
   }
   const auto file_id = record->id;
-  std::vector<std::string> node_ids;
-  if ((error = CollectAllNodeIds(node_ids)) != VXCORE_OK) return error;
-  if (std::count(node_ids.begin(), node_ids.end(), file_id) != 1) {
+  if (!EncryptionOwnsNoteIdentity(*notebook_, config, parent, file_id, parts.second, "", 1)) {
     return VXCORE_ERR_INVALID_STATE;
   }
   bool exists = false;
@@ -4754,11 +4779,8 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
   if (!source_record && (error = Encryption::GenerateIdentity(file_id)) != VXCORE_OK) {
     return error;
   }
-  std::vector<std::string> node_ids;
-  if ((error = CollectAllNodeIds(node_ids)) != VXCORE_OK) {
-    return error;
-  }
-  if (std::count(node_ids.begin(), node_ids.end(), file_id) != (source_record ? 1 : 0)) {
+  if (!EncryptionOwnsNoteIdentity(*notebook_, config, parent_path, file_id,
+                                  source_record ? name : "", "", source_record ? 1 : 0)) {
     return source_record ? VXCORE_ERR_INVALID_STATE : VXCORE_ERR_ALREADY_EXISTS;
   }
   EncryptionJson preconditions = EncryptionJson::array();
@@ -5073,10 +5095,11 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
             config.folders.end()) {
       return recovery;
     }
-    std::vector<std::string> ids;
-    if (CollectAllNodeIds(ids) != VXCORE_OK || std::count(ids.begin(), ids.end(), file_id) != 1) {
-      return recovery;
-    }
+  }
+  if (!EncryptionOwnsNoteIdentity(*notebook_, config, parent, file_id,
+                                  source.empty() ? "" : PathFilename(source),
+                                  PathFilename(target), 1)) {
+    return recovery;
   }
   std::map<std::string, std::string> conditions;
   for (const auto &condition : journal["preconditions"]) {

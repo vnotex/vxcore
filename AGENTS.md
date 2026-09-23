@@ -758,6 +758,25 @@ replaces an existing key file. Unlock authenticates only the key envelope, not e
 closed note. Lock All requires protected buffers, key leases, and prepared setups to
 have been released; an outstanding owner must prevent successful key release.
 
+`vx_notebook/config.json` records optional boolean `encryptionInitialized`: absent means
+unknown legacy state, false means confirmed uninitialized, and true is permanent even after
+all notes are decrypted or deleted. Fresh bundled notebooks start false. Ordinary config/tag
+updates preserve the fresh disk marker; they cannot grant consent or clear true. Nonboolean
+persisted values are errors, not unknown. Setup/status never scan the contents tree for keys
+or encrypted records. A missing key with true (or a remembered initialized owner) requires
+recovery; a missing key with unknown cannot prepare/commit until explicit user consent.
+`vxcore_encryption_reconcile_notebook` runs under the caller's maintenance lease and IO gate:
+it persists false for unknown/keyless only with explicit consent, or true after validating an
+existing key. Status reports the persisted marker as boolean/null and remains read-only, as
+do password/cached-master unlock and read-only notebook access. Commit publishes the key
+before true and before any encrypted note; marker-write failure keeps the key for reconcile.
+
+Conversion checks only its hash-checked parent config plus existing cache ownership for UUID
+collisions; it does not run the import-only `CollectAllNodeIds` contents audit. Local duplicate
+file IDs, file/folder collisions and foreign indexed owners must fail closed, including during
+recovery. Unindexed duplicates in unrelated folders remain pre-existing metadata corruption;
+never scan or rewrite those folders as part of encrypting/decrypting another note.
+
 Encrypted Markdown, Text and MindMap notes use `.vne` envelopes containing only the
 note body and authenticated `editorType`. Document/key identity, stream FINAL and exact
 EOF are checked before exposing plaintext. Images, attachments and comment sidecars

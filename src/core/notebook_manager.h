@@ -61,6 +61,8 @@ class NotebookManager {
   // Encryption-only entry points. Lazy state remains null for ordinary use.
   // Existing notebook lifecycle/metadata synchronization remains caller-owned.
   struct EncryptionSetup;
+  VxCoreError ReconcileNotebookEncryption(const std::string &notebook_id,
+                                          bool confirm_uninitialized);
   VxCoreError PrepareNotebookEncryption(const std::string &notebook_id,
                                         const std::string &source_notebook_id,
                                         const void *password, size_t password_size,

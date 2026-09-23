@@ -30,6 +30,10 @@ class BundledNotebook : public Notebook {
   static const char *kMetadataFolderName;
 
  private:
+  friend class NotebookManager;
+  // Only creation and explicit encryption reconciliation may change the marker.
+  VxCoreError PersistConfig(const NotebookConfig &config, bool update_encryption_marker);
+
   BundledNotebook(const std::string &local_data_folder, const std::string &root_folder);
 
   std::string GetMetadataFolder() const override;

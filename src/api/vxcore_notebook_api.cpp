@@ -51,6 +51,20 @@ VxCoreError EncryptionApiResult(Function &&function) {
 
 }  // namespace
 
+VXCORE_API VxCoreError vxcore_encryption_reconcile_notebook(
+    VxCoreContextHandle context, const char *notebook_id, bool confirm_uninitialized) {
+  if (!context || !notebook_id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  if (!*notebook_id) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return EncryptionApiResult([&]() {
+    return ctx->notebook_manager->ReconcileNotebookEncryption(notebook_id, confirm_uninitialized);
+  });
+}
+
 VXCORE_API VxCoreError vxcore_encryption_prepare_notebook(
     VxCoreContextHandle context, const char *notebook_id, const char *source_notebook_id,
     const void *password, size_t password_size, VxCoreEncryptionSetupHandle *out_setup) {

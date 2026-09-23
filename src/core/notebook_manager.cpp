@@ -62,7 +62,7 @@ VxCoreError EntryExists(const fs::path &path, bool &exists) {
 }
 
 VxCoreError CheckNotebookIdentity(const Notebook &notebook, bool writable,
-                                  fs::path &out_root) {
+                                  fs::path &out_root, nlohmann::json *out_config = nullptr) {
   if (writable) {
     const auto error = notebook.CheckWritable();
     if (error != VXCORE_OK) return error;
@@ -98,6 +98,11 @@ VxCoreError CheckNotebookIdentity(const Notebook &notebook, bool writable,
       config[kJsonKeyId] != notebook.GetId()) {
     return VXCORE_ERR_INVALID_STATE;
   }
+  if (config.contains(kJsonKeyEncryptionInitialized) &&
+      config.at(kJsonKeyEncryptionInitialized).is_boolean() == false) {
+    return VXCORE_ERR_ENCRYPTION_FORMAT;
+  }
+  if (out_config) *out_config = std::move(config);
   return VXCORE_OK;
 }
 
@@ -130,67 +135,12 @@ VxCoreError ReadNotebookEnvelope(const Notebook &notebook, Encryption::KeyEnvelo
   return error;
 }
 
-// Only explicit initialization/status of a missing key file takes this slow path.
-// Never initialize over orphaned ciphertext or an encrypted FileRecord marker.
-VxCoreError CheckNoProtectedContent(const Notebook &notebook) {
-  std::error_code ec;
-  fs::recursive_directory_iterator it(PathFromUtf8(notebook.GetRootFolder()), ec), end;
-  if (ec) {
-    return VXCORE_ERR_IO;
+VxCoreError CheckEncryptionSetupAllowed(const nlohmann::json &config) {
+  if (!config.contains(kJsonKeyEncryptionInitialized)) {
+    return VXCORE_ERR_INVALID_STATE;
   }
-  while (it != end) {
-    const auto path = it->path();
-    const auto name = path.filename();
-    if (name == ".git") {
-      it.disable_recursion_pending();
-    } else {
-      const auto state = CheckReparsePoint(PathToUtf8(path));
-      if (state == ReparseState::kError) {
-        return VXCORE_ERR_IO;
-      }
-      if (state == ReparseState::kYes) {
-        return VXCORE_ERR_INVALID_STATE;
-      }
-      if (path.extension() == ".vne") {
-        return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
-      }
-      const auto relative = path.lexically_relative(PathFromUtf8(notebook.GetMetadataFolder()));
-      if (name == "vx.json" && !relative.empty() && *relative.begin() == "contents") {
-        nlohmann::json config;
-        auto error = LoadJsonFile(path, config);
-        if (error != VXCORE_OK) {
-          return error;
-        }
-        if (!config.is_object() || (config.contains(kJsonKeyFiles) &&
-                                   !config[kJsonKeyFiles].is_array())) {
-          return VXCORE_ERR_ENCRYPTION_FORMAT;
-        }
-        if (config.contains(kJsonKeyFiles)) {
-          for (const auto &file : config[kJsonKeyFiles]) {
-            if (!file.is_object()) {
-              return VXCORE_ERR_ENCRYPTION_FORMAT;
-            }
-            const auto metadata = file.find(kJsonKeyMetadata);
-            if (metadata != file.end() && metadata->is_object() &&
-                metadata->contains(kJsonKeyEncrypted)) {
-              const auto &marker = metadata->at(kJsonKeyEncrypted);
-              if (!marker.is_boolean()) {
-                return VXCORE_ERR_ENCRYPTION_FORMAT;
-              }
-              if (marker.get<bool>()) {
-                return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
-              }
-            }
-          }
-        }
-      }
-    }
-    it.increment(ec);
-    if (ec) {
-      return VXCORE_ERR_IO;
-    }
-  }
-  return VXCORE_OK;
+  return config.at(kJsonKeyEncryptionInitialized).get<bool>()
+             ? VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED : VXCORE_OK;
 }
 
 VxCoreError CheckKeyFileAbsent(const Notebook &notebook) {
@@ -497,6 +447,39 @@ VxCoreError NotebookManager::LockAllEncryption() {
   return VXCORE_OK;
 }
 
+VxCoreError NotebookManager::ReconcileNotebookEncryption(const std::string &notebook_id,
+                                                          bool confirm_uninitialized) {
+  auto *notebook = GetNotebook(notebook_id);
+  if (!notebook) return VXCORE_ERR_NOT_FOUND;
+  fs::path root;
+  nlohmann::json persisted;
+  auto error = CheckNotebookIdentity(*notebook, false, root, &persisted);
+  if (error != VXCORE_OK) return error;
+  bool key_exists = false;
+  error = EntryExists(EncryptionKeyPath(*notebook), key_exists);
+  if (error != VXCORE_OK) return error;
+  auto config = NotebookConfig::FromJson(persisted);
+  if (key_exists) {
+    Encryption::KeyEnvelope envelope;
+    error = ReadNotebookEnvelope(*notebook, envelope);
+    if (error != VXCORE_OK) return error;
+    if (config.encryption_initialized == true) return VXCORE_OK;
+  } else {
+    if (config.encryption_initialized == true) return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+    if (auto *owner = notebook->GetEncryption()) {
+      std::lock_guard<std::mutex> lock(owner->mutex_);
+      if (!owner->envelope_.notebook_id.empty()) {
+        return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+      }
+    }
+    if (config.encryption_initialized == false) return VXCORE_OK;
+    if (!confirm_uninitialized) return VXCORE_ERR_INVALID_STATE;
+  }
+  // The private writer enforces writability only on this actual publication path.
+  config.encryption_initialized = key_exists;
+  return static_cast<BundledNotebook *>(notebook)->PersistConfig(config, true);
+}
+
 VxCoreError NotebookManager::PrepareNotebookEncryption(
     const std::string &notebook_id, const std::string &source_notebook_id,
     const void *password, size_t password_size, EncryptionSetup *&out_setup) {
@@ -514,12 +497,13 @@ VxCoreError NotebookManager::PrepareNotebookEncryption(
     return VXCORE_ERR_NOT_FOUND;
   }
   auto prepared = std::make_unique<EncryptionSetup::Prepared>();
-  auto error = CheckNotebookIdentity(*notebook, true, prepared->root);
+  nlohmann::json config;
+  auto error = CheckNotebookIdentity(*notebook, true, prepared->root, &config);
   if (error == VXCORE_OK) {
     error = CheckKeyFileAbsent(*notebook);
   }
   if (error == VXCORE_OK) {
-    error = CheckNoProtectedContent(*notebook);
+    error = CheckEncryptionSetupAllowed(config);
   }
   if (error == VXCORE_OK) {
     error = RegisterEncryptionOwner(*notebook, *session);
@@ -654,6 +638,11 @@ VxCoreError NotebookManager::InstallEncryptionKeys(
     if (error == VXCORE_OK) {
       error = PublishKeyFile(notebook, envelope, *key_file_bytes);
     }
+    if (error == VXCORE_OK) {
+      // Never remove a published key on marker failure. Explicit reconciliation
+      // repairs this boundary; unlock/cached unlock (null bytes) remain read-only.
+      error = ReconcileNotebookEncryption(notebook.GetId(), false);
+    }
     if (error != VXCORE_OK) {
       return error;
     }
@@ -698,7 +687,8 @@ VxCoreError NotebookManager::CommitNotebookEncryption(EncryptionSetup *setup) {
     return VXCORE_ERR_INVALID_STATE;
   }
   fs::path root;
-  auto error = CheckNotebookIdentity(*notebook, true, root);
+  nlohmann::json config;
+  auto error = CheckNotebookIdentity(*notebook, true, root, &config);
   if (error == VXCORE_OK && root != prepared->root) {
     return VXCORE_ERR_INVALID_STATE;
   }
@@ -706,10 +696,16 @@ VxCoreError NotebookManager::CommitNotebookEncryption(EncryptionSetup *setup) {
     error = CheckKeyFileAbsent(*notebook);
   }
   if (error == VXCORE_OK) {
-    error = CheckNoProtectedContent(*notebook);
+    error = CheckEncryptionSetupAllowed(config);
   }
   if (error != VXCORE_OK) {
     return error;
+  }
+  {
+    std::lock_guard<std::mutex> lock(prepared->owner->mutex_);
+    if (!prepared->owner->envelope_.notebook_id.empty()) {
+      return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+    }
   }
   if (!prepared->source_notebook_id.empty()) {
     auto *source = GetNotebook(prepared->source_notebook_id);
@@ -902,9 +898,10 @@ VxCoreError NotebookManager::GetEncryptionStatus(const std::string &notebook_id,
   if (notebook->GetType() != NotebookType::Bundled) {
     return VXCORE_ERR_UNSUPPORTED;
   }
-  const auto conflict_error = GitConflictResolver::CheckEncryptionKeyConflict(
-      notebook->GetMetadataFolder() + "/vx_sync");
-  if (conflict_error != VXCORE_OK) return conflict_error;
+  fs::path root;
+  nlohmann::json config;
+  auto error = CheckNotebookIdentity(*notebook, false, root, &config);
+  if (error != VXCORE_OK) return error;
   bool encrypted = false;
   Encryption::ObjectHeader header;
   if (file_path) {
@@ -964,7 +961,7 @@ VxCoreError NotebookManager::GetEncryptionStatus(const std::string &notebook_id,
     }
   }
   bool initialized = false;
-  auto error = EntryExists(EncryptionKeyPath(*notebook), initialized);
+  error = EntryExists(EncryptionKeyPath(*notebook), initialized);
   if (error != VXCORE_OK) {
     return error;
   }
@@ -983,7 +980,7 @@ VxCoreError NotebookManager::GetEncryptionStatus(const std::string &notebook_id,
       unlocked = !owner->locking_ && owner->notebook_key_ && SameEnvelope(envelope, owner->envelope_);
     }
   } else {
-    if (encrypted) {
+    if (encrypted || config.value(kJsonKeyEncryptionInitialized, false)) {
       return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
     }
     if (auto *owner = notebook->GetEncryption()) {
@@ -992,12 +989,10 @@ VxCoreError NotebookManager::GetEncryptionStatus(const std::string &notebook_id,
         return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
       }
     }
-    error = CheckNoProtectedContent(*notebook);
-    if (error != VXCORE_OK) {
-      return error;
-    }
   }
   out_status_json = nlohmann::json{{kJsonKeyInitialized, initialized},
+                                  {kJsonKeyEncryptionInitialized,
+                                   config.value(kJsonKeyEncryptionInitialized, nlohmann::json())},
                                   {kJsonKeyUnlocked, unlocked},
                                   {kJsonKeyEncrypted, encrypted},
                                   {kJsonKeyVaultId, envelope.vault_id}}.dump();

@@ -131,6 +131,8 @@ VXCORE_API VxCoreError vxcore_notebook_list(VxCoreContextHandle context, char **
 VXCORE_API VxCoreError vxcore_notebook_get_config(VxCoreContextHandle context,
                                                   const char *notebook_id, char **out_config_json);
 
+// Normal config edits preserve the persisted encryption marker. Only explicit
+// encryption reconciliation may confirm a legacy notebook as uninitialized.
 VXCORE_API VxCoreError vxcore_notebook_update_config(VxCoreContextHandle context,
                                                      const char *notebook_id,
                                                      const char *config_json);
@@ -144,8 +146,20 @@ VXCORE_API VxCoreError vxcore_notebook_rebuild_cache(VxCoreContextHandle context
 // ============ Portable Notebook Encryption (Bundled Notebooks Only) ============
 typedef struct VxCoreEncryptionSetup_ *VxCoreEncryptionSetupHandle;
 
+// Caller holds maintenance then the notebook IO gate. No KDF or contents scan.
+// A valid existing key persists encryptionInitialized:true, regardless of consent.
+// With no key: unknown requires confirm_uninitialized=true to persist false;
+// false is a no-op; true returns ENCRYPTION_RECOVERY_REQUIRED (restore original key).
+// Unknown without consent returns INVALID_STATE. Read-only is supported only when
+// no write is needed. Writes preserve other config fields and emit config_changed.
+// Never creates, replaces or deletes a key; queries and unlock never migrate markers.
+VXCORE_API VxCoreError vxcore_encryption_reconcile_notebook(
+    VxCoreContextHandle context, const char *notebook_id, bool confirm_uninitialized);
+
 // Synchronous worker operation, outside NotebookIoGate: performs KDF/wrapping and
-// creates no files. A NULL source creates a new vault (nonempty password required).
+// creates no files. Fresh config must explicitly mark encryptionInitialized:false;
+// legacy unknown requires reconciliation first, and true with no key needs recovery.
+// A NULL source creates a new vault (nonempty password required).
 // Otherwise reuse the source's authenticated password envelope and create an
 // independent notebook key; an empty password requires that source already unlocked.
 // Password bytes are borrowed verbatim, never retained/logged; the caller erases them.
@@ -157,9 +171,11 @@ VXCORE_API VxCoreError vxcore_encryption_prepare_notebook(
     VxCoreContextHandle context, const char *notebook_id, const char *source_notebook_id,
     const void *password, size_t password_size, VxCoreEncryptionSetupHandle *out_setup);
 
-// Caller holds the notebook maintenance lease and IO gate. No KDF or callbacks.
-// Rechecks identities, writability and key-file absence, publishes binary Git policy
-// before the key file, then installs authenticated keys. Never replaces an existing
+// Caller holds the notebook maintenance lease and IO gate. No KDF.
+// Rechecks identities, writability, confirmed-false marker and key-file absence.
+// Publishes binary Git policy, then the key, then durable encryptionInitialized:true
+// (emitting config_changed), before installing keys. Marker failure retains the key
+// and returns an error; retry with reconciliation, not setup. Never replaces an existing
 // key file. Consumes an owned handle on success AND failure; foreign/stale handles
 // return INVALID_PARAM without touching another context's state.
 VXCORE_API VxCoreError vxcore_encryption_commit_notebook(
@@ -181,8 +197,12 @@ VXCORE_API VxCoreError vxcore_encryption_unlock_notebook(
 VXCORE_API VxCoreError vxcore_encryption_lock_all(VxCoreContextHandle context);
 
 // Explicit UI/protected-candidate query only; NEVER use on ordinary open/save paths.
-// Returns exactly {initialized,unlocked,encrypted,vaultId}. NULL file_path means
-// encrypted:false. Reads metadata/headers only, never decrypts note contents.
+// Returns {initialized,encryptionInitialized,unlocked,encrypted,vaultId}.
+// initialized means a valid key exists; encryptionInitialized is the persisted
+// boolean or null for legacy unknown. No key with true requires recovery; unknown
+// without a key is queryable but cannot initialize before explicit confirmation.
+// NULL file_path means encrypted:false. Read-only: no migration, writes or contents
+// scan. Reads only notebook config, key and optional candidate metadata/header.
 // Malformed key data or suffix/metadata/header disagreement returns an error.
 // Output is NULL on failure; free success with vxcore_string_free().
 VXCORE_API VxCoreError vxcore_encryption_get_status(

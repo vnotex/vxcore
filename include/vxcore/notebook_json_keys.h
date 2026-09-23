@@ -78,6 +78,8 @@ inline constexpr const char *kJsonKeyName = "name";
 inline constexpr const char *kJsonKeyDescription = "description";
 inline constexpr const char *kJsonKeyAssetsFolder = "assetsFolder";
 inline constexpr const char *kJsonKeyRecycleBinFolder = "recycleBinFolder";
+// Absent means legacy/unknown; true is sticky after key initialization.
+inline constexpr const char *kJsonKeyEncryptionInitialized = "encryptionInitialized";
 inline constexpr const char *kJsonKeyMetadata = "metadata";
 // Optional line-ending override nested in notebook metadata.
 inline constexpr const char *kJsonKeyLineEnding = "lineEnding";

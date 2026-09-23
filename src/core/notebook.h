@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -55,6 +56,8 @@ struct VXCORE_API NotebookConfig {
   std::string sync_backend;
   std::string sync_remote_url;
   bool auto_sync_enabled = true;
+  // Unknown until new-notebook creation or explicit legacy reconciliation.
+  std::optional<bool> encryption_initialized;
 
   NotebookConfig();
 

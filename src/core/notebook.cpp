@@ -1498,6 +1498,10 @@ NotebookConfig::NotebookConfig()
 
 NotebookConfig NotebookConfig::FromJson(const nlohmann::json &json) {
   NotebookConfig config;
+  if (json.contains(kJsonKeyEncryptionInitialized)) {
+    // get<bool>() deliberately rejects every nonboolean, including persisted null.
+    config.encryption_initialized = json.at(kJsonKeyEncryptionInitialized).get<bool>();
+  }
   if (json.contains(kJsonKeyId) && json[kJsonKeyId].is_string()) {
     config.id = json[kJsonKeyId].get<std::string>();
   }
@@ -1574,6 +1578,9 @@ nlohmann::json NotebookConfig::ToJson() const {
   json[kJsonKeySyncBackend] = sync_backend;
   json[kJsonKeySyncRemoteUrl] = sync_remote_url;
   json[kJsonKeyAutoSyncEnabled] = auto_sync_enabled;
+  if (encryption_initialized.has_value()) {
+    json[kJsonKeyEncryptionInitialized] = *encryption_initialized;
+  }
   return json;
 }
 

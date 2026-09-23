@@ -190,6 +190,7 @@ VxCoreError BundledNotebook::Create(const std::string &local_data_folder,
 
 VxCoreError BundledNotebook::InitOnCreation() {
   EnsureId();
+  config_.encryption_initialized = false;
 
   try {
     auto localDataPath = PathFromUtf8(GetLocalDataFolder());
@@ -203,7 +204,7 @@ VxCoreError BundledNotebook::InitOnCreation() {
     return VXCORE_ERR_IO;
   }
 
-  auto err = UpdateConfig(config_);
+  auto err = PersistConfig(config_, true);
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to save bundled notebook config: root=%s, error=%d",
                      root_folder_.c_str(), err);
@@ -353,6 +354,11 @@ VxCoreError BundledNotebook::LoadConfig() {
 }
 
 VxCoreError BundledNotebook::UpdateConfig(const NotebookConfig &config) {
+  return PersistConfig(config, false);
+}
+
+VxCoreError BundledNotebook::PersistConfig(const NotebookConfig &config,
+                                           bool update_encryption_marker) {
   if (CheckWritable() != VXCORE_OK) { return CheckWritable(); }
 
   assert(config_.id == config.id);
@@ -360,7 +366,31 @@ VxCoreError BundledNotebook::UpdateConfig(const NotebookConfig &config) {
   try {
     // Copy before publication: callers may pass config_ itself during creation/tag updates.
     auto candidate = config;
-    auto serialized = candidate.ToJson().dump(2);
+    nlohmann::json persisted = nlohmann::json::object();
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(PathFromUtf8(GetConfigPath()), ec);
+    if (ec || (!exists && !update_encryption_marker)) return VXCORE_ERR_IO;
+    if (exists) {
+      const auto error = LoadJsonFile(PathFromUtf8(GetConfigPath()), persisted);
+      if (error != VXCORE_OK) return error;
+      if (!persisted.is_object() || persisted.value(kJsonKeyId, std::string()) != config_.id) {
+        return VXCORE_ERR_INVALID_STATE;
+      }
+      std::optional<bool> current;
+      if (persisted.contains(kJsonKeyEncryptionInitialized)) {
+        const auto &marker = persisted.at(kJsonKeyEncryptionInitialized);
+        if (!marker.is_boolean()) return VXCORE_ERR_JSON_PARSE;
+        current = marker.get<bool>();
+      }
+      // Even internal tag edits may carry a stale false marker. Ordinary config
+      // edits preserve fresh disk state, including unknown; initialized is sticky.
+      if (!update_encryption_marker || current == true) {
+        candidate.encryption_initialized = current;
+      }
+    }
+    // Preserve unrelated persisted fields, including fields from newer consumers.
+    persisted.update(candidate.ToJson());
+    auto serialized = persisted.dump(2);
 #ifdef _WIN32
     // Preserve the previous text-mode stream's formatting newlines on Windows.
     // JSON string newlines are escaped and must remain untouched.
