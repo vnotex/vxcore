@@ -31,7 +31,7 @@ class WebDavSyncBackend final : public ISyncBackend {
   VxCoreError GetStatus(std::vector<SyncFileInfo> &out_files) override;
   VxCoreError GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) override;
   VxCoreError ResolveConflict(const std::string &path, SyncConflictResolution resolution) override;
-  std::string GetLastError() const;
+  std::string GetLastError() const override;
 
  private:
   struct Impl;
