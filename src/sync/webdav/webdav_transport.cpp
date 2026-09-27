@@ -852,6 +852,7 @@ struct WebDavTransport::Impl {
       WebDavResource resource;
       bool have_href = false, have_type = false, have_etag = false, have_length = false;
       bool have_modified = false, have_status = false, have_propstat = false;
+      uint8_t seen_properties = 0;
       std::string href;
       for (const auto &child : item.children()) {
         if (child.type() != pugi::node_element) continue;
@@ -867,11 +868,14 @@ struct WebDavTransport::Impl {
           have_propstat = true;
           pugi::xml_node properties;
           bool got_status = false;
+          long property_status = 0;
           for (const auto &part : child.children()) {
             if (part.type() != pugi::node_element) continue;
             if (DavNode(part, "status")) {
               std::string status;
-              if (got_status || !TextOnly(part, status) || ParseStatus(status) != 200)
+              if (got_status || !TextOnly(part, status)) return Finish(VXCORE_ERR_INVALID_STATE);
+              property_status = ParseStatus(status);
+              if (property_status != 200 && property_status != 404)
                 return Finish(VXCORE_ERR_INVALID_STATE);
               got_status = true;
             } else if (DavNode(part, "prop")) {
@@ -883,7 +887,15 @@ struct WebDavTransport::Impl {
           if (!got_status || !properties) return Finish(VXCORE_ERR_INVALID_STATE);
           for (const auto &property : properties.children()) {
             if (property.type() != pugi::node_element) continue;
-            if (DavNode(property, "resourcetype")) {
+            const uint8_t property_bit = DavNode(property, "resourcetype")       ? 1
+                                         : DavNode(property, "getetag")          ? 2
+                                         : DavNode(property, "getcontentlength") ? 4
+                                         : DavNode(property, "getlastmodified")  ? 8
+                                                                                 : 0;
+            if (seen_properties & property_bit) return Finish(VXCORE_ERR_INVALID_STATE);
+            seen_properties |= property_bit;
+            if (property_status == 404) continue;
+            if (property_bit == 1) {
               if (have_type) return Finish(VXCORE_ERR_INVALID_STATE);
               have_type = true;
               bool collection = false;
@@ -895,17 +907,17 @@ struct WebDavTransport::Impl {
               }
               resource.kind =
                   collection ? WebDavResourceKind::kCollection : WebDavResourceKind::kFile;
-            } else if (DavNode(property, "getetag")) {
+            } else if (property_bit == 2) {
               if (have_etag || !TextOnly(property, resource.etag))
                 return Finish(VXCORE_ERR_INVALID_STATE);
               have_etag = true;
-            } else if (DavNode(property, "getcontentlength")) {
+            } else if (property_bit == 4) {
               std::string length;
               if (have_length || !TextOnly(property, length) ||
                   !ParseUnsigned(length, resource.size))
                 return Finish(VXCORE_ERR_INVALID_STATE);
               have_length = true;
-            } else if (DavNode(property, "getlastmodified")) {
+            } else if (property_bit == 8) {
               std::string modified;
               if (have_modified || !TextOnly(property, modified))
                 return Finish(VXCORE_ERR_INVALID_STATE);

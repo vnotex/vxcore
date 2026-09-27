@@ -237,6 +237,153 @@ int TestNamesNamespacesAndCompleteListing() {
   return 0;
 }
 
+int TestPropertyStatusHandling() {
+  ASSERT_TRUE(Control({{"action", "reset"}}));
+  ASSERT_TRUE(Control({{"action", "put"}, {"path", "note"}, {"text", "x"}}));
+  WebDavTransport transport(RootUrl(), Credentials(), nullptr);
+  const auto root = ResponseXml("/notebook/", true);
+  const auto file = ResponseXml("/notebook/note");
+  const std::string collection_type =
+      "<q:propstat><q:prop><q:resourcetype><q:collection/></q:resourcetype>"
+      "</q:prop><q:status>HTTP/1.1 200 OK</q:status></q:propstat>";
+  const std::string collection_metadata =
+      "<q:propstat><q:prop><q:resourcetype><q:collection/></q:resourcetype>"
+      "<q:getetag>&quot;collection-version&quot;</q:getetag>"
+      "<q:getlastmodified>Wed, 21 Oct 2015 07:28:00 GMT</q:getlastmodified>"
+      "</q:prop><q:status>HTTP/1.1 200 OK</q:status></q:propstat>";
+  const std::string missing_length =
+      "<q:propstat><q:prop><q:getcontentlength/></q:prop>"
+      "<q:status>HTTP/1.1 404 Not Found</q:status></q:propstat>";
+  for (const bool missing_first : {false, true}) {
+    const auto collection = "<q:response><q:href>/notebook/</q:href>" +
+                            (missing_first ? missing_length + collection_metadata
+                                           : collection_metadata + missing_length) +
+                            "</q:response>";
+    ASSERT_TRUE(XmlFault(Multistatus(collection)));
+    WebDavResource resource;
+    ASSERT_EQ(transport.Stat("", resource), VXCORE_OK);
+    ASSERT_TRUE(resource.kind == WebDavResourceKind::kCollection);
+    ASSERT_EQ(resource.etag, "\"collection-version\"");
+    ASSERT_EQ(resource.size, uint64_t(0));
+    ASSERT_EQ(resource.modified_utc, int64_t(1445412480000));
+
+    ASSERT_TRUE(XmlFault(Multistatus(collection + file)));
+    std::vector<WebDavResource> resources;
+    ASSERT_EQ(transport.List(resources), VXCORE_OK);
+    ASSERT_EQ(resources.size(), size_t(2));
+    bool saw_root = false, saw_file = false;
+    for (const auto &entry : resources) {
+      if (entry.path.empty()) {
+        saw_root = true;
+        ASSERT_TRUE(entry.kind == WebDavResourceKind::kCollection);
+        ASSERT_EQ(entry.etag, "\"collection-version\"");
+        ASSERT_EQ(entry.modified_utc, int64_t(1445412480000));
+      } else {
+        ASSERT_EQ(entry.path, "note");
+        saw_file = true;
+        ASSERT_TRUE(entry.kind == WebDavResourceKind::kFile);
+        ASSERT_EQ(entry.etag, "\"version\"");
+        ASSERT_EQ(entry.size, uint64_t(1));
+      }
+    }
+    ASSERT_TRUE(saw_root && saw_file);
+  }
+
+  // Failed properties carry plausible values, but none may populate the result.
+  const std::string missing_optional =
+      "<q:propstat><q:prop><q:getetag>&quot;ignored&quot;</q:getetag>"
+      "<q:getcontentlength>123</q:getcontentlength>"
+      "<q:getlastmodified>Wed, 21 Oct 2015 07:28:00 GMT</q:getlastmodified>"
+      "</q:prop><q:status>HTTP/1.1 404 Not Found</q:status></q:propstat>";
+  ASSERT_TRUE(XmlFault(Multistatus("<q:response><q:href>/notebook/</q:href>" + missing_optional +
+                                   collection_type + "</q:response>")));
+  WebDavResource resource;
+  ASSERT_EQ(transport.Stat("", resource), VXCORE_OK);
+  ASSERT_TRUE(resource.kind == WebDavResourceKind::kCollection);
+  ASSERT_TRUE(resource.etag.empty());
+  ASSERT_EQ(resource.size, uint64_t(0));
+  ASSERT_EQ(resource.modified_utc, int64_t(0));
+
+  const std::string file_metadata =
+      "<q:propstat><q:prop><q:resourcetype/><q:getetag>&quot;version&quot;</q:getetag>"
+      "<q:getcontentlength>1</q:getcontentlength></q:prop>"
+      "<q:status>HTTP/1.1 200 OK</q:status></q:propstat>";
+  const std::string missing_modified =
+      "<q:propstat><q:prop><q:getlastmodified>Wed, 21 Oct 2015 07:28:00 GMT</q:getlastmodified>"
+      "</q:prop><q:status>HTTP/1.1 404 Not Found</q:status></q:propstat>";
+  ASSERT_TRUE(XmlFault(Multistatus("<q:response><q:href>/notebook/note</q:href>" + file_metadata +
+                                   missing_modified + "</q:response>"),
+                       "note"));
+  ASSERT_EQ(transport.Stat("note", resource), VXCORE_OK);
+  ASSERT_EQ(resource.path, "note");
+  ASSERT_TRUE(resource.kind == WebDavResourceKind::kFile);
+  ASSERT_EQ(resource.etag, "\"version\"");
+  ASSERT_EQ(resource.size, uint64_t(1));
+  ASSERT_EQ(resource.modified_utc, int64_t(0));
+
+  const std::string successful_length =
+      "<q:propstat><q:prop><q:getcontentlength>1</q:getcontentlength></q:prop>"
+      "<q:status>HTTP/1.1 200 OK</q:status></q:propstat>";
+  const std::string missing_aliased_length =
+      "<q:propstat xmlns:d=\"DAV:\"><q:prop><d:getcontentlength/></q:prop>"
+      "<q:status>HTTP/1.1 404 Not Found</q:status></q:propstat>";
+  struct Failure {
+    const char *name;
+    std::string groups;
+    VxCoreError error = VXCORE_ERR_INVALID_STATE;
+  };
+  const std::vector<Failure> failures{
+      {"missing resource type",
+       "<q:propstat><q:prop><q:resourcetype><q:collection/></q:resourcetype></q:prop>"
+       "<q:status>HTTP/1.1 404 Not Found</q:status></q:propstat>"},
+      {"missing file length",
+       "<q:propstat><q:prop><q:resourcetype/><q:getetag>&quot;version&quot;</q:getetag>"
+       "</q:prop><q:status>HTTP/1.1 200 OK</q:status></q:propstat>" +
+           missing_length},
+      {"missing file etag",
+       "<q:propstat><q:prop><q:resourcetype/><q:getcontentlength>1</q:getcontentlength>"
+       "</q:prop><q:status>HTTP/1.1 200 OK</q:status></q:propstat>"
+       "<q:propstat><q:prop><q:getetag>&quot;ignored&quot;</q:getetag></q:prop>"
+       "<q:status>HTTP/1.1 404 Not Found</q:status></q:propstat>",
+       VXCORE_ERR_UNSUPPORTED},
+      {"forbidden optional property",
+       collection_type + "<q:propstat><q:prop><q:getcontentlength/></q:prop>"
+                         "<q:status>HTTP/1.1 403 Forbidden</q:status></q:propstat>"},
+      {"failed optional property",
+       collection_type + "<q:propstat><q:prop><q:getcontentlength/></q:prop>"
+                         "<q:status>HTTP/1.1 500 Internal Server Error</q:status></q:propstat>"},
+      {"malformed status", collection_type + "<q:propstat><q:prop><q:getcontentlength/></q:prop>"
+                                             "<q:status>404 Not Found</q:status></q:propstat>"},
+      {"missing status",
+       collection_type + "<q:propstat><q:prop><q:getcontentlength/></q:prop></q:propstat>"},
+      {"duplicate status", collection_type +
+                               "<q:propstat><q:prop><q:getcontentlength/></q:prop>"
+                               "<q:status>HTTP/1.1 404 Not Found</q:status>"
+                               "<q:status>HTTP/1.1 404 Not Found</q:status></q:propstat>"},
+      {"missing prop",
+       collection_type + "<q:propstat><q:status>HTTP/1.1 404 Not Found</q:status></q:propstat>"},
+      {"duplicate prop", collection_type +
+                             "<q:propstat><q:prop><q:getcontentlength/></q:prop><q:prop/>"
+                             "<q:status>HTTP/1.1 404 Not Found</q:status></q:propstat>"},
+      {"duplicate successful property", collection_type + successful_length + successful_length},
+      {"duplicate missing property", collection_type + missing_length + missing_aliased_length},
+      {"successful then missing property",
+       collection_type + successful_length + missing_aliased_length},
+      {"missing then successful property",
+       collection_type + missing_aliased_length + successful_length}};
+  for (const auto &failure : failures) {
+    std::cout << "  Property status: " << failure.name << '\n';
+    ASSERT_TRUE(
+        XmlFault(Multistatus(root + file + "<q:response><q:href>/notebook/invalid</q:href>" +
+                             failure.groups + "</q:response>")));
+    std::vector<WebDavResource> resources(1);
+    resources.front().path = "previous-listing";
+    ASSERT_EQ(transport.List(resources), failure.error);
+    ASSERT_TRUE(resources.empty());
+  }
+  return 0;
+}
+
 int TestConditionalFileOperations() {
   ASSERT_TRUE(Control({{"action", "reset"}}));
   LocalDirectory directory;
@@ -638,6 +785,7 @@ int main() {
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK || sodium_init() < 0) return 1;
   RUN_TEST(TestAuthenticationAndTls);
   RUN_TEST(TestNamesNamespacesAndCompleteListing);
+  RUN_TEST(TestPropertyStatusHandling);
   RUN_TEST(TestConditionalFileOperations);
   RUN_TEST(TestMutationRaceAndLostAcknowledgement);
   RUN_TEST(TestReadRedirectsAndWriteRefusal);
