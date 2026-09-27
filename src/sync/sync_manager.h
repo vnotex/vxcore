@@ -160,6 +160,23 @@ class SyncManager {
   VXCORE_API VxCoreError NetworkPhaseOnly(const std::string &notebook_id,
                                           SyncCancellationPtr cancellation);
 
+  // Query backend feature bits without invoking it under state_mutex_.
+  // The output is reset to zero before notebook/backend validation.
+  VXCORE_API VxCoreError GetCapabilities(const std::string &notebook_id,
+                                         SyncCapabilities &out_capabilities);
+
+  // Install staged local changes under the consumer's per-notebook IO gate.
+  // Does not emit lifecycle events, clear dirty state, or stamp last-sync time.
+  // Changed paths are retained on failure so the consumer can refresh them.
+  VXCORE_API VxCoreError ApplyPhaseOnly(const std::string &notebook_id,
+                                        SyncCancellationPtr cancellation,
+                                        const std::vector<std::string> &protected_paths,
+                                        std::vector<std::string> &out_changed_paths);
+
+  // Caller owns the metadata DB thread. Refresh partial installs before retiring the phase;
+  // only successful apply + refresh can clear the captured dirty generation.
+  VXCORE_API VxCoreError RefreshNotebookAfterSync(const std::string &notebook_id);
+
   VXCORE_API VxCoreError GetSyncStatus(const std::string &notebook_id, SyncState &out_state,
                             std::vector<SyncFileInfo> &out_files);
 
@@ -231,6 +248,9 @@ class SyncManager {
   // persistent VXCORE_ERR_SYNC_IN_PROGRESS on every Sync Now click.
   VXCORE_API bool IsRegistered(const std::string &notebook_id) const;
 
+  // Consumed by the C wrapper on the operation thread; key is notebook ID or clone target.
+  std::string TakeLastError(const std::string &operation_key);
+
   // Task 7.4 (F3.6): authoritative "last successful sync timestamp" accessor
   // (milliseconds since Unix epoch, UTC). Reads the per-device value from the
   // notebook's metadata.db via Notebook::GetLastSyncUtc. Returns 0 when the
@@ -272,6 +292,8 @@ class SyncManager {
   }
 
  private:
+  VxCoreError CaptureBackendError(const std::string &operation_key, const ISyncBackend &backend,
+                                  VxCoreError result);
   VxCoreError ValidateNotebook(const std::string &notebook_id);
 
   // Shared implementation for EnableSync overloads. Wave 6.3 F4.4 collapsed
@@ -310,7 +332,17 @@ class SyncManager {
   EventManager *event_manager_ = nullptr;
   WorkQueueManager *work_queue_manager_ = nullptr;
   std::unordered_map<std::string, std::unique_ptr<ISyncBackend>> backends_;
+  std::unordered_map<std::string, std::string> last_errors_;
   std::unordered_map<std::string, SyncState> states_;
+  struct DeferredApplyState {
+    uint64_t revision = 0;
+    bool has_revision = false;
+    bool applied = false;
+    bool metadata_changed = false;
+    VxCoreError result = VXCORE_ERR_INVALID_STATE;
+    SyncCancellationPtr cancellation;
+  };
+  std::unordered_map<std::string, DeferredApplyState> deferred_phases_;
   // Task 7.5 (F3.2): SyncConfig cache. Authoritative store is the per-notebook
   // NotebookConfig sync_* fields on disk (written by the Qt SyncService
   // layer); this map is a read-through cache populated lazily by
@@ -328,8 +360,8 @@ class SyncManager {
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_enqueue_time_;
   std::vector<uint64_t> event_listener_ids_;
 
-  // Wave 10.1 (F2.4 part 2): coarse mutex guarding the three runtime maps —
-  // configs_cache_, states_, backends_. Single mutex (no per-member locks,
+  // Coarse mutex guarding configs_cache_, states_, backends_, and
+  // deferred_phases_. Single mutex (no per-member locks,
   // no recursive_mutex). Wave 0.5 contract: NEVER hold this lock across any
   // external invocation (hook, signal, libgit2 progress callback, credential
   // provider call, work-queue dispatch, backend method call). Standard

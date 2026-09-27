@@ -2,6 +2,7 @@
 #define VXCORE_NOTEBOOK_H
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
@@ -307,11 +308,16 @@ class Notebook {
   void SetReadOnly(bool read_only) noexcept;
   bool IsReadOnly() const noexcept;
 
+  // Runtime-only reservation. Callers drain existing writers before setting it.
+  void SetSyncApplyInProgress(bool active) noexcept;
+  bool IsSyncApplyInProgress() const noexcept;
+
   // Cached runtime recovery interlock, independent of the user's read-only setting.
   // Callers serialize changes with the notebook maintenance/IO lease.
   VxCoreError CheckWritable() const noexcept {
-    return encryption_recovery_required_ ? VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED
-                                         : (read_only_ ? VXCORE_ERR_READ_ONLY : VXCORE_OK);
+    if (encryption_recovery_required_) return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+    if (read_only_) return VXCORE_ERR_READ_ONLY;
+    return IsSyncApplyInProgress() ? VXCORE_ERR_SYNC_IN_PROGRESS : VXCORE_OK;
   }
   bool IsEncryptionRecoveryRequired() const noexcept { return encryption_recovery_required_; }
   void SetEncryptionRecoveryRequired(bool required) noexcept {
@@ -379,6 +385,7 @@ class Notebook {
   EventManager *event_manager_ = nullptr;
   bool read_only_ = false;
   bool encryption_recovery_required_ = false;
+  std::atomic<bool> sync_apply_in_progress_{false};
   // The sparse session registry retains this owner across Close(), so live key
   // leases cannot disappear from Lock All preflight when a notebook is closed.
   std::shared_ptr<NotebookEncryption> encryption_;

@@ -36,7 +36,7 @@
 #include "event_names.h"
 #include "metadata_store.h"
 #include "notebook_manager.h"
-#include "sync/git/git_conflict_resolver.h"
+#include "sync/sync_encryption_guard.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -141,8 +141,7 @@ class BundleNotebook final : public Notebook {
 
 VxCoreError ValidateTransferEnvelope(Notebook *notebook,
                                      const NotebookEncryption::KeyEnvelope &expected) {
-  auto error = GitConflictResolver::CheckEncryptionKeyConflict(
-      ConcatenatePaths(notebook->GetMetadataFolder(), "vx_sync"));
+  auto error = CheckNotebookEncryptionSyncState(notebook->GetMetadataFolder());
   if (error != VXCORE_OK) return error;
   NotebookEncryption::KeyEnvelope current;
   error = NotebookEncryption::ReadKeyEnvelope(
@@ -2676,6 +2675,7 @@ VxCoreError NodeTransfer::Recover(Notebook *notebook, int *out_recovered_count) 
   if (!notebook || notebook->GetType() != NotebookType::Bundled) {
     return VXCORE_ERR_UNSUPPORTED;
   }
+  if (notebook->IsSyncApplyInProgress()) return notebook->CheckWritable();
   auto *manager = dynamic_cast<BundledFolderManager *>(notebook->GetFolderManager());
   if (!manager) {
     return VXCORE_ERR_INVALID_STATE;

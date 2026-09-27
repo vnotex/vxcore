@@ -20,6 +20,8 @@ class BundledNotebook : public Notebook {
 
   VxCoreError UpdateConfig(const NotebookConfig &config) override;
   VxCoreError RebuildCache() override;
+  // Caller owns the apply reservation and metadata DB thread; never rewrites config files.
+  VxCoreError ReloadAfterSync();
 
   std::string GetRecycleBinPath() const override;
   VxCoreError EmptyRecycleBin() override;

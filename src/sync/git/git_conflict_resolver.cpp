@@ -159,6 +159,7 @@ VxCoreError GitConflictResolver::GetConflicts(std::vector<SyncConflictInfo> &out
     // of rename/delete-modify conflicts, including the notebook key envelope.
     info.is_binary = IsEncryptedEntry(ancestor) || IsEncryptedEntry(our) ||
                      IsEncryptedEntry(their);
+    info.can_keep_both = !info.is_binary;
     for (const auto *entry : {our, their, ancestor}) {
       if (info.is_binary) break;
       if (!entry) continue;

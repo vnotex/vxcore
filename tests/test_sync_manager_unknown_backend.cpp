@@ -50,7 +50,9 @@ int test_unknown_backend_returns_error() {
 
   // Enable with unknown backend (should fail with VXCORE_ERR_UNKNOWN_BACKEND)
   // This is the fail-fast check, so it should fire BEFORE the init check
-  err = vxcore_sync_enable(ctx, notebook_id, "{\"backend\":\"webdav\",\"remoteUrl\":\"test://repo\"}", nullptr);
+  err = vxcore_sync_enable(
+      ctx, notebook_id, "{\"backend\":\"unsupported-test-backend\",\"remoteUrl\":\"test://repo\"}",
+      nullptr);
   ASSERT_EQ(err, VXCORE_ERR_UNKNOWN_BACKEND);
 
   vxcore_string_free(notebook_id);

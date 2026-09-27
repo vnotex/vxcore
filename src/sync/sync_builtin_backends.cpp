@@ -14,6 +14,7 @@
 #include "sync/sync_backend.h"
 #include "sync/sync_backend_registry.h"
 #include "sync/sync_types.h"
+#include "sync/webdav/webdav_sync_backend.h"
 
 namespace vxcore {
 
@@ -24,10 +25,16 @@ std::unique_ptr<ISyncBackend> MakeGitSyncBackend(
   return std::make_unique<GitSyncBackend>(cfg, std::move(provider));
 }
 
+std::unique_ptr<ISyncBackend> MakeWebDavSyncBackend(const SyncConfig &cfg,
+                                                    std::shared_ptr<ICredentialProvider> provider) {
+  return std::make_unique<WebDavSyncBackend>(cfg, std::move(provider));
+}
+
 }  // namespace
 
 void RegisterBuiltinBackends(SyncBackendRegistry &registry) {
   registry.Register("git", &MakeGitSyncBackend);
+  registry.Register("webdav", &MakeWebDavSyncBackend);
 }
 
 }  // namespace vxcore

@@ -237,8 +237,8 @@ VxCoreError Buffer::WriteBackup() {
   if (is_virtual_) {
     return VXCORE_OK;
   }
-  if (notebook_ && notebook_->IsEncryptionRecoveryRequired()) {
-    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+  if (notebook_ && notebook_->CheckWritable() != VXCORE_OK) {
+    return notebook_->CheckWritable();
   }
 
   if (!content_loaded_) {
@@ -306,8 +306,8 @@ VxCoreError Buffer::RecoverBackup() {
   if (is_virtual_) {
     return VXCORE_OK;
   }
-  if (notebook_ && notebook_->IsEncryptionRecoveryRequired()) {
-    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+  if (notebook_ && notebook_->CheckWritable() != VXCORE_OK) {
+    return notebook_->CheckWritable();
   }
 
   if (is_encrypted_) {
@@ -402,7 +402,7 @@ VxCoreError Buffer::RecoverBackup() {
 }
 
 void Buffer::DiscardBackup() {
-  if (is_virtual_ || (notebook_ && notebook_->IsEncryptionRecoveryRequired())) {
+  if (is_virtual_ || (notebook_ && notebook_->CheckWritable() != VXCORE_OK)) {
     return;
   }
 
@@ -531,8 +531,8 @@ VxCoreError Buffer::SaveContent(const std::string &full_path) {
   if (is_virtual_) {
     return VXCORE_OK;
   }
-  if (notebook_ && notebook_->IsEncryptionRecoveryRequired()) {
-    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+  if (notebook_ && notebook_->CheckWritable() != VXCORE_OK) {
+    return notebook_->CheckWritable();
   }
 
   if (is_encrypted_) {

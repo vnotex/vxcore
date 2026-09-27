@@ -584,6 +584,16 @@ VxCoreError AtomicFileWriter::Open() {
       temp_path_ += PathFromUtf8(".tmp-" + std::to_string(process_id) + "-" +
                                 std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
 #ifdef _WIN32
+      // The destination can fit MAX_PATH while our exclusive temporary sibling does not.
+      // Extend only the internal temporary path; preserve normal destination semantics.
+      const auto absolute_temp =
+          std::filesystem::absolute(temp_path_).lexically_normal().make_preferred();
+      const auto &native_temp = absolute_temp.native();
+      if (native_temp.size() >= MAX_PATH && native_temp.compare(0, 4, L"\\\\?\\") != 0) {
+        temp_path_ = native_temp.compare(0, 2, L"\\\\") == 0
+                         ? std::filesystem::path(L"\\\\?\\UNC\\" + native_temp.substr(2))
+                         : std::filesystem::path(L"\\\\?\\" + native_temp);
+      }
       const int fd = _wopen(temp_path_.c_str(),
                            _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT,
                            _S_IREAD | _S_IWRITE);

@@ -51,6 +51,7 @@ struct SyncConflictInfo {
   int64_t local_modified_utc = 0;
   int64_t remote_modified_utc = 0;
   bool is_binary = false;
+  bool can_keep_both = true;
 };
 
 struct SyncConfig {

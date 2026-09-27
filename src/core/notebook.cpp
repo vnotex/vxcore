@@ -1822,6 +1822,14 @@ bool Notebook::IsReadOnly() const noexcept {
   return read_only_;
 }
 
+void Notebook::SetSyncApplyInProgress(bool active) noexcept {
+  sync_apply_in_progress_.store(active, std::memory_order_release);
+}
+
+bool Notebook::IsSyncApplyInProgress() const noexcept {
+  return sync_apply_in_progress_.load(std::memory_order_acquire);
+}
+
 void Notebook::Close() {
   VXCORE_LOG_INFO("Closing notebook: id=%s", config_.id.c_str());
 

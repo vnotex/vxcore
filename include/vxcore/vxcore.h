@@ -1578,6 +1578,51 @@ VXCORE_API VxCoreError vxcore_sync_network_phase(VxCoreContextHandle context,
                                                  const char *notebook_id,
                                                  VxCoreSyncCancellation *token);
 
+// Get the registered backend's feature bitmask (SyncCapability in sync_backend.h):
+// conflict detection/resolution = bits 0/1, incremental sync = bit 2,
+// auth required = bit 3, cancellation = bit 4, progress = bit 5,
+// clone = bit 6, deferred local apply = bit 7.
+// out_capabilities is required and initialized to zero before validation.
+VXCORE_API VxCoreError vxcore_sync_get_capabilities(VxCoreContextHandle context,
+                                                    const char *notebook_id,
+                                                    uint32_t *out_capabilities);
+
+// Install the deferred local transaction after a successful network phase.
+// The caller must serialize local mutations with its notebook IO gate.
+// Backends without a deferred transaction return success with an empty array.
+// protected_paths_json is an array of notebook-relative UTF-8 paths, or NULL
+// for an empty list. Paths use '/' separators and may not contain empty, '.',
+// '..', absolute, drive/UNC, backslash, NUL, or native-invalid components.
+// Invalid JSON, non-string entries and unsafe paths return INVALID_PARAM.
+// out_changed_paths_json is required and initialized to NULL before validation.
+// After dispatch it contains a JSON array, including on a failed partial apply.
+// Free it with vxcore_string_free(), even when the returned error is nonzero.
+// Cancellation lifetime is identical to vxcore_sync_stage_only; a token already
+// cancelled before dispatch prevents local installation.
+// This phase does not emit lifecycle events or update last-sync metadata.
+VXCORE_API VxCoreError vxcore_sync_apply_phase(VxCoreContextHandle context, const char *notebook_id,
+                                               VxCoreSyncCancellation *token,
+                                               const char *protected_paths_json,
+                                               char **out_changed_paths_json);
+
+// Runtime-only reservation for bundled notebooks; active must be 0 or 1.
+// Callers first drain already-running writers, then serialize apply with their IO gate.
+// Clearing is idempotent and never changes the persisted read-only setting.
+VXCORE_API VxCoreError vxcore_sync_set_apply_in_progress(VxCoreContextHandle context,
+                                                         const char *notebook_id, int active);
+
+// Network-free metadata refresh/finalization on the metadata DB owner thread, while
+// the apply reservation is held. Refreshes partial installs too, preserving their error.
+// Does not emit lifecycle events or update the last-sync timestamp.
+VXCORE_API VxCoreError vxcore_sync_refresh_notebook(VxCoreContextHandle context,
+                                                    const char *notebook_id);
+
+// Local read-only retirement preflight; works with runtime sync disabled.
+// Refuses unresolved Git index/rebase state and WebDAV conflicts/pending recovery.
+// Caller serializes lifecycle changes and restores an interrupted archive first.
+VXCORE_API VxCoreError vxcore_sync_check_reconfiguration(VxCoreContextHandle context,
+                                                         const char *notebook_id);
+
 // Get sync status for a notebook.
 // out_status_json: JSON output: {"state":"idle","files":[{"path":"...","status":"modified_local"}]}
 // Caller must free with vxcore_string_free().
@@ -1586,7 +1631,8 @@ VXCORE_API VxCoreError vxcore_sync_get_status(VxCoreContextHandle context, const
 
 // Get unresolved sync conflicts.
 // out_conflicts_json: JSON output:
-// {"conflicts":[{"path":"...","localModifiedUtc":123,"remoteModifiedUtc":456,"isBinary":false}]}
+// {"conflicts":[{"path":"...","localModifiedUtc":123,"remoteModifiedUtc":456,
+//               "isBinary":false,"canKeepBoth":true}]}
 // Caller must free with vxcore_string_free().
 VXCORE_API VxCoreError vxcore_sync_get_conflicts(VxCoreContextHandle context,
                                                  const char *notebook_id,

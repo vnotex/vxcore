@@ -1,4 +1,5 @@
 #include <nlohmann/json.hpp>
+#include <string_view>
 
 #include "api/api_utils.h"
 #include "core/context.h"
@@ -6,6 +7,7 @@
 #include "core/notebook_manager.h"
 #include "sync/credential_provider.h"
 #include "sync/sync_cancellation.h"
+#include "sync/sync_encryption_guard.h"
 #include "sync/sync_json_keys.h"
 #include "sync/sync_manager.h"
 #include "sync/sync_types.h"
@@ -18,6 +20,16 @@
 struct VxCoreSyncCancellation_ {
   vxcore::SyncCancellationPtr ptr;
 };
+
+// Backend diagnostics contain no credentials or remote bodies. Keep the existing C error API.
+static VxCoreError SyncResult(vxcore::VxCoreContext *ctx, const std::string &operation_key,
+                              VxCoreError result) {
+  auto message = ctx->sync_manager->TakeLastError(operation_key);
+  if (result != VXCORE_OK) {
+    ctx->last_error = message.empty() ? vxcore_error_message(result) : std::move(message);
+  }
+  return result;
+}
 
 static const char *SyncStateToString(vxcore::SyncState state) {
   switch (state) {
@@ -47,12 +59,11 @@ static const char *SyncFileStatusToString(vxcore::SyncFileStatus status) {
   return "unknown";
 }
 
-// Parse credentials_json into a vxcore::SyncCredentials. All fields optional;
-// missing or non-string fields become empty strings. Throws nlohmann::json::exception
-// on malformed JSON (caught by callers).
-static vxcore::SyncCredentials ParseCredentials(const char *credentials_json) {
-  vxcore::SyncCredentials creds;
-  auto j = nlohmann::json::parse(credentials_json);
+// Credential parse errors must never carry input bytes in exception diagnostics.
+// Optional field and author semantics are shared by enable, rotation and clone.
+static bool ParseCredentials(const char *credentials_json, vxcore::SyncCredentials &creds) {
+  auto j = nlohmann::json::parse(credentials_json, nullptr, false);
+  if (j.is_discarded() || !j.is_object()) return false;
   if (j.contains(vxcore::kJsonKeyPat) && j[vxcore::kJsonKeyPat].is_string()) {
     creds.personal_access_token = j[vxcore::kJsonKeyPat].get<std::string>();
   }
@@ -65,7 +76,63 @@ static vxcore::SyncCredentials ParseCredentials(const char *credentials_json) {
   if (j.contains(vxcore::kJsonKeyExtra) && j[vxcore::kJsonKeyExtra].is_object()) {
     creds.extra = j[vxcore::kJsonKeyExtra];
   }
-  return creds;
+  return true;
+}
+
+// Paths in this API are decoded UTF-8 filesystem names, never URLs. Do not
+// normalize them: aliases such as a/../b must be rejected, not silently changed.
+static bool IsSafeSyncRelativePath(const std::string &path) {
+  if (path.empty() || path.front() == '/' || path.find('\\') != std::string::npos ||
+      path.find(':') != std::string::npos || path.find('\0') != std::string::npos) {
+    return false;
+  }
+  const std::string_view value(path);
+  for (size_t begin = 0; begin <= value.size();) {
+    const size_t end = value.find('/', begin);
+    const auto part = value.substr(begin, end == std::string_view::npos ? end : end - begin);
+    if (part.empty() || part == "." || part == "..") return false;
+#ifdef _WIN32
+    if (part.back() == '.' || part.back() == ' ') return false;
+    for (unsigned char ch : part) {
+      if (ch < 32 || ch == '<' || ch == '>' || ch == '"' || ch == '|' || ch == '?' || ch == '*') {
+        return false;
+      }
+    }
+    const auto stem = part.substr(0, part.find('.'));
+    const auto equals_ascii = [stem](std::string_view name) {
+      if (stem.size() != name.size()) return false;
+      for (size_t i = 0; i < stem.size(); ++i) {
+        char ch = stem[i];
+        if (ch >= 'a' && ch <= 'z') ch -= 'a' - 'A';
+        if (ch != name[i]) return false;
+      }
+      return true;
+    };
+    if (equals_ascii("CON") || equals_ascii("PRN") || equals_ascii("AUX") || equals_ascii("NUL") ||
+        equals_ascii("CONIN$") || equals_ascii("CONOUT$")) {
+      return false;
+    }
+    // COM/LPT device names also recognize the superscript 1, 2 and 3 digits.
+    if (stem.size() >= 4) {
+      const auto prefix = stem.substr(0, 3);
+      const bool device = (prefix[0] == 'C' || prefix[0] == 'c') &&
+                          (prefix[1] == 'O' || prefix[1] == 'o') &&
+                          (prefix[2] == 'M' || prefix[2] == 'm');
+      const bool printer = (prefix[0] == 'L' || prefix[0] == 'l') &&
+                           (prefix[1] == 'P' || prefix[1] == 'p') &&
+                           (prefix[2] == 'T' || prefix[2] == 't');
+      const auto suffix = stem.substr(3);
+      if ((device || printer) &&
+          ((suffix.size() == 1 && suffix[0] >= '1' && suffix[0] <= '9') || suffix == "\xc2\xb9" ||
+           suffix == "\xc2\xb2" || suffix == "\xc2\xb3")) {
+        return false;
+      }
+    }
+#endif
+    if (end == std::string_view::npos) break;
+    begin = end + 1;
+  }
+  return true;
 }
 
 VXCORE_API VxCoreError vxcore_sync_enable(VxCoreContextHandle context, const char *notebook_id,
@@ -96,14 +163,19 @@ VXCORE_API VxCoreError vxcore_sync_enable(VxCoreContextHandle context, const cha
     // behaviour.
     std::shared_ptr<vxcore::ICredentialProvider> provider;
     if (credentials_json != nullptr) {
-      vxcore::SyncCredentials creds = ParseCredentials(credentials_json);
+      vxcore::SyncCredentials creds;
+      if (!ParseCredentials(credentials_json, creds)) {
+        ctx->last_error = "Invalid synchronization credentials";
+        return VXCORE_ERR_JSON_PARSE;
+      }
       provider =
           std::make_shared<vxcore::InMemoryCredentialProvider>(std::move(creds));
     } else {
       provider = std::make_shared<vxcore::NoOpCredentialProvider>();
     }
 
-    return ctx->sync_manager->EnableSync(notebook_id, config, std::move(provider));
+    return SyncResult(ctx, notebook_id,
+                      ctx->sync_manager->EnableSync(notebook_id, config, std::move(provider)));
   } catch (const nlohmann::json::exception &e) {
     ctx->last_error = e.what();
     return VXCORE_ERR_JSON_PARSE;
@@ -176,7 +248,7 @@ VXCORE_API VxCoreError vxcore_sync_trigger(VxCoreContextHandle context, const ch
       return VXCORE_ERR_UNKNOWN;
     }
 
-    return ctx->sync_manager->TriggerSync(notebook_id);
+    return SyncResult(ctx, notebook_id, ctx->sync_manager->TriggerSync(notebook_id));
   } catch (const std::exception &e) {
     ctx->last_error = e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -232,7 +304,8 @@ VXCORE_API VxCoreError vxcore_sync_trigger_cancellable(VxCoreContextHandle conte
     // forward the shared_ptr (copy, so the C handle stays free to outlive
     // this call — pipelines snapshot internally).
     vxcore::SyncCancellationPtr ptr = (token != nullptr) ? token->ptr : nullptr;
-    return ctx->sync_manager->TriggerSync(notebook_id, std::move(ptr));
+    return SyncResult(ctx, notebook_id,
+                      ctx->sync_manager->TriggerSync(notebook_id, std::move(ptr)));
   } catch (const std::exception &e) {
     ctx->last_error = e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -268,7 +341,7 @@ VXCORE_API VxCoreError vxcore_sync_stage_only(VxCoreContextHandle context,
     if (out_did_commit != nullptr) {
       *out_did_commit = did_commit ? 1 : 0;
     }
-    return err;
+    return SyncResult(ctx, notebook_id, err);
   } catch (const std::exception &e) {
     ctx->last_error = e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -294,13 +367,154 @@ VXCORE_API VxCoreError vxcore_sync_network_phase(VxCoreContextHandle context,
     }
 
     vxcore::SyncCancellationPtr ptr = (token != nullptr) ? token->ptr : nullptr;
-    return ctx->sync_manager->NetworkPhaseOnly(notebook_id, std::move(ptr));
+    return SyncResult(ctx, notebook_id,
+                      ctx->sync_manager->NetworkPhaseOnly(notebook_id, std::move(ptr)));
   } catch (const std::exception &e) {
     ctx->last_error = e.what();
     return VXCORE_ERR_UNKNOWN;
   } catch (...) {
     ctx->last_error = "Unknown error running network-phase sync";
     return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_sync_get_capabilities(VxCoreContextHandle context,
+                                                    const char *notebook_id,
+                                                    uint32_t *out_capabilities) {
+  if (out_capabilities) *out_capabilities = 0;
+  if (!context || !notebook_id || !out_capabilities) return VXCORE_ERR_NULL_POINTER;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    if (!ctx->sync_manager) {
+      ctx->last_error = "Sync manager not initialized";
+      return VXCORE_ERR_UNKNOWN;
+    }
+    return SyncResult(ctx, notebook_id,
+                      ctx->sync_manager->GetCapabilities(notebook_id, *out_capabilities));
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error getting sync capabilities";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_sync_apply_phase(VxCoreContextHandle context, const char *notebook_id,
+                                               VxCoreSyncCancellation *token,
+                                               const char *protected_paths_json,
+                                               char **out_changed_paths_json) {
+  if (out_changed_paths_json) *out_changed_paths_json = nullptr;
+  if (!context || !notebook_id || !out_changed_paths_json) return VXCORE_ERR_NULL_POINTER;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    std::vector<std::string> protected_paths;
+    if (protected_paths_json) {
+      auto paths = nlohmann::json::parse(protected_paths_json, nullptr, false);
+      if (!paths.is_array()) {
+        ctx->last_error = "Protected paths must be an array of safe relative UTF-8 paths";
+        return VXCORE_ERR_INVALID_PARAM;
+      }
+      protected_paths.reserve(paths.size());
+      for (auto &path : paths) {
+        if (!path.is_string() || !IsSafeSyncRelativePath(path.get_ref<const std::string &>())) {
+          ctx->last_error = "Protected paths must be an array of safe relative UTF-8 paths";
+          return VXCORE_ERR_INVALID_PARAM;
+        }
+        protected_paths.push_back(std::move(path.get_ref<std::string &>()));
+      }
+    }
+    if (!ctx->sync_manager) {
+      ctx->last_error = "Sync manager not initialized";
+      return VXCORE_ERR_UNKNOWN;
+    }
+    vxcore::SyncCancellationPtr ptr = token ? token->ptr : nullptr;
+    std::vector<std::string> changed_paths;
+    VxCoreError err;
+    try {
+      err = ctx->sync_manager->ApplyPhaseOnly(notebook_id, std::move(ptr), protected_paths,
+                                              changed_paths);
+      SyncResult(ctx, notebook_id, err);
+    } catch (const std::bad_alloc &) {
+      ctx->last_error = "Out of memory applying sync";
+      err = VXCORE_ERR_OUT_OF_MEMORY;
+    } catch (const std::exception &e) {
+      ctx->last_error = e.what();
+      err = VXCORE_ERR_UNKNOWN;
+    } catch (...) {
+      ctx->last_error = "Unknown error applying sync";
+      err = VXCORE_ERR_UNKNOWN;
+    }
+    // A failed apply can have installed a bounded prefix of the transaction.
+    // Its paths still need to reach the consumer's refresh/cleanup boundary.
+    *out_changed_paths_json = vxcore_strdup(nlohmann::json(changed_paths).dump().c_str());
+    if (!*out_changed_paths_json) return VXCORE_ERR_OUT_OF_MEMORY;
+    return err;
+  } catch (const std::bad_alloc &) {
+    ctx->last_error = "Out of memory applying sync";
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    ctx->last_error = "Unknown error applying sync";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_sync_set_apply_in_progress(VxCoreContextHandle context,
+                                                         const char *notebook_id, int active) {
+  if (!context || !notebook_id) return VXCORE_ERR_NULL_POINTER;
+  if (active != 0 && active != 1) return VXCORE_ERR_INVALID_PARAM;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    if (!ctx->notebook_manager) return VXCORE_ERR_INVALID_STATE;
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) return VXCORE_ERR_NOT_FOUND;
+    if (notebook->GetType() != vxcore::NotebookType::Bundled) return VXCORE_ERR_UNSUPPORTED;
+    if (active && !notebook->IsSyncApplyInProgress()) {
+      const auto error = notebook->CheckWritable();
+      if (error != VXCORE_OK) return error;
+    }
+    notebook->SetSyncApplyInProgress(active != 0);
+    return VXCORE_OK;
+  } catch (...) {
+    ctx->last_error = "Unable to reserve notebook for sync apply";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_sync_refresh_notebook(VxCoreContextHandle context,
+                                                    const char *notebook_id) {
+  if (!context || !notebook_id) return VXCORE_ERR_NULL_POINTER;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    if (!ctx->sync_manager) return VXCORE_ERR_INVALID_STATE;
+    return SyncResult(ctx, notebook_id, ctx->sync_manager->RefreshNotebookAfterSync(notebook_id));
+  } catch (...) {
+    ctx->last_error = "Unable to refresh notebook after sync apply";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_sync_check_reconfiguration(VxCoreContextHandle context,
+                                                         const char *notebook_id) {
+  if (!context || !notebook_id) return VXCORE_ERR_NULL_POINTER;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    if (!ctx->notebook_manager) return VXCORE_ERR_INVALID_STATE;
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) return VXCORE_ERR_NOT_FOUND;
+    if (notebook->GetType() != vxcore::NotebookType::Bundled) return VXCORE_ERR_UNSUPPORTED;
+    if (notebook->IsSyncApplyInProgress()) return VXCORE_ERR_SYNC_IN_PROGRESS;
+    const auto result = vxcore::CheckNotebookSyncReconfiguration(notebook->GetMetadataFolder());
+    if (result != VXCORE_OK) {
+      ctx->last_error = "Synchronization conflicts or recovery state prevent reconfiguration";
+    }
+    return result;
+  } catch (...) {
+    ctx->last_error = "Unable to inspect synchronization recovery state";
+    return VXCORE_ERR_INVALID_STATE;
   }
 }
 
@@ -383,6 +597,7 @@ VXCORE_API VxCoreError vxcore_sync_get_conflicts(VxCoreContextHandle context,
       cj[vxcore::kJsonKeyLocalModifiedUtc] = c.local_modified_utc;
       cj[vxcore::kJsonKeyRemoteModifiedUtc] = c.remote_modified_utc;
       cj[vxcore::kJsonKeyIsBinary] = c.is_binary;
+      cj[vxcore::kJsonKeyCanKeepBoth] = c.can_keep_both;
       j["conflicts"].push_back(cj);
     }
 
@@ -433,7 +648,7 @@ VXCORE_API VxCoreError vxcore_sync_resolve_conflict(VxCoreContextHandle context,
       return VXCORE_ERR_INVALID_PARAM;
     }
 
-    return ctx->sync_manager->ResolveConflict(notebook_id, path, res);
+    return SyncResult(ctx, notebook_id, ctx->sync_manager->ResolveConflict(notebook_id, path, res));
   } catch (const std::exception &e) {
     ctx->last_error = e.what();
     return VXCORE_ERR_UNKNOWN;
@@ -458,7 +673,11 @@ VXCORE_API VxCoreError vxcore_sync_set_credentials(VxCoreContextHandle context,
       return VXCORE_ERR_UNKNOWN;
     }
 
-    vxcore::SyncCredentials creds = ParseCredentials(credentials_json);
+    vxcore::SyncCredentials creds;
+    if (!ParseCredentials(credentials_json, creds)) {
+      ctx->last_error = "Invalid synchronization credentials";
+      return VXCORE_ERR_JSON_PARSE;
+    }
     // NOTE: never log the PAT value itself.
     // Wave 6.3 F4.4: route through UpdateCredentials by wrapping the
     // incoming creds in an InMemoryCredentialProvider. The backend reads
@@ -695,30 +914,10 @@ VXCORE_API VxCoreError vxcore_sync_clone_cancellable(VxCoreContextHandle context
     // formatting helpers. NEVER log the PAT itself.
     std::shared_ptr<vxcore::ICredentialProvider> provider;
     if (credentials_json != nullptr) {
-      // Same no-throw treatment for creds. ParseCredentials in this TU uses
-      // the throwing parser; reproduce the safe shape inline so the throwing
-      // parser never runs from this entry point.
-      auto cj = nlohmann::json::parse(credentials_json, /*cb=*/nullptr,
-                                      /*allow_exceptions=*/false);
-      if (cj.is_discarded() || !cj.is_object()) {
-        ctx->last_error =
-            "vxcore_sync_clone: credentials_json failed to parse as a JSON object";
-        return VXCORE_ERR_JSON_PARSE;
-      }
       vxcore::SyncCredentials creds;
-      if (cj.contains(vxcore::kJsonKeyPat) && cj[vxcore::kJsonKeyPat].is_string()) {
-        creds.personal_access_token = cj[vxcore::kJsonKeyPat].get<std::string>();
-      }
-      if (cj.contains(vxcore::kJsonKeyAuthorName) &&
-          cj[vxcore::kJsonKeyAuthorName].is_string()) {
-        creds.author_name = cj[vxcore::kJsonKeyAuthorName].get<std::string>();
-      }
-      if (cj.contains(vxcore::kJsonKeyAuthorEmail) &&
-          cj[vxcore::kJsonKeyAuthorEmail].is_string()) {
-        creds.author_email = cj[vxcore::kJsonKeyAuthorEmail].get<std::string>();
-      }
-      if (cj.contains(vxcore::kJsonKeyExtra) && cj[vxcore::kJsonKeyExtra].is_object()) {
-        creds.extra = cj[vxcore::kJsonKeyExtra];
+      if (!ParseCredentials(credentials_json, creds)) {
+        ctx->last_error = "Invalid synchronization credentials";
+        return VXCORE_ERR_JSON_PARSE;
       }
       provider =
           std::make_shared<vxcore::InMemoryCredentialProvider>(std::move(creds));
@@ -737,6 +936,7 @@ VXCORE_API VxCoreError vxcore_sync_clone_cancellable(VxCoreContextHandle context
                                                        std::move(provider),
                                                        std::move(cancellation_ptr),
                                                        notebook_id);
+    SyncResult(ctx, target_dir, err);
     if (err != VXCORE_OK) {
       // SyncManager::CloneNotebook leaves notebook_id empty on failure.
       // Keep *out_notebook_id at the nullptr we set above and forward the

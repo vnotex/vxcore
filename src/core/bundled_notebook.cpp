@@ -422,6 +422,33 @@ VxCoreError BundledNotebook::PersistConfig(const NotebookConfig &config,
   }
 }
 
+VxCoreError BundledNotebook::ReloadAfterSync() {
+  try {
+    std::ifstream file(PathFromUtf8(GetConfigPath()), std::ios::binary);
+    if (!file) return VXCORE_ERR_IO;
+    const auto json = nlohmann::json::parse(file);
+    if (!json.is_object()) return VXCORE_ERR_INVALID_STATE;
+    auto candidate = NotebookConfig::FromJson(json);
+    if (!NotebookEncryption::IsCanonicalUuid(candidate.id) || candidate.id != config_.id ||
+        candidate.name.empty()) {
+      return VXCORE_ERR_INVALID_STATE;
+    }
+    // Apply has already restored this device's routing in the installed representation.
+    // Do not use UpdateConfig: refresh is not a new local mutation.
+    config_ = std::move(candidate);
+    folder_manager_->ClearCache();
+    auto error = RebuildCache();
+    if (error != VXCORE_OK) return error;
+    return SyncTagsToMetadataStore();
+  } catch (const nlohmann::json::exception &) {
+    return VXCORE_ERR_JSON_PARSE;
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (...) {
+    return VXCORE_ERR_IO;
+  }
+}
+
 VxCoreError BundledNotebook::RebuildCache() {
   auto *bundled_folder_manager = dynamic_cast<BundledFolderManager *>(folder_manager_.get());
   if (!bundled_folder_manager) {

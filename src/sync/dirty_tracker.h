@@ -1,6 +1,7 @@
 #ifndef VXCORE_SYNC_DIRTY_TRACKER_H
 #define VXCORE_SYNC_DIRTY_TRACKER_H
 
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -24,10 +25,11 @@ class DirtyTracker {
   DirtyTracker(const DirtyTracker &) = delete;
   DirtyTracker &operator=(const DirtyTracker &) = delete;
 
-  // Mark `path` as dirty for `notebookId`. Idempotent (insert into a set).
+  // Mark `path` dirty. Every call advances the notebook's revision, even if
+  // this path is already dirty.
   void MarkDirty(const std::string &notebookId, const std::string &path);
 
-  // Return all dirty paths for `notebookId` and clear that notebook's entry.
+  // Return all dirty paths for `notebookId` and clear them, retaining its revision.
   // Returns an empty vector if the notebook has no dirty paths.
   std::vector<std::string> TakeDirty(const std::string &notebookId);
 
@@ -36,6 +38,14 @@ class DirtyTracker {
 
   // Drop all dirty paths for `notebookId` (no-op if not tracked).
   void Clear(const std::string &notebookId);
+
+  // Monotonic mutation generation; zero for a notebook never marked dirty.
+  // Taking or clearing paths does not reset the generation.
+  uint64_t Revision(const std::string &notebookId) const;
+
+  // Clear dirty paths only if no MarkDirty call occurred since `revision`.
+  // Returns false on a stale revision and preserves all outstanding work.
+  bool ClearIfUnchanged(const std::string &notebookId, uint64_t revision);
 
   // Drop all dirty paths for every notebook.
   void ClearAll();
@@ -48,7 +58,11 @@ class DirtyTracker {
 
  private:
   mutable std::mutex mu_;
-  std::unordered_map<std::string, std::unordered_set<std::string>> dirty_;
+  struct DirtyState {
+    uint64_t revision = 0;
+    std::unordered_set<std::string> paths;
+  };
+  std::unordered_map<std::string, DirtyState> dirty_;
 };
 
 }  // namespace vxcore

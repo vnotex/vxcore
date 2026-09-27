@@ -1,9 +1,9 @@
 #include "buffer_manager.h"
 
+#include <vxcore/notebook_json_keys.h>
+
 #include <algorithm>
 #include <filesystem>
-
-#include <vxcore/notebook_json_keys.h>
 
 #include "buffer_provider.h"
 #include "config_manager.h"
@@ -14,7 +14,7 @@
 #include "metadata_store.h"
 #include "notebook.h"
 #include "notebook_manager.h"
-#include "sync/git/git_conflict_resolver.h"
+#include "sync/sync_encryption_guard.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -308,8 +308,7 @@ VxCoreError BufferManager::EnsureProtectedContent(Buffer &buffer) {
   }
   if (buffer.IsContentLoaded()) {
     const auto *notebook = buffer.GetNotebook();
-    return notebook ? GitConflictResolver::CheckEncryptionKeyConflict(
-                          ConcatenatePaths(notebook->GetMetadataFolder(), "vx_sync"))
+    return notebook ? CheckNotebookEncryptionSyncState(notebook->GetMetadataFolder())
                     : VXCORE_ERR_UNSUPPORTED;
   }
   if (!buffer.GetNotebook() || !notebook_manager_) {
@@ -429,8 +428,8 @@ VxCoreError BufferManager::SaveBuffer(const std::string &id) {
     VXCORE_LOG_ERROR("Cannot save: buffer not found: id=%s", id.c_str());
     return VXCORE_ERR_BUFFER_NOT_FOUND;
   }
-  if (buffer->GetNotebook() && buffer->GetNotebook()->IsEncryptionRecoveryRequired()) {
-    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+  if (buffer->GetNotebook() && buffer->GetNotebook()->CheckWritable() != VXCORE_OK) {
+    return buffer->GetNotebook()->CheckWritable();
   }
 
   if (buffer->IsVirtual()) {
@@ -608,8 +607,8 @@ VxCoreError BufferManager::WriteBackup(const std::string &id) {
     VXCORE_LOG_ERROR("Cannot write backup: buffer not found: id=%s", id.c_str());
     return VXCORE_ERR_BUFFER_NOT_FOUND;
   }
-  if (buffer->GetNotebook() && buffer->GetNotebook()->IsEncryptionRecoveryRequired()) {
-    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+  if (buffer->GetNotebook() && buffer->GetNotebook()->CheckWritable() != VXCORE_OK) {
+    return buffer->GetNotebook()->CheckWritable();
   }
 
   VxCoreError err = buffer->WriteBackup();
@@ -636,10 +635,9 @@ VxCoreError BufferManager::RecoverBackup(const std::string &id) {
     VXCORE_LOG_ERROR("Cannot recover backup: buffer not found: id=%s", id.c_str());
     return VXCORE_ERR_BUFFER_NOT_FOUND;
   }
-  if (buffer->GetNotebook() && buffer->GetNotebook()->IsEncryptionRecoveryRequired()) {
-    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+  if (buffer->GetNotebook() && buffer->GetNotebook()->CheckWritable() != VXCORE_OK) {
+    return buffer->GetNotebook()->CheckWritable();
   }
-
 
   if (buffer->IsEncrypted()) {
     const auto error = EnsureProtectedContent(*buffer);
@@ -661,8 +659,8 @@ VxCoreError BufferManager::DiscardBackup(const std::string &id) {
     VXCORE_LOG_ERROR("Cannot discard backup: buffer not found: id=%s", id.c_str());
     return VXCORE_ERR_BUFFER_NOT_FOUND;
   }
-  if (buffer->GetNotebook() && buffer->GetNotebook()->IsEncryptionRecoveryRequired()) {
-    return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+  if (buffer->GetNotebook() && buffer->GetNotebook()->CheckWritable() != VXCORE_OK) {
+    return buffer->GetNotebook()->CheckWritable();
   }
 
   buffer->DiscardBackup();
@@ -683,6 +681,8 @@ VxCoreError BufferManager::GetBackupPath(const std::string &id, std::string &out
 }
 
 void BufferManager::CloseBuffersForNotebook(const std::string &notebook_id) {
+  const auto *notebook = notebook_manager_ ? notebook_manager_->GetNotebook(notebook_id) : nullptr;
+  if (notebook && notebook->IsSyncApplyInProgress()) return;
   std::vector<std::string> to_close;
 
   // Collect buffer IDs to close

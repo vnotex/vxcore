@@ -15,9 +15,9 @@ vxcore is an **embedded library**, not an application. It publishes a stable C A
 | Layer | Owner | Job | Forbidden |
 |---|---|---|---|
 | 1. Event emission | vxcore (FolderManager, BufferManager, NotebookManager) | Fire faithful, lossless state-change events on every mutation. | Deciding when consumers act. Throttling, debouncing, or filtering events. |
-| 2. Dirtiness tracking | vxcore (DirtyTracker, per-notebook flag) | Track outstanding work; cleared on TriggerSync success. | Scheduling sync. Applying timing policy. |
+| 2. Dirtiness tracking | vxcore (DirtyTracker, per-notebook flag) | Track outstanding work; deferred apply clears only an unchanged generation after metadata refresh. | Scheduling sync. Applying timing policy. |
 | 3. Scheduling policy | CONSUMER (e.g., VNote SyncWorkQueueManager + SyncScheduler) | Decide WHEN sync runs: debounce, throttle, coalesce, backpressure, retry, periodic safety net. | Touching git, libgit2, or backend internals. |
-| 4. Sync execution | vxcore (SyncManager::TriggerSync + GitSyncBackend) | Synchronously execute the round-trip; return a result; fire lifecycle events. | Knowing about scheduling. Embedding timers. |
+| 4. Sync execution | vxcore (SyncManager + GitSyncBackend/WebDavSyncBackend) | Synchronously execute the round-trip; return a result; fire lifecycle events. | Knowing about scheduling. Embedding timers. |
 
 ### Anti-patterns (FORBIDDEN)
 
@@ -795,11 +795,14 @@ recovery completes. Old asset-conversion journals remain untouched and require r
 never silently finish their destructive asset cleanup. New protected notes publish
 ciphertext from the first body write. Raw/external notes cannot be protected.
 
-Git sync needs no unlock. Preserve `*.vne -text -diff -merge` in new and initialized existing
+Git and WebDAV synchronize ciphertext without unlocking. Preserve `*.vne -text -diff -merge` in new and initialized existing
 repositories and resolve encrypted conflicts as complete binary envelopes, never a text
 merge. Asset files continue through the normal plaintext sync/transfer paths. A key-envelope
 conflict blocks protected body access. Encryption preflight permits an absent or empty
-`vx_notebook/vx_sync` directory without creating a repository. A nonempty invalid repository
+`vx_notebook/vx_sync` directory without creating a repository. WebDAV-only state is not Git
+corruption: `CheckNotebookEncryptionSyncState` inspects both backends, even when unregistered.
+Pending/conflicting key envelopes block protected operations; applying a changed envelope requires
+a successful key lock with no live leases and leaves the notebook locked. A nonempty invalid Git repository
 or unreadable index must still fail closed; never ignore all Git `NOT_FOUND` errors.
 Inspection failures return `VXCORE_ERR_ENCRYPTION_SYNC_STATE`, distinct from a missing notebook
 (`NOT_FOUND`) and a confirmed key conflict (`SYNC_CONFLICT`). Keep the raw Git cause in logs;

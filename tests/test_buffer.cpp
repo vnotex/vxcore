@@ -6018,6 +6018,125 @@ int test_encryption_with_empty_sync_directory() {
   return 0;
 }
 
+int test_webdav_encryption_state_survives_unregister_and_restart() {
+  EncryptionFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  auto context = fixture.context.value;
+  const auto notebook = fixture.notebook_id.value;
+  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+  EncryptionTestString file, buffer;
+  const std::string body = "private WebDAV body";
+  ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "private.md", "markdown",
+                                          body.data(), body.size(), &file.value),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open_by_node_id(context, file.value, &buffer.value), VXCORE_OK);
+  const auto webdav = fixture.path + "/vx_notebook/vx_sync/webdav";
+  std::filesystem::create_directories(utf8_to_fs_path(webdav));
+  nlohmann::json state = {{"version", 1},
+                          {"notebookId", notebook},
+                          {"remoteUrl", "https://example.invalid/notebook/"},
+                          {"usernameHash", encryption_sha256("user")},
+                          {"entries", nlohmann::json::object()},
+                          {"conflicts", nlohmann::json::object()}};
+  write_file(webdav + "/state.json", state.dump());
+  const void *data = nullptr;
+  size_t size = 0;
+  ASSERT_EQ(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size), VXCORE_OK);
+  ASSERT_EQ(std::string(static_cast<const char *>(data), size), body);
+  // A clean retained Git repository and WebDAV private state may coexist.
+  EncryptionTestGitRepository repository;
+  git_repository_init_options options = GIT_REPOSITORY_INIT_OPTIONS_INIT;
+  options.flags = GIT_REPOSITORY_INIT_MKPATH;
+  options.workdir_path = fixture.path.c_str();
+  ASSERT_EQ(git_repository_init_ext(&repository.value,
+                                    (fixture.path + "/vx_notebook/vx_sync").c_str(), &options),
+            0);
+  ASSERT_EQ(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size), VXCORE_OK);
+  const std::string operation = "00000000-0000-4000-8000-000000000001";
+  const std::string snapshot = "snapshots/" + operation + "/00000000-0000-4000-8000-000000000002";
+  std::filesystem::create_directories(utf8_to_fs_path(webdav + "/snapshots/" + operation));
+  const auto key = read_file_content(fixture.key_path());
+  write_file(webdav + "/" + snapshot, key);
+  state["conflicts"]["vx_notebook/encryption.vne"] = {{"localSha256", encryption_sha256(key)},
+                                                      {"remoteSha256", encryption_sha256(key)},
+                                                      {"remoteEtag", "\"key\""},
+                                                      {"localSnapshot", snapshot},
+                                                      {"remoteSnapshot", snapshot},
+                                                      {"isBinary", true},
+                                                      {"canKeepBoth", false},
+                                                      {"localModifiedUtc", 0},
+                                                      {"remoteModifiedUtc", 0}};
+  write_file(webdav + "/state.json", state.dump());
+  ASSERT_EQ(vxcore_sync_unregister_notebook(context, notebook), VXCORE_OK);
+  data = reinterpret_cast<const void *>(1);
+  size = 1;
+  ASSERT_EQ(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size),
+            VXCORE_ERR_SYNC_CONFLICT);
+  ASSERT_NULL(data);
+  ASSERT_EQ(size, size_t(0));
+  ASSERT_EQ(vxcore_buffer_set_content_raw(context, buffer.value, "rejected", 8),
+            VXCORE_ERR_SYNC_CONFLICT);
+  ASSERT_EQ(vxcore_buffer_save(context, buffer.value), VXCORE_ERR_SYNC_CONFLICT);
+  ASSERT_EQ(vxcore_buffer_write_backup(context, buffer.value), VXCORE_ERR_SYNC_CONFLICT);
+  EncryptionTestString rejected;
+  ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "rejected.md", "markdown", "", 0,
+                                          &rejected.value),
+            VXCORE_ERR_SYNC_CONFLICT);
+  ASSERT_NULL(rejected.value);
+  ASSERT_EQ(vxcore_buffer_close(context, buffer.value), VXCORE_OK);
+  vxcore_context_destroy(context);
+  fixture.context.value = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &fixture.context.value), VXCORE_OK);
+  context = fixture.context.value;
+  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook, kEncryptionPassword.data(),
+                                              kEncryptionPassword.size()),
+            VXCORE_ERR_SYNC_CONFLICT);
+  EncryptionTestString status;
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value),
+            VXCORE_ERR_SYNC_CONFLICT);
+  ASSERT_NULL(status.value);
+  // Selecting a revision does not retire the conflict before its applying sync commits.
+  state["conflicts"]["vx_notebook/encryption.vne"]["resolution"] = "keep_remote";
+  write_file(webdav + "/state.json", state.dump());
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value),
+            VXCORE_ERR_SYNC_CONFLICT);
+  state["conflicts"] = nlohmann::json::object();
+  write_file(webdav + "/state.json", state.dump());
+  auto pending = state;
+  pending.erase("entries");
+  pending.erase("conflicts");
+  pending["operationId"] = operation;
+  pending["operations"] = nlohmann::json::array({{{"path", "vx_notebook/encryption.vne"},
+                                                  {"kind", "file"},
+                                                  {"action", "upsertLocal"},
+                                                  {"expectedLocalKind", "file"},
+                                                  {"expectedRemoteKind", "file"},
+                                                  {"expectedLocalSha256", encryption_sha256(key)},
+                                                  {"expectedRemoteEtag", "\"key\""},
+                                                  {"oldSha256", nullptr},
+                                                  {"newSha256", encryption_sha256(key)},
+                                                  {"sourceSnapshot", snapshot},
+                                                  {"previousSnapshot", nullptr},
+                                                  {"scratchUrl", nullptr},
+                                                  {"stage", "remoteConfirmed"}}});
+  write_file(webdav + "/pending.json", pending.dump());
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value),
+            VXCORE_ERR_SYNC_CONFLICT);
+  write_file(webdav + "/pending.json", "{unreadable");
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value),
+            VXCORE_ERR_ENCRYPTION_SYNC_STATE);
+  ASSERT_TRUE(std::filesystem::remove(utf8_to_fs_path(webdav + "/pending.json")));
+  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook, kEncryptionPassword.data(),
+                                              kEncryptionPassword.size()),
+            VXCORE_OK);
+  EncryptionTestString reopened;
+  ASSERT_EQ(vxcore_buffer_open_by_node_id(context, file.value, &reopened.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_get_content_raw(context, reopened.value, &data, &size), VXCORE_OK);
+  ASSERT_EQ(std::string(static_cast<const char *>(data), size), body);
+  ASSERT_EQ(read_file_content(fixture.key_path()), key);
+  return 0;
+}
+
 int test_encryption_sync_state_error_is_distinct() {
   EncryptionFixture fixture;
   ASSERT_EQ(fixture.error, VXCORE_OK);
@@ -8092,6 +8211,58 @@ int test_buffer_line_ending_encrypted_notebook() {
   return 0;
 }
 
+int test_reconfiguration_refuses_unregistered_index_conflicts() {
+  struct Scope {
+    VxCoreContextHandle context = nullptr;
+    char *notebook = nullptr;
+    git_repository *repository = nullptr;
+    git_index *index = nullptr;
+    std::string root = get_test_path("sync_unregistered_index_conflict");
+    ~Scope() {
+      git_index_free(index);
+      git_repository_free(repository);
+      if (context && notebook) vxcore_notebook_close(context, notebook);
+      vxcore_string_free(notebook);
+      if (context) vxcore_context_destroy(context);
+      cleanup_test_dir(root);
+    }
+  } scope;
+  cleanup_test_dir(scope.root);
+  ASSERT_EQ(vxcore_context_create(nullptr, &scope.context), VXCORE_OK);
+  ASSERT_EQ(
+      vxcore_notebook_create(scope.context, scope.root.c_str(), "{\"name\":\"Retirement guard\"}",
+                             VXCORE_NOTEBOOK_BUNDLED, &scope.notebook),
+      VXCORE_OK);
+  const auto gitdir = std::filesystem::u8path(scope.root) / "vx_notebook/vx_sync";
+  std::filesystem::create_directories(gitdir);
+  git_repository_init_options options = GIT_REPOSITORY_INIT_OPTIONS_INIT;
+  options.flags = GIT_REPOSITORY_INIT_MKPATH | GIT_REPOSITORY_INIT_NO_DOTGIT_DIR;
+  options.workdir_path = scope.root.c_str();
+  options.initial_head = "main";
+  ASSERT_EQ(git_repository_init_ext(&scope.repository, gitdir.u8string().c_str(), &options), 0);
+  ASSERT_EQ(git_repository_index(&scope.index, scope.repository), 0);
+  git_index_entry ancestor = {};
+  ancestor.mode = GIT_FILEMODE_BLOB;
+  ancestor.path = "ordinary.md";
+  ASSERT_EQ(git_blob_create_frombuffer(&ancestor.id, scope.repository, "base", 4), 0);
+  auto ours = ancestor;
+  auto theirs = ancestor;
+  ASSERT_EQ(git_blob_create_frombuffer(&ours.id, scope.repository, "ours", 4), 0);
+  ASSERT_EQ(git_blob_create_frombuffer(&theirs.id, scope.repository, "theirs", 6), 0);
+  ASSERT_EQ(git_index_conflict_add(scope.index, &ancestor, &ours, &theirs), 0);
+  ASSERT_EQ(git_index_write(scope.index), 0);
+  ASSERT_EQ(git_repository_state(scope.repository), GIT_REPOSITORY_STATE_NONE);
+  ASSERT_EQ(vxcore_sync_check_reconfiguration(scope.context, scope.notebook),
+            VXCORE_ERR_SYNC_CONFLICT);
+  int registered = 1;
+  ASSERT_EQ(vxcore_sync_is_registered(scope.context, scope.notebook, &registered), VXCORE_OK);
+  ASSERT_EQ(registered, 0);
+  git_index_conflict_cleanup(scope.index);
+  ASSERT_EQ(git_index_write(scope.index), 0);
+  ASSERT_EQ(vxcore_sync_check_reconfiguration(scope.context, scope.notebook), VXCORE_OK);
+  return 0;
+}
+
 int main() {
   BufferTestTempDirectory test_directory;
   ASSERT_TRUE(test_directory.valid());
@@ -8099,6 +8270,8 @@ int main() {
 
   vxcore_set_test_mode(1);
   vxcore_clear_test_directory();
+
+  RUN_TEST(test_reconfiguration_refuses_unregistered_index_conflicts);
 
   RUN_TEST(test_buffer_open_close);
   RUN_TEST(test_buffer_get);
@@ -8229,6 +8402,7 @@ int main() {
   RUN_TEST(test_encryption_rejects_links_within_notebook);
   RUN_TEST(test_encryption_create_note_transaction);
   RUN_TEST(test_encryption_with_empty_sync_directory);
+  RUN_TEST(test_webdav_encryption_state_survives_unregister_and_restart);
   RUN_TEST(test_encryption_sync_state_error_is_distinct);
   RUN_TEST(test_key_conflict_blocks_cached_protected_body);
   RUN_TEST(test_encryption_protect_body_only);

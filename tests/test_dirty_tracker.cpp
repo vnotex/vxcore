@@ -123,6 +123,42 @@ static int test_list_dirty_notebooks() {
   return 0;
 }
 
+static int test_revision_prevents_stale_clear() {
+  DirtyTracker dt;
+  ASSERT_EQ(dt.Revision("A"), uint64_t(0));
+  ASSERT_TRUE(dt.ClearIfUnchanged("A", 0));
+  ASSERT_FALSE(dt.ClearIfUnchanged("A", 1));
+
+  dt.MarkDirty("A", "note.md");
+  const auto snapshot = dt.Revision("A");
+  dt.MarkDirty("B", "other.md");
+  ASSERT_EQ(dt.Revision("A"), snapshot);
+  // A second save to the same path must invalidate the snapshot.
+  dt.MarkDirty("A", "note.md");
+  ASSERT_EQ(dt.Revision("A"), snapshot + 1);
+  ASSERT_FALSE(dt.ClearIfUnchanged("A", snapshot));
+  ASSERT_TRUE(dt.HasDirty("A"));
+  ASSERT_TRUE(dt.ClearIfUnchanged("A", snapshot + 1));
+  ASSERT_FALSE(dt.HasDirty("A"));
+  ASSERT_TRUE(dt.HasDirty("B"));
+
+  // No clearing API may recycle a generation and let an old sync erase work.
+  auto revision = dt.Revision("A");
+  dt.Clear("A");
+  dt.MarkDirty("A", "note.md");
+  ASSERT_EQ(dt.Revision("A"), ++revision);
+  ASSERT_FALSE(dt.ClearIfUnchanged("A", snapshot));
+  ASSERT_EQ(dt.TakeDirty("A").size(), size_t(1));
+  dt.MarkDirty("A", "note.md");
+  ASSERT_EQ(dt.Revision("A"), ++revision);
+  dt.ClearAll();
+  dt.MarkDirty("A", "note.md");
+  ASSERT_EQ(dt.Revision("A"), ++revision);
+  ASSERT_FALSE(dt.ClearIfUnchanged("A", snapshot));
+  ASSERT_TRUE(dt.HasDirty("A"));
+  return 0;
+}
+
 static int test_concurrent_mark_take_1000_iter() {
   DirtyTracker dt;
   constexpr int kNotebooks = 10;
@@ -173,6 +209,8 @@ static int test_concurrent_mark_take_1000_iter() {
   ASSERT_TRUE(total_consumed <= issued.load());
   for (int nb = 0; nb < kNotebooks; ++nb) {
     ASSERT_FALSE(dt.HasDirty("nb-" + std::to_string(nb)));
+    ASSERT_EQ(dt.Revision("nb-" + std::to_string(nb)),
+              static_cast<uint64_t>(kMarkers * kIters / kNotebooks));
   }
 
   std::cout << "  ✓ test_concurrent_mark_take_1000_iter (issued=" << issued.load()
@@ -190,6 +228,7 @@ int main() {
   RUN_TEST(test_clear);
   RUN_TEST(test_clear_all);
   RUN_TEST(test_list_dirty_notebooks);
+  RUN_TEST(test_revision_prevents_stale_clear);
   RUN_TEST(test_concurrent_mark_take_1000_iter);
 
   std::cout << "All DirtyTracker tests passed." << std::endl;

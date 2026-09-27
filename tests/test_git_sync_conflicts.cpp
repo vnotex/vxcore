@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include "sync/git/git_conflict_resolver.h"
+#include "sync/git/git_handles.h"
 #include "sync/git/git_sync_backend.h"
 #include "sync/git/git_sync_pipeline.h"
 #include "sync/git/libgit2_init.h"
@@ -26,6 +28,9 @@
 #include "vxcore/vxcore_types.h"
 
 namespace {
+
+// This direct-compile target never creates a vxcore context or links vxcore.dll.
+void vxcore_set_test_mode(int) {}
 
 void write_file_at(const std::string &abs_path, const std::string &content) {
   std::filesystem::create_directories(
@@ -292,6 +297,7 @@ int test_git_get_conflicts_after_rebase() {
     ASSERT_EQ(conflicts.size(), static_cast<size_t>(1));
     ASSERT_EQ(conflicts[0].path, std::string("note.md"));
     ASSERT_FALSE(conflicts[0].is_binary);
+    ASSERT_TRUE(conflicts[0].can_keep_both);
     ASSERT_TRUE(conflicts[0].remote_modified_utc > 0);
   } catch (const std::exception &e) {
     std::cerr << "  exception: " << e.what() << std::endl;
@@ -441,13 +447,54 @@ int test_git_resolve_keep_remote() {
   return 0;
 }
 
+int test_encrypted_conflicts_disallow_keep_both() {
+  vxcore::LibGit2Init guard;
+  const std::string root = get_test_path("git_conf_capabilities");
+  cleanup_test_dir(root);
+  std::filesystem::create_directories(vxcore::PathFromUtf8(root));
+  {
+    git_repository *raw_repo = nullptr;
+    ASSERT_EQ(git_repository_init(&raw_repo, root.c_str(), 0), 0);
+    vxcore::git_repositoryPtr repo(raw_repo);
+    git_index *raw_index = nullptr;
+    ASSERT_EQ(git_repository_index(&raw_index, repo.get()), 0);
+    vxcore::git_indexPtr index(raw_index);
+    git_oid text_blob;
+    git_oid binary_blob;
+    ASSERT_EQ(git_blob_create_frombuffer(&text_blob, repo.get(), "text", 4), 0);
+    ASSERT_EQ(git_blob_create_frombuffer(&binary_blob, repo.get(), "\0binary", 7), 0);
+    for (const char *path : {"note.md.vne", "vx_notebook/encryption.VNE", "image.png"}) {
+      git_index_entry entry{};
+      entry.mode = GIT_FILEMODE_BLOB;
+      entry.path = path;
+      entry.id = std::string(path) == "image.png" ? binary_blob : text_blob;
+      ASSERT_EQ(git_index_conflict_add(index.get(), &entry, &entry, &entry), 0);
+    }
+    ASSERT_EQ(git_index_write(index.get()), 0);
+    vxcore::GitConflictResolver resolver(repo.get(), root);
+    std::vector<vxcore::SyncConflictInfo> conflicts;
+    ASSERT_EQ(resolver.GetConflicts(conflicts), VXCORE_OK);
+    ASSERT_EQ(conflicts.size(), size_t(3));
+    for (const auto &conflict : conflicts) {
+      ASSERT_TRUE(conflict.is_binary);
+      // Ordinary binary attachments remain duplicable; the encryption policy
+      // must not be inferred from the shared binary-content classification.
+      ASSERT_EQ(conflict.can_keep_both, conflict.path == "image.png");
+    }
+  }
+  cleanup_test_dir(root);
+  return 0;
+}
+
 }  // namespace
 
 int main() {
+  vxcore_set_test_mode(1);
   RUN_TEST(test_git_get_conflicts_after_rebase);
   RUN_TEST(test_git_resolve_keep_both_creates_conflict_file);
   RUN_TEST(test_git_resolve_keep_local);
   RUN_TEST(test_git_resolve_keep_remote);
+  RUN_TEST(test_encrypted_conflicts_disallow_keep_both);
   std::cout << "All git_sync_conflicts tests passed" << std::endl;
   return 0;
 }

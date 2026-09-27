@@ -39,7 +39,7 @@
 #include "filetype_config.h"
 #include "metadata_store.h"
 #include "node_transfer.h"
-#include "sync/git/git_conflict_resolver.h"
+#include "sync/sync_encryption_guard.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/string_utils.h"
@@ -2032,35 +2032,43 @@ VxCoreError BundledFolderManager::SyncMetadataStoreFromConfigs() {
 
   VXCORE_LOG_INFO("SyncMetadataStoreFromConfigs: Starting sync from config files");
 
-  // Rebuild the store (clears all data and re-initializes schema)
+  // Preserve device-local completion history, including on a failed partial apply.
+  const auto last_sync = store->GetNotebookMetadata("last_sync_utc");
+  if (!store->BeginTransaction()) return VXCORE_ERR_IO;
+  struct RebuildTransaction {
+    MetadataStore *store;
+    BundledFolderManager *manager;
+    bool committed = false;
+    ~RebuildTransaction() {
+      if (!committed) {
+        store->RollbackTransaction();
+        manager->ClearCache();
+      }
+    }
+  } transaction{store, this};
   if (!store->RebuildAll()) {
-    VXCORE_LOG_ERROR("SyncMetadataStoreFromConfigs: Failed to rebuild store");
     return VXCORE_ERR_IO;
-  }
-
-  // Begin transaction for bulk inserts
-  if (!store->BeginTransaction()) {
-    VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Failed to begin transaction");
   }
 
   // Helper to recursively sync folders
   // Returns true on success, false on failure
   std::function<bool(const std::string &, const std::string &)> sync_folder =
       [&](const std::string &folder_path, const std::string &parent_folder_id) -> bool {
-    FolderConfig *config = nullptr;
-    VxCoreError error = GetFolderConfig(folder_path, &config);
+    std::unique_ptr<FolderConfig> config;
+    VxCoreError error = LoadFolderConfig(folder_path, config);
     if (error != VXCORE_OK) {
       VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Failed to load config for folder: %s",
                       folder_path.c_str());
       return false;
     }
+    bool success = true;
 
     // Create folder record in store
     StoreFolderRecord folder_record = ToStoreFolderRecord(*config, parent_folder_id);
     if (!store->CreateFolder(folder_record)) {
       VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Failed to create folder in store: %s",
                       config->id.c_str());
-      // Continue anyway - best effort
+      return false;
     }
 
     // Create file records in store
@@ -2069,7 +2077,7 @@ VxCoreError BundledFolderManager::SyncMetadataStoreFromConfigs() {
       if (!store->CreateFile(file_record)) {
         VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Failed to create file in store: %s",
                         file.id.c_str());
-        // Continue anyway - best effort
+        return false;
       }
     }
 
@@ -2077,30 +2085,28 @@ VxCoreError BundledFolderManager::SyncMetadataStoreFromConfigs() {
     for (const auto &subfolder_name : config->folders) {
       std::string subfolder_path = ConcatenatePaths(folder_path, subfolder_name);
       if (!sync_folder(subfolder_path, config->id)) {
-        // Log but continue with other subfolders
+        success = false;
         VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Failed to sync subfolder: %s",
                         subfolder_path.c_str());
       }
     }
+    if (success) CacheConfig(folder_path, std::move(config));
 
-    return true;
+    return success;
   };
 
   // Start from root folder with empty parent_id
   bool success = sync_folder(".", "");
 
-  // Commit transaction
+  if (last_sync && !store->SetNotebookMetadata("last_sync_utc", *last_sync)) success = false;
+  if (!success) {
+    return VXCORE_ERR_IO;
+  }
   if (!store->CommitTransaction()) {
-    VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Failed to commit transaction");
+    return VXCORE_ERR_IO;
   }
-
-  if (success) {
-    VXCORE_LOG_INFO("SyncMetadataStoreFromConfigs: Sync completed successfully");
-    return VXCORE_OK;
-  } else {
-    VXCORE_LOG_WARN("SyncMetadataStoreFromConfigs: Sync completed with warnings");
-    return VXCORE_OK;  // Return OK since we did best-effort sync
-  }
+  transaction.committed = true;
+  return VXCORE_OK;
 }
 
 // ---------------------------------------------------------------------------
@@ -2560,6 +2566,7 @@ VxCoreError BundledFolderManager::RecoverImports(int *out_recovered_count) {
   if (out_recovered_count) {
     *out_recovered_count = 0;
   }
+  if (notebook_->CheckWritable() != VXCORE_OK) return notebook_->CheckWritable();
 
   const fs::path staging_root =
       PathFromUtf8(notebook_->GetMetadataFolder()) / kImportStagingDirName;
@@ -4442,8 +4449,7 @@ VxCoreError BundledFolderManager::UnprotectNote(
   out_path.clear();
   auto error = notebook_->CheckWritable();
   if (error != VXCORE_OK) return error;
-  error = GitConflictResolver::CheckEncryptionKeyConflict(
-      ConcatenatePaths(notebook_->GetMetadataFolder(), "vx_sync"));
+  error = CheckNotebookEncryptionSyncState(notebook_->GetMetadataFolder());
   if (error != VXCORE_OK) return error;
   auto *encryption = notebook_->GetEncryption();
   if (!encryption) return VXCORE_ERR_ENCRYPTION_LOCKED;
@@ -4707,8 +4713,7 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
   if (notebook_->CheckWritable() != VXCORE_OK) {
     return notebook_->CheckWritable();
   }
-  const auto conflict_error = GitConflictResolver::CheckEncryptionKeyConflict(
-      ConcatenatePaths(notebook_->GetMetadataFolder(), "vx_sync"));
+  const auto conflict_error = CheckNotebookEncryptionSyncState(notebook_->GetMetadataFolder());
   if (conflict_error != VXCORE_OK) return conflict_error;
   if ((!body && body_size) || !EncryptionRelativePath(parent_path, true) ||
       !IsSingleName(name) || name == "." || name == ".." ||
@@ -5356,6 +5361,7 @@ VxCoreError BundledFolderManager::RecoverEncryptionTransactions(
   if (out_recovered_count) {
     *out_recovered_count = 0;
   }
+  if (notebook_->IsSyncApplyInProgress()) return notebook_->CheckWritable();
   notebook_->SetEncryptionRecoveryRequired(true);
   try {
     const auto expected = PathFromUtf8(notebook_->GetMetadataFolder()) /

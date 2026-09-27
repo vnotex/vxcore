@@ -2,9 +2,11 @@
 
 #include <vxcore/notebook_json_keys.h>
 
+#include <algorithm>
 #include <chrono>
 #include <mutex>
 
+#include "core/bundled_notebook.h"
 #include "core/event_manager.h"
 #include "core/event_names.h"
 #include "core/notebook.h"
@@ -13,6 +15,7 @@
 #include "sync/credential_provider.h"
 #include "sync/git/libgit2_init.h"
 #include "sync/sync_backend_registry.h"
+#include "sync/sync_encryption_guard.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -32,6 +35,28 @@ SyncManager::~SyncManager() {
   VXCORE_LOG_INFO("SyncManager shutting down");
 }
 
+VxCoreError SyncManager::CaptureBackendError(const std::string &operation_key,
+                                             const ISyncBackend &backend, VxCoreError result) {
+  // Never call backend code with the manager mutex held.
+  auto message = result == VXCORE_OK ? std::string() : backend.GetLastError();
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (message.empty()) {
+    last_errors_.erase(operation_key);
+  } else {
+    last_errors_[operation_key] = std::move(message);
+  }
+  return result;
+}
+
+std::string SyncManager::TakeLastError(const std::string &operation_key) {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  auto it = last_errors_.find(operation_key);
+  if (it == last_errors_.end()) return {};
+  auto message = std::move(it->second);
+  last_errors_.erase(it);
+  return message;
+}
+
 void SyncManager::SetEventManager(EventManager *event_manager) {
   event_manager_ = event_manager;
   if (!event_manager_) return;
@@ -41,18 +66,13 @@ void SyncManager::SetEventManager(EventManager *event_manager) {
 
     if (data.contains(kJsonKeyNotebookId) && data[kJsonKeyNotebookId].is_string()) {
       std::string nb_id = data[kJsonKeyNotebookId].get<std::string>();
-      // Task 7.5 (F3.2): cache-presence is the correct predicate here — it
-      // means "EnableSync has populated runtime state for this notebook in
-      // this process". Wave 10.1 (F2.4 part 2): the read MUST take
-      // state_mutex_ because the event can fire from any thread while
-      // EnableSync/DisableSync mutate configs_cache_ on another thread.
-      // Lock is released BEFORE invoking DirtyTracker / MaybeEnqueueSync —
-      // both of which fan out to external code (work queue + GetSyncConfig
-      // which itself re-takes state_mutex_).
+      // Runtime registration, not cache presence, controls dirty tracking.
+      // Refresh invalidates the read-through config cache without disabling sync.
+      // Release the lock before DirtyTracker / MaybeEnqueueSync, which can fan out.
       bool sync_enabled;
       {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        sync_enabled = (configs_cache_.count(nb_id) > 0);
+        sync_enabled = (states_.count(nb_id) > 0);
       }
       VXCORE_LOG_DEBUG("SyncManager::mark_dirty: event=%s notebookId=%s sync_enabled=%d",
                        event_name.c_str(), nb_id.c_str(), sync_enabled ? 1 : 0);
@@ -345,7 +365,8 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
   // EXTERNAL CALL — backend->Initialize may block on network I/O (libgit2
   // clone), fire progress callbacks, or call back into SyncManager.
   // MUST run outside state_mutex_.
-  err = backend->Initialize(notebook->GetRootFolder(), config);
+  err = CaptureBackendError(notebook_id, *backend,
+                            backend->Initialize(notebook->GetRootFolder(), config));
   if (err != VXCORE_OK) {
     rollback();
     return err;
@@ -356,6 +377,7 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
     backends_[notebook_id] = std::move(backend);
+    deferred_phases_.erase(notebook_id);
   }
   VXCORE_LOG_INFO("Sync enabled for notebook: %s, backend: %s", notebook_id.c_str(),
                   config.backend.c_str());
@@ -379,6 +401,8 @@ VxCoreError SyncManager::DisableSync(const std::string &notebook_id) {
     }
     states_.erase(notebook_id);
     configs_cache_.erase(notebook_id);
+    deferred_phases_.erase(notebook_id);
+    last_errors_.erase(notebook_id);
   }
   // doomed_backend destructs here (lock released).
 
@@ -398,6 +422,7 @@ VxCoreError SyncManager::UnregisterBackend(const std::string &notebook_id) {
   std::unique_ptr<ISyncBackend> doomed_backend;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    last_errors_.erase(notebook_id);
     auto it = backends_.find(notebook_id);
     if (it == backends_.end()) {
       // Idempotent: notebook was never registered, nothing to release.
@@ -407,6 +432,7 @@ VxCoreError SyncManager::UnregisterBackend(const std::string &notebook_id) {
     backends_.erase(it);
     states_.erase(notebook_id);
     configs_cache_.erase(notebook_id);
+    deferred_phases_.erase(notebook_id);
   }
   // doomed_backend destructs here (lock released) → ~GitSyncBackend →
   // git_repository_free → pack-file mmaps unmapped + fds closed.
@@ -489,7 +515,8 @@ VxCoreError SyncManager::CloneNotebook(const std::string &target_dir, const Sync
     return VXCORE_ERR_CANCELLED;
   }
   backend->SetCancellation(cancellation);
-  VxCoreError clone_err = backend->Clone(target_dir, config);
+  VxCoreError clone_err =
+      CaptureBackendError(target_dir, *backend, backend->Clone(target_dir, config));
   backend->SetCancellation(nullptr);
   if (clone_err != VXCORE_OK) {
     VXCORE_LOG_WARN("SyncManager::CloneNotebook: backend Clone returned %d", clone_err);
@@ -655,6 +682,10 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
     states_[notebook_id] = SyncState::kStaging;
   }
 
+  const bool deferred_apply =
+      (backend_ptr->GetCapabilities() &
+       static_cast<SyncCapabilities>(SyncCapability::DeferredLocalApply)) != 0;
+
   // T7 (sync-queue-convergence): emit sync.started OUTSIDE state_mutex_
   // (the lock above was already released by the closing brace). EventManager
   // fan-out is "external" per AGENTS.md § SyncManager Locking Discipline
@@ -674,7 +705,32 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
   SyncProgressCallback progress_cb = [this](const SyncProgress &progress, void * /*userdata*/) {
     progress_dispatcher_.Dispatch(progress);
   };
-  VxCoreError sync_err = backend_ptr->Sync(progress_cb, nullptr);
+  VxCoreError sync_err;
+  if (deferred_apply) {
+    // The manager's composite entry has the same safe boundary as staged consumers.
+    // Its caller owns serialization and the metadata DB thread.
+    progress_cb(SyncProgress{"Preparing notebook snapshot", 0.0f, SyncState::kStaging}, nullptr);
+    sync_err = StageOnly(notebook_id, cancellation, nullptr);
+    if (sync_err == VXCORE_OK) {
+      progress_cb(SyncProgress{"Exchanging notebook revisions", 0.0f, SyncState::kFetching},
+                  nullptr);
+      sync_err = NetworkPhaseOnly(notebook_id, cancellation);
+    }
+    if (sync_err == VXCORE_OK) {
+      progress_cb(SyncProgress{"Installing notebook revisions", 0.0f, SyncState::kMerging},
+                  nullptr);
+      std::vector<std::string> changed;
+      sync_err = ApplyPhaseOnly(notebook_id, cancellation, {}, changed);
+      const auto refresh_error = RefreshNotebookAfterSync(notebook_id);
+      if (sync_err == VXCORE_OK) sync_err = refresh_error;
+      if (sync_err == VXCORE_OK) {
+        progress_cb(SyncProgress{"Notebook synchronized", 100.0f, SyncState::kIdle}, nullptr);
+      }
+    }
+  } else {
+    sync_err =
+        CaptureBackendError(notebook_id, *backend_ptr, backend_ptr->Sync(progress_cb, nullptr));
+  }
   // ALWAYS clear the token to avoid stale state on the next Sync() that
   // arrives without one. Safe even when SetCancellation is a no-op (Mock /
   // future non-cancellable backends).
@@ -693,7 +749,7 @@ VxCoreError SyncManager::TriggerSync(const std::string &notebook_id,
 
   if (sync_err == VXCORE_OK) {
     // DirtyTracker is self-locking and external to state_mutex_.
-    ClearDirty(notebook_id);
+    if (!deferred_apply) ClearDirty(notebook_id);
     // Persist per-device "last successful sync" timestamp. Best-effort:
     // failure to write is logged inside SetLastSyncUtc but does NOT fail
     // the sync (the sync itself succeeded -- only the UI timestamp suffers).
@@ -760,11 +816,41 @@ VxCoreError SyncManager::StageOnly(const std::string &notebook_id, SyncCancellat
     backend_ptr = backend_it->second.get();
   }
 
+  const bool deferred_apply =
+      (backend_ptr->GetCapabilities() &
+       static_cast<SyncCapabilities>(SyncCapability::DeferredLocalApply)) != 0;
+  const uint64_t revision = deferred_apply ? dirty_tracker_.Revision(notebook_id) : 0;
+  if (deferred_apply) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    // A previous failed metadata refresh still needs to be retried after this round.
+    const auto old = deferred_phases_.find(notebook_id);
+    const bool refresh_needed = old != deferred_phases_.end() && old->second.metadata_changed;
+    auto &phase = deferred_phases_[notebook_id];
+    phase = DeferredApplyState{};
+    phase.metadata_changed = refresh_needed;
+    states_[notebook_id] = SyncState::kStaging;
+  }
+
   // EXTERNAL CALLS — outside state_mutex_. SetCancellation must run before
   // the phase so an early Cancel() between install and entry is observed.
   backend_ptr->SetCancellation(cancellation);
-  VxCoreError stage_err = backend_ptr->StageAndCommit(out_did_commit);
+  VxCoreError stage_err =
+      CaptureBackendError(notebook_id, *backend_ptr, backend_ptr->StageAndCommit(out_did_commit));
   backend_ptr->SetCancellation(nullptr);
+  if (deferred_apply) {
+    if (stage_err == VXCORE_OK && dirty_tracker_.Revision(notebook_id) != revision) {
+      stage_err = VXCORE_ERR_SYNC_IN_PROGRESS;
+    }
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (stage_err == VXCORE_OK) {
+      auto &phase = deferred_phases_[notebook_id];
+      phase.revision = revision;
+      phase.has_revision = true;
+    } else {
+      states_[notebook_id] =
+          stage_err == VXCORE_ERR_SYNC_CONFLICT ? SyncState::kConflicted : SyncState::kError;
+    }
+  }
   return stage_err;
 }
 
@@ -792,9 +878,148 @@ VxCoreError SyncManager::NetworkPhaseOnly(const std::string &notebook_id,
   }
 
   backend_ptr->SetCancellation(cancellation);
-  VxCoreError net_err = backend_ptr->FetchRebasePush();
+  VxCoreError net_err =
+      CaptureBackendError(notebook_id, *backend_ptr, backend_ptr->FetchRebasePush());
   backend_ptr->SetCancellation(nullptr);
+  if ((backend_ptr->GetCapabilities() &
+       static_cast<SyncCapabilities>(SyncCapability::DeferredLocalApply)) != 0) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    states_[notebook_id] = net_err == VXCORE_OK                  ? SyncState::kMerging
+                           : net_err == VXCORE_ERR_SYNC_CONFLICT ? SyncState::kConflicted
+                                                                 : SyncState::kError;
+  }
   return net_err;
+}
+
+VxCoreError SyncManager::GetCapabilities(const std::string &notebook_id,
+                                         SyncCapabilities &out_capabilities) {
+  out_capabilities = 0;
+  VxCoreError err = ValidateNotebook(notebook_id);
+  if (err != VXCORE_OK) return err;
+
+  ISyncBackend *backend_ptr = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (states_.find(notebook_id) == states_.end()) {
+      return VXCORE_ERR_SYNC_NOT_ENABLED;
+    }
+    auto it = backends_.find(notebook_id);
+    if (it == backends_.end()) return VXCORE_ERR_NOT_IMPLEMENTED;
+    backend_ptr = it->second.get();
+  }
+  out_capabilities = backend_ptr->GetCapabilities();
+  return VXCORE_OK;
+}
+
+VxCoreError SyncManager::ApplyPhaseOnly(const std::string &notebook_id,
+                                        SyncCancellationPtr cancellation,
+                                        const std::vector<std::string> &protected_paths,
+                                        std::vector<std::string> &out_changed_paths) {
+  out_changed_paths.clear();
+  VxCoreError err = ValidateNotebook(notebook_id);
+  if (err != VXCORE_OK) return err;
+
+  ISyncBackend *backend_ptr = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (states_.find(notebook_id) == states_.end()) {
+      return VXCORE_ERR_SYNC_NOT_ENABLED;
+    }
+    auto it = backends_.find(notebook_id);
+    if (it == backends_.end()) return VXCORE_ERR_NOT_IMPLEMENTED;
+    backend_ptr = it->second.get();
+  }
+
+  const bool deferred = (backend_ptr->GetCapabilities() &
+                         static_cast<SyncCapabilities>(SyncCapability::DeferredLocalApply)) != 0;
+  // Scope cancellation across exceptions too. No backend call holds state_mutex_.
+  struct ResetCancellation {
+    ISyncBackend *backend;
+    ~ResetCancellation() { backend->SetCancellation(nullptr); }
+  } reset{backend_ptr};
+  backend_ptr->SetCancellation(cancellation);
+  VxCoreError result = VXCORE_OK;
+  try {
+    if (cancellation && cancellation->IsCancelled()) {
+      result = VXCORE_ERR_CANCELLED;
+    } else if (deferred) {
+      result = PrepareNotebookEncryptionSyncApply(*notebook_manager_->GetNotebook(notebook_id),
+                                                  protected_paths);
+    }
+    if (result == VXCORE_OK) {
+      result = CaptureBackendError(notebook_id, *backend_ptr,
+                                   backend_ptr->ApplySync(protected_paths, out_changed_paths));
+    }
+  } catch (const std::bad_alloc &) {
+    result = VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (...) {
+    result = VXCORE_ERR_UNKNOWN;
+  }
+  if (deferred) {
+    const bool metadata_changed = std::any_of(
+        out_changed_paths.begin(), out_changed_paths.end(), [](const std::string &path) {
+          return path == "vx_notebook/config.json" ||
+                 (path.compare(0, 21, "vx_notebook/contents/") == 0 &&
+                  PathFilename(path) == "vx.json");
+        });
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    auto &phase = deferred_phases_[notebook_id];
+    phase.applied = true;
+    phase.result = result;
+    phase.cancellation = cancellation;
+    phase.metadata_changed = phase.metadata_changed || metadata_changed;
+    states_[notebook_id] = result == VXCORE_OK                  ? SyncState::kMerging
+                           : result == VXCORE_ERR_SYNC_CONFLICT ? SyncState::kConflicted
+                                                                : SyncState::kError;
+  }
+  return result;
+}
+
+VxCoreError SyncManager::RefreshNotebookAfterSync(const std::string &notebook_id) {
+  auto error = ValidateNotebook(notebook_id);
+  if (error != VXCORE_OK) return error;
+  DeferredApplyState phase;
+  bool has_phase = false;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    const auto it = deferred_phases_.find(notebook_id);
+    if (it != deferred_phases_.end()) {
+      phase = it->second;
+      has_phase = true;
+    }
+  }
+  if (has_phase && !phase.applied) {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    states_[notebook_id] = SyncState::kError;
+    return VXCORE_ERR_SYNC_IN_PROGRESS;
+  }
+  auto *notebook = dynamic_cast<BundledNotebook *>(notebook_manager_->GetNotebook(notebook_id));
+  if (!notebook) return VXCORE_ERR_UNSUPPORTED;
+  if (!has_phase || phase.metadata_changed) error = notebook->ReloadAfterSync();
+  InvalidateConfigCache(notebook_id);
+  if (!has_phase) return error;
+  // A refresh of a partial publication cannot turn the original apply failure into success.
+  const auto result = phase.result != VXCORE_OK ? phase.result
+                      : phase.cancellation && phase.cancellation->IsCancelled()
+                          ? VXCORE_ERR_CANCELLED
+                          : error;
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    states_[notebook_id] = result == VXCORE_OK                  ? SyncState::kIdle
+                           : result == VXCORE_ERR_SYNC_CONFLICT ? SyncState::kConflicted
+                                                                : SyncState::kError;
+    if (result == VXCORE_OK) {
+      deferred_phases_.erase(notebook_id);
+    } else if (error == VXCORE_OK) {
+      deferred_phases_[notebook_id].metadata_changed = false;
+      deferred_phases_[notebook_id].result = result;
+      deferred_phases_[notebook_id].cancellation.reset();
+    }
+  }
+  if (result == VXCORE_OK && phase.has_revision) {
+    dirty_tracker_.ClearIfUnchanged(notebook_id, phase.revision);
+  }
+  return result;
 }
 
 VxCoreError SyncManager::GetSyncStatus(const std::string &notebook_id, SyncState &out_state,
@@ -881,7 +1106,8 @@ VxCoreError SyncManager::ResolveConflict(const std::string &notebook_id, const s
     backend_ptr = backend_it->second.get();
   }
 
-  VxCoreError resolve_err = backend_ptr->ResolveConflict(path, resolution);
+  VxCoreError resolve_err = CaptureBackendError(notebook_id, *backend_ptr,
+                                                backend_ptr->ResolveConflict(path, resolution));
   if (resolve_err == VXCORE_OK) {
     std::vector<SyncConflictInfo> remaining;
     backend_ptr->GetConflicts(remaining);

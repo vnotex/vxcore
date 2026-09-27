@@ -1,4 +1,5 @@
 include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/git_sync_sources.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/webdav_sources.cmake)
 
 set(VXCORE_PUBLIC_HEADERS
     ${PROJECT_SOURCE_DIR}/include/vxcore/vxcore.h
@@ -66,6 +67,7 @@ set(VXCORE_SOURCES
     sync/sync_types.cpp
     sync/sync_json_keys.cpp
     sync/sync_manager.cpp
+    sync/sync_encryption_guard.cpp
     sync/sync_backend_registry.cpp
     sync/sync_builtin_backends.cpp
     sync/credential_provider.cpp
@@ -74,6 +76,7 @@ set(VXCORE_SOURCES
     sync/sync_cancellation.cpp
 sync/sync_progress_dispatcher.cpp
     ${VXCORE_GIT_SYNC_SOURCES_RELATIVE}
+    ${VXCORE_WEBDAV_SOURCES_RELATIVE}
     utils/utils.cpp
     utils/string_utils.cpp
     utils/base64.cpp
@@ -104,8 +107,12 @@ target_include_directories(vxcore
 )
 
 target_link_libraries(vxcore PRIVATE nlohmann_json sqlite3 cmark Threads::Threads libgit2package sodium)
+target_link_libraries(vxcore PRIVATE vxcore_webdav_curl pugixml::pugixml)
 if(NOT WIN32)
     target_link_libraries(vxcore PRIVATE Iconv::Iconv)
+endif()
+if(APPLE)
+    target_link_libraries(vxcore PRIVATE "-framework CoreFoundation")
 endif()
 
 

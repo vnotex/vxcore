@@ -1,6 +1,8 @@
 // Copyright (c) 2025 VNote
 #include "standard_buffer_provider.h"
 
+#include <vxcore/notebook_json_keys.h>
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -9,12 +11,11 @@
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <unordered_set>
-#include <vxcore/notebook_json_keys.h>
 
 #include "folder.h"
 #include "folder_manager.h"
 #include "notebook.h"
-#include "sync/git/git_conflict_resolver.h"
+#include "sync/sync_encryption_guard.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 
@@ -147,8 +148,7 @@ void StandardBufferProvider::SetFileState(const std::string &path, const nlohman
 VxCoreError StandardBufferProvider::RequireProtectedState(bool writing) const {
   if (!encrypted_) return VXCORE_ERR_UNSUPPORTED;
   if (protection_error_ != VXCORE_OK) return protection_error_;
-  const auto conflict_error = GitConflictResolver::CheckEncryptionKeyConflict(
-      notebook_->GetMetadataFolder() + "/vx_sync");
+  const auto conflict_error = CheckNotebookEncryptionSyncState(notebook_->GetMetadataFolder());
   if (conflict_error != VXCORE_OK) return conflict_error;
   if (writing) {
     const auto error = notebook_->CheckWritable();
@@ -191,8 +191,7 @@ VxCoreError StandardBufferProvider::LoadEncryptedContent(std::vector<uint8_t> &o
   return ProtectedResult([&]() -> VxCoreError {
     if (!encrypted_) return VXCORE_ERR_UNSUPPORTED;
     if (protection_error_ != VXCORE_OK) return protection_error_;
-    const auto conflict_error = GitConflictResolver::CheckEncryptionKeyConflict(
-        notebook_->GetMetadataFolder() + "/vx_sync");
+    const auto conflict_error = CheckNotebookEncryptionSyncState(notebook_->GetMetadataFolder());
     if (conflict_error != VXCORE_OK) return conflict_error;
     auto *encryption = notebook_->GetEncryption();
     if (!encryption) return VXCORE_ERR_ENCRYPTION_LOCKED;

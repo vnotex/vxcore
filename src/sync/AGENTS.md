@@ -2,7 +2,7 @@
 
 src/sync contains the pluggable notebook synchronization backend layer.
 It provides an abstract `ISyncBackend` interface, a `SyncManager` orchestrator, and all supporting types.
-GitSyncBackend is implemented; WebDAV/OneDrive/etc. remain future.
+GitSyncBackend and WebDavSyncBackend are implemented. The application recognizes exactly `git` and `webdav`.
 
 ## Architecture
 
@@ -15,12 +15,12 @@ SyncManager                         ← Orchestrator (per-notebook backend dispa
     ├── backends_  map<id, unique_ptr<ISyncBackend>>   ← Concrete backend instances
     ├── states_    map<id, SyncState>                   ← Per-notebook sync state
     ├── configs_   map<id, SyncConfig>                  ← Per-notebook sync config (runtime)
-    └── dirty_notebooks_  set<id>                       ← Notebooks with unsynced changes (via EventManager)
+    └── dirty_tracker_  DirtyTracker                    ← Paths plus per-notebook mutation generations
 
-ISyncBackend                        ← Pure virtual interface (7 methods including virtual destructor; reduced from 10 in Wave 4.5 of sync-backend-phase4 which removed Push/Pull/Shutdown)
+ISyncBackend                        ← Synchronous backend contract with optional split phases
     │
     ├── GitSyncBackend (libgit2-based)
-    ├── WebDavSyncBackend (future)
+    ├── WebDavSyncBackend (libcurl + pugixml)
     ├── OneDriveSyncBackend (future)
     ├── DropboxSyncBackend (future)
     └── BaiduNetDiskSyncBackend (future)
@@ -83,7 +83,7 @@ Every SyncManager method that operates on a notebook follows this pattern:
 | `git/git_conflict_resolver.{h,cpp}` | `GitConflictResolver` class: GetConflicts + ResolveConflict |
 | `git/libgit2_init.h` | `LibGit2Init` RAII helper that calls `git_libgit2_init`/`shutdown` |
 | `git/libgit2_init.cpp` | Reference-counted `git_libgit2_init` wrapper (thread-safe) |
-| `sync_builtin_backends.cpp` | `RegisterBuiltinBackends(SyncBackendRegistry&)` — explicit one-shot registration of built-in backends ("git"). Called from `vxcore_context_create()` exactly once at startup; idempotent (first-wins). Replaces the old static-init `BackendRegistration` token + `EnsureGitBackendLinked` anchor that MSVC `/OPT:REF` dead-stripped from `vnote.exe`. |
+| `sync_builtin_backends.cpp` | Explicit `RegisterBuiltinBackends` registers `git` and `webdav` once through the registry. No static initializer or linker anchor. |
 
 ### Related Files Outside src/sync
 
@@ -135,8 +135,8 @@ enum class SyncConflictResolution {
 | `SyncConfig` | `enabled`, `backend`, `remote_url`, `auto_sync_enabled`, `exclude_paths`, `backend_options`, `auto_commit_merges` | Has `FromJson()`/`ToJson()`. Default `auto_sync_enabled`: true. Default excludes: `*.vswp`, `vx_notebook/vx_sync/`. `backend_options` is an opaque JSON bag for backend-specific config. `auto_commit_merges` (default true) gates Pull auto-commit behavior — see Pull Auto-Commit Semantics below. |
 | `SyncProgress` | `message`, `percentage`, `current_state` | Passed to `SyncProgressCallback` during sync operations |
 | `SyncFileInfo` | `path`, `status` | Per-file sync status |
-| `SyncConflictInfo` | `path`, `local_modified_utc`, `remote_modified_utc`, `is_binary` | Conflict metadata for resolution UI |
-| `SyncCredentials` | `username`, `password`, `ssh_public_key_path`, `ssh_private_key_path`, `personal_access_token`, `author_name`, `author_email`, `extra` | NOT stored in notebook config. On the Qt side the PAT lives in the OS keychain via `SyncCredentialsStore` (see `src/core/services/syncservice.cpp`); vxcore itself never persists credentials. `extra` is an opaque JSON bag for backend-specific credentials. |
+| `SyncConflictInfo` | `path`, `local_modified_utc`, `remote_modified_utc`, `is_binary`, `can_keep_both` | `canKeepBoth` is backend data. Metadata/encrypted WebDAV conflicts and encrypted Git conflicts refuse Keep Both. |
+| `SyncCredentials` | `personal_access_token`, `author_name`, `author_email`, `extra` | Runtime only. Git uses `pat`; WebDAV uses `extra.username` and `extra.password`. No credentials enter notebook config or durable sync state. |
 
 ### Callback
 
@@ -146,44 +146,22 @@ using SyncProgressCallback = std::function<void(const SyncProgress &progress, vo
 
 > **Integration note (audit D10)**: backends MUST honour a non-null callback
 > when one is supplied, but as of today the orchestrator (`SyncManager::TriggerSync`)
-> passes `nullptr, nullptr` to backends — so the callback is currently a
-> contract-only feature. Wiring a real callback through the C API is tracked
-> as a follow-up.
+> forwards progress through its dispatcher. Deferred composite triggers use the same guarded
+> phases as staged callers; WebDavSyncBackend::Sync also supports standalone callback callers.
 
 ## ISyncBackend Interface
 
-```cpp
-class ISyncBackend {
-public:
-  virtual ~ISyncBackend() = default;
+`sync_backend.h` is authoritative. Implement identity/capabilities/initialization, composite
+`Sync`, network-free status/conflicts, resolution, and any advertised optional features.
+Credential providers and cancellation tokens are snapshotted under short mutexes; callbacks
+and network work never execute under a state mutex. `GetLastError` returns fixed redacted
+operation diagnostics. There are no Push, Pull, Shutdown or SetCredentials virtuals.
 
-  virtual std::string GetName() const = 0;
-  virtual SyncCapabilities GetCapabilities() const = 0;
-  virtual bool IsInitialized() const = 0;
-  virtual VxCoreError Initialize(const std::string &root_folder,
-                                 const SyncConfig &config) = 0;
-  virtual VxCoreError SetCredentials(const SyncCredentials &creds);  // REMOVED in Wave 6.3 F4.4 — credentials flow via ICredentialProvider
-  virtual VxCoreError Sync(SyncProgressCallback callback, void *userdata) = 0;
-  virtual VxCoreError GetStatus(std::vector<SyncFileInfo> &out_files) = 0;
-  virtual VxCoreError GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) = 0;
-  virtual VxCoreError ResolveConflict(const std::string &path,
-                                      SyncConflictResolution resolution) = 0;
-};
-```
-
-| Method | When Called | Expected Behavior |
-|--------|-----------|-------------------|
-| `Initialize` | On `EnableSync` after backend is created | Set up working directory, connect to remote, validate config |
-| `Sync` | On `TriggerSync` (full round-trip) | Stage + fetch + merge + push. Report progress via callback |
-| `GetStatus` | On `GetSyncStatus` | Return per-file status list |
-| `GetConflicts` | On `GetConflicts` | Return list of unresolved conflicts |
-| `ResolveConflict` | On `ResolveConflict` | Apply resolution strategy to a specific file |
-
-> **Wave 4.5 note**: the standalone `Shutdown`, `Push`, and `Pull` virtuals were
-> removed in F1.3 of sync-backend-phase4 (rip-and-replace; no shims). Teardown
-> happens via the destructor; the composite `Sync()` round-trip is the only
-> remote-write entry point. New backends MUST NOT add Push/Pull methods —
-> compose their phases inside `Sync()`.
+The split entry points retain their names: `StageAndCommit`, `FetchRebasePush`, and optional
+`ApplySync(protected_paths, changed_paths)`. A backend without `DeferredLocalApply` (bit 7)
+has no deferred transaction; its default ApplySync clears output and succeeds. WebDAV overrides
+all three phases; Git keeps its existing two-phase behavior. `Clone` uses a caller-owned EMPTY
+staging directory and leaves runtime registration to the caller.
 
 ## C API Reference
 
@@ -193,7 +171,7 @@ Output strings must be freed with `vxcore_string_free()`.
 | Function | Parameters | Notes |
 |----------|-----------|-------|
 | `vxcore_sync_enable` | `notebook_id`, `config_json`, `credentials_json` (nullable, see next row) | JSON keys: `backend`, `remoteUrl`, `autoSyncEnabled`, `backendOptions` |
-| `vxcore_sync_disable` | `notebook_id` | Clears backend, state, and config for notebook |
+| `vxcore_sync_disable` | `notebook_id` | Clears runtime backend/state/cache only; the consumer owns portable routing and keychain cleanup |
 | `vxcore_sync_trigger` | `notebook_id` | Returns `SYNC_NOT_ENABLED` or `NOT_IMPLEMENTED` until backend exists. Clears dirty state on success. |
 | `vxcore_sync_get_status` | `notebook_id`, `out_status_json` | Output: `{"state":"idle","files":[{"path":"...","status":"..."}]}` |
 | `vxcore_sync_get_conflicts` | `notebook_id`, `out_conflicts_json` | Output: `{"conflicts":[{"path":"...","localModifiedUtc":0,"remoteModifiedUtc":0,"isBinary":false}]}` |
@@ -202,6 +180,11 @@ Output strings must be freed with `vxcore_string_free()`.
 | `vxcore_sync_enable` (cont.) | `credentials_json` (4th arg, nullable) | When non-NULL: enable + set credentials atomically (needed when Initialize requires auth, e.g., authenticated git clone). When NULL: legacy creds-less path via NoOpCredentialProvider. |
 | `vxcore_sync_is_ready` | `notebook_id`, `out_ready` | Returns 1 if `syncEnabled` is true AND `syncBackend` is non-empty AND `syncRemoteUrl` is non-empty. Reads notebook JSON directly; **bypasses `SyncManager`** (no `states_`/`backends_` check). |
 | `vxcore_sync_get_last_sync_utc` | `notebook_id`, `out_utc_millis` | Returns the per-device last successful sync timestamp (ms since Unix epoch) from `metadata.db`. **Bypasses `SyncManager`**. Returns 0 if never synced on this device. |
+| `vxcore_sync_get_capabilities` | `notebook_id`, required `out_capabilities` | Initialized output bitmask; query before selecting the apply path |
+| `vxcore_sync_apply_phase` | `notebook_id`, cancellation, protected-path JSON array, changed-path JSON output | Network-free installation; changed paths also returned after partial failure |
+| `vxcore_sync_set_apply_in_progress` | `notebook_id`, `active` (0/1) | Runtime reservation; not persisted read-only state |
+| `vxcore_sync_refresh_notebook` | `notebook_id` | Metadata-owner-thread refresh/finalization; no lifecycle pair or success timestamp |
+| `vxcore_sync_check_reconfiguration` | `notebook_id` | Offline persisted Git index and current WebDAV recovery check, including disabled runtime |
 
 ### JSON Key Mapping (C API ↔ C++ Struct)
 
@@ -252,6 +235,52 @@ struct NotebookConfig {
 | Recycle bin IS synced | `vx_recycle_bin/` is included so deletions propagate across devices |
 | Sync state directory: `vx_notebook/vx_sync/` | Backend-specific state (e.g., `.git/`) lives here |
 | Conflict naming: `file.sync-conflict-{timestamp}.ext` | Syncthing-style, keeps both versions |
+
+## WebDAV backend
+
+`webdav/webdav_transport.*`, `webdav_state.*`, and `webdav_sync_backend.*` separate synchronous
+HTTP/XML, durable state/path validation, and three-way reconciliation. `cmake/webdav_sources.cmake`
+is the shared source inventory. Windows/Linux use pinned static curl 8.22.0; Windows uses
+Schannel with the Windows 7 target, Linux uses OpenSSL. Apple uses the active SDK/system libcurl
+(minimum API 7.64), never a Homebrew architecture-specific fallback. pugixml 1.16 parses DAV XML.
+
+The URL names one existing dedicated HTTPS collection. Initialize validates notebook UUID and
+probes strong ETags/create-if-absent/tagged MOVE/conditional file DELETE using journaled owned
+scratch resources only. First publication conditionally claims `vx_notebook/config.json` before
+other user files. Missing baseline means non-destructive union, never deletion propagation.
+
+Private state is `vx_notebook/vx_sync/webdav/{state,pending}.json` plus immutable snapshots;
+probe ownership has a separate same-schema `probe` ledger. Version-1 bindings contain notebook
+UUID, canonical URL and username SHA-256, never a password or absolute local root. Validate all
+journal paths/hashes/stages before use. Intent precedes mutation; confirmed stages and both-side
+verification precede baseline acknowledgement. Lost acknowledgements revalidate old/new/other
+state rather than replaying unsafe writes. Conflicts and selected resolutions survive restart;
+new local hashes or remote ETags invalidate stale choices.
+
+Remote content remains ordinary editable files: notes, assets, unindexed files, comments, folder
+metadata and recycle data. Ciphertext is copied unchanged. Exclude private sync/transfer state,
+`.git`, swap files and owned staging artifacts. Local reserved `.vnote-webdav-tmp-` names and
+symlinks/reparse points are errors; other clients' scratch is never collected. Project only the
+four routing fields out of synchronized notebook config and restore device routing on local
+installation. Preserve unknown configuration fields and raw bytes for every other file.
+
+A complete remote scan precedes deletion decisions. File writes use verified scratch PUT plus
+conditioned MOVE; file deletes use exact If-Match. Never DELETE a remote collection; retain empty
+containers and preserve concurrently added children. File/collection collisions fail before
+mutations. Conflicts preserve whole versions, with no text/JSON merge. Keep Both is forbidden for
+metadata and encrypted content; ordinary binary files remain supported.
+
+TLS verification is mandatory. Auth is challenge Basic/Digest, and PUT uses Expect:100-continue
+before streaming. Writes never follow redirects or transparently replay. Read redirects are
+bounded and same-origin/root-contained. DAV XML is limited to 16 MiB, traversal to depth 256 and
+250,000 resources; invalid/partial responses fail closed. Bodies stream in 64 KiB chunks, with
+30 s connect, 60 s no-progress and 30 min request limits; multi-wait cancellation polls within
+100 ms. HTTP loopback and a test CA are available only under actual vxcore test mode.
+
+`tests/run_webdav_test.py -- <executable> [args]` owns an isolated authenticated loopback fixture,
+uses TLS by default and never installs a host CA. `--http` is direct-core-only. Tests cover real
+HTTP, process crash boundaries and durable file state; fixture success does not establish
+Nextcloud/Apache or untested platform compatibility.
 
 ## Git Sync Backend
 
@@ -470,190 +499,18 @@ All three test targets follow the [standalone test pattern](../../AGENTS.md#stan
 
 ## How to Add a New Sync Backend
 
-### Step 1: Create the Backend Class
-
-Create `src/sync/my_sync_backend.h` and `src/sync/my_sync_backend.cpp`:
-
-```cpp
-// src/sync/my_sync_backend.h
-#ifndef VXCORE_MY_SYNC_BACKEND_H
-#define VXCORE_MY_SYNC_BACKEND_H
-
-#include "sync_backend.h"
-
-namespace vxcore {
-
-class MySyncBackend : public ISyncBackend {
- public:
-  MySyncBackend();
-  ~MySyncBackend() override;
-
-  VxCoreError Initialize(const std::string &root_folder,
-                         const SyncConfig &config) override;
-  VxCoreError Shutdown() override;
-  VxCoreError Sync(SyncProgressCallback callback, void *userdata) override;
-  VxCoreError Push(SyncProgressCallback callback, void *userdata) override;
-  VxCoreError Pull(SyncProgressCallback callback, void *userdata) override;
-  VxCoreError GetStatus(std::vector<SyncFileInfo> &out_files) override;
-  VxCoreError GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) override;
-  VxCoreError ResolveConflict(const std::string &path,
-                              SyncConflictResolution resolution) override;
-
- private:
-  std::string root_folder_;
-  SyncConfig config_;
-  bool initialized_ = false;
-};
-
-}  // namespace vxcore
-
-#endif  // VXCORE_MY_SYNC_BACKEND_H
-```
-
-### Step 2: Implement the Methods
-
-```cpp
-// src/sync/my_sync_backend.cpp
-#include "my_sync_backend.h"
-#include "utils/logger.h"
-
-namespace vxcore {
-
-MySyncBackend::MySyncBackend() = default;
-MySyncBackend::~MySyncBackend() { Shutdown(); }
-
-VxCoreError MySyncBackend::Initialize(const std::string &root_folder,
-                                      const SyncConfig &config) {
-  root_folder_ = root_folder;
-  config_ = config;
-
-  // TODO: Set up sync working directory at root_folder_/vx_notebook/vx_sync/
-  // TODO: Connect to remote using config.remote_url
-  // TODO: Validate remote is reachable
-
-  initialized_ = true;
-  VXCORE_LOG_INFO("MySyncBackend initialized for: %s", root_folder.c_str());
-  return VXCORE_OK;
-}
-
-VxCoreError MySyncBackend::Shutdown() {
-  if (!initialized_) return VXCORE_OK;
-  // TODO: Close connections, flush state
-  initialized_ = false;
-  return VXCORE_OK;
-}
-
-VxCoreError MySyncBackend::Sync(SyncProgressCallback callback, void *userdata) {
-  if (!initialized_) return VXCORE_ERR_UNKNOWN;
-
-  // Report progress via callback
-  if (callback) {
-    SyncProgress progress;
-    progress.current_state = SyncState::kStaging;
-    progress.message = "Staging local changes...";
-    progress.percentage = 0.1f;
-    callback(progress, userdata);
-  }
-
-  // TODO: Implement actual sync logic
-  // 1. Stage local changes (kStaging)
-  // 2. Fetch remote changes (kFetching)
-  // 3. Analyze differences (kAnalyzing)
-  // 4. Merge changes (kMerging)
-  // 5. Push to remote (kPushing)
-
-  return VXCORE_OK;
-}
-
-// ... implement Push, Pull, GetStatus, GetConflicts, ResolveConflict similarly
-}  // namespace vxcore
-```
-
-### Step 3: Register in SyncManager
-
-Add a factory branch to `SyncManager::EnableSyncImpl()` in `sync_manager.cpp`:
-
-> **Note**: The factory-branch approach is an explicit code smell tracked as
-> F1.1 in `sync-backend-phase4.md`. A registry-based replacement is planned;
-> until it lands, the if/else chain remains the integration point.
-
-```cpp
-// In SyncManager::EnableSyncImpl(), after the existing "git" branch:
-if (config.backend == "git") {
-  backend = std::make_unique<GitSyncBackend>();
-} else if (config.backend == "my_backend") {
-  backend = std::make_unique<MySyncBackend>();
-}
-```
-
-The existing `EnableSyncImpl` handles credential forwarding, rollback on failure,
-and state management — you only need to add the factory branch.
-
-### Step 4: Add to Build
-
-Add the new `.cpp` file to `src/CMakeLists.txt`:
-
-```cmake
-set(VXCORE_SOURCES
-  # ... existing sources ...
-  sync/my_sync_backend.cpp
-)
-```
-
-### Step 5: Add Tests
-
-Most sync coverage now lives in dedicated test files (`tests/test_sync.cpp`
-for the SyncManager + JSON contract, plus the `test_git_sync_*.cpp` and
-`test_gitkeep_*.cpp` suites for end-to-end libgit2 fixtures). Add cases to
-the most specific existing file, or create a new `tests/test_{topic}.cpp`
-when you are exercising a separate concern. Follow the existing test pattern:
-
-```cpp
-int test_my_sync_backend_init() {
-  std::cout << "  Running test_my_sync_backend_init..." << std::endl;
-  cleanup_test_dir(get_test_path("test_my_sync"));
-
-  VxCoreContextHandle ctx = nullptr;
-  VxCoreError err = vxcore_context_create(nullptr, &ctx);
-  ASSERT_EQ(err, VXCORE_OK);
-
-  char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_my_sync").c_str(),
-                               "{\"name\":\"My Sync Test\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
-  ASSERT_EQ(err, VXCORE_OK);
-
-  // Enable with your backend
-  err = vxcore_sync_enable(ctx, notebook_id,
-                           "{\"backend\":\"my_backend\",\"remoteUrl\":\"test://repo\"}");
-  ASSERT_EQ(err, VXCORE_OK);
-
-  // Trigger should now succeed (backend exists)
-  err = vxcore_sync_trigger(ctx, notebook_id);
-  ASSERT_EQ(err, VXCORE_OK);
-
-  vxcore_string_free(notebook_id);
-  vxcore_context_destroy(ctx);
-  cleanup_test_dir(get_test_path("test_my_sync"));
-  std::cout << "  ✓ test_my_sync_backend_init passed" << std::endl;
-  return 0;
-}
-```
-
-### Checklist for New Backend
-
-- [ ] Create `src/sync/{name}_sync_backend.h` with class inheriting `ISyncBackend`
-- [ ] Create `src/sync/{name}_sync_backend.cpp` implementing all required methods (the pure virtuals plus optionally overriding `ReplaceCredsProvider`/`GetCredsProviderSnapshot` if you need to store the provider for credential access)
-- [ ] Add factory branch in `SyncManager::EnableSyncImpl()`
-- [ ] Add `.cpp` to `src/CMakeLists.txt` `VXCORE_SOURCES`
-- [ ] Add test cases to the most relevant existing file under `tests/` (e.g., `test_sync.cpp` for SyncManager wiring, `test_git_sync_*.cpp` for libgit2-backed coverage) or create a new `tests/test_{topic}.cpp`
-- [ ] If backend needs external library (e.g., libgit2), add `find_package` + `target_link_libraries` in `CMakeLists.txt`
-- [ ] Use `SyncProgressCallback` to report progress during `Sync()`, `Push()`, `Pull()`
-- [ ] Handle credentials via `SyncCredentials` struct (passed at runtime, not stored in config)
-- [ ] Read backend-specific options from `SyncConfig::backend_options` and `SyncCredentials::extra`
-- [ ] Store backend-specific state in `<notebook_root>/vx_notebook/vx_sync/`
-- [ ] Respect `SyncConfig::exclude_paths` when scanning for changes
-- [ ] Return appropriate error codes (see table in Validation Flow section)
+- Implement the current `ISyncBackend` contract in focused sources, including every advertised
+  capability and the production split-phase path. Never expose a selectable placeholder.
+- Register explicitly in `sync_builtin_backends.cpp` through the existing config/provider factory.
+  Do not add factory branches to SyncManager or static registration tokens.
+- Put backend-private files under an owned subtree and exclude them from transfer. Keep credentials
+  exclusively in runtime providers. Use shared sync JSON keys at the C/Qt boundary.
+- Add a shared CMake source inventory when direct-compile tests need private symbols; update every
+  transitive source closure when adding a core utility dependency.
+- Keep scheduling in the consumer. Backends have no worker pool, timer or automatic retry policy
+  added on behalf of the GUI. Support cooperative cancellation and call progress outside locks.
+- Verify observable data, conditional mutations, failure recovery and credential boundaries through
+  the real transport. Update application settings/lifecycle/conflict capability consumers together.
 
 ## Existing Tests
 
@@ -763,14 +620,26 @@ These rules govern every code path that crosses a thread boundary, fires a callb
 
 The Qt-side mirror of these rules lives in `src/core/services/AGENTS.md` § Threading rules for SyncService.
 
-### Two-phase sync API (consumer concurrency seam)
+### Staged sync API (consumer concurrency seam)
 
-`vxcore_sync_trigger_cancellable` is still the simplest entry point and bundles staging + network internally. Consumers that need to release a per-notebook lock (e.g. an editor save mutex) the moment the local commit lands, BEFORE blocking on remote I/O, should call the two-phase API instead:
+Query capabilities first. `vxcore_sync_stage_only` snapshots/stages with the caller's notebook
+IO gate held. `vxcore_sync_network_phase` performs remote exchange without that gate. For
+`DeferredLocalApply`, incoming bytes remain private until a GUI buffer reservation/save drain,
+`vxcore_sync_set_apply_in_progress`, and gated `vxcore_sync_apply_phase`. The apply flag makes
+ordinary core mutations return busy while preserving read-only/encryption-recovery precedence.
 
-- `vxcore_sync_stage_only` performs ONLY the working-tree-touching phases (`StageAll` + `CommitIndex`). It does no network I/O and is safe to call while holding a consumer-side per-notebook lock that will be released before the network phase. The `out_did_commit` out-parameter reports whether a commit was actually produced.
-- `vxcore_sync_network_phase` performs ONLY the network phases (`FetchOrigin` + `RebaseOntoOrigin` + `PushOrigin`). The caller must have already run `vxcore_sync_stage_only` (or `vxcore_sync_trigger_cancellable`) for the same notebook in the same logical sync attempt. This call is safe to make without holding the consumer's per-notebook lock.
+After worker publication, the metadata owner calls `vxcore_sync_refresh_notebook` while reserved.
+It reloads validated config and folder caches only when needed, rebuilds metadata transactionally,
+and preserves the last-sync timestamp. Partial failure retains its original result; failed refresh
+remains pending for retry. Successful acknowledgement clears dirty work only if the generation
+captured before preparation is unchanged. Duplicate dirty marks advance that generation. Runtime
+registration, not config-cache presence, is the mutation subscription predicate.
 
-Both halves honor the same `VxCoreSyncCancellation *` token and check it at every phase boundary, matching the existing `vxcore_sync_trigger_cancellable` cancellation semantics. The split is purely a lock-scope seam for embedders; consumers that do not need fine-grained locking should keep using the bundled trigger.
+The Qt consumer owns exactly one start/finish pair and writes the successful timestamp on its GUI
+thread. Composite core trigger remains for serialized non-Qt callers; deferred backends use the
+same guarded phases so key-envelope replacement cannot bypass the key-lock preflight. Never use
+composite trigger on the Qt worker. `CheckNotebookEncryptionSyncState` inspects persisted Git and
+WebDAV recovery even when unregistered; a WebDAV child alone is not corrupt Git state.
 
 ## SyncManager Locking Discipline
 
@@ -780,9 +649,10 @@ Wave 10.1 (F2.4 part 2) made `state_mutex_` real. It is the single coarse mutex 
 
 | Member | Why |
 |---|---|
-| `configs_cache_` | Read-through cache populated by `EnableSyncImpl` and `GetSyncConfig` slow path; read by `mark_dirty` event lambda from any thread. |
-| `states_` | Per-notebook `SyncState`; mutated by `EnableSync`/`DisableSync`/`TriggerSync`/`ResolveConflict`. |
-| `backends_` | Per-notebook `unique_ptr<ISyncBackend>`; mutated by `EnableSync`/`DisableSync`; read by every dispatching method. |
+| `configs_cache_` | Read-through routing cache; invalidation after metadata refresh must not suppress dirty events. |
+| `states_` | Per-notebook state and authoritative runtime-presence predicate for dirty marks. |
+| `backends_` | Backend ownership; never invoke methods/destructors while holding the state mutex. |
+| `deferred_phases_`, `last_errors_` | Captured generation, apply/refresh/cancellation facts and redacted operation diagnostics. |
 
 ### What it does NOT guard
 

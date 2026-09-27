@@ -1,4 +1,5 @@
 include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/git_sync_sources.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/webdav_sources.cmake)
 
 # Test sources are UTF-8 without a BOM. Without /utf-8 MSVC decodes them using
 # the active ANSI code page, silently mangling every non-ASCII string literal —
@@ -497,6 +498,7 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/search/search_file_info.cpp
     ${CMAKE_SOURCE_DIR}/src/search/search_query.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/path_provider.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_encryption_guard.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -938,3 +940,51 @@ target_link_libraries(test_vxcore_sync_clone_capi PRIVATE git_sync_test_helpers 
 # git_sync_test_helpers (bare-repo fixture) + nlohmann_json.
 add_vxcore_test(test_vxcore_sync_clone_cancellable)
 target_link_libraries(test_vxcore_sync_clone_cancellable PRIVATE git_sync_test_helpers nlohmann_json)
+
+
+# Internal backend tests use the production source inventory, without exporting test-only ABI.
+# Keep a single core instance per process (including ConfigManager test-mode state).
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(_webdav_test_core vxcore)
+if(VXCORE_BUILD_SHARED)
+    get_target_property(_webdav_core_sources vxcore SOURCES)
+    get_target_property(_webdav_core_includes vxcore INCLUDE_DIRECTORIES)
+    get_target_property(_webdav_core_links vxcore LINK_LIBRARIES)
+    set(_webdav_core_absolute_sources "")
+    foreach(_source IN LISTS _webdav_core_sources)
+        if(IS_ABSOLUTE "${_source}")
+            list(APPEND _webdav_core_absolute_sources "${_source}")
+        else()
+            list(APPEND _webdav_core_absolute_sources "${CMAKE_SOURCE_DIR}/src/${_source}")
+        endif()
+    endforeach()
+    add_library(vxcore_webdav_test_core STATIC ${_webdav_core_absolute_sources})
+    target_include_directories(vxcore_webdav_test_core PRIVATE ${_webdav_core_includes})
+    target_link_libraries(vxcore_webdav_test_core PRIVATE ${_webdav_core_links})
+    if(WIN32)
+        target_compile_definitions(vxcore_webdav_test_core PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+    set(_webdav_test_core vxcore_webdav_test_core)
+endif()
+add_executable(test_webdav_transport test_webdav_transport.cpp)
+target_include_directories(test_webdav_transport PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_webdav_transport PRIVATE ${_webdav_test_core} vxcore_webdav_curl pugixml::pugixml sodium)
+if(WIN32)
+    target_link_libraries(test_webdav_transport PRIVATE shell32 ole32)
+elseif(APPLE)
+    target_link_libraries(test_webdav_transport PRIVATE Iconv::Iconv "-framework CoreFoundation")
+else()
+    target_link_libraries(test_webdav_transport PRIVATE Iconv::Iconv)
+endif()
+add_test(NAME test_webdav_transport COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_webdav_test.py -- $<TARGET_FILE:test_webdav_transport>)
+
+
+add_executable(test_webdav_sync test_webdav_sync.cpp)
+target_include_directories(test_webdav_sync PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_webdav_sync PRIVATE ${_webdav_test_core} vxcore_webdav_curl pugixml::pugixml sodium)
+add_test(NAME test_webdav_sync COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/run_webdav_test.py -- $<TARGET_FILE:test_webdav_sync>)
+set_tests_properties(test_webdav_sync PROPERTIES TIMEOUT 900)

@@ -40,12 +40,15 @@ inline constexpr const char *kJsonKeyPat = "pat";
 inline constexpr const char *kJsonKeyAuthorName = "authorName";
 inline constexpr const char *kJsonKeyAuthorEmail = "authorEmail";
 inline constexpr const char *kJsonKeyExtra = "extra";
+inline constexpr const char *kJsonKeyUsername = "username";
+inline constexpr const char *kJsonKeyPassword = "password";
 
 // SyncConflictInfo JSON keys (emitted by vxcore_sync_get_conflicts).
 inline constexpr const char *kJsonKeyPath = "path";
 inline constexpr const char *kJsonKeyLocalModifiedUtc = "localModifiedUtc";
 inline constexpr const char *kJsonKeyRemoteModifiedUtc = "remoteModifiedUtc";
 inline constexpr const char *kJsonKeyIsBinary = "isBinary";
+inline constexpr const char *kJsonKeyCanKeepBoth = "canKeepBoth";
 
 // GitOptions keys (parsed from SyncConfig::backend_options for the git backend).
 inline constexpr const char *kJsonKeySslVerify = "sslVerify";

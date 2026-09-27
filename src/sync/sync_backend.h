@@ -17,21 +17,21 @@ class ICredentialProvider;
 // Capability bits advertised by an ISyncBackend implementation. The set of
 // bits returned by GetCapabilities() lets callers query optional features
 // without subclass-specific knowledge (e.g. progress UIs, cancellation glue,
-// auth prompts). Capabilities are exposed at the C++ level only — there is
-// no `vxcore_sync_get_capabilities` C ABI in v1.
+// auth prompts). The same bitmask is exposed by vxcore_sync_get_capabilities.
 //
 // Task 4.1 of sync-backend-phase4 introduces these initial bits. New bits
 // MUST be appended (do NOT renumber existing bits — third-party backends
 // may already encode them in persisted configuration in the future).
 enum class SyncCapability : uint32_t {
   None = 0,
-  ConflictDetection  = 1u << 0,
+  ConflictDetection = 1u << 0,
   ConflictResolution = 1u << 1,
-  IncrementalSync    = 1u << 2,
-  AuthRequired       = 1u << 3,
-  Cancellation       = 1u << 4,
-  ProgressReporting  = 1u << 5,
-  Cloneable          = 1u << 6,
+  IncrementalSync = 1u << 2,
+  AuthRequired = 1u << 3,
+  Cancellation = 1u << 4,
+  ProgressReporting = 1u << 5,
+  Cloneable = 1u << 6,
+  DeferredLocalApply = 1u << 7,
 };
 
 // Bitwise-OR of SyncCapability values. Kept as a plain uint32_t alias rather
@@ -127,6 +127,9 @@ class ISyncBackend {
 
   virtual VxCoreError GetStatus(std::vector<SyncFileInfo> &out_files) = 0;
 
+  // Last operation diagnostic: fixed redacted text, safe to query without network I/O.
+  virtual std::string GetLastError() const { return {}; }
+
   virtual VxCoreError GetConflicts(std::vector<SyncConflictInfo> &out_conflicts) = 0;
 
   virtual VxCoreError ResolveConflict(const std::string &path,
@@ -175,6 +178,18 @@ class ISyncBackend {
 
   virtual VxCoreError FetchRebasePush() {
     return VXCORE_ERR_NOT_IMPLEMENTED;
+  }
+
+  // Install a deferred local transaction without contacting the remote.
+  // DeferredLocalApply backends require callers to serialize local mutations
+  // around this phase. Protected notebook-relative paths must not be replaced.
+  // Report actually installed paths even if a later operation fails.
+  // Backends without a deferred transaction have nothing to apply.
+  virtual VxCoreError ApplySync(const std::vector<std::string> &protected_paths,
+                                std::vector<std::string> &out_changed_paths) {
+    (void)protected_paths;
+    out_changed_paths.clear();
+    return VXCORE_OK;
   }
 };
 

@@ -11,9 +11,9 @@
 #endif
 #include <windows.h>
 #endif
-#include <unordered_map>
-
 #include <vxcore/notebook_json_keys.h>
+
+#include <unordered_map>
 
 #include "bundled_notebook.h"
 #include "config_manager.h"
@@ -22,7 +22,7 @@
 #include "core/folder_manager.h"
 #include "metadata_store.h"
 #include "raw_notebook.h"
-#include "sync/git/git_conflict_resolver.h"
+#include "sync/sync_encryption_guard.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -70,8 +70,7 @@ VxCoreError CheckNotebookIdentity(const Notebook &notebook, bool writable,
   if (notebook.GetType() != NotebookType::Bundled) {
     return VXCORE_ERR_UNSUPPORTED;
   }
-  const auto conflict_error = GitConflictResolver::CheckEncryptionKeyConflict(
-      notebook.GetMetadataFolder() + "/vx_sync");
+  const auto conflict_error = CheckNotebookEncryptionSyncState(notebook.GetMetadataFolder());
   if (conflict_error != VXCORE_OK) return conflict_error;
   if (!Encryption::IsCanonicalUuid(notebook.GetId())) {
     return VXCORE_ERR_ENCRYPTION_FORMAT;
@@ -1262,6 +1261,7 @@ VxCoreError NotebookManager::CloseNotebook(const std::string &notebook_id) {
     VXCORE_LOG_WARN("Notebook not found for closing: id=%s", notebook_id.c_str());
     return VXCORE_ERR_NOT_FOUND;
   }
+  if (it->second->IsSyncApplyInProgress()) return VXCORE_ERR_SYNC_IN_PROGRESS;
 
   // Capture the cleaned root before the runtime entry is erased so the session
   // record can be matched by root even when its persisted id is stale.

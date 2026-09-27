@@ -155,6 +155,13 @@ int test_sync_builtin_git_registered() {
   auto names = vxcore::SyncBackendRegistry::Instance().Names();
   bool has_git = std::find(names.begin(), names.end(), std::string("git")) != names.end();
   ASSERT_TRUE(has_git);
+  ASSERT_TRUE(std::find(names.begin(), names.end(), std::string("webdav")) != names.end());
+  auto webdav = vxcore::SyncBackendRegistry::Instance().Create(
+      "webdav", vxcore::SyncConfig{}, std::make_shared<vxcore::NoOpCredentialProvider>());
+  ASSERT_NOT_NULL(webdav.get());
+  ASSERT_EQ(webdav->GetName(), "webdav");
+  ASSERT_TRUE((webdav->GetCapabilities() &
+               static_cast<uint32_t>(vxcore::SyncCapability::DeferredLocalApply)) != 0);
 
   vxcore_context_destroy(ctx);
   std::cout << "  \xE2\x9C\x93 test_sync_builtin_git_registered passed" << std::endl;

@@ -81,6 +81,15 @@ if(VXCORE_INSTALL)
     install(FILES "${_vxcore_sodium_source_dir}/LICENSE"
         DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/vxcore RENAME LICENSE.libsodium-cmake)
 
+    get_target_property(_vxcore_pugixml_license pugixml VXCORE_LICENSE_FILE)
+    install(FILES "${_vxcore_pugixml_license}"
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/vxcore RENAME LICENSE.pugixml)
+    if(NOT APPLE)
+        get_target_property(_vxcore_curl_license vxcore_webdav_curl VXCORE_LICENSE_FILE)
+        install(FILES "${_vxcore_curl_license}"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/vxcore RENAME LICENSE.curl)
+    endif()
+
     install(DIRECTORY include/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
         FILES_MATCHING PATTERN "*.h"

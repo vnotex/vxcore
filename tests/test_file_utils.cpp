@@ -461,6 +461,36 @@ int test_atomic_file_publication() {
   ASSERT_FALSE(std::filesystem::exists(base / "missing"));
   ASSERT_EQ(vxcore::WriteFileAtomic(destination, std::string()), VXCORE_OK);
   ASSERT_EQ(std::filesystem::file_size(destination), 0);
+
+#ifdef _WIN32
+  // The valid destination fits MAX_PATH; only the writer-owned suffix crosses it.
+  const auto prefixLength = base.native().size() + 1;
+  ASSERT_TRUE(prefixLength < 253);
+  const auto longDestination = base / std::wstring(253 - prefixLength, L'x');
+  {
+    std::ofstream seed(longDestination, std::ios::binary);
+    seed.write(original.data(), static_cast<std::streamsize>(original.size()));
+    seed.close();
+    ASSERT_TRUE(seed.good());
+  }
+  {
+    vxcore::AtomicFileWriter writer(longDestination);
+    ASSERT_EQ(writer.Open(), VXCORE_OK);
+    ASSERT_EQ(writer.Write(replacement.data(), replacement.size()), VXCORE_OK);
+    ASSERT_EQ(read_binary(longDestination), original);
+    ASSERT_EQ(writer.Commit(), VXCORE_OK);
+  }
+  ASSERT_EQ(read_binary(longDestination), replacement);
+  {
+    vxcore::AtomicFileWriter abandoned(longDestination);
+    ASSERT_EQ(abandoned.Open(), VXCORE_OK);
+    ASSERT_EQ(abandoned.Write(original.data(), original.size()), VXCORE_OK);
+  }
+  ASSERT_EQ(read_binary(longDestination), replacement);
+  for (const auto &entry : std::filesystem::directory_iterator(base)) {
+    ASSERT_TRUE(entry.path().filename().native().find(L".tmp-") == std::wstring::npos);
+  }
+#endif
   std::filesystem::remove_all(base);
   return 0;
 }

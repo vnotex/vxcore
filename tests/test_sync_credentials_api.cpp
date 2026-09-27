@@ -29,11 +29,13 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <string>
 
 #include "test_git_sync_helpers.h"
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
+#include "vxcore/vxcore_log.h"
 #include "vxcore/vxcore_types.h"
 
 namespace fs = std::filesystem;
@@ -181,6 +183,62 @@ static int test_enable_auth_fail() {
   return 0;
 }
 
+static int test_malformed_credentials_redacted() {
+  struct Scope {
+    VxCoreContextHandle context = nullptr;
+    std::mutex mutex;
+    std::string logs;
+    ~Scope() {
+      if (context) vxcore_context_destroy(context);
+      vxcore_log_set_handler(nullptr, nullptr);
+    }
+  } scope;
+  ASSERT_EQ(vxcore_context_create(nullptr, &scope.context), VXCORE_OK);
+  ASSERT_EQ(vxcore_log_set_handler(
+                [](VxCoreLogLevel, const char *, int, const char *message, void *userdata) {
+                  auto &capture = *static_cast<Scope *>(userdata);
+                  std::lock_guard<std::mutex> lock(capture.mutex);
+                  if (message) capture.logs.append(message);
+                },
+                &scope),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_log_set_level(VXCORE_LOG_LEVEL_TRACE), VXCORE_OK);
+  std::string fixed_error;
+  const char *config = "{\"backend\":\"git\",\"remoteUrl\":\"file:///unused\"}";
+  for (const std::string secret :
+       {"credential-marker-short", "credential-marker-with-a-different-length"}) {
+    for (const std::string prefix :
+         {"{\"pat\":\"", "{\"extra\":{\"username\":\"user\",\"password\":\""}) {
+      const auto malformed = prefix + secret;
+      for (int operation = 0; operation != 3; ++operation) {
+        VxCoreError result;
+        if (operation == 0) {
+          result =
+              vxcore_sync_enable(scope.context, "credential-parse-test", config, malformed.c_str());
+        } else if (operation == 1) {
+          result = vxcore_sync_set_credentials(scope.context, "credential-parse-test",
+                                               malformed.c_str());
+        } else {
+          char *id = reinterpret_cast<char *>(1);
+          result = vxcore_sync_clone(scope.context, "unused-clone-target", config,
+                                     malformed.c_str(), &id);
+          ASSERT_NULL(id);
+        }
+        ASSERT_EQ(result, VXCORE_ERR_JSON_PARSE);
+        const char *detail = nullptr;
+        ASSERT_EQ(vxcore_context_get_last_error(scope.context, &detail), VXCORE_OK);
+        const std::string message = detail ? detail : "";
+        ASSERT_TRUE(message.find(secret) == std::string::npos);
+        if (fixed_error.empty()) fixed_error = message;
+        ASSERT_TRUE(message == fixed_error);
+        std::lock_guard<std::mutex> lock(scope.mutex);
+        ASSERT_TRUE(scope.logs.find(secret) == std::string::npos);
+      }
+    }
+  }
+  return 0;
+}
+
 int main(int argc, char **argv) {
   vxcore_set_test_mode(1);
   vxcore_clear_test_directory();
@@ -222,11 +280,16 @@ int main(int argc, char **argv) {
     }
   }
 
-  if (!run_all && which != "valid_pat" && which != "unknown_notebook" &&
-      which != "enable_clone" && which != "enable_auth_fail") {
+  if (run_all || which == "malformed_credentials_redacted") {
+    rc = test_malformed_credentials_redacted();
+    if (rc != 0) return rc;
+  }
+
+  if (!run_all && which != "valid_pat" && which != "unknown_notebook" && which != "enable_clone" &&
+      which != "enable_auth_fail" && which != "malformed_credentials_redacted") {
     std::cerr << "Unknown case: " << which << std::endl;
     std::cerr << "Valid cases: valid_pat | unknown_notebook | enable_clone | "
-                 "enable_auth_fail"
+                 "enable_auth_fail | malformed_credentials_redacted"
               << std::endl;
     return 2;
   }
