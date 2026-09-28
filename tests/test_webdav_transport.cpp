@@ -183,8 +183,8 @@ int TestAuthenticationAndTls() {
   WebDavResource root;
   const auto production_error = production.Stat("", root);
   ConfigManager::SetTestMode(true);
-  ASSERT_EQ(production_error, RootUrl().compare(0, 8, "https://") == 0 ? VXCORE_ERR_SYNC_NETWORK
-                                                                       : VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(production_error,
+            RootUrl().compare(0, 8, "https://") == 0 ? VXCORE_ERR_SYNC_NETWORK : VXCORE_OK);
   ASSERT_TRUE(Control({{"action", "configure"}, {"anonymous_read", true}}));
   WebDavTransport anonymous(RootUrl(), SyncCredentials{}, nullptr);
   ASSERT_EQ(anonymous.Stat("", root), VXCORE_OK);
@@ -495,8 +495,11 @@ int TestReadRedirectsAndWriteRefusal() {
   ASSERT_EQ(transport.Download("alias", target.etag, directory.path, "copy"), VXCORE_OK);
   ASSERT_EQ(directory.Read("copy"), "target bytes");
   ASSERT_EQ(transport.LastResponse().corrected_url, RootUrl() + "target");
+  const auto other_scheme_target =
+      std::string(RootUrl().compare(0, 8, "https://") == 0 ? "http" : "https") +
+      RootUrl().substr(RootUrl().find("://")) + "target";
   for (const auto &location :
-       {std::string("https://127.0.0.1:1/stolen"), RootUrl() + "../escape",
+       {std::string("https://127.0.0.1:1/stolen"), other_scheme_target, RootUrl() + "../escape",
         RootUrl() + "%2e%2e/escape", RootUrl() + "target?secret=forbidden"}) {
     ASSERT_TRUE(Control({{"action", "fault"},
                          {"method", "GET"},
@@ -740,8 +743,7 @@ int TestStreamingAndCancellation() {
 int TestUnsafeLocalPathsAndUrls() {
   ASSERT_TRUE(Control({{"action", "reset"}}));
   for (const auto *url :
-       {"http://example.com/notebook/", "http://localhost/notebook/",
-        "https://user:password@example.com/notebook/", "file:///notebook/",
+       {"https://user:password@example.com/notebook/", "file:///notebook/",
         "https://example.com/notebook/?query", "https://example.com/notebook/#fragment",
         "https://example.com/notebook/%2e%2e/", "https://example.com/notebook/%2F"}) {
     WebDavTransport invalid(url, Credentials(), nullptr);
@@ -750,6 +752,18 @@ int TestUnsafeLocalPathsAndUrls() {
   WebDavTransport canonical("HTTPS://EXAMPLE.COM:443/folder%20space", Credentials(), nullptr);
   ASSERT_EQ(canonical.Initialize(), VXCORE_OK);
   ASSERT_EQ(canonical.CanonicalRoot(), "https://example.com/folder%20space/");
+  const char *http_urls[][2] = {
+      {"HTTP://EXAMPLE.COM:80/folder%20space", "http://example.com/folder%20space/"},
+      {"http://example.com:443/notebook/", "http://example.com:443/notebook/"},
+      {"http://localhost/notebook/", "http://localhost/notebook/"}};
+  for (const auto &url : http_urls) {
+    ConfigManager::SetTestMode(false);
+    WebDavTransport accepted(url[0], Credentials(), nullptr);
+    const auto error = accepted.Initialize();
+    ConfigManager::SetTestMode(true);
+    ASSERT_EQ(error, VXCORE_OK);
+    ASSERT_EQ(accepted.CanonicalRoot(), url[1]);
+  }
   LocalDirectory directory, outside;
   ASSERT_TRUE(directory.Write("regular", "safe local content"));
   std::filesystem::path resolved;

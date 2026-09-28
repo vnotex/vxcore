@@ -244,7 +244,7 @@ is the shared source inventory. Windows/Linux use pinned static curl 8.22.0; Win
 Schannel with the Windows 7 target, Linux uses OpenSSL. Apple uses the active SDK/system libcurl
 (minimum API 7.64), never a Homebrew architecture-specific fallback. pugixml 1.16 parses DAV XML.
 
-The URL names one existing dedicated HTTPS collection. Initialize validates notebook UUID and
+The URL names one existing dedicated HTTP or HTTPS collection. Initialize validates notebook UUID and
 probes strong ETags/create-if-absent/tagged MOVE/conditional file DELETE using journaled owned
 scratch resources only. First publication conditionally claims `vx_notebook/config.json` before
 other user files. Missing baseline means non-destructive union, never deletion propagation.
@@ -270,12 +270,13 @@ containers and preserve concurrently added children. File/collection collisions 
 mutations. Conflicts preserve whole versions, with no text/JSON merge. Keep Both is forbidden for
 metadata and encrypted content; ordinary binary files remain supported.
 
-TLS verification is mandatory. Auth is challenge Basic/Digest, and PUT uses Expect:100-continue
+HTTPS certificate and hostname verification are mandatory. HTTP is allowed for any host,
+but exposes credentials and notebook data in transit. Auth is challenge Basic/Digest, and PUT uses Expect:100-continue
 before streaming. Writes never follow redirects or transparently replay. Read redirects are
 bounded and same-origin/root-contained. DAV XML is limited to 16 MiB, traversal to depth 256 and
 250,000 resources; invalid/partial responses fail closed. Bodies stream in 64 KiB chunks, with
 30 s connect, 60 s no-progress and 30 min request limits; multi-wait cancellation polls within
-100 ms. HTTP loopback and a test CA are available only under actual vxcore test mode.
+100 ms. A custom test CA is available only under actual vxcore test mode.
 
 `tests/run_webdav_test.py -- <executable> [args]` owns an isolated authenticated loopback fixture,
 uses TLS by default and never installs a host CA. `--http` is direct-core-only. Tests cover real

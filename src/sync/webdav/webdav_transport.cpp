@@ -1000,10 +1000,6 @@ VxCoreError WebDavTransport::Initialize() {
   if (impl_->easy && impl_->multi) return VXCORE_OK;
   if (!impl_->credentials_valid || !ParseUrl(impl_->configured_url, impl_->root))
     return impl_->Finish(VXCORE_ERR_INVALID_PARAM);
-  if (impl_->root.scheme == "http" &&
-      (!ConfigManager::IsTestMode() ||
-       (impl_->root.host != "127.0.0.1" && impl_->root.host != "[::1]")))
-    return impl_->Finish(VXCORE_ERR_INVALID_PARAM);
   if (impl_->root.path.back() != '/') impl_->root.path += '/';
   impl_->canonical_root = impl_->root.String();
   if (ConfigManager::IsTestMode()) {
