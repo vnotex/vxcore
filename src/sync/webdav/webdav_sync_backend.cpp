@@ -216,7 +216,12 @@ struct WebDavSyncBackend::Impl {
     Require(!writable || HasCredentials(credentials), VXCORE_ERR_SYNC_AUTH_FAILED);
     username = UsernameHash(credentials);
     auto transport = std::make_unique<WebDavTransport>(config.remote_url, credentials, token);
-    Check(transport->Initialize());
+    const auto error = transport->Initialize();
+    if (error != VXCORE_OK) {
+      std::lock_guard<std::mutex> lock(mutex);
+      last_error = transport->LastError();
+      Check(error);
+    }
     transport->SetProgressCallback([this](uint64_t bytes, uint64_t total) {
       Progress(SyncState::kFetching, "Transferring WebDAV bytes",
                total ? static_cast<float>(100.0 * static_cast<double>(bytes) / total) : 0.0f);
@@ -368,7 +373,8 @@ struct WebDavSyncBackend::Impl {
     probe.CleanupTransient();
   }
 
-  void Probe(WebDavTransport &transport) {
+  void Probe(WebDavTransport &transport, const char *&step) {
+    step = "recovering previous capability probe files";
     State probe;
     probe.cancellation = token;
     probe.Open(state.root, state.notebook_id, state.remote_url, state.username_hash,
@@ -396,24 +402,40 @@ struct WebDavSyncBackend::Impl {
     probe.operations = {first, second, third};
     probe.SavePending();
     try {
+      step = "creating capability probe files (PUT with If-None-Match: *)";
       Check(transport.Upload(a, probe.directory, first.source_snapshot, ""));
       Check(transport.Upload(b, probe.directory, second.source_snapshot, ""));
+      step = "reading back capability probe files (PROPFIND/GET)";
       auto av = Inspect(transport, a, true, &probe);
       auto bv = Inspect(transport, b, true, &probe);
+      step = "verifying capability probe file contents";
       Require(av.sha256 == first.new_sha256 && bv.sha256 == second.new_sha256,
               VXCORE_ERR_UNSUPPORTED);
       probe.operations[0].stage = "remoteConfirmed";
       probe.operations[1].stage = "remoteConfirmed";
       probe.SavePending();
       auto reject = [&](VxCoreError result) {
-        Require(result == VXCORE_ERR_SYNC_CONFLICT && transport.LastResponse().http_status == 412,
-                VXCORE_ERR_UNSUPPORTED);
+        if (result == VXCORE_ERR_SYNC_CONFLICT && transport.LastResponse().http_status == 412)
+          return;
+        std::string detail = "The server must reject this request with HTTP 412";
+        const auto status = transport.LastResponse().http_status;
+        detail += status ? "; last response was HTTP " + std::to_string(status) + "."
+                         : "; no HTTP response was received.";
+        if (!transport.LastError().empty()) detail += " " + transport.LastError();
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          last_error = std::move(detail);
+        }
+        throw Failure{VXCORE_ERR_UNSUPPORTED};
       };
+      step = "checking create-if-absent protection (PUT with If-None-Match: *)";
       reject(transport.Upload(a, probe.directory, second.source_snapshot, ""));
+      step = "checking destination ETag protection (MOVE with tagged If)";
       reject(transport.Move(a, av.etag, b, "\"vnote-invalid-" + NewId() + "\""));
       Require(Inspect(transport, a, true, &probe).sha256 == av.sha256 &&
                   Inspect(transport, b, true, &probe).sha256 == bv.sha256,
               VXCORE_ERR_UNSUPPORTED);
+      step = "checking no-overwrite protection (MOVE with Overwrite: F)";
       reject(transport.Move(a, av.etag, b, ""));
       Require(Inspect(transport, a, true, &probe).sha256 == av.sha256 &&
                   Inspect(transport, b, true, &probe).sha256 == bv.sha256,
@@ -424,16 +446,20 @@ struct WebDavSyncBackend::Impl {
       probe.operations[1].source_snapshot = first.source_snapshot;
       probe.operations[1].new_sha256 = first.new_sha256;
       probe.SavePending();
+      step = "replacing a capability probe file (MOVE with matching ETags)";
       Check(transport.Move(a, av.etag, b, bv.etag));
       bv = Inspect(transport, b, true, &probe);
       Require(bv.sha256 == av.sha256 && Inspect(transport, a, false, &probe).kind == "absent",
               VXCORE_ERR_UNSUPPORTED);
+      step = "checking deletion protection (DELETE with If-Match)";
       reject(transport.RemoveFile(b, "\"vnote-invalid-" + NewId() + "\""));
       Require(Inspect(transport, b, true, &probe).sha256 == av.sha256, VXCORE_ERR_UNSUPPORTED);
+      step = "moving a capability probe file (MOVE with Overwrite: F)";
       Check(transport.Move(b, bv.etag, c, ""));
       auto cv = Inspect(transport, c, true, &probe);
       Require(cv.sha256 == av.sha256 && Inspect(transport, b, false, &probe).kind == "absent",
               VXCORE_ERR_UNSUPPORTED);
+      step = "removing capability probe files (DELETE with If-Match)";
       ProbeCleanup(transport, probe);
     } catch (...) {
       // A cancelled or broken connection is not a reason to send more mutations. Its
@@ -458,23 +484,39 @@ struct WebDavSyncBackend::Impl {
     }
     config = cfg;
     Require(config.backend == "webdav", VXCORE_ERR_INVALID_PARAM);
-    const auto root_path = fs::absolute(PathFromUtf8(root));
-    Require(fs::is_directory(root_path) &&
-                CheckReparsePoint(PathToUtf8(root_path)) == ReparseState::kNo,
-            VXCORE_ERR_UNSUPPORTED);
-    fs::path config_file;
-    Check(WebDavTransport::ResolveLocalPath(root_path, kConfigPath, config_file));
-    const auto notebook = NotebookJson(config_file);
-    std::string username;
-    auto transport = Session(username, true);
-    state.Open(root_path, notebook.at(kJsonKeyId).get<std::string>(), transport->CanonicalRoot(),
-               username);
-    VerifyIdentity(*transport, true);
-    if (!state.existed) state.Save();
-    if (state.operations.empty()) state.RotateUsername(username);
-    // Existing recovery is bound to its original authenticated account until it completes.
-    Probe(*transport);
-    initialized.store(true);
+    const char *step = "validating local notebook paths";
+    std::unique_ptr<WebDavTransport> transport;
+    try {
+      const auto root_path = fs::absolute(PathFromUtf8(root));
+      Require(fs::is_directory(root_path) &&
+                  CheckReparsePoint(PathToUtf8(root_path)) == ReparseState::kNo,
+              VXCORE_ERR_UNSUPPORTED);
+      fs::path config_file;
+      Check(WebDavTransport::ResolveLocalPath(root_path, kConfigPath, config_file));
+      const auto notebook = NotebookJson(config_file);
+      std::string username;
+      step = "initializing the HTTP transport";
+      transport = Session(username, true);
+      step = "opening local sync state";
+      state.Open(root_path, notebook.at(kJsonKeyId).get<std::string>(), transport->CanonicalRoot(),
+                 username);
+      step = "reading remote notebook identity (PROPFIND/GET)";
+      VerifyIdentity(*transport, true);
+      step = "saving local sync state";
+      if (!state.existed) state.Save();
+      if (state.operations.empty()) state.RotateUsername(username);
+      // Existing recovery is bound to its original authenticated account until it completes.
+      Probe(*transport, step);
+      initialized.store(true);
+    } catch (const Failure &failure) {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (last_error.empty()) {
+        last_error = transport ? transport->LastError() : std::string();
+        if (last_error.empty()) last_error = Diagnostic(failure.error);
+      }
+      last_error = std::string("WebDAV setup failed while ") + step + ": " + last_error;
+      throw;
+    }
   }
 
   void ScanLocal() {

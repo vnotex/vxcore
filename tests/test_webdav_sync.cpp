@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "core/config_manager.h"
@@ -449,17 +450,26 @@ int TestBootstrapOwnershipAndProjection() {
 }
 
 int TestBootstrapRaceAndConditionalProbes() {
-  for (const auto *condition :
-       {"ignore_create_conditions", "ignore_move_conditions", "ignore_delete_conditions"}) {
+  const std::pair<const char *, const char *> conditions[] = {
+      {"ignore_create_conditions", "If-None-Match"},
+      {"ignore_move_conditions", "MOVE"},
+      {"ignore_delete_conditions", "DELETE"},
+  };
+  for (const auto &condition : conditions) {
     Control({{"action", "reset"}});
-    Control({{"action", "configure"}, {condition, true}});
+    Control({{"action", "configure"}, {condition.first, true}});
     Client client;
     client.Write("must-not-publish.md", "local only");
     ASSERT_EQ(client.Attach(), VXCORE_ERR_UNSUPPORTED);
     ASSERT_FALSE(client.backend->IsInitialized());
     ASSERT_FALSE(Inspect(kConfigPath).value("exists", false));
     ASSERT_FALSE(Inspect("must-not-publish.md").value("exists", false));
-    ASSERT_FALSE(client.backend->GetLastError().empty());
+    const auto error = client.backend->GetLastError();
+    ASSERT_TRUE(error.find(condition.second) != std::string::npos);
+    ASSERT_TRUE(error.find("HTTP 412") != std::string::npos);
+    ASSERT_TRUE(error.find("HTTP 201") != std::string::npos ||
+                error.find("HTTP 204") != std::string::npos);
+    std::cout << "Capability diagnostic: " << error << std::endl;
     const auto probe_tree = RemoteTree();
     for (const auto &item : probe_tree.items()) {
       ASSERT_TRUE(item.key().empty() || item.key().find(".vnote-webdav-tmp-") == 0);
@@ -477,6 +487,74 @@ int TestBootstrapRaceAndConditionalProbes() {
   ASSERT_NE(loser.Sync(), VXCORE_OK);
   ASSERT_TRUE(RemoteTree() == before);
   ASSERT_EQ(loser.Read("loser.md"), "must stay local");
+  return 0;
+}
+
+int TestSetupFailureDiagnostics() {
+  struct Scenario {
+    Json fault;
+    const char *method;
+    const char *status;
+    bool file_listing;
+    bool etag_error;
+  };
+  const Scenario scenarios[] = {
+      {{{"method", "PROPFIND"}, {"effect", "status"}, {"status", 405}},
+       "PROPFIND", "HTTP 405", false, false},
+      {{{"method", "PUT"}, {"effect", "missing_etag"}}, "PUT", "HTTP 201", false, true},
+      {{{"method", "PROPFIND"}, {"effect", "weak_etag"}}, "PROPFIND", "HTTP 207", true, true},
+      {{{"method", "GET"}, {"effect", "missing_etag"}}, "GET", "HTTP 200", false, true},
+  };
+  for (const auto &scenario : scenarios) {
+    Control({{"action", "reset"}});
+    FaultScope cleanup;
+    const std::string foreign_path = ".vnote-webdav-tmp-private-filename";
+    const std::string foreign_body = "private-server-content";
+    if (scenario.file_listing) PutRemote(foreign_path, foreign_body);
+    auto fault = scenario.fault;
+    fault["action"] = "fault";
+    Control(fault); // Wildcard path also reaches randomly named probe files.
+    Client client;
+    client.Write("must-not-publish.md", "local only");
+    ASSERT_EQ(client.Attach(), VXCORE_ERR_UNSUPPORTED);
+    const auto error = client.backend->GetLastError();
+    ASSERT_TRUE(error.find(scenario.method) != std::string::npos);
+    ASSERT_TRUE(error.find(scenario.status) != std::string::npos);
+    ASSERT_EQ(error.find("ETag") != std::string::npos, scenario.etag_error);
+    ASSERT_TRUE(error.find(client.config.remote_url) == std::string::npos);
+    ASSERT_TRUE(error.find(Environment("VXCORE_WEBDAV_TEST_USERNAME")) == std::string::npos);
+    ASSERT_TRUE(error.find(Environment("VXCORE_WEBDAV_TEST_PASSWORD")) == std::string::npos);
+    ASSERT_TRUE(error.find(foreign_path) == std::string::npos);
+    ASSERT_TRUE(error.find(foreign_body) == std::string::npos);
+    ASSERT_FALSE(Inspect(kConfigPath).value("exists", false));
+    ASSERT_FALSE(Inspect("must-not-publish.md").value("exists", false));
+    std::cout << "Setup diagnostic: " << error << std::endl;
+
+    Control({{"action", "clear_faults"}});
+    ASSERT_EQ(client.backend->Initialize(PathToUtf8(client.root), client.config), VXCORE_OK);
+    ASSERT_TRUE(client.backend->GetLastError().empty());
+    if (scenario.file_listing) ASSERT_EQ(*RemoteBytes(foreign_path), foreign_body);
+  }
+
+  Control({{"action", "reset"}});
+  Client denied;
+  const std::string wrong_password = "private-incorrect-password";
+  denied.backend = std::make_unique<WebDavSyncBackend>(denied.config, Provider(wrong_password));
+  ASSERT_EQ(denied.backend->Initialize(PathToUtf8(denied.root), denied.config),
+            VXCORE_ERR_SYNC_AUTH_FAILED);
+  const auto error = denied.backend->GetLastError();
+  ASSERT_TRUE(error.find("PROPFIND") != std::string::npos);
+  ASSERT_TRUE(error.find("HTTP 401") != std::string::npos);
+  ASSERT_TRUE(error.find(wrong_password) == std::string::npos);
+  ASSERT_FALSE(Inspect(kConfigPath).value("exists", false));
+
+  // A successful listing followed by an identity rejection is not an HTTP failure.
+  Control({{"action", "reset"}});
+  PutRemote("foreign.md", "preserve this existing collection");
+  Client foreign;
+  ASSERT_EQ(foreign.Attach(), VXCORE_ERR_INVALID_STATE);
+  ASSERT_TRUE(foreign.backend->GetLastError().find("HTTP") == std::string::npos);
+  ASSERT_EQ(*RemoteBytes("foreign.md"), "preserve this existing collection");
   return 0;
 }
 
@@ -2033,6 +2111,7 @@ int main(int argc, char **argv) {
     const TestCase cases[] = {
         {"bootstrap", TestBootstrapOwnershipAndProjection},
         {"probes", TestBootstrapRaceAndConditionalProbes},
+        {"setup-diagnostics", TestSetupFailureDiagnostics},
         {"probe-recovery", TestFailedProbeCleanupIsRecoverable},
         {"exclusions", TestExcludedAndUnsupportedLocalNames},
         {"complete-scan", TestCompleteScanRequiredForDeletions},

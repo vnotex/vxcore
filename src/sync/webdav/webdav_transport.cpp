@@ -454,9 +454,29 @@ struct WebDavTransport::Impl {
   WebDavResponse response;
   std::string error_text;
 
-  VxCoreError Finish(VxCoreError error) {
-    error_text = ErrorText(error);
+  VxCoreError Finish(VxCoreError error, const char *detail = nullptr) {
+    error_text = error == VXCORE_OK ? "" : (detail ? detail : ErrorText(error));
     return error;
+  }
+
+  VxCoreError FinishHttp(const char *method, long status) {
+    const auto error = HttpError(status);
+    const char *reason = status == 405 ? "The server does not allow this HTTP method."
+                         : status == 501 ? "The server does not implement this HTTP method."
+                         : status == 428 ? "The server requires a different request precondition."
+                                         : ErrorText(error);
+    const auto detail = std::string(method) + " returned HTTP " + std::to_string(status) +
+                        ". " + reason;
+    return Finish(error, detail.c_str());
+  }
+
+  VxCoreError FinishEtag(const char *source, const std::string &etag) {
+    const char *reason = etag.empty() ? "The server omitted the file ETag."
+                         : etag.compare(0, 2, "W/") == 0 ? "The server returned a weak file ETag."
+                                                        : "The server returned an invalid file ETag.";
+    const auto detail = std::string(source) + " (HTTP " + std::to_string(response.http_status) +
+                        "): " + reason + " A strong ETag is required for safe synchronization.";
+    return Finish(VXCORE_ERR_UNSUPPORTED, detail.c_str());
   }
   bool Cancelled() const { return cancellation && cancellation->IsCancelled(); }
   std::string UrlFor(const std::string &path, bool collection = false) const {
@@ -706,11 +726,11 @@ struct WebDavTransport::Impl {
       for (const auto &header : headers)
         if (!list.Add(header)) return Finish(VXCORE_ERR_OUT_OF_MEMORY);
       if (!list.Add("Accept-Encoding: identity")) return Finish(VXCORE_ERR_OUT_OF_MEMORY);
-#define DAV_SET(option, value)                                  \
-  if (curl_easy_setopt(easy, option, value) != CURLE_OK) {      \
-    error_text = "WebDAV HTTP support is unavailable (" #option \
-                 "). Check the libcurl build configuration.";   \
-    return VXCORE_ERR_UNSUPPORTED;                              \
+#define DAV_SET(option, value)                                                   \
+  if (curl_easy_setopt(easy, option, value) != CURLE_OK) {                         \
+    return Finish(VXCORE_ERR_UNSUPPORTED,                                        \
+                  "WebDAV HTTP support is unavailable (" #option                \
+                  "). Check the libcurl build configuration.");                 \
   }
       DAV_SET(CURLOPT_URL, url.c_str());
       DAV_SET(CURLOPT_CUSTOMREQUEST, method);
@@ -810,13 +830,20 @@ struct WebDavTransport::Impl {
       if (transfer.error != VXCORE_OK) return Finish(transfer.error);
       if (!complete || result != CURLE_OK) return Finish(VXCORE_ERR_SYNC_NETWORK);
       if (transfer.status >= 300 && transfer.status < 400) {
+        const char *reason = nullptr;
+        Url destination;
         if (!allow_redirect || redirects >= 3 ||
             (transfer.status != 301 && transfer.status != 302 && transfer.status != 303 &&
              transfer.status != 307 && transfer.status != 308))
-          return Finish(VXCORE_ERR_UNSUPPORTED);
-        Url destination;
-        if (!ResolveUrl(root, url, transfer.location, destination))
-          return Finish(VXCORE_ERR_UNSUPPORTED);
+          reason = "Write redirects and excessive read redirects are not allowed.";
+        else if (!ResolveUrl(root, url, transfer.location, destination))
+          reason = "The redirect leaves the allowed origin or collection.";
+        if (reason) {
+          const auto detail = std::string(method) + " redirect (HTTP " +
+                              std::to_string(transfer.status) + "): " + reason +
+                              " Use the final collection URL.";
+          return Finish(VXCORE_ERR_UNSUPPORTED, detail.c_str());
+        }
         url = destination.String();
         corrected = url;
         continue;
@@ -940,8 +967,9 @@ struct WebDavTransport::Impl {
       if (resource.kind == WebDavResourceKind::kFile &&
           (resolved.path.back() == '/' || !have_length ||
            !WebDavTransport::IsStrongEtag(resource.etag)))
-        return Finish(!WebDavTransport::IsStrongEtag(resource.etag) ? VXCORE_ERR_UNSUPPORTED
-                                                                    : VXCORE_ERR_INVALID_STATE);
+        return !WebDavTransport::IsStrongEtag(resource.etag)
+                   ? FinishEtag("PROPFIND file metadata", resource.etag)
+                   : Finish(VXCORE_ERR_INVALID_STATE);
       if (resource.path == requested) {
         if (self_found) return Finish(VXCORE_ERR_INVALID_STATE);
         self_found = true;
@@ -969,7 +997,7 @@ struct WebDavTransport::Impl {
         {depth_one ? "Depth: 1" : "Depth: 0", "Content-Type: application/xml; charset=utf-8"},
         transfer, true, kProperties);
     if (error != VXCORE_OK) return error;
-    if (response.http_status != 207) return Finish(HttpError(response.http_status));
+    if (response.http_status != 207) return FinishHttp("PROPFIND", response.http_status);
     if (!response.corrected_url.empty()) {
       Url corrected;
       if (!ParseUrl(response.effective_url, corrected)) return Finish(VXCORE_ERR_INVALID_STATE);
@@ -1006,7 +1034,10 @@ VxCoreError WebDavTransport::Initialize() {
     const char *ca = std::getenv("VXCORE_WEBDAV_TEST_CA_FILE");
     if (ca) impl_->ca_file = ca;
   }
-  if (!InitializeLibraries()) return impl_->Finish(VXCORE_ERR_UNSUPPORTED);
+  if (!InitializeLibraries())
+    return impl_->Finish(VXCORE_ERR_UNSUPPORTED,
+                         "WebDAV requires libcurl 7.64 or newer with asynchronous DNS and "
+                         "initialized cryptographic support. Check the application build.");
   if (!impl_->easy) impl_->easy = curl_easy_init();
   if (!impl_->multi) impl_->multi = curl_multi_init();
   return impl_->Finish(impl_->easy && impl_->multi ? VXCORE_OK : VXCORE_ERR_OUT_OF_MEMORY);
@@ -1100,9 +1131,9 @@ VxCoreError WebDavTransport::Options() {
   Impl::Transfer transfer;
   error = impl_->Request("OPTIONS", CanonicalRoot(), {}, transfer, true);
   if (error != VXCORE_OK) return error;
-  return impl_->Finish(LastResponse().http_status >= 200 && LastResponse().http_status < 300
-                           ? VXCORE_OK
-                           : HttpError(LastResponse().http_status));
+  return LastResponse().http_status >= 200 && LastResponse().http_status < 300
+             ? impl_->Finish(VXCORE_OK)
+             : impl_->FinishHttp("OPTIONS", LastResponse().http_status);
 }
 
 VxCoreError WebDavTransport::Stat(const std::string &path, WebDavResource &out_resource) {
@@ -1178,8 +1209,8 @@ VxCoreError WebDavTransport::Download(const std::string &path, const std::string
       impl_->Request("GET", impl_->UrlFor(path), {"If-Match: " + expected_etag}, transfer, true);
   if (error != VXCORE_OK) return error;
   if (LastResponse().http_status != 200)
-    return impl_->Finish(HttpError(LastResponse().http_status));
-  if (!IsStrongEtag(transfer.etag)) return impl_->Finish(VXCORE_ERR_UNSUPPORTED);
+    return impl_->FinishHttp("GET", LastResponse().http_status);
+  if (!IsStrongEtag(transfer.etag)) return impl_->FinishEtag("GET response", transfer.etag);
   if (transfer.etag != expected_etag) return impl_->Finish(VXCORE_ERR_SYNC_CONFLICT);
   if (transfer.length_seen && transfer.content_length != transfer.bytes)
     return impl_->Finish(VXCORE_ERR_INVALID_STATE);
@@ -1228,11 +1259,11 @@ VxCoreError WebDavTransport::Upload(const std::string &path,
   if (error != VXCORE_OK) return error;
   if (LastResponse().http_status != 200 && LastResponse().http_status != 201 &&
       LastResponse().http_status != 204)
-    return impl_->Finish(HttpError(LastResponse().http_status));
+    return impl_->FinishHttp("PUT", LastResponse().http_status);
   if (transfer.bytes != size || std::filesystem::file_size(source, ec) != size || ec ||
       std::filesystem::last_write_time(source, ec) != time || ec)
     return impl_->Finish(VXCORE_ERR_SYNC_IN_PROGRESS);
-  if (!IsStrongEtag(transfer.etag)) return impl_->Finish(VXCORE_ERR_UNSUPPORTED);
+  if (!IsStrongEtag(transfer.etag)) return impl_->FinishEtag("PUT response", transfer.etag);
   impl_->response.sha256 = DigestHex(transfer.hash);
   return impl_->Finish(VXCORE_OK);
 }
@@ -1264,9 +1295,9 @@ VxCoreError WebDavTransport::Move(const std::string &source, const std::string &
   Impl::Transfer transfer;
   error = impl_->Request("MOVE", impl_->UrlFor(source), headers, transfer, false);
   if (error != VXCORE_OK) return error;
-  return impl_->Finish(LastResponse().http_status == 201 || LastResponse().http_status == 204
-                           ? VXCORE_OK
-                           : HttpError(LastResponse().http_status));
+  return LastResponse().http_status == 201 || LastResponse().http_status == 204
+             ? impl_->Finish(VXCORE_OK)
+             : impl_->FinishHttp("MOVE", LastResponse().http_status);
 }
 
 VxCoreError WebDavTransport::RemoveFile(const std::string &path, const std::string &expected_etag) {
@@ -1280,9 +1311,9 @@ VxCoreError WebDavTransport::RemoveFile(const std::string &path, const std::stri
   error = impl_->Request("DELETE", impl_->UrlFor(path), {"If-Match: " + expected_etag}, transfer,
                          false);
   if (error != VXCORE_OK) return error;
-  return impl_->Finish(LastResponse().http_status == 200 || LastResponse().http_status == 204
-                           ? VXCORE_OK
-                           : HttpError(LastResponse().http_status));
+  return LastResponse().http_status == 200 || LastResponse().http_status == 204
+             ? impl_->Finish(VXCORE_OK)
+             : impl_->FinishHttp("DELETE", LastResponse().http_status);
 }
 
 VxCoreError WebDavTransport::MakeCollection(const std::string &path) {
@@ -1300,7 +1331,7 @@ VxCoreError WebDavTransport::MakeCollection(const std::string &path) {
     return impl_->Finish(resource.kind == WebDavResourceKind::kCollection ? VXCORE_OK
                                                                           : VXCORE_ERR_UNSUPPORTED);
   }
-  return impl_->Finish(HttpError(LastResponse().http_status));
+  return impl_->FinishHttp("MKCOL", LastResponse().http_status);
 }
 
 }  // namespace vxcore

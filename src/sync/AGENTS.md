@@ -249,6 +249,14 @@ probes strong ETags/create-if-absent/tagged MOVE/conditional file DELETE using j
 scratch resources only. First publication conditionally claims `vx_notebook/config.json` before
 other user files. Missing baseline means non-destructive union, never deletion propagation.
 
+Setup errors retain the failed identity/capability-probe step and transport diagnostic. HTTP
+failures identify method/status; missing, weak and invalid file ETags remain distinct from
+method rejection. Negative probes report expected HTTP 412 and the last response status.
+Never append a successful HTTP status to a backend-only validation failure. Diagnostics use
+fixed text/protocol names/numeric statuses, never credentials, URLs, paths, server-supplied
+header values or response bodies. Do not weaken conditional-operation checks to accommodate
+a provider.
+
 Private state is `vx_notebook/vx_sync/webdav/{state,pending}.json` plus immutable snapshots;
 probe ownership has a separate same-schema `probe` ledger. Version-1 bindings contain notebook
 UUID, canonical URL and username SHA-256, never a password or absolute local root. Validate all
