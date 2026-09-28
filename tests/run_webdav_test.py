@@ -2,6 +2,7 @@
 
   python libs/vxcore/tests/run_webdav_test.py -- executable [arguments ...]
   python libs/vxcore/tests/run_webdav_test.py --http -- executable [arguments ...]
+  python libs/vxcore/tests/run_webdav_test.py --profile jianguoyun -- executable [arguments ...]
 
 TLS is the default and requires Python's ssl module plus OpenSSL >= 1.1.1. Resolve
 OpenSSL from OPENSSL (explicit executable), PATH, or the usr/bin directory of a
@@ -12,6 +13,7 @@ A missing/broken TLS prerequisite fails the run, never falls back to plain HTTP.
 
 Child environment:
   VXCORE_WEBDAV_TEST_URL              dedicated /notebook/ collection
+  VXCORE_WEBDAV_TEST_PROFILE          immutable strict(default) or jianguoyun semantics
   VXCORE_WEBDAV_TEST_CA_FILE          explicit TLS trust bundle (TLS mode only)
   VXCORE_WEBDAV_TEST_UNTRUSTED_CA_FILE unrelated certificate for negative tests
   VXCORE_WEBDAV_TEST_USERNAME / VXCORE_WEBDAV_TEST_PASSWORD
@@ -23,7 +25,7 @@ Child environment:
 The executable still MUST enable vxcore test mode before creating any context.
 For two-device/crash tests an orchestrating child can launch this SAME runner with
 --reuse-fixture -- executable ... and the inherited fixture environment. It keeps
-that live endpoint and remote content, allocates a fresh owned client root/temp,
+that live endpoint, selected profile and remote content, allocates a fresh owned client root/temp,
 and does not stop the borrowed fixture. Each invocation is a separate process and
 independent local baseline. A crash-recovery orchestrator may keep its baseline
 in its own CLIENT_ROOT and pass that path explicitly to successive child clients;
@@ -118,6 +120,8 @@ def isolated_client_environment(directory, base_environment):
 
 
 def validate_borrowed_environment(environment):
+    if environment.get("VXCORE_WEBDAV_TEST_PROFILE", "strict") not in {"strict", "jianguoyun"}:
+        raise FixtureError("--reuse-fixture has an invalid inherited profile")
     required = ("VXCORE_WEBDAV_TEST_URL", "VXCORE_WEBDAV_TEST_USERNAME",
                 "VXCORE_WEBDAV_TEST_PASSWORD", "VXCORE_WEBDAV_TEST_CONTROL_URL",
                 "VXCORE_WEBDAV_TEST_CONTROL_TOKEN")
@@ -187,6 +191,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("--http", action="store_true", help="use explicit loopback HTTP instead of TLS")
     parser.add_argument("--reuse-fixture", action="store_true", help="borrow the inherited running fixture")
+    parser.add_argument("--profile", choices=("strict", "jianguoyun"), default=None,
+                        help="immutable provider semantics (default: strict; inherited on reuse)")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     options = parser.parse_args(argv)
     command = options.command
@@ -203,6 +209,10 @@ def main(argv=None):
             environment = dict(os.environ)
             if options.reuse_fixture:
                 validate_borrowed_environment(environment)
+                inherited = environment.get("VXCORE_WEBDAV_TEST_PROFILE", "strict")
+                if options.profile is not None and options.profile != inherited:
+                    raise FixtureError("--reuse-fixture cannot change its inherited profile")
+                environment["VXCORE_WEBDAV_TEST_PROFILE"] = inherited
                 check_ready(environment)
                 return run_child(command, isolated_client_environment(directory, environment))
             environment.pop("VXCORE_WEBDAV_TEST_CA_FILE", None)
@@ -219,7 +229,7 @@ def main(argv=None):
                 tls_context.load_cert_chain(certificate, key)
                 environment["VXCORE_WEBDAV_TEST_CA_FILE"] = str(certificate)
                 environment["VXCORE_WEBDAV_TEST_UNTRUSTED_CA_FILE"] = str(unrelated)
-            with WebDavFixture(directory, tls_context) as fixture:
+            with WebDavFixture(directory, tls_context, options.profile or "strict") as fixture:
                 environment.update(fixture.environment())
                 check_ready(environment)
                 status = run_child(command, isolated_client_environment(directory, environment))

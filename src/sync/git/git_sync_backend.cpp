@@ -130,7 +130,7 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
     provider_snapshot = creds_provider_;
   }
 
-  // An absent Git HEAD is safe only when the directory belongs solely to WebDAV.
+  // An absent Git HEAD is safe only for recognized DAV providers' private directories.
   // Never delete another backend's private recovery state to initialize Git.
   const std::string head_path = git_dir_ + "/HEAD";
   bool webdav_only = false;
@@ -140,12 +140,16 @@ VxCoreError GitSyncBackend::Initialize(const std::string &root_folder,
     auto entries = std::filesystem::directory_iterator(directory, error);
     if (!error && CheckReparsePoint(git_dir_) == ReparseState::kNo &&
         entries != std::filesystem::directory_iterator()) {
-      const auto child = entries->path();
-      webdav_only = child.filename() == "webdav" &&
-                    CheckReparsePoint(PathToUtf8(child)) == ReparseState::kNo &&
-                    std::filesystem::is_directory(child, error) && !error;
-      entries.increment(error);
-      webdav_only = webdav_only && !error && entries == std::filesystem::directory_iterator();
+      webdav_only = true;
+      for (; entries != std::filesystem::directory_iterator() && webdav_only;
+           entries.increment(error)) {
+        const auto child = entries->path();
+        webdav_only = (child.filename() == "webdav" || child.filename() == "jianguoyun") &&
+                      CheckReparsePoint(PathToUtf8(child)) == ReparseState::kNo &&
+                      std::filesystem::is_directory(child, error) && !error;
+        if (error) break;
+      }
+      webdav_only = webdav_only && !error;
     }
     if (!webdav_only) {
       VXCORE_LOG_ERROR(

@@ -33,6 +33,8 @@ VXCORE_API void vxcore_set_test_mode(int enabled) {
   vxcore::ConfigManager::SetTestMode(enabled != 0);
 }
 
+VXCORE_API int vxcore_is_test_mode(void) { return vxcore::ConfigManager::IsTestMode() ? 1 : 0; }
+
 VXCORE_API void vxcore_clear_test_directory(void) { vxcore::ConfigManager::ClearTestDirectory(); }
 
 VXCORE_API void vxcore_set_app_info(const char *org_name, const char *app_name) {

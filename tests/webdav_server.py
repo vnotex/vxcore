@@ -9,6 +9,7 @@ HTTP logging nor exception reporting prints headers, credentials, or bodies.
 Control protocol (paths are decoded notebook-relative UTF-8, root is ""):
   {"action":"reset"} clears remote files, configuration, faults, barriers and
     counters, restores the original credentials, and invalidates in-flight writes.
+    The immutable strict(default)/jianguoyun profile is preserved across reset.
   {"action":"configure", ...} sets any of: auth="basic"|"digest"|"both",
     username/password, anonymous_read=false (only GET/PROPFIND/OPTIONS),
     namespace="prefix"|"default", namespace_prefix="D", href_mode="path"|
@@ -18,7 +19,7 @@ Control protocol (paths are decoded notebook-relative UTF-8, root is ""):
   {"action":"put","path":"dir/file", "text":"UTF-8"} writes ordinary bytes;
     alternatively content_base64, or size + repeat_base64 (default: zero bytes)
     streams large fixtures without a large JSON allocation. parents=true creates
-    missing parents. Returns metadata, including exact quoted etag and sha256.
+    missing parents. Returns metadata, including exact profile etag and sha256.
   {"action":"mkdir","path":"dir", "parents":true} creates collections.
   {"action":"delete","path":"file", "recursive":false} removes a resource;
     recursive=true is an EXTERNAL-client control only, never a DAV DELETE.
@@ -32,11 +33,14 @@ Control protocol (paths are decoded notebook-relative UTF-8, root is ""):
   {"action":"fault","method":"PROPFIND","path":"", "effect":"xml", ...}
     arms a rule. method/path default "*"; phase="before"|"after", count=1
     (count=-1 means persistent). Matching authorized requests consume rules.
+    Optional path_prefix/destination (decoded MOVE target)/depth narrow matching; skip=N
+    ignores the first N matching requests, permitting deterministic quota windows.
     effects: status + status (400..599); redirect + location (+ status default 301);
     xml + body (literal UTF-8), or size + repeat_base64; delay + delay_ms;
     drop (close without acknowledgement); truncate + bytes (advertise full size,
     then close early); throttle + delay_ms (per 64 KiB response chunk);
-    weak_etag/missing_etag (headers AND generated DAV properties).
+    weak_etag/missing_etag (headers AND generated DAV properties); the jianguoyun
+    profile additionally accepts raw_etag/quoted_etag for validator-negative cases.
     xml replaces a PROPFIND response with HTTP 207; it can express DTDs, bad hrefs,
     duplicates, partial/failed propstats, alias collisions, and oversized XML.
     xml + resource_count=N emits a real collection's self response plus N synthetic
@@ -49,6 +53,8 @@ Control protocol (paths are decoded notebook-relative UTF-8, root is ""):
   {"action":"barrier","id":"race","method":"MOVE","path":"scratch",
     "phase":"before","count":1} pauses matching requests before precondition
     evaluation or after mutation/before response headers. No store lock is held.
+    Jianguoyun-only drop_after_release=true disconnects that same request after
+    releasing its barrier, allowing a descendant before a lost acknowledgement.
   {"action":"wait","id":"race","timeout_ms":5000} => reached + hits.
   {"action":"release","id":"race"} releases the barrier permanently.
   {"action":"clear_faults"} clears rules and releases/removes all barriers.
@@ -62,6 +68,13 @@ PUT requires If-None-Match:* or exact If-Match. MOVE requires Overwrite:F for an
 absent destination, or Overwrite:T plus tagged If: <destination-URL> (["etag"])
 for an existing destination. DELETE requires exact If-Match and accepts files only.
 All conditions are checked together with the mutation under the store lock.
+
+Explicit profile="jianguoyun" models the observed provider instead: raw GET/DAV
+validators, no PUT ETag, exact raw PUT If-Match, ignored GET/PUT If-None-Match/
+DELETE/source-MOVE conditions, create-only MOVE (409 occupied, 201 absent), and
+idempotent MKCOL201 with file collisions rejected. Depth:1 returns at most 750
+real resources including self; it is deliberately NOT a complete inventory.
+Control tree pagination remains complete. Profile cannot be changed by controls.
 
 Payloads, hashes, uploads, downloads and XML spool files use 64 KiB chunks. Control
 JSON is bounded at 1 MiB, ordinary request XML at 64 KiB, files at 8 GiB, injected
@@ -109,6 +122,10 @@ DEFAULT_CONFIG = {
     "ignore_create_conditions": False, "ignore_move_conditions": False,
     "ignore_delete_conditions": False,
 }
+
+
+class DigestNonceExpired(Exception):
+    """A valid Digest request must authenticate again against the new bounded epoch."""
 
 
 class DavError(Exception):
@@ -191,7 +208,10 @@ def repeated_chunks(seed, size):
 
 
 class Store:
-    def __init__(self, root):
+    def __init__(self, root, profile="strict"):
+        if profile not in {"strict", "jianguoyun"}:
+            raise ValueError("Unknown WebDAV fixture profile")
+        self._profile = profile
         self.root = Path(root).resolve()
         self.root.mkdir()
         self.uploads = self.root.parent / "uploads"
@@ -207,6 +227,10 @@ class Store:
         self.barriers = {}
         self.reset()
 
+    @property
+    def profile(self):
+        return self._profile
+
     def reset(self):
         with self.lock:
             self.epoch += 1
@@ -218,6 +242,7 @@ class Store:
             self.username = self.initial_username
             self.password = self.initial_password
             self.nonce = secrets.token_hex(24)
+            self.previous_nonce = None
             self.opaque = secrets.token_hex(16)
             self.nonce_counts = {}
             if self.root.exists():
@@ -249,8 +274,9 @@ class Store:
 
     def update(self, path, kind, sha256=None, size=0):
         self.serial += 1
+        tag = "%x-%s" % (self.serial, sha256 or "collection")
         metadata = {"path": path, "kind": kind, "size": size,
-                    "etag": '"%x-%s"' % (self.serial, sha256 or "collection"),
+                    "etag": tag if self.profile == "jianguoyun" else '"' + tag + '"',
                     "modified_ms": int(time.time() * 1000)}
         if sha256 is not None:
             metadata["sha256"] = sha256
@@ -358,6 +384,7 @@ class Store:
             self.username = data.get("username", self.username)
             self.password = data.get("password", self.password)
             self.nonce = secrets.token_hex(24)
+            self.previous_nonce = None
             self.nonce_counts.clear()
 
     def authorize(self, method, target, header):
@@ -380,7 +407,8 @@ class Store:
                 if len(parts) != len(items):
                     return False
                 if (parts.get("username") != self.username or parts.get("realm") != REALM
-                        or parts.get("nonce") != self.nonce or parts.get("uri") != target
+                        or parts.get("nonce") not in {self.nonce, self.previous_nonce}
+                        or parts.get("uri") != target
                         or parts.get("opaque") != self.opaque or parts.get("qop") != "auth"
                         or parts.get("algorithm", "MD5").upper() != "MD5"
                         or not re.fullmatch(r"[0-9a-fA-F]{8}", parts.get("nc", ""))
@@ -388,17 +416,22 @@ class Store:
                     return False
                 key = parts["cnonce"]
                 count = int(parts["nc"], 16)
-                if count <= self.nonce_counts.get(key, 0):
-                    return False
-                if key not in self.nonce_counts and len(self.nonce_counts) >= 4096:
+                if parts["nonce"] == self.nonce and count <= self.nonce_counts.get(key, 0):
                     return False
                 def md5(text):
                     return hashlib.md5(text.encode("utf-8")).hexdigest()
                 ha1 = md5(self.username + ":" + REALM + ":" + self.password)
                 ha2 = md5(method + ":" + target)
-                expected = md5(":".join((ha1, self.nonce, parts["nc"], key, "auth", ha2)))
+                expected = md5(":".join((ha1, parts["nonce"], parts["nc"], key, "auth", ha2)))
                 if not hmac.compare_digest(expected, parts.get("response", "")):
                     return False
+                if parts["nonce"] == self.previous_nonce:
+                    raise DigestNonceExpired()
+                if key not in self.nonce_counts and len(self.nonce_counts) >= 4096:
+                    self.previous_nonce = self.nonce
+                    self.nonce = secrets.token_hex(24)
+                    self.nonce_counts.clear()
+                    raise DigestNonceExpired()
                 self.nonce_counts[key] = count
                 return True
             except (ValueError, TypeError, UnicodeError, binascii.Error):
@@ -413,12 +446,18 @@ class Store:
             self.method_counts[method] += 1
             return entry
 
-    def rules(self, method, path):
+    def rules(self, method, path, destination=None, depth=None):
         with self.lock:
             selected = []
             for rule in self.faults + list(self.barriers.values()):
                 if (rule["count"] != 0 and rule["method"] in ("*", method)
-                        and rule["path"] in ("*", path)):
+                        and rule["path"] in ("*", path)
+                        and (not rule.get("path_prefix") or path.startswith(rule["path_prefix"]))
+                        and ("destination" not in rule or rule["destination"] == destination)
+                        and ("depth" not in rule or rule["depth"] == depth)):
+                    if rule.get("skip", 0):
+                        rule["skip"] -= 1
+                        continue
                     if rule["count"] > 0:
                         rule["count"] -= 1
                     selected.append(rule)
@@ -436,21 +475,42 @@ class Store:
         count = integer(data.get("count", 1), -1, 1000000)
         if count == 0:
             raise DavError(400)
-        rule = {"method": method, "path": path, "phase": phase, "count": count}
+        rule = {"method": method, "path": path, "phase": phase, "count": count,
+                "skip": integer(data.get("skip", 0), 0, 1000000)}
+        if "path_prefix" in data:
+            prefix = data["path_prefix"]
+            if not isinstance(prefix, str) or not prefix:
+                raise DavError(400)
+            relative_path(prefix.rstrip("/"))
+            rule["path_prefix"] = prefix
+        if "depth" in data:
+            if method != "PROPFIND" or data["depth"] not in {"0", "1"}:
+                raise DavError(400)
+            rule["depth"] = data["depth"]
+        if "destination" in data:
+            if method != "MOVE":
+                raise DavError(400)
+            rule["destination"] = relative_path(data["destination"])
         if barrier:
             name = data.get("id")
             if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", name)
                     or name in self.barriers or len(self.barriers) >= 256):
                 raise DavError(400)
+            drop_after_release = data.get("drop_after_release", False)
+            if type(drop_after_release) is not bool or (drop_after_release and self.profile != "jianguoyun"):
+                raise DavError(400)
             rule.update(effect="barrier", hits=0, reached=threading.Event(),
-                        release=threading.Event())
+                        release=threading.Event(), drop_after_release=drop_after_release)
             self.barriers[name] = rule
             return
         if len(self.faults) >= 256:
             raise DavError(400)
         effect = data.get("effect")
-        if effect not in {"status", "redirect", "xml", "delay", "drop", "truncate",
-                          "throttle", "weak_etag", "missing_etag"}:
+        effects = {"status", "redirect", "xml", "delay", "drop", "truncate",
+                   "throttle", "weak_etag", "missing_etag"}
+        if self.profile == "jianguoyun":
+            effects.update({"raw_etag", "quoted_etag"})
+        if effect not in effects:
             raise DavError(400)
         if phase == "after_headers" and effect not in {"delay", "drop"}:
             raise DavError(400)
@@ -711,7 +771,7 @@ class DavHandler(BaseHTTPRequestHandler):
         else:
             self.reply(status)
 
-    def challenge(self):
+    def challenge(self, stale=False):
         with self.store.lock:
             mode = self.store.config["auth"]
             nonce, opaque = self.store.nonce, self.store.opaque
@@ -720,8 +780,9 @@ class DavHandler(BaseHTTPRequestHandler):
             self.store.status_counts["401"] += 1
         self.send_response(401)
         if mode in {"digest", "both"}:
-            self.send_header("WWW-Authenticate", 'Digest realm="%s", nonce="%s", '
-                             'opaque="%s", algorithm=MD5, qop="auth"' % (REALM, nonce, opaque))
+            challenge = ('Digest realm="%s", nonce="%s", '
+                         'opaque="%s", algorithm=MD5, qop="auth"' % (REALM, nonce, opaque))
+            self.send_header("WWW-Authenticate", challenge + (", stale=true" if stale else ""))
         if mode in {"basic", "both"}:
             self.send_header("WWW-Authenticate", 'Basic realm="%s", charset="UTF-8"' % REALM)
         self.send_header("Content-Length", "0")
@@ -741,6 +802,9 @@ class DavHandler(BaseHTTPRequestHandler):
                 while not rule["release"].wait(0.05):
                     if self.store.stopping.is_set():
                         raise DavError(503)
+                if rule.get("drop_after_release"):
+                    self.drop()
+                    return True
             elif effect == "delay":
                 if self.store.stopping.wait(rule["delay_ms"] / 1000):
                     raise DavError(503)
@@ -802,9 +866,18 @@ class DavHandler(BaseHTTPRequestHandler):
                 mode = "weak"
             elif rule["effect"] == "missing_etag":
                 mode = "missing"
+            elif rule["effect"] == "raw_etag":
+                mode = "raw"
+            elif rule["effect"] == "quoted_etag":
+                mode = "quoted"
         if mode == "missing":
             return None
-        return ("W/" if mode == "weak" else "") + metadata["etag"]
+        tag = metadata["etag"]
+        if mode == "raw":
+            return tag.strip('"')
+        if mode in {"weak", "quoted"} and not tag.startswith('"'):
+            tag = '"' + tag + '"'
+        return ("W/" if mode == "weak" else "") + tag
 
     def check_epoch(self):
         if self.epoch != self.store.epoch:
@@ -882,9 +955,13 @@ class DavHandler(BaseHTTPRequestHandler):
             append(entry)
             if depth == "1" and entry["kind"] == "collection":
                 prefix_path = path + "/" if path else ""
+                returned = 1
                 for name, child in self.store.entries.items():
                     if name != path and name.startswith(prefix_path) and "/" not in name[len(prefix_path):]:
+                        if self.store.profile == "jianguoyun" and returned >= 750:
+                            break
                         append(child)
+                        returned += 1
             stream.write(("</%s>" % tag("multistatus")).encode("utf-8"))
             size = stream.tell()
             stream.seek(0)
@@ -908,10 +985,15 @@ class DavHandler(BaseHTTPRequestHandler):
                 with self.store.lock:
                     self.check_epoch()
                     previous = self.store.entries.get(path)
-                    self.expected(previous, required=True,
-                                  ignore=self.store.config["ignore_create_conditions"])
+                    if self.store.profile == "jianguoyun":
+                        match = self.headers.get("If-Match")
+                        if match is not None and (previous is None or match != previous["etag"]):
+                            raise DavError(412)
+                    else:
+                        self.expected(previous, required=True,
+                                      ignore=self.store.config["ignore_create_conditions"])
                     metadata = self.store.install(path, temporary, digest.hexdigest(), size)
-                    etag = self.presented_etag(metadata)
+                    etag = None if self.store.profile == "jianguoyun" else self.presented_etag(metadata)
                     return 204 if previous else 201, {"ETag": etag} if etag else {}, None, 0
             finally:
                 if temporary and os.path.exists(temporary):
@@ -929,7 +1011,7 @@ class DavHandler(BaseHTTPRequestHandler):
                     raise DavError(404)
                 if entry["kind"] != "file":
                     raise DavError(405)
-                self.expected(entry)
+                self.expected(entry, ignore=self.store.profile == "jianguoyun")
                 # Snapshot the inspected representation before releasing the lock. In
                 # particular, Windows forbids replacing an ordinary open file handle.
                 stream = tempfile.TemporaryFile(dir=self.store.uploads)
@@ -949,8 +1031,12 @@ class DavHandler(BaseHTTPRequestHandler):
                 if body_size:
                     raise DavError(415)
                 if entry is not None:
-                    raise DavError(405)
-                self.expected(entry)
+                    if self.store.profile != "jianguoyun":
+                        raise DavError(405)
+                    if entry["kind"] != "collection":
+                        raise DavError(409)
+                    return 201, {}, None, 0
+                self.expected(entry, ignore=self.store.profile == "jianguoyun")
                 self.store.mkdir(path)
                 return 201, {}, None, 0
             if method == "DELETE":
@@ -959,7 +1045,8 @@ class DavHandler(BaseHTTPRequestHandler):
                 if entry["kind"] != "file":
                     raise DavError(405)
                 self.expected(entry, required=True,
-                              ignore=self.store.config["ignore_delete_conditions"])
+                              ignore=(self.store.profile == "jianguoyun" or
+                                      self.store.config["ignore_delete_conditions"]))
                 self.store.remove(path)
                 return 204, {}, None, 0
             if method == "MOVE":
@@ -967,7 +1054,7 @@ class DavHandler(BaseHTTPRequestHandler):
                     raise DavError(404)
                 if entry["kind"] != "file":
                     raise DavError(405)
-                self.expected(entry)
+                self.expected(entry, ignore=self.store.profile == "jianguoyun")
                 destination = self.headers.get("Destination", "")
                 parsed = urlsplit(destination)
                 if (parsed.scheme + "://" + parsed.netloc != self.store.origin
@@ -980,7 +1067,10 @@ class DavHandler(BaseHTTPRequestHandler):
                 overwrite = self.headers.get("Overwrite")
                 if overwrite not in {"T", "F"}:
                     raise DavError(400)
-                if not self.store.config["ignore_move_conditions"]:
+                if self.store.profile == "jianguoyun":
+                    if old is not None:
+                        raise DavError(409)
+                elif not self.store.config["ignore_move_conditions"]:
                     if overwrite == "F":
                         if old is not None:
                             raise DavError(412)
@@ -1031,15 +1121,34 @@ class DavHandler(BaseHTTPRequestHandler):
                 return
             path = decode_url_path(parsed.path)
             self.record = self.store.record(self.command, path)
+            if self.store.profile == "jianguoyun" and self.command == "PROPFIND":
+                depth = self.headers.get("Depth")
+                with self.store.lock:
+                    self.record["depth"] = depth if depth in {"0", "1"} else "invalid"
             if self.command not in METHODS:
                 raise DavError(405)
-            if not self.store.authorize(self.command, self.path, self.headers.get("Authorization")):
+            try:
+                authorized = self.store.authorize(self.command, self.path, self.headers.get("Authorization"))
+            except DigestNonceExpired:
+                self.challenge(stale=True)
+                return
+            if not authorized:
                 self.challenge()
                 return
             with self.store.lock:
                 self.record["authenticated"] = bool(self.headers.get("Authorization"))
                 self.epoch = self.store.epoch
-                self.active_rules = self.store.rules(self.command, path)
+                destination = None
+                if self.command == "MOVE":
+                    try:
+                        destination = decode_url_path(urlsplit(self.headers.get("Destination", "")).path)
+                    except DavError:
+                        pass
+                if self.store.profile == "jianguoyun":
+                    if destination is not None:
+                        self.record["destination"] = destination
+                self.active_rules = self.store.rules(self.command, path, destination,
+                                                     self.headers.get("Depth"))
             for rule in self.active_rules:
                 if rule["effect"] == "truncate":
                     self.truncate = rule["bytes"]
@@ -1140,8 +1249,8 @@ class LoopbackServer(ThreadingHTTPServer):
 
 class WebDavFixture:
     """Own the listener, not the supplied temporary directory or child processes."""
-    def __init__(self, directory, tls_context=None):
-        self.store = Store(Path(directory) / "remote")
+    def __init__(self, directory, tls_context=None, profile="strict"):
+        self.store = Store(Path(directory) / "remote", profile)
         self.server = LoopbackServer(self.store, tls_context)
         scheme = "https" if tls_context else "http"
         self.store.origin = "%s://127.0.0.1:%d" % (scheme, self.server.server_port)
@@ -1153,6 +1262,7 @@ class WebDavFixture:
 
     def environment(self):
         return {"VXCORE_WEBDAV_TEST_URL": self.url,
+                "VXCORE_WEBDAV_TEST_PROFILE": self.store.profile,
                 "VXCORE_WEBDAV_TEST_USERNAME": self.store.initial_username,
                 "VXCORE_WEBDAV_TEST_PASSWORD": self.store.initial_password,
                 "VXCORE_WEBDAV_TEST_CONTROL_URL": self.control_url,

@@ -1,5 +1,7 @@
 include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/git_sync_sources.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/webdav_sources.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/sync_http_sources.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/jianguoyun_sources.cmake)
 
 set(VXCORE_PUBLIC_HEADERS
     ${PROJECT_SOURCE_DIR}/include/vxcore/vxcore.h
@@ -77,6 +79,8 @@ set(VXCORE_SOURCES
 sync/sync_progress_dispatcher.cpp
     ${VXCORE_GIT_SYNC_SOURCES_RELATIVE}
     ${VXCORE_WEBDAV_SOURCES_RELATIVE}
+    ${VXCORE_SYNC_HTTP_SOURCES_RELATIVE}
+    ${VXCORE_JIANGUOYUN_SOURCES_RELATIVE}
     utils/utils.cpp
     utils/string_utils.cpp
     utils/base64.cpp

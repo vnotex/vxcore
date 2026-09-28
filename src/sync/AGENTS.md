@@ -2,7 +2,9 @@
 
 src/sync contains the pluggable notebook synchronization backend layer.
 It provides an abstract `ISyncBackend` interface, a `SyncManager` orchestrator, and all supporting types.
-GitSyncBackend and WebDavSyncBackend are implemented. The application recognizes exactly `git` and `webdav`.
+GitSyncBackend, WebDavSyncBackend and JianguoyunSyncBackend are implemented. The application
+recognizes exactly `git`, `webdav` and `jianguoyun`; managed Jianguoyun storage never weakens the
+strict ordinary-file WebDAV protocol.
 
 ## Architecture
 
@@ -83,7 +85,7 @@ Every SyncManager method that operates on a notebook follows this pattern:
 | `git/git_conflict_resolver.{h,cpp}` | `GitConflictResolver` class: GetConflicts + ResolveConflict |
 | `git/libgit2_init.h` | `LibGit2Init` RAII helper that calls `git_libgit2_init`/`shutdown` |
 | `git/libgit2_init.cpp` | Reference-counted `git_libgit2_init` wrapper (thread-safe) |
-| `sync_builtin_backends.cpp` | Explicit `RegisterBuiltinBackends` registers `git` and `webdav` once through the registry. No static initializer or linker anchor. |
+| `sync_builtin_backends.cpp` | Explicit `RegisterBuiltinBackends` registers `git`, `webdav` and `jianguoyun` once through the registry. No static initializer or linker anchor. |
 
 ### Related Files Outside src/sync
 
@@ -239,8 +241,10 @@ struct NotebookConfig {
 ## WebDAV backend
 
 `webdav/webdav_transport.*`, `webdav_state.*`, and `webdav_sync_backend.*` separate synchronous
-HTTP/XML, durable state/path validation, and three-way reconciliation. `cmake/webdav_sources.cmake`
-is the shared source inventory. Windows/Linux use pinned static curl 8.22.0; Windows uses
+HTTP/XML, durable state/path validation, and three-way reconciliation.
+`http/sync_http_client.*` owns shared synchronous HTTP mechanics; strict DAV validation stays in
+the WebDAV adapter. `cmake/webdav_sources.cmake` and `cmake/sync_http_sources.cmake` are the source
+inventories. Windows/Linux use pinned static curl 8.22.0; Windows uses
 Schannel with the Windows 7 target, Linux uses OpenSSL. Apple uses the active SDK/system libcurl
 (minimum API 7.64), never a Homebrew architecture-specific fallback. pugixml 1.16 parses DAV XML.
 
@@ -290,6 +294,62 @@ bounded and same-origin/root-contained. DAV XML is limited to 16 MiB, traversal 
 uses TLS by default and never installs a host CA. `--http` is direct-core-only. Tests cover real
 HTTP, process crash boundaries and durable file state; fixture success does not establish
 Nextcloud/Apache or untested platform compatibility.
+
+## Jianguoyun managed storage
+
+`jianguoyun/jianguoyun_{transport,state,sync_backend}.*` implement backend `jianguoyun` separately
+from `webdav`. The production URL must be HTTPS at `dav.jianguoyun.com`, default port 443, with a
+dedicated collection below `/dav/` (never the account root). No host-based protocol switch or
+fallback is permitted. Test endpoints require actual core test mode AND an exact HTTPS-loopback
+`VXCORE_WEBDAV_TEST_URL`; setting environment variables alone never disables endpoint/TLS checks.
+
+Remote `.vnote-sync/head.json` is the only mutable publication record. Immutable full-tree commits
+live at `commits/<sha256>.json`, payload chunks at `objects/<prefix>/<sha256>`, and journal-owned
+uploads at `staging/<operationId>/<objectId>`. Chunk objects are at most 16 MiB, streamed through
+64 KiB buffers. Manifests are bounded to 128 MiB, 250,000 entries and depth 256; ancestry traversal
+is bounded to 4,096 commits. Local notebooks remain ordinary files; do not edit managed cloud
+storage as a notebook. Full config projection and ciphertext preservation match WebDAV.
+
+Stage PUT -> GET/hash verification -> create-only MOVE -> canonical GET/hash verification makes
+objects immutable. Never PUT or DELETE canonical objects/commits. Only `head.json` uses PUT with
+its exact raw provider ETag. Jianguoyun omits PUT response ETags and ignores GET conditions,
+create-if-absent PUT, DELETE conditions and lock tokens; do not substitute those for publication
+protection. A MOVE 409 requires validating the existing destination, not assuming success.
+Directory MKCOL 201 does not establish ownership. No synchronized DELETE/LOCK or automatic remote
+GC: tombstones, prior commits and abandoned uploads remain retained, so remote storage grows.
+Normal sync and clone follow hash references, not capped/paginated directory inventories.
+
+Initialize authenticates/probes and binds an existing matching repository without publishing a
+production head. Genesis is published only by the first network sync after consumer persistence.
+Fresh same-notebook bootstrap losers adopt the winning repository with non-destructive union;
+a previously bound missing/recreated/forked repository fails closed. Conflicts retain whole
+versions; metadata/ciphertext cannot Keep Both. File/directory collisions require rename before
+publication, not recursive subtree overwrite.
+
+State, pending journal, probe ledger and snapshots live under `vx_notebook/vx_sync/jianguoyun/`.
+Bind notebook/repository UUIDs, canonical URL and username hash, never secrets or absolute roots.
+`stagedUploaded` is not proof of publication: only canonical GET+hash permits `publishedVerified`.
+On a lost head acknowledgement, exact intended bytes establish that head; verified descendant
+inclusion establishes publication only and requires re-analysis against the current head.
+Quota/cancellation preserves progress; bounded Retry-After is diagnostic text, not a backend timer.
+
+The existing deferred apply/GUI reservation contract applies unchanged. Baselines advance only
+for installed/revalidated paths; success time remains consumer-owned after metadata refresh.
+An interrupted own apply may temporarily mix key/metadata revisions: validate its journaled
+completed cohort only when actual fingerprints still match expected/intended operations, then
+keep actual fingerprints for subsequent preflight. File IDs and encryption document IDs are
+independent. Only incoming envelope replacement requires key locking; outgoing publication and
+Keep Local must not revoke existing leases. Offline `InspectRecovery` validates structure and
+snapshot types/lengths without hashing attachment contents on hot GUI/protected-read paths.
+
+Retired-only directories are clean inactive bindings. Core/Git/controller guards preserve both
+`webdav` and `jianguoyun` siblings and inspect archives with the matching schema. Unknown entries,
+malformed recovery and reparse points still fail closed.
+
+Provider fixtures use `tests/run_webdav_test.py --profile jianguoyun -- <executable>`; strict is
+the default and reset preserves the selected profile. `webdav_live_smoke` is opt-in, requires
+explicitly owned collections/workspaces and transient environment credentials, and is never a
+default credentialed CTest. Fixtures do not replace qualification against a real provider.
 
 ## Git Sync Backend
 

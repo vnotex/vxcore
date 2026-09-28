@@ -23,6 +23,16 @@ int test_error_message() {
   return 0;
 }
 
+int test_test_mode_state() {
+  vxcore_set_test_mode(0);
+  const int production = vxcore_is_test_mode();
+  vxcore_set_test_mode(1);
+  const int isolated = vxcore_is_test_mode();
+  ASSERT_EQ(production, 0);
+  ASSERT_EQ(isolated, 1);
+  return 0;
+}
+
 int test_context_create_destroy() {
   std::cout << "  Running test_context_create_destroy..." << std::endl;
   VxCoreContextHandle ctx = nullptr;
@@ -231,6 +241,7 @@ int main() {
 
   RUN_TEST(test_version);
   RUN_TEST(test_error_message);
+  RUN_TEST(test_test_mode_state);
   RUN_TEST(test_context_create_destroy);
   RUN_TEST(test_get_config_by_name_not_found);
   RUN_TEST(test_update_and_get_config_by_name);

@@ -1,5 +1,6 @@
 include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/git_sync_sources.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/webdav_sources.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/sync_http_sources.cmake)
 
 # Test sources are UTF-8 without a BOM. Without /utf-8 MSVC decodes them using
 # the active ANSI code page, silently mangling every non-ASCII string literal —
@@ -499,6 +500,11 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/search/search_query.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/path_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_encryption_guard.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/jianguoyun/jianguoyun_state.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/jianguoyun/jianguoyun_transport.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/webdav/webdav_state.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/webdav/webdav_transport.cpp
+    ${VXCORE_SYNC_HTTP_SOURCES_ABS}
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_conflict_resolver.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_sync_pipeline.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_credential_callback.cpp
@@ -515,7 +521,15 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/content_processor/content_processor.cpp
     ${CMAKE_SOURCE_DIR}/src/core/content_processor/markdown_handler.cpp)
 target_include_directories(test_folder_manager PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
-target_link_libraries(test_folder_manager PRIVATE sqlite3 nlohmann_json cmark sodium libgit2package)
+target_link_libraries(test_folder_manager PRIVATE sqlite3 nlohmann_json cmark sodium libgit2package
+    vxcore_webdav_curl pugixml::pugixml)
+if(WIN32)
+    target_link_libraries(test_folder_manager PRIVATE shell32 ole32)
+elseif(APPLE)
+    target_link_libraries(test_folder_manager PRIVATE Iconv::Iconv "-framework CoreFoundation")
+else()
+    target_link_libraries(test_folder_manager PRIVATE Iconv::Iconv)
+endif()
 add_test(NAME test_folder_manager COMMAND test_folder_manager)
 
 # test_sync_manager_dispatch: T9 of git-sync-backend plan. Hosts MockSyncBackend
@@ -987,4 +1001,24 @@ target_include_directories(test_webdav_sync PRIVATE
 target_link_libraries(test_webdav_sync PRIVATE ${_webdav_test_core} vxcore_webdav_curl pugixml::pugixml sodium)
 add_test(NAME test_webdav_sync COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/run_webdav_test.py -- $<TARGET_FILE:test_webdav_sync>)
-set_tests_properties(test_webdav_sync PROPERTIES TIMEOUT 900)
+# The complete TLS/crash suite takes about 815 seconds on Windows without contention.
+set_tests_properties(test_webdav_sync PROPERTIES TIMEOUT 1800)
+
+# Opt-in executable only: never run against a live account through default ctest.
+add_executable(webdav_live_smoke webdav_live_smoke.cpp)
+target_include_directories(webdav_live_smoke PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(webdav_live_smoke PRIVATE ${_webdav_test_core} sodium)
+
+# Managed provider tests use an explicit weak-DAV fixture profile, never strict defaults.
+foreach(_managed_test test_jianguoyun_transport test_jianguoyun_sync)
+    add_executable(${_managed_test} ${_managed_test}.cpp)
+    target_include_directories(${_managed_test} PRIVATE
+        ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
+    target_link_libraries(${_managed_test} PRIVATE ${_webdav_test_core}
+        vxcore_webdav_curl pugixml::pugixml sodium)
+    add_test(NAME ${_managed_test} COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/run_webdav_test.py --profile jianguoyun -- $<TARGET_FILE:${_managed_test}>)
+endforeach()
+set_tests_properties(test_jianguoyun_transport PROPERTIES TIMEOUT 300)
+set_tests_properties(test_jianguoyun_sync PROPERTIES TIMEOUT 3600)

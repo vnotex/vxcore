@@ -12,6 +12,7 @@
 #include "core/notebook.h"
 #include "sync/git/git_conflict_resolver.h"
 #include "sync/git/libgit2_init.h"
+#include "sync/jianguoyun/jianguoyun_state.h"
 #include "sync/sync_json_keys.h"
 #include "utils/file_utils.h"
 #include "vxcore/notebook_json_keys.h"
@@ -178,6 +179,29 @@ VxCoreError CheckWebDav(const fs::path &directory, bool all_paths) {
   }
   return VXCORE_OK;
 }
+VxCoreError CheckJianguoyun(const fs::path &directory, bool all_paths) {
+  if (!Directory(directory)) return VXCORE_OK;
+  const auto check = [all_paths](const fs::path &path) {
+    jianguoyun::RecoveryStatus state;
+    const auto error = jianguoyun::InspectRecovery(path, state);
+    if (error != VXCORE_OK) return error;
+    const bool unresolved = all_paths ? state.any_conflict || state.any_pending
+                                      : state.encryption_conflict || state.encryption_pending;
+    return unresolved ? VXCORE_ERR_SYNC_CONFLICT : VXCORE_OK;
+  };
+  const auto error = check(directory);
+  if (error != VXCORE_OK || all_paths) return error;
+  // Retired histories can still contain key-envelope recovery that protects reads.
+  const auto retired = directory / "retired";
+  if (Directory(retired)) {
+    for (const auto &entry : fs::directory_iterator(retired)) {
+      Require(NotebookEncryption::IsCanonicalUuid(PathToUtf8(entry.path().filename())));
+      const auto archived = check(entry.path());
+      if (archived != VXCORE_OK) return archived;
+    }
+  }
+  return VXCORE_OK;
+}
 }  // namespace
 
 VxCoreError CheckNotebookEncryptionSyncState(const std::string &metadata_folder) {
@@ -189,15 +213,17 @@ VxCoreError CheckNotebookEncryptionSyncState(const std::string &metadata_folder)
     bool git_owned = false;
     for (const auto &entry : fs::directory_iterator(sync)) {
       Require(Exists(entry.path()));
-      if (entry.path().filename() != "webdav") git_owned = true;
+      if (entry.path().filename() != "webdav" && entry.path().filename() != "jianguoyun")
+        git_owned = true;
     }
-    // Git uses vx_sync itself as its repository. A WebDAV child is not Git evidence;
+    // Git uses vx_sync itself as its repository. DAV provider directories are not Git evidence;
     // any other unexplained/non-readable content still fails closed in the Git inspector.
     if (git_owned) {
       const auto error = GitConflictResolver::CheckEncryptionKeyConflict(PathToUtf8(sync));
       if (error != VXCORE_OK) return error;
     }
-    return CheckWebDav(sync / "webdav", false);
+    const auto webdav_error = CheckWebDav(sync / "webdav", false);
+    return webdav_error == VXCORE_OK ? CheckJianguoyun(sync / "jianguoyun", false) : webdav_error;
   } catch (...) {
     return VXCORE_ERR_ENCRYPTION_SYNC_STATE;
   }
@@ -212,7 +238,8 @@ VxCoreError CheckNotebookSyncReconfiguration(const std::string &metadata_folder)
     bool git_owned = false;
     for (const auto &entry : fs::directory_iterator(sync)) {
       Require(Exists(entry.path()));
-      if (entry.path().filename() != "webdav") git_owned = true;
+      if (entry.path().filename() != "webdav" && entry.path().filename() != "jianguoyun")
+        git_owned = true;
     }
     if (git_owned) {
       LibGit2Init init;
@@ -231,7 +258,8 @@ VxCoreError CheckNotebookSyncReconfiguration(const std::string &metadata_folder)
       if (git_repository_state(repo.get()) != GIT_REPOSITORY_STATE_NONE)
         return VXCORE_ERR_SYNC_IN_PROGRESS;
     }
-    return CheckWebDav(sync / "webdav", true);
+    const auto webdav_error = CheckWebDav(sync / "webdav", true);
+    return webdav_error == VXCORE_OK ? CheckJianguoyun(sync / "jianguoyun", true) : webdav_error;
   } catch (...) {
     return VXCORE_ERR_INVALID_STATE;
   }
@@ -245,7 +273,9 @@ VxCoreError PrepareNotebookEncryptionSyncApply(Notebook &notebook,
     const auto sync = metadata / "vx_sync";
     if (!Directory(sync)) return VXCORE_OK;
     const auto state = InspectWebDav(sync / "webdav");
-    if (!state.replace_local) return VXCORE_OK;
+    jianguoyun::RecoveryStatus managed;
+    Require(jianguoyun::InspectRecovery(sync / "jianguoyun", managed) == VXCORE_OK);
+    if (!state.replace_local && !managed.replaces_encryption) return VXCORE_OK;
     for (const auto &path : protected_paths) {
       const bool encrypted = path.size() >= 4 && std::equal(path.end() - 4, path.end(), ".vne",
                                                             [](char actual, char expected) {

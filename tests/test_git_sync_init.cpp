@@ -26,6 +26,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "sync/git/git_defaults.h"
 #include "sync/git/git_sync_backend.h"
@@ -279,50 +280,59 @@ int test_git_init_rejects_corrupt_repo() {
 }
 
 int test_git_init_preserves_webdav_state() {
-  for (bool publish : {false, true}) {
-    const auto suffix = publish ? "publish" : "clone";
-    const auto root = get_test_path(std::string("git_webdav_") + suffix);
-    const auto bare = get_test_path(std::string("git_webdav_remote_") + suffix);
-    cleanup_test_dir(root);
-    cleanup_test_dir(bare);
-    const auto url = vxcore_test::create_bare_repo(bare);
-    if (!publish) {
-      vxcore_test::commit_file(bare, "notes.md", "remote notes", "seed");
-    }
-    const auto gitdir = vxcore::PathFromUtf8(root) / "vx_notebook/vx_sync";
-    const auto preserved = gitdir / "webdav/retired/previous/snapshot";
-    std::filesystem::create_directories(preserved.parent_path());
-    const std::string payload("private\0recovery", 16);
-    ASSERT_EQ(vxcore::WriteFileAtomic(preserved, payload), VXCORE_OK);
-    if (publish) {
-      ASSERT_EQ(vxcore::WriteFileAtomic(vxcore::PathFromUtf8(root) / "notes.md", "local notes"),
+  for (unsigned providers : {1u, 2u, 3u}) {
+    for (bool publish : {false, true}) {
+      const auto suffix = std::to_string(providers) + (publish ? "publish" : "clone");
+      const auto root = get_test_path(std::string("git_webdav_") + suffix);
+      const auto bare = get_test_path(std::string("git_webdav_remote_") + suffix);
+      cleanup_test_dir(root);
+      cleanup_test_dir(bare);
+      const auto url = vxcore_test::create_bare_repo(bare);
+      if (!publish) {
+        vxcore_test::commit_file(bare, "notes.md", "remote notes", "seed");
+      }
+      const auto gitdir = vxcore::PathFromUtf8(root) / "vx_notebook/vx_sync";
+      std::vector<std::filesystem::path> preserved;
+      if (providers & 1u) preserved.push_back(gitdir / "webdav/retired/previous/snapshot");
+      if (providers & 2u) preserved.push_back(gitdir / "jianguoyun/retired/previous/snapshot");
+      const std::string payload("private\0recovery", 16);
+      for (const auto &file : preserved) {
+        std::filesystem::create_directories(file.parent_path());
+        ASSERT_EQ(vxcore::WriteFileAtomic(file, payload), VXCORE_OK);
+      }
+      if (publish) {
+        ASSERT_EQ(vxcore::WriteFileAtomic(vxcore::PathFromUtf8(root) / "notes.md", "local notes"),
+                  VXCORE_OK);
+      }
+      vxcore::SyncConfig config;
+      config.backend = "git";
+      config.remote_url = url;
+      // The coexistence exception must not admit unexplained Git-owned entries.
+      ASSERT_EQ(vxcore::WriteFileAtomic(gitdir / "unexplained", "preserve me"), VXCORE_OK);
+      {
+        vxcore::GitSyncBackend rejected;
+        ASSERT_NE(rejected.Initialize(root, config), VXCORE_OK);
+        ASSERT_FALSE(std::filesystem::exists(gitdir / "HEAD"));
+      }
+      ASSERT_TRUE(std::filesystem::remove(gitdir / "unexplained"));
+      {
+        vxcore::GitSyncBackend backend;
+        ASSERT_EQ(backend.Initialize(root, config), VXCORE_OK);
+      }
+      std::string actual;
+      for (const auto &file : preserved) {
+        ASSERT_EQ(vxcore::ReadFileHead(file, payload.size() + 1, actual), VXCORE_OK);
+        ASSERT_EQ(actual, payload);
+      }
+      ASSERT_TRUE(std::filesystem::is_regular_file(gitdir / "HEAD"));
+      ASSERT_EQ(vxcore_test::git_head_sha(vxcore::PathToUtf8(gitdir)),
+                vxcore_test::git_head_sha(bare));
+      ASSERT_EQ(vxcore::ReadFileHead(vxcore::PathFromUtf8(root) / "notes.md", 64, actual),
                 VXCORE_OK);
+      ASSERT_EQ(actual, publish ? "local notes" : "remote notes");
+      cleanup_test_dir(root);
+      cleanup_test_dir(bare);
     }
-    vxcore::SyncConfig config;
-    config.backend = "git";
-    config.remote_url = url;
-    // The coexistence exception must not admit unexplained Git-owned entries.
-    ASSERT_EQ(vxcore::WriteFileAtomic(gitdir / "unexplained", "preserve me"), VXCORE_OK);
-    {
-      vxcore::GitSyncBackend rejected;
-      ASSERT_NE(rejected.Initialize(root, config), VXCORE_OK);
-      ASSERT_FALSE(std::filesystem::exists(gitdir / "HEAD"));
-    }
-    ASSERT_TRUE(std::filesystem::remove(gitdir / "unexplained"));
-    {
-      vxcore::GitSyncBackend backend;
-      ASSERT_EQ(backend.Initialize(root, config), VXCORE_OK);
-    }
-    std::string actual;
-    ASSERT_EQ(vxcore::ReadFileHead(preserved, payload.size() + 1, actual), VXCORE_OK);
-    ASSERT_EQ(actual, payload);
-    ASSERT_TRUE(std::filesystem::is_regular_file(gitdir / "HEAD"));
-    ASSERT_EQ(vxcore_test::git_head_sha(vxcore::PathToUtf8(gitdir)),
-              vxcore_test::git_head_sha(bare));
-    ASSERT_EQ(vxcore::ReadFileHead(vxcore::PathFromUtf8(root) / "notes.md", 64, actual), VXCORE_OK);
-    ASSERT_EQ(actual, publish ? "local notes" : "remote notes");
-    cleanup_test_dir(root);
-    cleanup_test_dir(bare);
   }
   return 0;
 }
