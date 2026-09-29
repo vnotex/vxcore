@@ -113,7 +113,7 @@ FileTypesConfig::FileTypesConfig() {
                      "dockerfile", "gitignore", "gitattributes", "editorconfig"},
                     true, "Text", true));
   types.push_back(FileTypeEntry("PDF", {"pdf"}, false, "Portable Document Format", false));
-  types.push_back(FileTypeEntry("MindMap", {"emind"}, true, "Mind Map", true));
+  types.push_back(FileTypeEntry("MindMap", {"mmm", "emind"}, true, "Mind Map", true));
   types.push_back(FileTypeEntry("Others", {}, true, "Others", false));
 }
 
