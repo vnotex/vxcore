@@ -176,8 +176,8 @@ class State {
   void ValidateFiles() const;
 };
 
-// Offline, strict validation. Only encryption.vne controls the global key/lease barrier;
-// an ordinary encrypted-note conflict still contributes to any_conflict/any_pending.
+// Offline, strict validation. Incoming encrypted notes and the legacy vault require
+// the live-key barrier; legacy read conflicts remain scoped to encryption.vne.
 VxCoreError InspectRecovery(const std::filesystem::path &directory, RecoveryStatus &out);
 
 }  // namespace jianguoyun

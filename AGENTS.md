@@ -744,32 +744,44 @@ See `GitSyncBackend::EnsureGitkeepFiles()` in `src/sync/git_sync_backend.cpp` fo
 
 ## Portable encrypted notes
 
-`NotebookEncryption` in `src/core/notebook.h/.cpp` is the sole authenticated storage
-implementation. It uses libsodium Argon2id for password-derived wrapping, independent
-master/notebook/document keys, XChaCha20-Poly1305 key envelopes, and secretstream objects.
-Keys and authenticated scratch storage are move-only secure owners. Do not add another
-codec in Qt, transfer, sync, or a buffer provider. Sodium and key registries are lazy:
-ordinary notes must work with unrelated missing/corrupt key files and without crypto IO.
+`EncryptedNote` in `src/core/encryptednote.h/.cpp` is the sole authenticated codec. It uses
+libsodium Argon2id, independent master/notebook/document keys, XChaCha20-Poly1305 key wrapping
+and secretstream payloads. `EncryptionKeySource` selects private legacy-vault or embedded-note
+strategies; callers do not duplicate format parsing or vault lookup. `NotebookEncryption` is
+only the notebook-owned, multi-context key ring. Keys and authenticated scratch storage are
+move-only secure owners; protected buffers/jobs retain exact notebook-key leases. Sodium and
+registries are lazy: ordinary notes perform no crypto IO.
 
-The C ABI in `include/vxcore/vxcore.h` owns setup handles per context. Prepare creates no
-files and runs outside the caller's notebook IO gate; commit rechecks identity and
-writability under maintenance exclusion and the gate, consumes the handle, and never
-replaces an existing key file. Unlock authenticates only the key envelope, not every
-closed note. Lock All requires protected buffers, key leases, and prepared setups to
-have been released; an outstanding owner must prevent successful key release.
+The `VNOTEE1` container family has a strict flat header `version`: 1 reads the legacy external
+vault; 2 carries the complete wrapped key chain, salt and KDF parameters in the note itself.
+All new snapshots, backups and authenticated transfer outputs are v2. The document-key AAD
+binds v2 and its complete envelope; the payload AAD stays compatible so migration can rewrap
+only the header. Unknown versions, malformed fields and authentication failures fail closed.
+Never expose plaintext before validating document identity, manifest, FINAL and exact EOF.
+A v2 source never reads or validates an unrelated missing/corrupt/conflicted legacy vault.
 
-`vx_notebook/config.json` records optional boolean `encryptionInitialized`: absent means
-unknown legacy state, false means confirmed uninitialized, and true is permanent even after
-all notes are decrypted or deleted. Fresh bundled notebooks start false. Ordinary config/tag
-updates preserve the fresh disk marker; they cannot grant consent or clear true. Nonboolean
-persisted values are errors, not unknown. Setup/status never scan the contents tree for keys
-or encrypted records. A missing key with true (or a remembered initialized owner) requires
-recovery; a missing key with unknown cannot prepare/commit until explicit user consent.
-`vxcore_encryption_reconcile_notebook` runs under the caller's maintenance lease and IO gate:
-it persists false for unknown/keyless only with explicit consent, or true after validating an
-existing key. Status reports the persisted marker as boolean/null and remains read-only, as
-do password/cached-master unlock and read-only notebook access. Commit publishes the key
-before true and before any encrypted note; marker-write failure keeps the key for reconcile.
+The C ABI in `include/vxcore/vxcore.h` owns setup handles per context. Prepare performs KDF
+outside the notebook IO gate. Commit rechecks identity/writability under maintenance and the
+gate, consumes the handle and installs ephemeral keys plus Git binary attributes. It creates
+no vault and writes no initialization marker. Reuse an authenticated active source context;
+do not retain passwords or derived KEKs. Exact-path `vxcore_encryption_unlock_note` resolves
+one source, authenticates its key chain/document key and revalidates after KDF. The explicit
+`unlock_notebook` entry point is legacy-vault-only. Neither opens closed note bodies.
+Lock All atomically refuses any live setup/operation/key lease, and wipes every cached key.
+
+`vx_notebook/config.json` retains optional boolean `encryptionInitialized` for legacy recovery:
+ordinary config/tag updates preserve it, and nonboolean values remain errors. Explicit legacy
+reconciliation may persist false with consent or true after validating the vault. It is never
+a prerequisite for v2 status, setup or unlock. Selected-note status uses that exact envelope;
+no-file status prefers an active default, otherwise an optional valid legacy vault, and does
+not fail merely because that unrelated vault is absent or damaged. Neither scans note trees.
+
+`vxcore_encryption_migrate_note` is an explicit, KDF-free writable-open operation under caller
+maintenance/IO exclusion, before loading a buffer. Authenticate the entire legacy note and
+optional backup, preserve payload bytes/IDs/editor/revision, recheck fingerprints and publish
+backup then note atomically. Each replacement is durable and partial progress is retryable;
+invalid backups leave both originals intact. Do not migrate read-only, search, history or
+already-loaded buffers. Retain the original vault for other v1 notes and historical copies.
 
 Conversion checks only its hash-checked parent config plus existing cache ownership for UUID
 collisions; it does not run the import-only `CollectAllNodeIds` contents audit. Local duplicate
@@ -788,30 +800,32 @@ Protected backups, recycle/restore and transfer retain note-body protection.
 
 `vxcore_encryption_protect_note` requires the caller's SHA-256 of the selected original
 note file, resolves its editor from configured FileTypes, and stages only note ciphertext.
-It rechecks the source, key envelope and folder config before publishing, preserves the
+It rechecks the source, selected key source and folder config before publishing, preserves the
 FileRecord UUID and attachment metadata, and removes only the replaced note/backup after
-publication. Its version-2 journal permits keyless recovery and blocks mutation/sync until
-recovery completes. Old asset-conversion journals remain untouched and require recovery;
-never silently finish their destructive asset cleanup. New protected notes publish
+publication. The v4 body-conversion journal has no external-key precondition; existing v2/v3
+journals retain their original validation. Recovery blocks mutation/sync until complete.
+Old asset-conversion journals remain untouched and require recovery; never silently finish
+their destructive asset cleanup. New protected notes publish
 ciphertext from the first body write. Raw/external notes cannot be protected.
 
 Git and WebDAV synchronize ciphertext without unlocking. Preserve `*.vne -text -diff -merge` in new and initialized existing
 repositories and resolve encrypted conflicts as complete binary envelopes, never a text
 merge. Asset files continue through the normal plaintext sync/transfer paths. A key-envelope
-conflict blocks protected body access. Encryption preflight permits an absent or empty
-`vx_notebook/vx_sync` directory without creating a repository. WebDAV-only state is not Git
+conflict blocks legacy-source body access, not self-contained v2 reads. Legacy encryption
+preflight permits an absent or empty `vx_notebook/vx_sync` directory without creating a repository. WebDAV-only state is not Git
 corruption: `CheckNotebookEncryptionSyncState` inspects both backends, even when unregistered.
-Pending/conflicting key envelopes block protected operations; applying a changed envelope requires
-a successful key lock with no live leases and leaves the notebook locked. A nonempty invalid Git repository
+Pending/conflicting key envelopes block legacy-source operations. Incoming vault or encrypted-note
+replacement requires a successful key lock with no live leases and leaves the notebook locked.
+Outgoing publication does not revoke leases. A nonempty invalid Git repository
 or unreadable index must still fail closed; never ignore all Git `NOT_FOUND` errors.
 Inspection failures return `VXCORE_ERR_ENCRYPTION_SYNC_STATE`, distinct from a missing notebook
 (`NOT_FOUND`) and a confirmed key conflict (`SYNC_CONFLICT`). Keep the raw Git cause in logs;
 Qt adds notebook locations and localized recovery guidance without shared `context.last_error`.
 Coverage: `tests/test_buffer.cpp` (empty-directory roundtrip and key-conflict/corruption guards).
 Copies get fresh document keys/identity;
-cross-notebook moves require both notebooks initialized and unlocked and rewrap the
-document key. Standard Markdown link rewrites affect only the protected body when ordinary
-asset paths change. Locked recycle preserves configured asset prefixes and ancestor paths,
+cross-notebook moves lease every source descriptor and an unlocked destination default,
+then rewrap document keys into v2 outputs. Mixed source contexts use per-file keys. Standard
+Markdown link rewrites affect only the protected body when ordinary asset paths change. Locked recycle preserves configured asset prefixes and ancestor paths,
 so it does not need to decrypt or rewrite a body. The VNote caller still owns transfer
 leases, comment durability and IO-gate ordering.
 
@@ -819,6 +833,7 @@ Security limits: filenames/folders/tags, image files, attachments and comment si
 are not encrypted. Warn users before protection; inline Base64 images are protected only
 because their bytes are part of the note body. Valid old ciphertext may be replayed.
 Existing Git history, remote versions and external backups may retain plaintext.
-Backups must include `vx_notebook/encryption.vne`, notes and the ordinary asset files.
-Losing that envelope or the password cannot be repaired by initializing a new key over
-existing ciphertext.
+Backups must include notes, their encrypted backups and ordinary assets. Legacy v1 copies
+also require the original `vx_notebook/encryption.vne`; self-contained v2 copies require only
+their password cryptographically. Never overwrite a legacy vault as a recovery shortcut.
+Old VNote versions cannot read v2 notes; migration does not upgrade historical copies.

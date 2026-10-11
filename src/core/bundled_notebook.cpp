@@ -429,7 +429,7 @@ VxCoreError BundledNotebook::ReloadAfterSync() {
     const auto json = nlohmann::json::parse(file);
     if (!json.is_object()) return VXCORE_ERR_INVALID_STATE;
     auto candidate = NotebookConfig::FromJson(json);
-    if (!NotebookEncryption::IsCanonicalUuid(candidate.id) || candidate.id != config_.id ||
+    if (!EncryptedNote::IsCanonicalUuid(candidate.id) || candidate.id != config_.id ||
         candidate.name.empty()) {
       return VXCORE_ERR_INVALID_STATE;
     }

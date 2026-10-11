@@ -11,6 +11,7 @@
 #include <stdexcept>
 
 #include "buffer_provider.h"
+#include "encryptednote.h"
 #include "external_buffer_provider.h"
 #include "notebook.h"
 #include "standard_buffer_provider.h"
@@ -23,7 +24,7 @@ namespace vxcore {
 namespace {
 struct ProtectedContentWiper {
   std::vector<uint8_t> &content;
-  ~ProtectedContentWiper() { NotebookEncryption::WipeBytes(content); }
+  ~ProtectedContentWiper() { EncryptedNote::WipeBytes(content); }
 };
 
 template <typename Function>
@@ -114,7 +115,7 @@ Buffer::Buffer(const std::string &address, bool virtual_flag)
 
 Buffer::~Buffer() {
   if (is_encrypted_) {
-    NotebookEncryption::WipeBytes(content_);
+    EncryptedNote::WipeBytes(content_);
   }
 }
 
@@ -181,7 +182,7 @@ bool Buffer::DetectEncryptedContent(const std::vector<uint8_t> &data) {
 
 void Buffer::ReplaceProtectedContent(std::vector<uint8_t> &data) noexcept {
   if (&data != &content_) {
-    NotebookEncryption::WipeBytes(content_);
+    EncryptedNote::WipeBytes(content_);
     content_.swap(data);
   }
 }

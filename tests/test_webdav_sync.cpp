@@ -26,7 +26,7 @@
 #include <vector>
 
 #include "core/config_manager.h"
-#include "core/notebook.h"
+#include "core/encryptednote.h"
 #include "sync/credential_provider.h"
 #include "sync/sync_backend_registry.h"
 #include "sync/sync_json_keys.h"
@@ -779,41 +779,65 @@ EncryptedRevision MakeEncryptedRevision(const std::string &notebook_id,
                                         const std::string &document_id,
                                         const std::string &plaintext) {
   Workspace staging;
-  NotebookEncryption::KeyEnvelope envelope;
-  NotebookEncryption::Key master, notebook, note;
-  NotebookEncryption::ObjectHeader header;
+  EncryptedNote::KeyEnvelope envelope;
+  EncryptedNote::Key master, notebook, note;
+  EncryptedNote::ObjectHeader header;
   const std::string passphrase = "disposable authenticated envelope fixture";
   auto require_success = [](VxCoreError result) {
     if (result != VXCORE_OK)
       throw std::runtime_error("Could not create real encrypted test revision");
   };
-  require_success(NotebookEncryption::PrepareNewKeys(
+  require_success(EncryptedNote::PrepareNewKeys(
       notebook_id, passphrase.data(), passphrase.size(), envelope, master, notebook));
-  require_success(NotebookEncryption::GenerateKey(note));
+  require_success(EncryptedNote::GenerateKey(note));
   const std::vector<uint8_t> body(plaintext.begin(), plaintext.end());
   const Json manifest{{"editorType", "markdown"}};
   const auto path = staging.path / "snapshot.vne";
-  require_success(NotebookEncryption::WriteNoteSnapshot(path, envelope, notebook, note, document_id,
+  require_success(EncryptedNote::WriteNoteSnapshot(path, envelope, notebook, note, document_id,
                                                         body, manifest, &header));
   std::vector<uint8_t> decoded_body;
   Json decoded_manifest;
   require_success(
-      NotebookEncryption::ReadNoteSnapshot(path, header, note, decoded_body, decoded_manifest));
+      EncryptedNote::ReadNoteSnapshot(path, header, note, decoded_body, decoded_manifest));
   if (decoded_body != body || decoded_manifest != manifest)
     throw std::runtime_error("Encrypted fixture did not authenticate its original content");
-  NotebookEncryption::WipeBytes(decoded_body);
-  NotebookEncryption::WipeJson(decoded_manifest);
+  EncryptedNote::WipeBytes(decoded_body);
+  EncryptedNote::WipeJson(decoded_manifest);
   EncryptedRevision result;
-  require_success(NotebookEncryption::EncodeKeyEnvelope(envelope, result.envelope));
+  require_success(EncryptedNote::EncodeKeyEnvelope(envelope, result.envelope));
   result.ciphertext = ReadBytes(path);
   return result;
+}
+
+int TestSelfContainedCiphertextWithoutVault() {
+  Control({{"action", "reset"}});
+  Client client;
+  std::string document;
+  ASSERT_EQ(EncryptedNote::GenerateIdentity(document), VXCORE_OK);
+  const auto original = MakeEncryptedRevision(client.id, document, "self-contained baseline");
+  client.Write("secret.vne", original.ciphertext);
+  ASSERT_EQ(client.Attach(), VXCORE_OK);
+  ASSERT_EQ(client.Sync(), VXCORE_OK);
+  ASSERT_EQ(*RemoteBytes("secret.vne"), original.ciphertext);
+  ASSERT_FALSE(Inspect("vx_notebook/encryption.vne").value("exists", false));
+  const auto incoming = MakeEncryptedRevision(client.id, document, "self-contained remote body");
+  PutRemote("secret.vne", incoming.ciphertext);
+  ASSERT_EQ(client.Sync(), VXCORE_OK);
+  ASSERT_EQ(client.Read("secret.vne"), incoming.ciphertext);
+  ASSERT_FALSE(fs::exists(client.Path("vx_notebook/encryption.vne")));
+  EncryptedNote::ObjectHeader header;
+  ASSERT_EQ(EncryptedNote::ReadObjectHeader(client.Path("secret.vne"), header), VXCORE_OK);
+  ASSERT_EQ(header.version, 2);
+  ASSERT_EQ(header.document_id, document);
+  ASSERT_EQ(header.envelope.notebook_id, client.id);
+  return 0;
 }
 
 int TestMetadataAndCiphertextConflictPolicy() {
   Control({{"action", "reset"}});
   Client client;
   std::string document_id;
-  ASSERT_EQ(NotebookEncryption::GenerateIdentity(document_id), VXCORE_OK);
+  ASSERT_EQ(EncryptedNote::GenerateIdentity(document_id), VXCORE_OK);
   const auto baseline = MakeEncryptedRevision(client.id, document_id, "protected baseline content");
   const auto local_revision =
       MakeEncryptedRevision(client.id, document_id, "protected local content");
@@ -867,10 +891,10 @@ int TestMetadataAndCiphertextConflictPolicy() {
       ASSERT_EQ(local, key_envelope ? local_revision.envelope : local_revision.ciphertext);
       ASSERT_EQ(remote, key_envelope ? remote_revision.envelope : remote_revision.ciphertext);
       if (key_envelope) {
-        NotebookEncryption::KeyEnvelope local_key, remote_key;
-        ASSERT_EQ(NotebookEncryption::DecodeKeyEnvelope(local.data(), local.size(), local_key),
+        EncryptedNote::KeyEnvelope local_key, remote_key;
+        ASSERT_EQ(EncryptedNote::DecodeKeyEnvelope(local.data(), local.size(), local_key),
                   VXCORE_OK);
-        ASSERT_EQ(NotebookEncryption::DecodeKeyEnvelope(remote.data(), remote.size(), remote_key),
+        ASSERT_EQ(EncryptedNote::DecodeKeyEnvelope(remote.data(), remote.size(), remote_key),
                   VXCORE_OK);
         ASSERT_EQ(local_key.notebook_id, client.id);
         ASSERT_EQ(remote_key.notebook_id, client.id);
@@ -2118,6 +2142,7 @@ int main(int argc, char **argv) {
         {"conflict-matrix", TestConflictMatrixAndDurableChoices},
         {"stale-choice", TestStaleChoicesAndSameBytesEtag},
         {"metadata-ciphertext", TestMetadataAndCiphertextConflictPolicy},
+        {"self-contained-ciphertext", TestSelfContainedCiphertextWithoutVault},
         {"type-collision", TestTypeCollisionsAndRetainedCollections},
         {"routing-projection", TestIncomingConfigRestoresRouting},
         {"apply-preflight", TestDeferredApplyProtectsWholeCohort},

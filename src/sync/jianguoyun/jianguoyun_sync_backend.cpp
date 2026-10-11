@@ -9,6 +9,7 @@
 #include <set>
 #include <utility>
 
+#include "core/encryptednote.h"
 #include "core/folder.h"
 #include "core/notebook.h"
 #include "jianguoyun_state.h"
@@ -435,12 +436,12 @@ struct JianguoyunSyncBackend::Impl {
     ValidateTree(Entries(tree));
     Require(Lookup(tree, kConfigPath).entry.kind == "file");
     std::vector<std::string> ids;
-    std::optional<NotebookEncryption::KeyEnvelope> envelope;
+    std::optional<EncryptedNote::KeyEnvelope> envelope;
     const auto encryption = tree.find(kEncryptionPath);
     if (encryption != tree.end() && Present(encryption->second.entry)) {
       Require(encryption->second.entry.kind == "file", VXCORE_ERR_ENCRYPTION_FORMAT);
-      NotebookEncryption::KeyEnvelope key;
-      Check(NotebookEncryption::ReadKeyEnvelope(
+      EncryptedNote::KeyEnvelope key;
+      Check(EncryptedNote::ReadKeyEnvelope(
           Payload(encryption->first, encryption->second, allow_local), key));
       Require(key.notebook_id == state.notebook_id, VXCORE_ERR_ENCRYPTION_FORMAT);
       envelope = key;
@@ -448,9 +449,6 @@ struct JianguoyunSyncBackend::Impl {
     const auto config_file = Payload(kConfigPath, tree.at(kConfigPath), allow_local);
     const auto notebook_json = webdav::NotebookJson(config_file, state.notebook_id);
     const auto notebook = NotebookConfig::FromJson(notebook_json);
-    Require(!notebook.encryption_initialized ||
-                *notebook.encryption_initialized == envelope.has_value(),
-            VXCORE_ERR_ENCRYPTION_FORMAT);
     std::set<std::string> encrypted_notes;
     for (const auto &item : tree) {
       if (item.second.entry.kind != "file" || !webdav::IsMetadata(item.first)) continue;
@@ -478,13 +476,18 @@ struct JianguoyunSyncBackend::Impl {
       if (item.second.entry.kind != "file" || item.first == kEncryptionPath ||
           !webdav::IsEncrypted(item.first))
         continue;
-      Require(envelope.has_value(), VXCORE_ERR_ENCRYPTION_FORMAT);
-      NotebookEncryption::ObjectHeader header;
-      Check(NotebookEncryption::ReadObjectHeader(Payload(item.first, item.second, allow_local),
-                                                 header));
-      Require(header.notebook_key_id == envelope->notebook_key_id, VXCORE_ERR_ENCRYPTION_FORMAT);
+      EncryptedNote::ObjectHeader header;
+      Check(EncryptedNote::ReadObjectHeader(Payload(item.first, item.second, allow_local),
+                                            header));
+      if (header.version == 1) {
+        Require(envelope.has_value() && header.notebook_key_id == envelope->notebook_key_id,
+                VXCORE_ERR_ENCRYPTION_FORMAT);
+        Require(!notebook.encryption_initialized || *notebook.encryption_initialized,
+                VXCORE_ERR_ENCRYPTION_FORMAT);
+      }
+      // V2 carries its complete descriptor; ReadObjectHeader validates its key membership.
+      // Its origin notebook identity is cryptographic, not the containing tree's identity.
       // FileRecord::id and the encryption document UUID are distinct identities.
-      // ReadObjectHeader validates its own UUID; the envelope owns key membership.
       if (encrypted_notes.count(item.first))
         Require(header.kind == "note", VXCORE_ERR_ENCRYPTION_FORMAT);
     }

@@ -21,6 +21,7 @@
 #include <unistd.h>
 #endif
 
+#include "core/encryptednote.h"
 #include "core/folder.h"
 #include "core/notebook.h"
 #include "sync/sync_json_keys.h"
@@ -35,7 +36,7 @@ namespace fs = std::filesystem;
 using Json = nlohmann::json;
 namespace {
 
-std::string Hex(const NotebookEncryption::Fingerprint &hash) {
+std::string Hex(const EncryptedNote::Fingerprint &hash) {
   constexpr char digits[] = "0123456789abcdef";
   std::string result(64, '0');
   for (size_t i = 0; i < hash.size(); ++i) {
@@ -76,8 +77,8 @@ void SnapshotField(const std::string &name) {
   Check(WebDavTransport::ValidateRelativePath(name));
   const auto components = SplitPathComponents(name);
   Require(components.size() == 3 && components[0] == "snapshots" &&
-          NotebookEncryption::IsCanonicalUuid(components[1]) &&
-          NotebookEncryption::IsCanonicalUuid(components[2]));
+          EncryptedNote::IsCanonicalUuid(components[1]) &&
+          EncryptedNote::IsCanonicalUuid(components[2]));
 }
 
 void ExactKeys(const Json &j, const std::set<std::string> &required,
@@ -168,7 +169,7 @@ void ValidateNotebook(const Json &j, const std::string &id) {
   Require(!j.contains(kJsonKeyTags) || j.at(kJsonKeyTags).is_array());
   Require(!j.contains(kJsonKeyIgnored) || j.at(kJsonKeyIgnored).is_array());
   const auto config = NotebookConfig::FromJson(j);
-  Require(NotebookEncryption::IsCanonicalUuid(config.id) && (id.empty() || id == config.id));
+  Require(EncryptedNote::IsCanonicalUuid(config.id) && (id.empty() || id == config.id));
   Require(!config.name.empty());
   Require(WebDavTransport::ValidateRelativePath(config.assets_folder) == VXCORE_OK &&
               WebDavTransport::ValidateRelativePath(config.recycle_bin_folder) == VXCORE_OK,
@@ -191,12 +192,12 @@ void CheckCancelled(const SyncCancellationPtr &token) {
 }
 std::string NewId() {
   std::string id;
-  Check(NotebookEncryption::GenerateIdentity(id));
+  Check(EncryptedNote::GenerateIdentity(id));
   return id;
 }
 std::string HashBytes(const std::string &bytes) {
-  NotebookEncryption::Fingerprint hash{};
-  Check(NotebookEncryption::FingerprintBytes(bytes.data(), bytes.size(), hash));
+  EncryptedNote::Fingerprint hash{};
+  Check(EncryptedNote::FingerprintBytes(bytes.data(), bytes.size(), hash));
   return Hex(hash);
 }
 std::string HashFile(const fs::path &path, const SyncCancellationPtr &token) {
@@ -215,7 +216,7 @@ std::string HashFile(const fs::path &path, const SyncCancellationPtr &token) {
                                         static_cast<unsigned long long>(input.gcount())) == 0);
   }
   Require(input.eof() && !input.bad(), VXCORE_ERR_IO);
-  NotebookEncryption::Fingerprint hash{};
+  EncryptedNote::Fingerprint hash{};
   Require(crypto_hash_sha256_final(&context, hash.data()) == 0);
   return Hex(hash);
 }
@@ -295,8 +296,8 @@ void ValidateMetadata(const std::string &path, const fs::path &file, const std::
     return;
   }
   if (path == "vx_notebook/encryption.vne") {
-    NotebookEncryption::KeyEnvelope envelope;
-    Check(NotebookEncryption::ReadKeyEnvelope(file, envelope));
+    EncryptedNote::KeyEnvelope envelope;
+    Check(EncryptedNote::ReadKeyEnvelope(file, envelope));
     Require(envelope.notebook_id == notebook_id, VXCORE_ERR_ENCRYPTION_FORMAT);
     return;
   }
@@ -305,14 +306,14 @@ void ValidateMetadata(const std::string &path, const fs::path &file, const std::
   Require(json.is_object() && json.contains(kJsonKeyFiles) && json.at(kJsonKeyFiles).is_array() &&
           json.contains(kJsonKeyFolders) && json.at(kJsonKeyFolders).is_array());
   const auto folder = FolderConfig::FromJson(json);
-  Require(NotebookEncryption::IsCanonicalUuid(folder.id) && !folder.name.empty());
+  Require(EncryptedNote::IsCanonicalUuid(folder.id) && !folder.name.empty());
   const auto parent_name = PathToUtf8(PathFromUtf8(path).parent_path().filename());
   Require(path == "vx_notebook/contents/vx.json"
               ? folder.name == "."
               : SafeName(folder.name) && folder.name == parent_name);
   std::set<std::string> seen_ids{folder.id}, names;
   for (const auto &entry : folder.files) {
-    Require(NotebookEncryption::IsCanonicalUuid(entry.id) && SafeName(entry.name) &&
+    Require(EncryptedNote::IsCanonicalUuid(entry.id) && SafeName(entry.name) &&
             seen_ids.insert(entry.id).second && names.insert(entry.name).second);
     const auto protection = entry.CheckProtectionMetadata();
     Require(protection == VXCORE_OK || protection == VXCORE_ERR_ENCRYPTION_LOCKED, protection);
@@ -450,7 +451,7 @@ void State::Open(const fs::path &notebook_root, const std::string &id, const std
                 "operations"});
   ValidateBinding(j, *this, true);
   operation_id = String(j, "operationId");
-  Require(NotebookEncryption::IsCanonicalUuid(operation_id) && j.at("operations").is_array());
+  Require(EncryptedNote::IsCanonicalUuid(operation_id) && j.at("operations").is_array());
   Require(j.at("operations").size() <= 500000);
   std::set<std::pair<std::string, std::string>> unique;
   for (const auto &o : j.at("operations")) {
@@ -492,7 +493,7 @@ void State::Open(const fs::path &notebook_root, const std::string &id, const std
     if (!op.scratch_url.empty()) {
       Check(WebDavTransport::ValidateRelativePath(op.scratch_url));
       Require(op.scratch_url.find('/') == std::string::npos && IsScratch(op.scratch_url) &&
-              NotebookEncryption::IsCanonicalUuid(
+              EncryptedNote::IsCanonicalUuid(
                   op.scratch_url.substr(std::char_traits<char>::length(kScratchPrefix))));
     }
     op.stage = String(o, "stage");
@@ -551,7 +552,7 @@ void State::Save() const {
   Check(WriteFileAtomic(Resolve("state.json"), j.dump()));
 }
 void State::SavePending() const {
-  Require(NotebookEncryption::IsCanonicalUuid(operation_id));
+  Require(EncryptedNote::IsCanonicalUuid(operation_id));
   auto j = Binding(*this);
   j["operationId"] = operation_id;
   j["operations"] = Json::array();

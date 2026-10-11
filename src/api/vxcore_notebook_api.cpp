@@ -18,6 +18,7 @@
 #include "core/bundled_notebook.h"
 #include "core/config_manager.h"
 #include "core/context.h"
+#include "core/encryptednote.h"
 #include "core/event_manager.h"
 #include "core/event_names.h"
 #include "core/history_manager.h"
@@ -50,6 +51,28 @@ VxCoreError EncryptionApiResult(Function &&function) {
 }
 
 }  // namespace
+
+VXCORE_API VxCoreError vxcore_encryption_requires_notebook_key(
+    const char *file_path, bool *out_required) {
+  if (out_required) {
+    *out_required = false;
+  }
+  if (!file_path || !out_required) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  if (!*file_path) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  return EncryptionApiResult([&]() {
+    vxcore::EncryptedNote::ObjectHeader header;
+    const auto error =
+        vxcore::EncryptedNote::ReadObjectHeader(vxcore::PathFromUtf8(file_path), header);
+    if (error == VXCORE_OK) {
+      *out_required = header.version == 1;
+    }
+    return error;
+  });
+}
 
 VXCORE_API VxCoreError vxcore_encryption_reconcile_notebook(
     VxCoreContextHandle context, const char *notebook_id, bool confirm_uninitialized) {
@@ -126,6 +149,33 @@ VXCORE_API VxCoreError vxcore_encryption_unlock_notebook(
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
   return EncryptionApiResult([&]() {
     return ctx->notebook_manager->UnlockNotebookEncryption(notebook_id, password, password_size);
+  });
+}
+
+VXCORE_API VxCoreError vxcore_encryption_unlock_note(
+    VxCoreContextHandle context, const char *notebook_id, const char *file_path,
+    const void *password, size_t password_size) {
+  if (!context || !notebook_id || !file_path || (!password && password_size)) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  if (!*notebook_id || !*file_path) return VXCORE_ERR_INVALID_PARAM;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return EncryptionApiResult([&]() {
+    if (!ctx->notebook_manager) return VXCORE_ERR_INVALID_STATE;
+    return ctx->notebook_manager->UnlockNotebookEncryption(notebook_id, password,
+                                                            password_size, file_path);
+  });
+}
+
+VXCORE_API VxCoreError vxcore_encryption_migrate_note(
+    VxCoreContextHandle context, const char *notebook_id, const char *file_path) {
+  if (!context || !notebook_id || !file_path) return VXCORE_ERR_NULL_POINTER;
+  if (!*notebook_id || !*file_path) return VXCORE_ERR_INVALID_PARAM;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return EncryptionApiResult([&]() {
+    if (!ctx->notebook_manager || !ctx->buffer_manager) return VXCORE_ERR_INVALID_STATE;
+    return ctx->notebook_manager->MigrateNoteEncryption(notebook_id, file_path,
+                                                        *ctx->buffer_manager);
   });
 }
 

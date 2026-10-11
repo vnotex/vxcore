@@ -17,6 +17,8 @@
 #include <sodium.h>
 
 #include "core/context.h"
+#include "core/encryptednote.h"
+#include "core/encryptionkeysource.h"
 #include "test_utils.h"
 #ifdef _WIN32
 #include <winioctl.h>
@@ -276,7 +278,7 @@ nlohmann::json encryption_status(VxCoreContextHandle context, const char *notebo
 
 nlohmann::json expected_encryption_status(bool initialized, bool unlocked,
                                           const std::string &vault_id = "") {
-  return {{"initialized", initialized}, {"encryptionInitialized", initialized},
+  return {{"initialized", initialized}, {"encryptionInitialized", false},
           {"unlocked", unlocked}, {"encrypted", false}, {"vaultId", vault_id}};
 }
 
@@ -351,6 +353,229 @@ int assert_key_envelope(const std::string &bytes, const char *notebook_id) {
       reinterpret_cast<const uint8_t *>(kEncryptionPassword.data()), kEncryptionPassword.size())),
       std::string::npos);
   return 0;
+}
+
+// Independent authenticated fixtures are needed to exercise manifests that the
+// current writer deliberately refuses to create. No test-only core exports.
+struct EncryptionSnapshotFixture {
+  std::array<std::array<unsigned char, 32>, 4> keys{};
+  nlohmann::json header;
+  nlohmann::json envelope;
+
+  ~EncryptionSnapshotFixture() { sodium_memzero(keys.data(), sizeof(keys)); }
+
+  static uint32_t little32(const std::string &bytes, size_t offset) {
+    uint32_t value = 0;
+    for (unsigned i = 0; i < 4; ++i) {
+      value |= static_cast<uint32_t>(static_cast<unsigned char>(bytes.at(offset + i))) << (i * 8);
+    }
+    return value;
+  }
+
+  static void append_integer(std::string &bytes, uint64_t value, unsigned count) {
+    for (unsigned i = 0; i < count; ++i) bytes.push_back(static_cast<char>(value >> (i * 8)));
+  }
+
+
+  static std::string identity() {
+    std::array<unsigned char, 16> bytes{};
+    randombytes_buf(bytes.data(), bytes.size());
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    char hex[33];
+    sodium_bin2hex(hex, sizeof(hex), bytes.data(), bytes.size());
+    const std::string text(hex);
+    return text.substr(0, 8) + "-" + text.substr(8, 4) + "-" + text.substr(12, 4) +
+           "-" + text.substr(16, 4) + "-" + text.substr(20);
+  }
+
+  int wrap(size_t parent, size_t child, nlohmann::json &target,
+           const char *nonce_field, const char *key_field, const nlohmann::json &aad_json) {
+    std::array<unsigned char, 24> nonce{};
+    std::array<unsigned char, 48> ciphertext{};
+    randombytes_buf(nonce.data(), nonce.size());
+    const auto aad = aad_json.dump();
+    unsigned long long size = 0;
+    ASSERT_EQ(crypto_aead_xchacha20poly1305_ietf_encrypt(ciphertext.data(), &size,
+        keys[child].data(), keys[child].size(),
+        reinterpret_cast<const unsigned char *>(aad.data()), aad.size(), nullptr,
+        nonce.data(), keys[parent].data()), 0);
+    ASSERT_EQ(size, static_cast<unsigned long long>(ciphertext.size()));
+    target[nonce_field] = test_base64_encode(nonce.data(), nonce.size());
+    target[key_field] = test_base64_encode(ciphertext.data(), ciphertext.size());
+    return 0;
+  }
+
+  int initialize_legacy(const char *notebook_id) {
+    ASSERT(sodium_init() >= 0);
+    std::array<unsigned char, 16> salt{};
+    randombytes_buf(salt.data(), salt.size());
+    for (size_t i = 1; i < keys.size(); ++i) randombytes_buf(keys[i].data(), keys[i].size());
+    ASSERT_EQ(crypto_pwhash(keys[0].data(), keys[0].size(), kEncryptionPassword.data(),
+        kEncryptionPassword.size(), salt.data(), 3, 67108864, crypto_pwhash_ALG_ARGON2ID13), 0);
+    envelope = {{"version", 1}, {"vaultId", identity()}, {"notebookId", notebook_id},
+        {"notebookKeyId", identity()}, {"kdf", "argon2id13"}, {"opslimit", 3},
+        {"memlimit", 67108864}, {"salt", test_base64_encode(salt.data(), salt.size())}};
+    ASSERT_EQ(wrap(0, 1, envelope, "masterNonce", "wrappedMasterKey",
+        nlohmann::json::array({"vnote-master", 1, envelope["vaultId"], "argon2id13",
+                              3, 67108864, envelope["salt"]})), 0);
+    ASSERT_EQ(wrap(1, 2, envelope, "notebookNonce", "wrappedNotebookKey",
+        nlohmann::json::array({"vnote-notebook", 1, envelope["vaultId"],
+                              envelope["notebookId"], envelope["notebookKeyId"]})), 0);
+    return 0;
+  }
+
+  int make_legacy_header() {
+    for (const auto *field : {"vaultId", "notebookId", "kdf", "opslimit", "memlimit",
+                              "salt", "masterNonce", "wrappedMasterKey", "notebookNonce",
+                              "wrappedNotebookKey"}) header.erase(field);
+    header["version"] = 1;
+    return wrap(2, 3, header, "keyNonce", "wrappedNoteKey",
+        nlohmann::json::array({"vnote-note-key", 1, envelope["notebookId"],
+                              header["notebookKeyId"], header["documentId"],
+                              header["kind"], header["objectId"]}));
+  }
+
+  int load(const EncryptionFixture &fixture, const std::string &object, std::string &payload) {
+    ASSERT_EQ(object.substr(0, 8), std::string("VNOTEE1\0", 8));
+    const auto header_size = little32(object, 8);
+    header = nlohmann::json::parse(object.substr(12, header_size));
+    envelope = header.at("version") == 2 ? header :
+        nlohmann::json::parse(read_file_content(fixture.key_path()).substr(12));
+    const auto salt = test_base64_decode(envelope.at("salt"));
+    ASSERT_EQ(salt.size(), size_t(crypto_pwhash_SALTBYTES));
+    ASSERT_EQ(crypto_pwhash(keys[0].data(), keys[0].size(), kEncryptionPassword.data(),
+        kEncryptionPassword.size(), salt.data(), 3, 67108864, crypto_pwhash_ALG_ARGON2ID13), 0);
+    auto unwrap = [&](size_t wrapping, size_t output, const nlohmann::json &json,
+                      const char *nonce_field, const char *key_field,
+                      const nlohmann::json &aad_json) -> int {
+      const auto nonce = test_base64_decode(json.at(nonce_field));
+      const auto ciphertext = test_base64_decode(json.at(key_field));
+      const auto aad = aad_json.dump();
+      ASSERT_EQ(nonce.size(), size_t(crypto_aead_xchacha20poly1305_ietf_NPUBBYTES));
+      ASSERT_EQ(ciphertext.size(),
+                keys[output].size() + crypto_aead_xchacha20poly1305_ietf_ABYTES);
+      unsigned long long size = 0;
+      ASSERT_EQ(crypto_aead_xchacha20poly1305_ietf_decrypt(
+          keys[output].data(), &size, nullptr, ciphertext.data(), ciphertext.size(),
+          reinterpret_cast<const unsigned char *>(aad.data()), aad.size(), nonce.data(),
+          keys[wrapping].data()), 0);
+      ASSERT_EQ(size, static_cast<unsigned long long>(keys[output].size()));
+      return 0;
+    };
+    ASSERT_EQ(unwrap(0, 1, envelope, "masterNonce", "wrappedMasterKey",
+        nlohmann::json::array({"vnote-master", 1, envelope["vaultId"], "argon2id13",
+                              3, 67108864, envelope["salt"]})), 0);
+    ASSERT_EQ(unwrap(1, 2, envelope, "notebookNonce", "wrappedNotebookKey",
+        nlohmann::json::array({"vnote-notebook", 1, envelope["vaultId"],
+                              envelope["notebookId"], envelope["notebookKeyId"]})), 0);
+    auto note_aad = nlohmann::json::array({"vnote-note-key", header["version"],
+        envelope["notebookId"], header["notebookKeyId"], header["documentId"],
+        header["kind"], header["objectId"]});
+    if (header.at("version") == 2) {
+      for (const auto *field : {"vaultId", "kdf", "opslimit", "memlimit", "salt",
+                                "masterNonce", "wrappedMasterKey", "notebookNonce",
+                                "wrappedNotebookKey"}) note_aad.push_back(envelope.at(field));
+    }
+    ASSERT_EQ(unwrap(2, 3, header, "keyNonce", "wrappedNoteKey", note_aad), 0);
+    size_t offset = 12 + header_size;
+    ASSERT(object.size() >= offset + crypto_secretstream_xchacha20poly1305_HEADERBYTES + 4);
+    crypto_secretstream_xchacha20poly1305_state stream;
+    ASSERT_EQ(crypto_secretstream_xchacha20poly1305_init_pull(&stream,
+        reinterpret_cast<const unsigned char *>(object.data() + offset), keys[3].data()), 0);
+    offset += crypto_secretstream_xchacha20poly1305_HEADERBYTES;
+    const auto record_size = little32(object, offset);
+    offset += 4;
+    ASSERT_EQ(offset + record_size, object.size());
+    const auto aad = nlohmann::json::array({"vnote-object", 1, header["kind"],
+        header["documentId"], header["objectId"]}).dump();
+    payload.resize(record_size);
+    unsigned long long size = 0;
+    unsigned char tag = 0;
+    const auto error = crypto_secretstream_xchacha20poly1305_pull(&stream,
+        reinterpret_cast<unsigned char *>(payload.data()), &size, &tag,
+        reinterpret_cast<const unsigned char *>(object.data() + offset), record_size,
+        reinterpret_cast<const unsigned char *>(aad.data()), aad.size());
+    sodium_memzero(&stream, sizeof(stream));
+    ASSERT_EQ(error, 0);
+    ASSERT_EQ(tag, crypto_secretstream_xchacha20poly1305_TAG_FINAL);
+    payload.resize(static_cast<size_t>(size));
+    return 0;
+  }
+
+  int encode(const std::string &body, const std::string &manifest, std::string &object,
+             int backup_revision = -1) {
+    std::string payload;
+    if (backup_revision >= 0) append_integer(payload, backup_revision, 4);
+    append_integer(payload, body.size(), 8);
+    payload += body;
+    append_integer(payload, manifest.size(), 4);
+    payload += manifest;
+    return encode_payload(std::move(payload), object);
+  }
+
+  int encode_payload(std::string payload, std::string &object) {
+    ASSERT(payload.size() < size_t(65536));
+    const auto json = header.dump();
+    object.assign("VNOTEE1\0", 8);
+    append_integer(object, json.size(), 4);
+    object += json;
+    crypto_secretstream_xchacha20poly1305_state stream;
+    std::array<unsigned char, crypto_secretstream_xchacha20poly1305_HEADERBYTES> stream_header{};
+    ASSERT_EQ(crypto_secretstream_xchacha20poly1305_init_push(&stream, stream_header.data(),
+        keys[3].data()), 0);
+    object.append(reinterpret_cast<const char *>(stream_header.data()), stream_header.size());
+    const auto aad = nlohmann::json::array({"vnote-object", 1, header["kind"],
+        header["documentId"], header["objectId"]}).dump();
+    std::string ciphertext(payload.size() + crypto_secretstream_xchacha20poly1305_ABYTES, '\0');
+    unsigned long long size = 0;
+    const auto error = crypto_secretstream_xchacha20poly1305_push(&stream,
+        reinterpret_cast<unsigned char *>(ciphertext.data()), &size,
+        reinterpret_cast<const unsigned char *>(payload.data()), payload.size(),
+        reinterpret_cast<const unsigned char *>(aad.data()), aad.size(),
+        crypto_secretstream_xchacha20poly1305_TAG_FINAL);
+    sodium_memzero(&stream, sizeof(stream));
+    sodium_memzero(payload.data(), payload.size());
+    ASSERT_EQ(error, 0);
+    ASSERT_EQ(size, static_cast<unsigned long long>(ciphertext.size()));
+    append_integer(object, size, 4);
+    object += ciphertext;
+    return 0;
+  }
+};
+
+
+int initialize_legacy_encryption(EncryptionFixture &fixture) {
+  EncryptionSnapshotFixture codec;
+  ASSERT_EQ(codec.initialize_legacy(fixture.notebook_id.value), 0);
+  write_file(fixture.key_path(), encryption_key_file(codec.envelope.dump()));
+  ASSERT_EQ(assert_key_envelope(read_file_content(fixture.key_path()), fixture.notebook_id.value), 0);
+  ASSERT_EQ(vxcore_encryption_unlock_notebook(fixture.context.value, fixture.notebook_id.value,
+      kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_OK);
+  return 0;
+}
+
+// Independent legacy wrapping and secretstream encoding; no production legacy writer.
+int make_legacy_note(EncryptionFixture &fixture, const std::string &path) {
+  EncryptionSnapshotFixture codec;
+  std::string payload, encoded;
+  ASSERT_EQ(codec.load(fixture, read_file_content(path), payload), 0);
+  ASSERT_EQ(codec.make_legacy_header(), 0);
+  ASSERT_EQ(codec.encode_payload(std::move(payload), encoded), 0);
+  write_file(path, encoded);
+  return 0;
+}
+
+nlohmann::json encrypted_header(const std::string &bytes) {
+  return nlohmann::json::parse(bytes.substr(12, EncryptionSnapshotFixture::little32(bytes, 8)));
+}
+
+std::string replace_encrypted_header(const std::string &bytes, const std::string &json) {
+  std::string result("VNOTEE1\0", 8);
+  EncryptionSnapshotFixture::append_integer(result, json.size(), 4);
+  result += json;
+  result += bytes.substr(12 + EncryptionSnapshotFixture::little32(bytes, 8));
+  return result;
 }
 
 struct EncryptionTestGitRepository {
@@ -4661,129 +4886,7 @@ int test_buffer_external_change_content_aware() {
   return 0;
 }
 
-int test_encryption_legacy_confirmation() {
-  EncryptionFixture fixture;
-  ASSERT_EQ(fixture.error, VXCORE_OK);
-  auto context = fixture.context.value;
-  const auto notebook = fixture.notebook_id.value;
-  auto config = nlohmann::json::parse(read_file_content(fixture.config_path()));
-  ASSERT(config.at("encryptionInitialized") == false);
-  config.erase("encryptionInitialized");
-  config["futureSetting"] = {{"preserve", 17}};
-  write_file(fixture.config_path(), config.dump());
 
-  // Tag edits use the internal config object, whose cached false marker is stale.
-  ASSERT_EQ(vxcore_tag_create(context, notebook, "legacy-tag"), VXCORE_OK);
-  config = nlohmann::json::parse(read_file_content(fixture.config_path()));
-  ASSERT_FALSE(config.contains("encryptionInitialized"));
-  ASSERT(config.at("futureSetting") == nlohmann::json({{"preserve", 17}}));
-  // Neither an ordinary config edit nor re-adding an existing directory grants consent.
-  auto attempted_consent = config;
-  attempted_consent["encryptionInitialized"] = false;
-  attempted_consent["name"] = "Legacy edited";
-  ASSERT_EQ(vxcore_notebook_update_config(context, notebook, attempted_consent.dump().c_str()),
-            VXCORE_OK);
-  config = nlohmann::json::parse(read_file_content(fixture.config_path()));
-  ASSERT_FALSE(config.contains("encryptionInitialized"));
-  ASSERT_EQ(config.at("name"), "Legacy edited");
-  ASSERT_EQ(vxcore_notebook_close(context, notebook), VXCORE_OK);
-  EncryptionTestString readded;
-  ASSERT_EQ(vxcore_notebook_create(context, fixture.path.c_str(), "{\"name\":\"Not new\"}",
-                                  VXCORE_NOTEBOOK_BUNDLED, &readded.value), VXCORE_OK);
-  ASSERT_EQ(std::string(readded.value), std::string(notebook));
-  const auto before = encryption_file_tree(fixture.path);
-  const auto status = encryption_status(context, notebook);
-  ASSERT(status.at("encryptionInitialized").is_null());
-  ASSERT(status.at("initialized") == false);
-  ASSERT_EQ(vxcore_encryption_reconcile_notebook(context, notebook, false), VXCORE_ERR_INVALID_STATE);
-  VxCoreEncryptionSetupHandle setup = nullptr;
-  ASSERT_EQ(vxcore_encryption_prepare_notebook(context, notebook, nullptr,
-      kEncryptionPassword.data(), kEncryptionPassword.size(), &setup), VXCORE_ERR_INVALID_STATE);
-  ASSERT_NULL(setup);
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook,
-      kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED);
-  ASSERT_EQ(vxcore_notebook_set_read_only(context, notebook, true), VXCORE_OK);
-  ASSERT_EQ(vxcore_encryption_reconcile_notebook(context, notebook, true), VXCORE_ERR_READ_ONLY);
-  ASSERT(encryption_status(context, notebook) == status);
-  ASSERT(encryption_file_tree(fixture.path) == before);
-
-  ASSERT_EQ(vxcore_notebook_set_read_only(context, notebook, false), VXCORE_OK);
-  ASSERT_EQ(vxcore_encryption_reconcile_notebook(context, notebook, true), VXCORE_OK);
-  auto confirmed = config;
-  confirmed["encryptionInitialized"] = false;
-  ASSERT(nlohmann::json::parse(read_file_content(fixture.config_path())) == confirmed);
-  ASSERT_FALSE(path_exists(fixture.key_path()));
-  const auto confirmed_files = encryption_file_tree(fixture.path);
-  ASSERT_EQ(vxcore_notebook_set_read_only(context, notebook, true), VXCORE_OK);
-  ASSERT_EQ(vxcore_encryption_reconcile_notebook(context, notebook, false), VXCORE_OK);
-  ASSERT_EQ(vxcore_encryption_reconcile_notebook(context, notebook, true), VXCORE_OK);
-  ASSERT(encryption_file_tree(fixture.path) == confirmed_files);
-  ASSERT_EQ(vxcore_notebook_set_read_only(context, notebook, false), VXCORE_OK);
-
-  vxcore_context_destroy(fixture.context.value);
-  fixture.context.value = nullptr;
-  ASSERT_EQ(vxcore_context_create(nullptr, &fixture.context.value), VXCORE_OK);
-  context = fixture.context.value;
-  EncryptionTestString reopened;
-  ASSERT_EQ(vxcore_notebook_open(context, fixture.path.c_str(), &reopened.value), VXCORE_OK);
-  ASSERT(encryption_status(context, reopened.value) == expected_encryption_status(false, false));
-  ASSERT_EQ(vxcore_encryption_prepare_notebook(context, reopened.value, nullptr,
-      kEncryptionPassword.data(), kEncryptionPassword.size(), &setup), VXCORE_OK);
-  vxcore_encryption_free_setup(context, setup);
-  ASSERT(encryption_file_tree(fixture.path) == confirmed_files);
-  return 0;
-}
-
-int test_encryption_sticky_marker_and_key_loss() {
-  EncryptionFixture fixture;
-  ASSERT_EQ(fixture.error, VXCORE_OK);
-  auto context = fixture.context.value;
-  const auto notebook = fixture.notebook_id.value;
-  auto stale = nlohmann::json::parse(read_file_content(fixture.config_path()));
-  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
-  const auto key = read_file_content(fixture.key_path());
-  for (const bool omit_marker : {false, true}) {
-    if (omit_marker) stale.erase("encryptionInitialized");
-    stale["name"] = omit_marker ? "Stale legacy snapshot" : "Stale false snapshot";
-    ASSERT_EQ(vxcore_notebook_update_config(context, notebook, stale.dump().c_str()), VXCORE_OK);
-    const auto persisted = nlohmann::json::parse(read_file_content(fixture.config_path()));
-    ASSERT(persisted.at("encryptionInitialized") == true);
-    ASSERT(persisted.at("name") == stale.at("name"));
-    ASSERT_EQ(read_file_content(fixture.key_path()), key);
-  }
-  EncryptionTestString deleted;
-  ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "deleted.txt", "text",
-                                          "body", 4, &deleted.value), VXCORE_OK);
-  ASSERT_EQ(vxcore_node_delete(context, notebook, "deleted.txt.vne"), VXCORE_OK);
-  ASSERT_EQ(vxcore_notebook_empty_recycle_bin(context, notebook), VXCORE_OK);
-  ASSERT(nlohmann::json::parse(read_file_content(fixture.config_path()))
-             .at("encryptionInitialized") == true);
-  // No encrypted notes are required: a lost initialized key stays unrecoverable
-  // after process restart, when no runtime owner or ciphertext scan can protect it.
-  vxcore_context_destroy(fixture.context.value);
-  fixture.context.value = nullptr;
-  ASSERT_TRUE(std::filesystem::remove(utf8_to_fs_path(fixture.key_path())));
-  ASSERT_EQ(vxcore_context_create(nullptr, &fixture.context.value), VXCORE_OK);
-  context = fixture.context.value;
-  EncryptionTestString reopened;
-  ASSERT_EQ(vxcore_notebook_open(context, fixture.path.c_str(), &reopened.value), VXCORE_OK);
-  const auto before = encryption_file_tree(fixture.path);
-  EncryptionTestString status;
-  ASSERT_EQ(vxcore_encryption_get_status(context, reopened.value, nullptr, &status.value),
-            VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED);
-  ASSERT_NULL(status.value);
-  for (const bool consent : {false, true}) {
-    ASSERT_EQ(vxcore_encryption_reconcile_notebook(context, reopened.value, consent),
-              VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED);
-  }
-  VxCoreEncryptionSetupHandle setup = nullptr;
-  ASSERT_EQ(vxcore_encryption_prepare_notebook(context, reopened.value, nullptr,
-      kEncryptionPassword.data(), kEncryptionPassword.size(), &setup),
-      VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED);
-  ASSERT_NULL(setup);
-  ASSERT(encryption_file_tree(fixture.path) == before);
-  return 0;
-}
 
 int test_encryption_rejects_invalid_initialization_marker() {
   EncryptionFixture fixture;
@@ -4824,39 +4927,13 @@ int test_encryption_rejects_invalid_initialization_marker() {
   return 0;
 }
 
-int test_encryption_commit_revalidates_initialization_marker() {
-  EncryptionFixture fixture;
-  ASSERT_EQ(fixture.error, VXCORE_OK);
-  const auto context = fixture.context.value;
-  const auto notebook = fixture.notebook_id.value;
-  const auto valid = nlohmann::json::parse(read_file_content(fixture.config_path()));
-  for (const auto expected : {VXCORE_ERR_INVALID_STATE, VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED,
-                              VXCORE_ERR_ENCRYPTION_FORMAT}) {
-    VxCoreEncryptionSetupHandle setup = nullptr;
-    ASSERT_EQ(vxcore_encryption_prepare_notebook(context, notebook, nullptr,
-        kEncryptionPassword.data(), kEncryptionPassword.size(), &setup), VXCORE_OK);
-    auto changed = valid;
-    if (expected == VXCORE_ERR_INVALID_STATE) changed.erase("encryptionInitialized");
-    else if (expected == VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED) changed["encryptionInitialized"] = true;
-    else changed["encryptionInitialized"] = nullptr;
-    write_file(fixture.config_path(), changed.dump());
-    const auto before = encryption_file_tree(fixture.path);
-    ASSERT_EQ(vxcore_encryption_commit_notebook(context, setup), expected);
-    ASSERT_EQ(vxcore_encryption_commit_notebook(context, setup), VXCORE_ERR_INVALID_PARAM);
-    ASSERT(encryption_file_tree(fixture.path) == before);
-    ASSERT_FALSE(path_exists(fixture.key_path()));
-    write_file(fixture.config_path(), valid.dump());
-  }
-  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
-  return 0;
-}
 
 int test_encryption_existing_key_reconciliation_is_explicit() {
   EncryptionFixture fixture;
   ASSERT_EQ(fixture.error, VXCORE_OK);
   const auto context = fixture.context.value;
   const auto notebook = fixture.notebook_id.value;
-  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+  ASSERT_EQ(initialize_legacy_encryption(fixture), 0);
   ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
   const auto key_bytes = read_file_content(fixture.key_path());
   auto config = nlohmann::json::parse(read_file_content(fixture.config_path()));
@@ -4942,90 +5019,11 @@ int test_encryption_cached_unlock_keeps_legacy_marker_unknown() {
   ASSERT(status.at("initialized") == true);
   ASSERT(status.at("unlocked") == true);
   ASSERT(status.at("encryptionInitialized").is_null());
-  ASSERT_EQ(vxcore_encryption_reconcile_notebook(context, reopened.value, false), VXCORE_ERR_READ_ONLY);
   ASSERT(encryption_file_tree(sibling_path) == before);
   ASSERT_EQ(vxcore_buffer_close(context, buffer.value), VXCORE_OK);
   return 0;
 }
 
-int test_encryption_key_publication_survives_marker_failure() {
-  EncryptionFixture fixture;
-  ASSERT_EQ(fixture.error, VXCORE_OK);
-  auto context = fixture.context.value;
-  const auto notebook = fixture.notebook_id.value;
-  auto config = nlohmann::json::parse(read_file_content(fixture.config_path()));
-  // Large enough for the POSIX file-size limit to reject only config publication,
-  // not the key envelope or Git attributes. Preserve this future field on recovery.
-  config["futureSetting"] = std::string(16384, 'x');
-  write_file(fixture.config_path(), config.dump());
-  const auto original = read_file_content(fixture.config_path());
-  VxCoreEncryptionSetupHandle setup = nullptr;
-  ASSERT_EQ(vxcore_encryption_prepare_notebook(context, notebook, nullptr,
-      kEncryptionPassword.data(), kEncryptionPassword.size(), &setup), VXCORE_OK);
-  {
-#ifdef _WIN32
-    struct ConfigLock {
-      HANDLE value = INVALID_HANDLE_VALUE;
-      ~ConfigLock() { if (value != INVALID_HANDLE_VALUE) CloseHandle(value); }
-    } lock;
-    // Reads still work, but the existing config cannot be atomically replaced.
-    lock.value = CreateFileW(utf8_to_fs_path(fixture.config_path()).c_str(), GENERIC_READ,
-                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
-    ASSERT(lock.value != INVALID_HANDLE_VALUE);
-#else
-    struct FileSizeLimit {
-      struct rlimit original {};
-      using SignalHandler = void (*)(int);
-      SignalHandler handler = SIG_ERR;
-      bool active = false;
-      ~FileSizeLimit() {
-        if (active) setrlimit(RLIMIT_FSIZE, &original);
-        if (handler != SIG_ERR) std::signal(SIGXFSZ, handler);
-      }
-    } limit;
-    ASSERT_EQ(getrlimit(RLIMIT_FSIZE, &limit.original), 0);
-    auto reduced = limit.original;
-    reduced.rlim_cur = 4096;
-    limit.handler = std::signal(SIGXFSZ, SIG_IGN);
-    ASSERT(limit.handler != SIG_ERR);
-    ASSERT_EQ(setrlimit(RLIMIT_FSIZE, &reduced), 0);
-    limit.active = true;
-#endif
-    ASSERT_EQ(vxcore_encryption_commit_notebook(context, setup), VXCORE_ERR_IO);
-  }
-  ASSERT_EQ(vxcore_encryption_commit_notebook(context, setup), VXCORE_ERR_INVALID_PARAM);
-  const auto key = read_file_content(fixture.key_path());
-  ASSERT_EQ(assert_key_envelope(key, notebook), 0);
-  ASSERT_EQ(read_file_content(fixture.config_path()), original);
-  const auto status = encryption_status(context, notebook);
-  ASSERT(status.at("initialized") == true);
-  ASSERT(status.at("encryptionInitialized") == false);
-  ASSERT(status.at("unlocked") == false);
-  EncryptionTestString note;
-  ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "blocked.txt", "text",
-                                          "body", 4, &note.value), VXCORE_ERR_ENCRYPTION_LOCKED);
-  ASSERT_NULL(note.value);
-  ASSERT_FALSE(path_exists(fixture.path + "/blocked.txt.vne"));
-  ASSERT_EQ(vxcore_encryption_prepare_notebook(context, notebook, nullptr,
-      kEncryptionPassword.data(), kEncryptionPassword.size(), &setup), VXCORE_ERR_ALREADY_EXISTS);
-  ASSERT_NULL(setup);
-
-  vxcore_context_destroy(fixture.context.value);
-  fixture.context.value = nullptr;
-  ASSERT_EQ(vxcore_context_create(nullptr, &fixture.context.value), VXCORE_OK);
-  context = fixture.context.value;
-  EncryptionTestString reopened;
-  ASSERT_EQ(vxcore_notebook_open(context, fixture.path.c_str(), &reopened.value), VXCORE_OK);
-  ASSERT_EQ(vxcore_encryption_reconcile_notebook(context, reopened.value, false), VXCORE_OK);
-  config["encryptionInitialized"] = true;
-  ASSERT(nlohmann::json::parse(read_file_content(fixture.config_path())) == config);
-  ASSERT_EQ(read_file_content(fixture.key_path()), key);
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, reopened.value,
-      kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_OK);
-  ASSERT_EQ(vxcore_encryption_create_note(context, reopened.value, "", "recovered.txt", "text",
-                                          "body", 4, &note.value), VXCORE_OK);
-  return 0;
-}
 
 int test_encryption_prepare_abandon() {
   EncryptionFixture fixture;
@@ -5076,10 +5074,10 @@ int test_encryption_commit_and_existing_key() {
       kEncryptionPassword.data(), kEncryptionPassword.size(), &competing), VXCORE_OK);
   ASSERT(encryption_file_tree(fixture.path) == before);
   ASSERT_EQ(vxcore_encryption_commit_notebook(context, first), VXCORE_OK);
-  const auto key_bytes = read_file_content(fixture.key_path());
-  ASSERT_EQ(assert_key_envelope(key_bytes, notebook_id), 0);
+  ASSERT_FALSE(path_exists(fixture.key_path()));
+  ASSERT_EQ(read_file_content(fixture.config_path()), before.at("vx_notebook/config.json"));
   const auto status = encryption_status(context, notebook_id);
-  const auto vault_id = nlohmann::json::parse(key_bytes.substr(12))["vaultId"].get<std::string>();
+  const auto vault_id = status.at("vaultId").get<std::string>();
   ASSERT(status == expected_encryption_status(true, true, vault_id));
   ASSERT_EQ(read_file_content(attributes_path).substr(0, original_attributes.size()),
             original_attributes);
@@ -5088,18 +5086,12 @@ int test_encryption_commit_and_existing_key() {
   ASSERT_EQ(vxcore_encryption_commit_notebook(context, first), VXCORE_ERR_INVALID_PARAM);
   ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_ERR_INVALID_STATE);
   const auto committed = encryption_file_tree(fixture.path);
-  ASSERT_EQ(vxcore_encryption_commit_notebook(context, competing), VXCORE_ERR_ALREADY_EXISTS);
+  ASSERT_EQ(vxcore_encryption_commit_notebook(context, competing), VXCORE_OK);
   ASSERT_EQ(vxcore_encryption_commit_notebook(context, competing), VXCORE_ERR_INVALID_PARAM);
   ASSERT(encryption_file_tree(fixture.path) == committed);
-  ASSERT(encryption_status(context, notebook_id) == status);
-  VxCoreEncryptionSetupHandle replacement = nullptr;
-  ASSERT_EQ(vxcore_encryption_prepare_notebook(context, notebook_id, nullptr,
-      kEncryptionPassword.data(), kEncryptionPassword.size(), &replacement),
-      VXCORE_ERR_ALREADY_EXISTS);
-  ASSERT_NULL(replacement);
-  ASSERT(encryption_file_tree(fixture.path) == committed);
+  ASSERT(encryption_status(context, notebook_id).at("vaultId") != vault_id);
   ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
-  ASSERT(encryption_status(context, notebook_id) == expected_encryption_status(true, false, vault_id));
+  ASSERT(encryption_status(context, notebook_id) == expected_encryption_status(false, false));
   return 0;
 }
 
@@ -5164,11 +5156,14 @@ int test_encryption_read_only_transitions() {
 
   ASSERT_EQ(vxcore_notebook_set_read_only(context, notebook_id, false), VXCORE_OK);
   ASSERT_EQ(initialize_test_encryption(context, notebook_id), VXCORE_OK);
+  EncryptionTestString note;
+  ASSERT_EQ(vxcore_encryption_create_note(context, notebook_id, "", "readonly.txt", "text",
+      "body", 4, &note.value), VXCORE_OK);
   const auto unlocked = encryption_status(context, notebook_id);
   ASSERT_EQ(vxcore_notebook_set_read_only(context, notebook_id, true), VXCORE_OK);
   ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
   const auto read_only_files = encryption_file_tree(fixture.path);
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook_id,
+  ASSERT_EQ(vxcore_encryption_unlock_note(context, notebook_id, "readonly.txt.vne",
       kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_OK);
   ASSERT(encryption_status(context, notebook_id) == unlocked);
   ASSERT(encryption_file_tree(fixture.path) == read_only_files);
@@ -5179,44 +5174,91 @@ int test_encryption_failed_unlock_preserves_state() {
   EncryptionFixture fixture;
   ASSERT_EQ(fixture.error, VXCORE_OK);
   const auto context = fixture.context.value;
-  const auto notebook_id = fixture.notebook_id.value;
-  ASSERT_EQ(initialize_test_encryption(context, notebook_id), VXCORE_OK);
-  EncryptionTestString sibling_id;
-  const auto sibling_path = get_test_path("sibling");
-  ASSERT_EQ(vxcore_notebook_create(context, sibling_path.c_str(), "{\"name\":\"Sibling\"}",
-      VXCORE_NOTEBOOK_BUNDLED, &sibling_id.value), VXCORE_OK);
-  ASSERT_EQ(initialize_test_encryption(context, sibling_id.value, notebook_id), VXCORE_OK);
-  const auto original = read_file_content(fixture.key_path());
-  const auto unlocked = encryption_status(context, notebook_id);
-  const auto sibling_unlocked = encryption_status(context, sibling_id.value);
+  const auto notebook = fixture.notebook_id.value;
+  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+  EncryptionTestString first, second;
+  ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "first.txt", "text",
+      "first body", 10, &first.value), VXCORE_OK);
+  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+  ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "second.txt", "text",
+      "second body", 11, &second.value), VXCORE_OK);
+  const auto path = fixture.path + "/first.txt.vne";
+  const auto original = read_file_content(path);
+  ASSERT(encrypted_header(original).at("notebookKeyId") !=
+         encrypted_header(read_file_content(fixture.path + "/second.txt.vne")).at("notebookKeyId"));
   ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
-  const auto locked = encryption_status(context, notebook_id);
-  const std::string wrong_password = "incorrect password";
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook_id,
-      wrong_password.data(), wrong_password.size()), VXCORE_ERR_ENCRYPTION_AUTH_FAILED);
-  ASSERT(encryption_status(context, notebook_id) == locked);
-  ASSERT_EQ(read_file_content(fixture.key_path()), original);
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook_id,
-      kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_OK);
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, sibling_id.value,
-      kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_OK);
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook_id,
-      wrong_password.data(), wrong_password.size()), VXCORE_ERR_ENCRYPTION_AUTH_FAILED);
-  ASSERT(encryption_status(context, notebook_id) == unlocked);
-  ASSERT(encryption_status(context, sibling_id.value) == sibling_unlocked);
+  const auto before = encryption_file_tree(fixture.path);
+  const std::string wrong = "incorrect password";
+  ASSERT_EQ(vxcore_encryption_unlock_note(context, notebook, "first.txt.vne", wrong.data(),
+      wrong.size()), VXCORE_ERR_ENCRYPTION_AUTH_FAILED);
+  ASSERT(encryption_status(context, notebook, "first.txt.vne").at("unlocked") == false);
+  ASSERT(encryption_file_tree(fixture.path) == before);
+  for (const auto *name : {"first.txt.vne", "second.txt.vne"}) {
+    ASSERT_EQ(vxcore_encryption_unlock_note(context, notebook, name, kEncryptionPassword.data(),
+        kEncryptionPassword.size()), VXCORE_OK);
+  }
+  ASSERT_EQ(vxcore_encryption_unlock_note(context, notebook, "first.txt.vne", wrong.data(),
+      wrong.size()), VXCORE_ERR_ENCRYPTION_AUTH_FAILED);
+  for (const auto *name : {"first.txt.vne", "second.txt.vne"}) {
+    ASSERT(encryption_status(context, notebook, name).at("unlocked") == true);
+  }
+  ASSERT(encryption_file_tree(fixture.path) == before);
 
-  auto damaged = nlohmann::json::parse(original.substr(12));
-  auto wrapped_key = damaged["wrappedNotebookKey"].get<std::string>();
-  wrapped_key[0] = wrapped_key[0] == 'A' ? 'B' : 'A';
-  damaged["wrappedNotebookKey"] = wrapped_key;
-  const auto tampered = encryption_key_file(damaged.dump());
-  write_file(fixture.key_path(), tampered);
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook_id,
-      kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_ERR_ENCRYPTION_AUTH_FAILED);
-  ASSERT_EQ(read_file_content(fixture.key_path()), tampered);
-  write_file(fixture.key_path(), original);
-  ASSERT(encryption_status(context, notebook_id) == unlocked);
-  ASSERT(encryption_status(context, sibling_id.value) == sibling_unlocked);
+  // Different contexts remain simultaneously usable. A live lease blocks Lock All atomically.
+  EncryptionTestString first_buffer, second_buffer;
+  ASSERT_EQ(vxcore_buffer_open_by_node_id(context, first.value, &first_buffer.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open_by_node_id(context, second.value, &second_buffer.value), VXCORE_OK);
+  const void *data = nullptr;
+  size_t size = 0;
+  ASSERT_EQ(vxcore_buffer_get_content_raw(context, first_buffer.value, &data, &size), VXCORE_OK);
+  ASSERT_EQ(std::string(static_cast<const char *>(data), size), "first body");
+  ASSERT_EQ(vxcore_buffer_get_content_raw(context, second_buffer.value, &data, &size), VXCORE_OK);
+  ASSERT_EQ(std::string(static_cast<const char *>(data), size), "second body");
+  ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_ERR_INVALID_STATE);
+  ASSERT_EQ(vxcore_buffer_close(context, first_buffer.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_ERR_INVALID_STATE);
+  ASSERT(encryption_status(context, notebook, "first.txt.vne").at("unlocked") == true);
+  ASSERT_EQ(vxcore_buffer_close(context, second_buffer.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
+  for (const auto *name : {"first.txt.vne", "second.txt.vne"}) {
+    ASSERT(encryption_status(context, notebook, name).at("unlocked") == false);
+  }
+
+  const auto header = encrypted_header(original);
+  std::vector<std::pair<std::string, VxCoreError>> malformed;
+  for (const auto *field : {"wrappedMasterKey", "wrappedNotebookKey", "wrappedNoteKey"}) {
+    auto damaged = header;
+    auto encoded = damaged.at(field).get<std::string>();
+    encoded[0] = encoded[0] == 'A' ? 'B' : 'A';
+    damaged[field] = encoded;
+    malformed.emplace_back(replace_encrypted_header(original, damaged.dump()),
+                           VXCORE_ERR_ENCRYPTION_AUTH_FAILED);
+  }
+  auto unknown = header;
+  unknown["version"] = 99;
+  malformed.emplace_back(replace_encrypted_header(original, unknown.dump()),
+                         VXCORE_ERR_ENCRYPTION_FORMAT);
+  auto downgraded = header;
+  downgraded["version"] = 1;
+  malformed.emplace_back(replace_encrypted_header(original, downgraded.dump()),
+                         VXCORE_ERR_ENCRYPTION_FORMAT);
+  auto duplicate = header.dump();
+  duplicate.insert(duplicate.size() - 1, ",\"version\":2");
+  malformed.emplace_back(replace_encrypted_header(original, duplicate), VXCORE_ERR_ENCRYPTION_FORMAT);
+  auto expensive = header;
+  expensive["memlimit"] = 1073741824;
+  malformed.emplace_back(replace_encrypted_header(original, expensive.dump()),
+                         VXCORE_ERR_ENCRYPTION_FORMAT);
+  for (const auto &entry : malformed) {
+    write_file(path, entry.first);
+    const auto damaged_tree = encryption_file_tree(fixture.path);
+    ASSERT_EQ(vxcore_encryption_unlock_note(context, notebook, "first.txt.vne",
+        kEncryptionPassword.data(), kEncryptionPassword.size()), entry.second);
+    ASSERT_EQ(vxcore_encryption_migrate_note(context, notebook, "first.txt.vne"),
+              entry.second == VXCORE_ERR_ENCRYPTION_AUTH_FAILED ? VXCORE_OK : entry.second);
+    ASSERT(encryption_file_tree(fixture.path) == damaged_tree);
+  }
+  write_file(path, original);
   return 0;
 }
 
@@ -5225,7 +5267,7 @@ int test_encryption_rejects_malformed_key_files() {
   ASSERT_EQ(fixture.error, VXCORE_OK);
   const auto context = fixture.context.value;
   const auto notebook_id = fixture.notebook_id.value;
-  ASSERT_EQ(initialize_test_encryption(context, notebook_id), VXCORE_OK);
+  ASSERT_EQ(initialize_legacy_encryption(fixture), 0);
   ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
   const auto original = read_file_content(fixture.key_path());
   const auto locked = encryption_status(context, notebook_id);
@@ -5250,9 +5292,8 @@ int test_encryption_rejects_malformed_key_files() {
     ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook_id,
         kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_ERR_ENCRYPTION_FORMAT);
     EncryptionTestString status;
-    ASSERT_EQ(vxcore_encryption_get_status(context, notebook_id, nullptr, &status.value),
-              VXCORE_ERR_ENCRYPTION_FORMAT);
-    ASSERT_NULL(status.value);
+    ASSERT_EQ(vxcore_encryption_get_status(context, notebook_id, nullptr, &status.value), VXCORE_OK);
+    ASSERT(nlohmann::json::parse(status.value).at("initialized") == false);
     ASSERT_EQ(vxcore_encryption_reconcile_notebook(context, notebook_id, true),
               VXCORE_ERR_ENCRYPTION_FORMAT);
     ASSERT_EQ(read_file_content(fixture.key_path()), bytes);
@@ -5265,65 +5306,78 @@ int test_encryption_rejects_malformed_key_files() {
 }
 
 int test_encryption_notebook_copy_portability() {
-  // The copied notebook is outside device A's disposable profile/notebook root.
   const auto copied_path = get_test_path("portable_notebook_copy");
-  std::string device_a_path;
-  std::string expected_id;
-  std::string vault_id;
-  std::string copied_key;
+  std::string expected_id, copied_note;
   {
     EncryptionFixture device_a;
     ASSERT_EQ(device_a.error, VXCORE_OK);
-    device_a_path = fs_path_to_utf8(device_a.directory.path());
     const auto context = device_a.context.value;
     ASSERT_EQ(initialize_test_encryption(context, device_a.notebook_id.value), VXCORE_OK);
-    EncryptionTestString second_id;
+    EncryptionTestString first, second_id, second;
+    ASSERT_EQ(vxcore_encryption_create_note(context, device_a.notebook_id.value, "", "first.txt",
+        "text", "first", 5, &first.value), VXCORE_OK);
     const auto second_path = get_test_path("second_notebook");
     ASSERT_EQ(vxcore_notebook_create(context, second_path.c_str(), "{\"name\":\"Second\"}",
         VXCORE_NOTEBOOK_BUNDLED, &second_id.value), VXCORE_OK);
     ASSERT_EQ(initialize_test_encryption(context, second_id.value, device_a.notebook_id.value),
               VXCORE_OK);
-    const auto first_key = nlohmann::json::parse(read_file_content(device_a.key_path()).substr(12));
-    copied_key = read_file_content(second_path + "/vx_notebook/encryption.vne");
-    const auto second_key = nlohmann::json::parse(copied_key.substr(12));
-    // Source setup reuses its password envelope, not its notebook identity/key envelope.
+    ASSERT_EQ(vxcore_encryption_create_note(context, second_id.value, "", "portable.txt", "text",
+        "portable body", 13, &second.value), VXCORE_OK);
+    const auto first_key = encrypted_header(read_file_content(device_a.path + "/first.txt.vne"));
+    copied_note = read_file_content(second_path + "/portable.txt.vne");
+    const auto second_key = encrypted_header(copied_note);
     for (const auto *field : {"vaultId", "kdf", "opslimit", "memlimit", "salt", "masterNonce",
-                              "wrappedMasterKey"}) {
-      ASSERT(first_key.at(field) == second_key.at(field));
-    }
+                              "wrappedMasterKey"}) ASSERT(first_key.at(field) == second_key.at(field));
     ASSERT(first_key.at("notebookKeyId") != second_key.at("notebookKeyId"));
     ASSERT(first_key.at("wrappedNotebookKey") != second_key.at("wrappedNotebookKey"));
+    ASSERT_FALSE(path_exists(second_path + "/vx_notebook/encryption.vne"));
     expected_id = second_id.value;
-    vault_id = second_key.at("vaultId").get<std::string>();
     ASSERT_EQ(vxcore_notebook_close(context, second_id.value), VXCORE_OK);
     std::filesystem::create_directories(utf8_to_fs_path(copied_path).parent_path());
     std::filesystem::copy(utf8_to_fs_path(second_path), utf8_to_fs_path(copied_path),
                           std::filesystem::copy_options::recursive);
   }
-  ASSERT_FALSE(path_exists(device_a_path));
-  {
+  // Each pass starts without any password/key cache; an unrelated corrupt vault cannot interfere.
+  for (const bool corrupt_vault : {false, true}) {
     BufferTestTempDirectory device_b_directory;
     ASSERT_TRUE(device_b_directory.valid());
+    if (corrupt_vault) write_file(copied_path + "/vx_notebook/encryption.vne", "unrelated corrupt vault");
+    const auto config_path = copied_path + "/vx_notebook/config.json";
+    auto config = nlohmann::json::parse(read_file_content(config_path));
+    if (corrupt_vault) config["encryptionInitialized"] = true;
+    else config.erase("encryptionInitialized");
+    write_file(config_path, config.dump());
     EncryptionTestContext device_b;
     ASSERT_EQ(vxcore_context_create(nullptr, &device_b.value), VXCORE_OK);
     EncryptionTestString notebook_id;
     ASSERT_EQ(vxcore_notebook_open(device_b.value, copied_path.c_str(), &notebook_id.value), VXCORE_OK);
     ASSERT_EQ(std::string(notebook_id.value), expected_id);
-    ASSERT(encryption_status(device_b.value, notebook_id.value) ==
-           expected_encryption_status(true, false, vault_id));
-    // Embedded NUL, Unicode, and surrounding spaces are exact password bytes.
-    const std::string truncated_password(kEncryptionPassword.c_str());
-    ASSERT_EQ(vxcore_encryption_unlock_notebook(device_b.value, notebook_id.value,
-        truncated_password.data(), truncated_password.size()), VXCORE_ERR_ENCRYPTION_AUTH_FAILED);
-    const auto trimmed_password = kEncryptionPassword.substr(2, kEncryptionPassword.size() - 4);
-    ASSERT_EQ(vxcore_encryption_unlock_notebook(device_b.value, notebook_id.value,
-        trimmed_password.data(), trimmed_password.size()), VXCORE_ERR_ENCRYPTION_AUTH_FAILED);
-    ASSERT_EQ(vxcore_encryption_unlock_notebook(device_b.value, notebook_id.value,
+    ASSERT(encryption_status(device_b.value, notebook_id.value).at("initialized") == false);
+    const auto status = encryption_status(device_b.value, notebook_id.value, "portable.txt.vne");
+    ASSERT(status.at("initialized") == true);
+    ASSERT(status.at("unlocked") == false);
+    ASSERT(status.at("version") == 2);
+    const auto before = encryption_file_tree(copied_path);
+    const std::string truncated(kEncryptionPassword.c_str());
+    ASSERT_EQ(vxcore_encryption_unlock_note(device_b.value, notebook_id.value, "portable.txt.vne",
+        truncated.data(), truncated.size()), VXCORE_ERR_ENCRYPTION_AUTH_FAILED);
+    const auto trimmed = kEncryptionPassword.substr(2, kEncryptionPassword.size() - 4);
+    ASSERT_EQ(vxcore_encryption_unlock_note(device_b.value, notebook_id.value, "portable.txt.vne",
+        trimmed.data(), trimmed.size()), VXCORE_ERR_ENCRYPTION_AUTH_FAILED);
+    ASSERT_EQ(vxcore_encryption_unlock_note(device_b.value, notebook_id.value, "portable.txt.vne",
         kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_OK);
-    ASSERT(encryption_status(device_b.value, notebook_id.value) ==
-           expected_encryption_status(true, true, vault_id));
-    ASSERT_EQ(read_file_content(copied_path + "/vx_notebook/encryption.vne"), copied_key);
-    ASSERT_EQ(vxcore_encryption_lock_all(device_b.value), VXCORE_OK);
+    ASSERT_EQ(vxcore_encryption_migrate_note(device_b.value, notebook_id.value, "portable.txt.vne"),
+              VXCORE_OK);
+    ASSERT(encryption_file_tree(copied_path) == before);
+    EncryptionTestString buffer;
+    ASSERT_EQ(vxcore_buffer_open(device_b.value, notebook_id.value, "portable.txt.vne", &buffer.value),
+              VXCORE_OK);
+    const void *data = nullptr;
+    size_t size = 0;
+    ASSERT_EQ(vxcore_buffer_get_content_raw(device_b.value, buffer.value, &data, &size), VXCORE_OK);
+    ASSERT_EQ(std::string(static_cast<const char *>(data), size), "portable body");
+    ASSERT_EQ(vxcore_buffer_close(device_b.value, buffer.value), VXCORE_OK);
+    ASSERT_EQ(read_file_content(copied_path + "/portable.txt.vne"), copied_note);
   }
   cleanup_test_dir(copied_path);
   return 0;
@@ -5481,7 +5535,8 @@ int assert_encrypted_body_roundtrip(EncryptionFixture &fixture, const char *file
             VXCORE_OK);
   ASSERT_EQ(vxcore_buffer_write_backup(context, buffer.value), VXCORE_OK);
   ASSERT_EQ(read_file_content(path), disk);
-  ASSERT_EQ(read_file_content(path + ".vswp").substr(0, 8), std::string("VNOTEE1\0", 8));
+  ASSERT(encrypted_header(disk).at("version") == 2);
+  ASSERT(encrypted_header(read_file_content(path + ".vswp")).at("version") == 2);
   ASSERT_EQ(vxcore_buffer_set_content_raw(context, buffer.value, "discarded", 9), VXCORE_OK);
   ASSERT_EQ(vxcore_buffer_recover_backup(context, buffer.value), VXCORE_OK);
   ASSERT_FALSE(path_exists(path + ".vswp"));
@@ -5489,7 +5544,9 @@ int assert_encrypted_body_roundtrip(EncryptionFixture &fixture, const char *file
   ASSERT_EQ(std::string(static_cast<const char *>(data), size), backup);
   ASSERT_EQ(vxcore_buffer_close(context, buffer.value), VXCORE_OK);
   ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, fixture.notebook_id.value,
+  const auto relative = std::filesystem::relative(utf8_to_fs_path(path),
+      utf8_to_fs_path(fixture.path)).generic_u8string();
+  ASSERT_EQ(vxcore_encryption_unlock_note(context, fixture.notebook_id.value, relative.c_str(),
       kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_OK);
   EncryptionTestString reopened;
   ASSERT_EQ(vxcore_buffer_open_by_node_id(context, file_id, &reopened.value), VXCORE_OK);
@@ -5516,7 +5573,6 @@ int test_encryption_setup_ignores_unrelated_folder_corruption() {
   config.erase("encryptionInitialized");
   write_file(fixture.config_path(), config.dump());
   ASSERT(encryption_status(context, notebook).at("encryptionInitialized").is_null());
-  ASSERT_EQ(vxcore_encryption_reconcile_notebook(context, notebook, true), VXCORE_OK);
   ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
   EncryptionTestString protected_path;
   const auto hash = encryption_sha256(body);
@@ -5578,48 +5634,29 @@ int test_encryption_missing_key_candidate_and_runtime_guards() {
   ASSERT_EQ(fixture.error, VXCORE_OK);
   auto context = fixture.context.value;
   const auto notebook = fixture.notebook_id.value;
-  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+  ASSERT_EQ(initialize_legacy_encryption(fixture), 0);
   EncryptionTestString file;
   ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "orphan.txt", "text",
-                                          "body", 4, &file.value), VXCORE_OK);
+      "body", 4, &file.value), VXCORE_OK);
+  ASSERT_EQ(make_legacy_note(fixture, fixture.path + "/orphan.txt.vne"), 0);
   ASSERT_TRUE(std::filesystem::remove(utf8_to_fs_path(fixture.key_path())));
-  auto config = nlohmann::json::parse(read_file_content(fixture.config_path()));
-  config["encryptionInitialized"] = false;
-  write_file(fixture.config_path(), config.dump());
+  ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
   const auto before = encryption_file_tree(fixture.path);
+  ASSERT(encryption_status(context, notebook).at("initialized") == false);
   EncryptionTestString status;
-  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value),
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, "orphan.txt.vne", &status.value),
             VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED);
-  ASSERT_EQ(vxcore_encryption_reconcile_notebook(context, notebook, true),
-            VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED);
-  VxCoreEncryptionSetupHandle setup = nullptr;
-  ASSERT_EQ(vxcore_encryption_prepare_notebook(context, notebook, nullptr,
-      kEncryptionPassword.data(), kEncryptionPassword.size(), &setup),
-      VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED);
-  ASSERT_NULL(setup);
+  ASSERT_NULL(status.value);
+  ASSERT_EQ(vxcore_encryption_unlock_note(context, notebook, "orphan.txt.vne",
+      kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED);
+  ASSERT_NE(vxcore_encryption_migrate_note(context, notebook, "orphan.txt.vne"), VXCORE_OK);
   ASSERT(encryption_file_tree(fixture.path) == before);
-
-  vxcore_context_destroy(fixture.context.value);
-  fixture.context.value = nullptr;
-  ASSERT_EQ(vxcore_context_create(nullptr, &fixture.context.value), VXCORE_OK);
-  context = fixture.context.value;
-  EncryptionTestString reopened;
-  ASSERT_EQ(vxcore_notebook_open(context, fixture.path.c_str(), &reopened.value), VXCORE_OK);
-  for (const bool unknown : {false, true}) {
-    if (unknown) config.erase("encryptionInitialized");
-    write_file(fixture.config_path(), config.dump());
-    const auto persisted = encryption_file_tree(fixture.path);
-    const auto notebook_status = encryption_status(context, reopened.value);
-    ASSERT(notebook_status.at("initialized") == false);
-    ASSERT(notebook_status.at("encryptionInitialized") ==
-           (unknown ? nlohmann::json() : nlohmann::json(false)));
-    // The notebook query does not scan for orphaned bodies, but the selected
-    // encrypted candidate always requires its original key, even for false/unknown.
-    ASSERT_EQ(vxcore_encryption_get_status(context, reopened.value, "orphan.txt.vne", &status.value),
-              VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED);
-    ASSERT_NULL(status.value);
-    ASSERT(encryption_file_tree(fixture.path) == persisted);
-  }
+  // Explicit creation of another context cannot repair or overwrite a lost legacy key.
+  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+  ASSERT_FALSE(path_exists(fixture.key_path()));
+  ASSERT_EQ(read_file_content(fixture.path + "/orphan.txt.vne"), before.at("orphan.txt.vne"));
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, "orphan.txt.vne", &status.value),
+            VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED);
   return 0;
 }
 
@@ -5634,121 +5671,203 @@ void capture_encryption_resource(const void *data, size_t size, void *userdata) 
   capture.bytes = size ? std::string(static_cast<const char *>(data), size) : std::string();
 }
 
-// Independent authenticated fixtures are needed to exercise manifests that the
-// current writer deliberately refuses to create. No test-only core exports.
-struct EncryptionSnapshotFixture {
-  std::array<std::array<unsigned char, 32>, 4> keys{};
-  nlohmann::json header;
 
-  ~EncryptionSnapshotFixture() { sodium_memzero(keys.data(), sizeof(keys)); }
 
-  static uint32_t little32(const std::string &bytes, size_t offset) {
-    uint32_t value = 0;
-    for (unsigned i = 0; i < 4; ++i) {
-      value |= static_cast<uint32_t>(static_cast<unsigned char>(bytes.at(offset + i))) << (i * 8);
-    }
-    return value;
-  }
-
-  static void append_integer(std::string &bytes, uint64_t value, unsigned count) {
-    for (unsigned i = 0; i < count; ++i) bytes.push_back(static_cast<char>(value >> (i * 8)));
-  }
-
-  int load(const EncryptionFixture &fixture, const std::string &object, std::string &payload) {
-    const auto envelope = nlohmann::json::parse(read_file_content(fixture.key_path()).substr(12));
-    ASSERT_EQ(object.substr(0, 8), std::string("VNOTEE1\0", 8));
-    const auto header_size = little32(object, 8);
-    header = nlohmann::json::parse(object.substr(12, header_size));
-    const auto salt = test_base64_decode(envelope.at("salt"));
-    ASSERT_EQ(salt.size(), size_t(crypto_pwhash_SALTBYTES));
-    ASSERT_EQ(crypto_pwhash(keys[0].data(), keys[0].size(), kEncryptionPassword.data(),
-        kEncryptionPassword.size(), salt.data(), 3, 67108864, crypto_pwhash_ALG_ARGON2ID13), 0);
-    auto unwrap = [&](size_t wrapping, size_t output, const nlohmann::json &json,
-                      const char *nonce_field, const char *key_field,
-                      const nlohmann::json &aad_json) -> int {
-      const auto nonce = test_base64_decode(json.at(nonce_field));
-      const auto ciphertext = test_base64_decode(json.at(key_field));
-      const auto aad = aad_json.dump();
-      ASSERT_EQ(nonce.size(), size_t(crypto_aead_xchacha20poly1305_ietf_NPUBBYTES));
-      ASSERT_EQ(ciphertext.size(),
-                keys[output].size() + crypto_aead_xchacha20poly1305_ietf_ABYTES);
-      unsigned long long size = 0;
-      ASSERT_EQ(crypto_aead_xchacha20poly1305_ietf_decrypt(
-          keys[output].data(), &size, nullptr, ciphertext.data(), ciphertext.size(),
-          reinterpret_cast<const unsigned char *>(aad.data()), aad.size(), nonce.data(),
-          keys[wrapping].data()), 0);
-      ASSERT_EQ(size, static_cast<unsigned long long>(keys[output].size()));
-      return 0;
-    };
-    ASSERT_EQ(unwrap(0, 1, envelope, "masterNonce", "wrappedMasterKey",
-        nlohmann::json::array({"vnote-master", 1, envelope["vaultId"], "argon2id13",
-                              3, 67108864, envelope["salt"]})), 0);
-    ASSERT_EQ(unwrap(1, 2, envelope, "notebookNonce", "wrappedNotebookKey",
-        nlohmann::json::array({"vnote-notebook", 1, envelope["vaultId"],
-                              envelope["notebookId"], envelope["notebookKeyId"]})), 0);
-    ASSERT_EQ(unwrap(2, 3, header, "keyNonce", "wrappedNoteKey",
-        nlohmann::json::array({"vnote-note-key", 1, envelope["notebookId"],
-                              header["notebookKeyId"], header["documentId"],
-                              header["kind"], header["objectId"]})), 0);
-    size_t offset = 12 + header_size;
-    ASSERT(object.size() >= offset + crypto_secretstream_xchacha20poly1305_HEADERBYTES + 4);
-    crypto_secretstream_xchacha20poly1305_state stream;
-    ASSERT_EQ(crypto_secretstream_xchacha20poly1305_init_pull(&stream,
-        reinterpret_cast<const unsigned char *>(object.data() + offset), keys[3].data()), 0);
-    offset += crypto_secretstream_xchacha20poly1305_HEADERBYTES;
-    const auto record_size = little32(object, offset);
-    offset += 4;
-    ASSERT_EQ(offset + record_size, object.size());
-    const auto aad = nlohmann::json::array({"vnote-object", 1, header["kind"],
-        header["documentId"], header["objectId"]}).dump();
-    payload.resize(record_size);
-    unsigned long long size = 0;
-    unsigned char tag = 0;
-    const auto error = crypto_secretstream_xchacha20poly1305_pull(&stream,
-        reinterpret_cast<unsigned char *>(payload.data()), &size, &tag,
-        reinterpret_cast<const unsigned char *>(object.data() + offset), record_size,
-        reinterpret_cast<const unsigned char *>(aad.data()), aad.size());
-    sodium_memzero(&stream, sizeof(stream));
-    ASSERT_EQ(error, 0);
-    ASSERT_EQ(tag, crypto_secretstream_xchacha20poly1305_TAG_FINAL);
-    payload.resize(static_cast<size_t>(size));
-    return 0;
-  }
-
-  int encode(const std::string &body, const std::string &manifest, std::string &object) {
+int test_self_contained_snapshot_schema() {
+  EncryptionFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  using Codec = vxcore::EncryptedNote;
+  Codec::KeyEnvelope envelope;
+  Codec::Key master, notebook_key, note_key;
+  ASSERT_EQ(Codec::PrepareNewKeys(fixture.notebook_id.value, kEncryptionPassword.data(),
+      kEncryptionPassword.size(), envelope, master, notebook_key), VXCORE_OK);
+  ASSERT_EQ(Codec::GenerateKey(note_key), VXCORE_OK);
+  std::string document;
+  ASSERT_EQ(Codec::GenerateIdentity(document), VXCORE_OK);
+  const std::vector<uint8_t> body = {'b', 'o', 'd', 'y', 0, 'x'};
+  const nlohmann::json manifest = {{"editorType", "text"}};
+  const auto path = utf8_to_fs_path(fixture.path) / "snapshot.vne";
+  const std::set<std::string> fields = {"version", "kind", "documentId", "objectId",
+      "notebookKeyId", "keyNonce", "wrappedNoteKey", "vaultId", "notebookId", "kdf",
+      "opslimit", "memlimit", "salt", "masterNonce", "wrappedMasterKey", "notebookNonce",
+      "wrappedNotebookKey"};
+  for (const int revision : {-1, 37}) {
+    Codec::ObjectHeader header;
+    ASSERT_EQ(Codec::WriteNoteSnapshot(path, envelope, notebook_key, note_key, document, body,
+        manifest, &header, nullptr, revision), VXCORE_OK);
+    const auto bytes = read_file_content(fs_path_to_utf8(path));
+    const auto json = encrypted_header(bytes);
+    std::set<std::string> actual;
+    for (auto it = json.begin(); it != json.end(); ++it) actual.insert(it.key());
+    ASSERT(actual == fields);
+    ASSERT(json.at("version") == 2);
+    ASSERT(json.at("kind") == (revision < 0 ? "note" : "backup"));
+    ASSERT(json.at("notebookId") == fixture.notebook_id.value);
+    ASSERT(json.at("kdf") == "argon2id13");
+    ASSERT(json.at("opslimit") == 3);
+    ASSERT(json.at("memlimit") == 67108864);
+    ASSERT_EQ(bytes.find("PRIVATE_PASSWORD_SENTINEL_7e9d"), std::string::npos);
+    EncryptionSnapshotFixture independent;
     std::string payload;
-    append_integer(payload, body.size(), 8);
-    payload += body;
-    append_integer(payload, manifest.size(), 4);
-    payload += manifest;
-    ASSERT(payload.size() < size_t(65536));
-    const auto json = header.dump();
-    object.assign("VNOTEE1\0", 8);
-    append_integer(object, json.size(), 4);
-    object += json;
-    crypto_secretstream_xchacha20poly1305_state stream;
-    std::array<unsigned char, crypto_secretstream_xchacha20poly1305_HEADERBYTES> stream_header{};
-    ASSERT_EQ(crypto_secretstream_xchacha20poly1305_init_push(&stream, stream_header.data(),
-        keys[3].data()), 0);
-    object.append(reinterpret_cast<const char *>(stream_header.data()), stream_header.size());
-    const auto aad = nlohmann::json::array({"vnote-object", 1, header["kind"],
-        header["documentId"], header["objectId"]}).dump();
-    std::string ciphertext(payload.size() + crypto_secretstream_xchacha20poly1305_ABYTES, '\0');
-    unsigned long long size = 0;
-    const auto error = crypto_secretstream_xchacha20poly1305_push(&stream,
-        reinterpret_cast<unsigned char *>(ciphertext.data()), &size,
-        reinterpret_cast<const unsigned char *>(payload.data()), payload.size(),
-        reinterpret_cast<const unsigned char *>(aad.data()), aad.size(),
-        crypto_secretstream_xchacha20poly1305_TAG_FINAL);
-    sodium_memzero(&stream, sizeof(stream));
-    sodium_memzero(payload.data(), payload.size());
-    ASSERT_EQ(error, 0);
-    ASSERT_EQ(size, static_cast<unsigned long long>(ciphertext.size()));
-    append_integer(object, size, 4);
-    object += ciphertext;
-    return 0;
+    ASSERT_EQ(independent.load(fixture, bytes, payload), 0);
+    const size_t offset = revision < 0 ? 0 : 4;
+    if (revision >= 0) ASSERT_EQ(EncryptionSnapshotFixture::little32(payload, 0), uint32_t(revision));
+    ASSERT_EQ(payload.substr(offset + 8, body.size()), std::string(body.begin(), body.end()));
+    ASSERT(nlohmann::json::parse(payload.substr(offset + 12 + body.size())) == manifest);
+    ASSERT_FALSE(path_exists(fixture.key_path()));
   }
-};
+  return 0;
+}
+
+int test_legacy_note_and_backup_migration() {
+  // Include a real backup under an aliased parent: both publications and a retry
+  // must retain the same trusted notebook target.
+  const std::pair<bool, bool> scenarios[] = {{false, false}, {false, true}, {true, true}};
+  for (const auto &[aliased_parent, backup_present] : scenarios) {
+    EncryptionFixture fixture(aliased_parent);
+    ASSERT_EQ(fixture.error, VXCORE_OK);
+    auto context = fixture.context.value;
+    const auto notebook = fixture.notebook_id.value;
+    ASSERT_EQ(initialize_legacy_encryption(fixture), 0);
+    const std::string original_body = "legacy persisted body\r\n";
+    const std::string backup_body = "legacy unsaved backup\r\n";
+    EncryptionTestString file;
+    ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "legacy.md", "markdown",
+        original_body.data(), original_body.size(), &file.value), VXCORE_OK);
+    const auto path = fixture.path + "/legacy.md.vne";
+    ASSERT_EQ(make_legacy_note(fixture, path), 0);
+    if (backup_present) {
+      EncryptionSnapshotFixture legacy;
+      std::string payload, backup;
+      ASSERT_EQ(legacy.load(fixture, read_file_content(path), payload), 0);
+      legacy.header["kind"] = "backup";
+      legacy.header["objectId"] = EncryptionSnapshotFixture::identity();
+      ASSERT_EQ(legacy.make_legacy_header(), 0);
+      const auto manifest = nlohmann::json({{"editorType", "markdown"}}).dump();
+      ASSERT_EQ(legacy.encode(backup_body, manifest, backup, 37), 0);
+      write_file(path + ".vswp", backup);
+    }
+    const auto original = read_file_content(path);
+    const auto original_backup = backup_present ? read_file_content(path + ".vswp") : std::string();
+    const auto metadata_path = fixture.path + "/vx_notebook/contents/vx.json";
+    const auto original_metadata = read_file_content(metadata_path);
+    ASSERT_EQ(vxcore_encryption_migrate_note(context, notebook, "legacy.md.vne"), VXCORE_OK);
+    const auto migrated = read_file_content(path);
+    const auto old_header = encrypted_header(original);
+    const auto new_header = encrypted_header(migrated);
+    ASSERT(new_header.at("version") == 2);
+    for (const auto *field : {"documentId", "objectId", "notebookKeyId", "kind"}) {
+      ASSERT(new_header.at(field) == old_header.at(field));
+    }
+    const auto payload_bytes = [](const std::string &bytes) {
+      return bytes.substr(12 + EncryptionSnapshotFixture::little32(bytes, 8));
+    };
+    ASSERT_EQ(payload_bytes(migrated), payload_bytes(original));
+    ASSERT_EQ(read_file_content(metadata_path), original_metadata);
+    if (backup_present) {
+      const auto migrated_backup = read_file_content(path + ".vswp");
+      ASSERT(encrypted_header(migrated_backup).at("version") == 2);
+      ASSERT_EQ(payload_bytes(migrated_backup), payload_bytes(original_backup));
+      EncryptionSnapshotFixture decoded;
+      std::string payload;
+      ASSERT_EQ(decoded.load(fixture, migrated_backup, payload), 0);
+      ASSERT_EQ(EncryptionSnapshotFixture::little32(payload, 0), uint32_t(37));
+      ASSERT_EQ(payload.substr(12, backup_body.size()), backup_body);
+      // A backup-first interruption is retryable without rewriting the already migrated backup.
+      write_file(path, original);
+      ASSERT_EQ(vxcore_encryption_migrate_note(context, notebook, "legacy.md.vne"), VXCORE_OK);
+      ASSERT_EQ(read_file_content(path + ".vswp"), migrated_backup);
+    }
+    const auto migrated_tree = encryption_file_tree(fixture.path);
+    ASSERT_EQ(vxcore_encryption_migrate_note(context, notebook, "legacy.md.vne"), VXCORE_OK);
+    ASSERT(encryption_file_tree(fixture.path) == migrated_tree);
+    ASSERT_TRUE(std::filesystem::remove(utf8_to_fs_path(fixture.key_path())));
+    vxcore_context_destroy(context);
+    fixture.context.value = nullptr;
+    ASSERT_EQ(vxcore_context_create(nullptr, &fixture.context.value), VXCORE_OK);
+    context = fixture.context.value;
+    EncryptionTestString reopened;
+    ASSERT_EQ(vxcore_notebook_open(context, fixture.path.c_str(), &reopened.value), VXCORE_OK);
+    ASSERT_EQ(vxcore_encryption_unlock_note(context, notebook, "legacy.md.vne",
+        kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_OK);
+    EncryptionTestString buffer;
+    ASSERT_EQ(vxcore_buffer_open_by_node_id(context, file.value, &buffer.value), VXCORE_OK);
+    const void *data = nullptr;
+    size_t size = 0;
+    ASSERT_EQ(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size), VXCORE_OK);
+    ASSERT_EQ(std::string(static_cast<const char *>(data), size), original_body);
+    if (backup_present) {
+      ASSERT_EQ(vxcore_buffer_recover_backup(context, buffer.value), VXCORE_OK);
+      ASSERT_EQ(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size), VXCORE_OK);
+      ASSERT_EQ(std::string(static_cast<const char *>(data), size), backup_body);
+    }
+    ASSERT_EQ(vxcore_buffer_close(context, buffer.value), VXCORE_OK);
+  }
+  return 0;
+}
+
+int test_legacy_migration_rejects_unsafe_boundaries() {
+  EncryptionFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  const auto notebook = fixture.notebook_id.value;
+  ASSERT_EQ(initialize_legacy_encryption(fixture), 0);
+  EncryptionTestString file;
+  ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "legacy.txt", "text",
+      "persisted", 9, &file.value), VXCORE_OK);
+  const auto path = fixture.path + "/legacy.txt.vne";
+  ASSERT_EQ(make_legacy_note(fixture, path), 0);
+  const auto original = read_file_content(path);
+  ASSERT_EQ(vxcore_notebook_set_read_only(context, notebook, true), VXCORE_OK);
+  auto before = encryption_file_tree(fixture.path);
+  ASSERT_EQ(vxcore_encryption_migrate_note(context, notebook, "legacy.txt.vne"), VXCORE_ERR_READ_ONLY);
+  ASSERT(encryption_file_tree(fixture.path) == before);
+  ASSERT_EQ(vxcore_notebook_set_read_only(context, notebook, false), VXCORE_OK);
+  EncryptionSnapshotFixture backup_codec;
+  std::string payload, valid_backup, wrong_editor;
+  ASSERT_EQ(backup_codec.load(fixture, original, payload), 0);
+  backup_codec.header["kind"] = "backup";
+  backup_codec.header["objectId"] = EncryptionSnapshotFixture::identity();
+  ASSERT_EQ(backup_codec.make_legacy_header(), 0);
+  ASSERT_EQ(backup_codec.encode("unsaved", "{\"editorType\":\"text\"}", valid_backup, 37), 0);
+  ASSERT_EQ(backup_codec.encode("unsaved", "{\"editorType\":\"markdown\"}", wrong_editor, 37), 0);
+  auto tampered_backup = valid_backup;
+  tampered_backup.back() ^= 1;
+  for (const auto &backup : {std::string("corrupt recovery data must not be discarded"),
+                             tampered_backup, wrong_editor}) {
+    write_file(path + ".vswp", backup);
+    before = encryption_file_tree(fixture.path);
+    ASSERT_NE(vxcore_encryption_migrate_note(context, notebook, "legacy.txt.vne"), VXCORE_OK);
+    ASSERT(encryption_file_tree(fixture.path) == before);
+  }
+  ASSERT_TRUE(std::filesystem::remove(utf8_to_fs_path(path + ".vswp")));
+  EncryptionTestString buffer;
+  ASSERT_EQ(vxcore_buffer_open_by_node_id(context, file.value, &buffer.value), VXCORE_OK);
+  const void *data = nullptr;
+  size_t size = 0;
+  ASSERT_EQ(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size), VXCORE_OK);
+  ASSERT_EQ(std::string(static_cast<const char *>(data), size), "persisted");
+  ASSERT_EQ(vxcore_encryption_migrate_note(context, notebook, "legacy.txt.vne"), VXCORE_ERR_INVALID_STATE);
+  ASSERT_EQ(read_file_content(path), original);
+  ASSERT_EQ(vxcore_buffer_close(context, buffer.value), VXCORE_OK);
+  std::unique_ptr<vxcore::EncryptionKeySource> source;
+  ASSERT_EQ(vxcore::EncryptionKeySource::Read(utf8_to_fs_path(path),
+      utf8_to_fs_path(fixture.path + "/vx_notebook"), source), VXCORE_OK);
+  auto replacement = encrypted_header(original);
+  replacement["objectId"] = EncryptionSnapshotFixture::identity();
+  write_file(path, replace_encrypted_header(original, replacement.dump()));
+  ASSERT_NE(source->Revalidate(), VXCORE_OK);
+  before = encryption_file_tree(fixture.path);
+  ASSERT_NE(vxcore_encryption_migrate_note(context, notebook, "legacy.txt.vne"), VXCORE_OK);
+  ASSERT(encryption_file_tree(fixture.path) == before);
+  write_file(path, original);
+  ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
+  before = encryption_file_tree(fixture.path);
+  ASSERT_EQ(vxcore_encryption_migrate_note(context, notebook, "legacy.txt.vne"),
+            VXCORE_ERR_ENCRYPTION_LOCKED);
+  ASSERT(encryption_file_tree(fixture.path) == before);
+  return 0;
+}
 
 int test_encryption_note_through_aliased_parent() {
   EncryptionFixture fixture(true);
@@ -5831,7 +5950,7 @@ int test_encryption_note_through_aliased_parent() {
   ASSERT_EQ(vxcore_notebook_open(context, fixture.path.c_str(), &reopened.value), VXCORE_OK);
   ASSERT_FALSE(std::filesystem::exists(residue));
   ASSERT_EQ(read_file_content(protected_absolute), live_ciphertext);
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, reopened.value, kEncryptionPassword.data(),
+  ASSERT_EQ(vxcore_encryption_unlock_note(context, reopened.value, "source.md.vne", kEncryptionPassword.data(),
                                               kEncryptionPassword.size()),
             VXCORE_OK);
   EncryptionTestString after_recovery;
@@ -5884,7 +6003,6 @@ int test_encryption_rejects_links_within_notebook() {
     fixture.link.path = link_utf8;
     // Snapshot the physical target, not a tree containing the installed link.
     const auto before = encryption_file_tree(fs_path_to_utf8(target));
-    const auto key_bytes = read_file_content(fixture.key_path());
     const auto config_bytes = read_file_content(fs_path_to_utf8(config));
     EncryptionTestString rejected;
     const auto error = vxcore_encryption_create_note(context, notebook, parent, "blocked.md",
@@ -5892,7 +6010,6 @@ int test_encryption_rejects_links_within_notebook() {
     ASSERT_EQ(error, VXCORE_ERR_INVALID_PARAM);
     ASSERT_NULL(rejected.value);
     ASSERT(encryption_file_tree(fs_path_to_utf8(target)) == before);
-    ASSERT_EQ(read_file_content(fixture.key_path()), key_bytes);
     ASSERT_EQ(read_file_content(fs_path_to_utf8(config)), config_bytes);
     ASSERT_FALSE(std::filesystem::exists(root / parent / "blocked.md"));
     ASSERT_FALSE(std::filesystem::exists(root / parent / "blocked.md.vne"));
@@ -5907,26 +6024,30 @@ int test_encryption_rejects_links_within_notebook() {
   ASSERT_EQ(fixture.error, VXCORE_OK);
   const auto context = fixture.context.value;
   ASSERT_EQ(initialize_test_encryption(context, fixture.notebook_id.value), VXCORE_OK);
+  EncryptionTestString note;
+  ASSERT_EQ(vxcore_encryption_create_note(context, fixture.notebook_id.value, "", "private.txt",
+      "text", "body", 4, &note.value), VXCORE_OK);
   ASSERT_EQ(vxcore_notebook_close(context, fixture.notebook_id.value), VXCORE_OK);
   const auto link = fs_path_to_utf8(fixture.directory.path() / "root-link");
   ASSERT_TRUE(vxcore_test::create_junction(fixture.path, link));
   fixture.link.path = link;
   const auto before = encryption_file_tree(fixture.path);
-  const auto key_bytes = read_file_content(fixture.key_path());
   const auto config_path = fixture.path + "/vx_notebook/contents/vx.json";
   const auto config_bytes = read_file_content(config_path);
   EncryptionTestString reopened;
-  ASSERT_EQ(vxcore_notebook_open(context, link.c_str(), &reopened.value), VXCORE_OK);
-  // The existing identity preflight rejects a link at the notebook root on unlock.
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, reopened.value, kEncryptionPassword.data(),
-                                              kEncryptionPassword.size()),
-            VXCORE_ERR_INVALID_STATE);
+  const auto open_error = vxcore_notebook_open(context, link.c_str(), &reopened.value);
+  if (open_error == VXCORE_OK) {
+    ASSERT_EQ(vxcore_encryption_unlock_note(context, reopened.value, "private.txt.vne",
+        kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_ERR_INVALID_STATE);
+  } else {
+    // Recovery may reject the unsafe root before any key source is consulted.
+    ASSERT_EQ(open_error, VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED);
+    ASSERT_NULL(reopened.value);
+  }
   ASSERT(encryption_file_tree(fixture.path) == before);
-  ASSERT_EQ(read_file_content(fixture.key_path()), key_bytes);
   ASSERT_EQ(read_file_content(config_path), config_bytes);
   ASSERT_FALSE(path_exists(fixture.path + "/blocked.md"));
   ASSERT_FALSE(path_exists(fixture.path + "/blocked.md.vne"));
-  ASSERT_FALSE(path_exists(fixture.path + "/vx_notebook/vx_transfer/encryption"));
   return 0;
 }
 
@@ -5935,6 +6056,8 @@ int test_encryption_create_note_transaction() {
   ASSERT_EQ(fixture.error, VXCORE_OK);
   const auto context = fixture.context.value;
   const auto notebook = fixture.notebook_id.value;
+  const std::string unrelated_vault = "unrelated corrupt legacy vault";
+  write_file(fixture.key_path(), unrelated_vault);
   ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
   struct BodyCase {
     const char *name;
@@ -5960,6 +6083,7 @@ int test_encryption_create_note_transaction() {
     ASSERT_FALSE(path_exists(fixture.path + "/" + item.name));
     const auto path = fixture.path + "/" + item.name + ".vne";
     ASSERT_EQ(read_file_content(path).find("PRIVATE_CREATED_BODY_7e9d"), std::string::npos);
+    ASSERT(encrypted_header(read_file_content(path)).at("version") == 2);
     ASSERT_EQ(assert_encrypted_body_roundtrip(fixture, file.value, path, item.body,
         item.saved, item.backup), 0);
   }
@@ -5984,6 +6108,7 @@ int test_encryption_create_note_transaction() {
   ASSERT_EQ(vxcore_buffer_get_content_raw(context, empty.value, &data, &size), VXCORE_OK);
   ASSERT_EQ(size, static_cast<size_t>(0));
   ASSERT_EQ(vxcore_buffer_close(context, empty.value), VXCORE_OK);
+  ASSERT_EQ(read_file_content(fixture.key_path()), unrelated_vault);
   return 0;
 }
 
@@ -6023,12 +6148,13 @@ int test_webdav_encryption_state_survives_unregister_and_restart() {
   ASSERT_EQ(fixture.error, VXCORE_OK);
   auto context = fixture.context.value;
   const auto notebook = fixture.notebook_id.value;
-  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+  ASSERT_EQ(initialize_legacy_encryption(fixture), 0);
   EncryptionTestString file, buffer;
   const std::string body = "private WebDAV body";
   ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "private.md", "markdown",
                                           body.data(), body.size(), &file.value),
             VXCORE_OK);
+  ASSERT_EQ(make_legacy_note(fixture, fixture.path + "/private.md.vne"), 0);
   ASSERT_EQ(vxcore_buffer_open_by_node_id(context, file.value, &buffer.value), VXCORE_OK);
   const auto webdav = fixture.path + "/vx_notebook/vx_sync/webdav";
   std::filesystem::create_directories(utf8_to_fs_path(webdav));
@@ -6081,8 +6207,8 @@ int test_webdav_encryption_state_survives_unregister_and_restart() {
   EncryptionTestString rejected;
   ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "rejected.md", "markdown", "", 0,
                                           &rejected.value),
-            VXCORE_ERR_SYNC_CONFLICT);
-  ASSERT_NULL(rejected.value);
+            VXCORE_OK);
+  ASSERT_NOT_NULL(rejected.value);
   ASSERT_EQ(vxcore_buffer_close(context, buffer.value), VXCORE_OK);
   vxcore_context_destroy(context);
   fixture.context.value = nullptr;
@@ -6092,13 +6218,13 @@ int test_webdav_encryption_state_survives_unregister_and_restart() {
                                               kEncryptionPassword.size()),
             VXCORE_ERR_SYNC_CONFLICT);
   EncryptionTestString status;
-  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value),
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, "private.md.vne", &status.value),
             VXCORE_ERR_SYNC_CONFLICT);
   ASSERT_NULL(status.value);
   // Selecting a revision does not retire the conflict before its applying sync commits.
   state["conflicts"]["vx_notebook/encryption.vne"]["resolution"] = "keep_remote";
   write_file(webdav + "/state.json", state.dump());
-  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value),
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, "private.md.vne", &status.value),
             VXCORE_ERR_SYNC_CONFLICT);
   state["conflicts"] = nlohmann::json::object();
   write_file(webdav + "/state.json", state.dump());
@@ -6120,10 +6246,10 @@ int test_webdav_encryption_state_survives_unregister_and_restart() {
                                                   {"scratchUrl", nullptr},
                                                   {"stage", "remoteConfirmed"}}});
   write_file(webdav + "/pending.json", pending.dump());
-  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value),
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, "private.md.vne", &status.value),
             VXCORE_ERR_SYNC_CONFLICT);
   write_file(webdav + "/pending.json", "{unreadable");
-  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value),
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, "private.md.vne", &status.value),
             VXCORE_ERR_ENCRYPTION_SYNC_STATE);
   ASSERT_TRUE(std::filesystem::remove(utf8_to_fs_path(webdav + "/pending.json")));
   ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook, kEncryptionPassword.data(),
@@ -6142,23 +6268,19 @@ int test_encryption_sync_state_error_is_distinct() {
   ASSERT_EQ(fixture.error, VXCORE_OK);
   const auto context = fixture.context.value;
   const auto notebook = fixture.notebook_id.value;
+  ASSERT_EQ(initialize_legacy_encryption(fixture), 0);
   const auto stray = utf8_to_fs_path(fixture.path) / "vx_notebook" / "vx_sync" / "stray.txt";
   ASSERT_TRUE(std::filesystem::create_directory(stray.parent_path()));
   write_file(fs_path_to_utf8(stray), "preserve this leftover");
+  ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
   const auto before = encryption_file_tree(fixture.path);
-
   EncryptionTestString status;
   ASSERT_EQ(vxcore_encryption_get_status(context, "missing-notebook", nullptr, &status.value),
             VXCORE_ERR_NOT_FOUND);
   ASSERT_NULL(status.value);
-  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value),
-            VXCORE_ERR_ENCRYPTION_SYNC_STATE);
-  ASSERT_NULL(status.value);
-  VxCoreEncryptionSetupHandle setup = nullptr;
-  ASSERT_EQ(vxcore_encryption_prepare_notebook(context, notebook, nullptr,
-      kEncryptionPassword.data(), kEncryptionPassword.size(), &setup),
-      VXCORE_ERR_ENCRYPTION_SYNC_STATE);
-  ASSERT_NULL(setup);
+  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook, kEncryptionPassword.data(),
+      kEncryptionPassword.size()), VXCORE_ERR_ENCRYPTION_SYNC_STATE);
+  ASSERT(encryption_status(context, notebook).at("initialized") == false);
   ASSERT(encryption_file_tree(fixture.path) == before);
   return 0;
 }
@@ -6168,11 +6290,12 @@ int test_key_conflict_blocks_cached_protected_body() {
   ASSERT_EQ(fixture.error, VXCORE_OK);
   const auto context = fixture.context.value;
   const auto notebook = fixture.notebook_id.value;
-  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+  ASSERT_EQ(initialize_legacy_encryption(fixture), 0);
   EncryptionTestString file, buffer, ordinary;
   const std::string body = "protected cached body";
   ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "private.md", "markdown",
       body.data(), body.size(), &file.value), VXCORE_OK);
+  ASSERT_EQ(make_legacy_note(fixture, fixture.path + "/private.md.vne"), 0);
   ASSERT_EQ(vxcore_buffer_open_by_node_id(context, file.value, &buffer.value), VXCORE_OK);
   EncryptionTestGitRepository repository;
   git_repository_init_options options = GIT_REPOSITORY_INIT_OPTIONS_INIT;
@@ -6221,7 +6344,7 @@ int test_key_conflict_blocks_cached_protected_body() {
   ASSERT_TRUE(std::filesystem::remove(
       utf8_to_fs_path(git_repository_path(repository.value)) / "HEAD"));
   EncryptionTestString status;
-  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, nullptr, &status.value),
+  ASSERT_EQ(vxcore_encryption_get_status(context, notebook, "private.md.vne", &status.value),
             VXCORE_ERR_ENCRYPTION_SYNC_STATE);
   ASSERT_NULL(status.value);
   data = reinterpret_cast<const void *>(1);
@@ -6313,8 +6436,8 @@ int test_encryption_protect_body_only() {
       dirty.size(), source_hash.c_str(), &output.value), VXCORE_ERR_ENCRYPTION_LOCKED);
   ASSERT_NULL(output.value);
   ASSERT(encryption_file_tree(fixture.path) == before);
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook,
-      kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_OK);
+  // No note exists for this ephemeral context yet; explicitly create a fresh one.
+  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
   ASSERT_EQ(vxcore_encryption_protect_note(context, notebook, "source.md", dirty.data(),
       dirty.size(), source_hash.c_str(), &output.value), VXCORE_OK);
   ASSERT_EQ(std::string(output.value), "source.md.vne");
@@ -6434,6 +6557,7 @@ int test_encryption_unprotect_body_only() {
   ASSERT_EQ(fixture.error, VXCORE_OK);
   const auto context = fixture.context.value;
   const auto notebook = fixture.notebook_id.value;
+  write_file(fixture.key_path(), "unrelated corrupt legacy vault");
   ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
   EncryptionTestString first, file, last, ordinary;
   ASSERT_EQ(vxcore_file_create(context, notebook, "", "before.md", &first.value), VXCORE_OK);
@@ -6483,7 +6607,6 @@ int test_encryption_unprotect_body_only() {
   ASSERT_EQ(vxcore_buffer_write_backup(context, protected_buffer.value), VXCORE_OK);
   ASSERT_EQ(read_file_content(source + ".vne.vswp").substr(0, 8), std::string("VNOTEE1\0", 8));
   const auto assets_before = encryption_file_tree(assets.value);
-  const auto key_before = read_file_content(fixture.key_path());
   const auto config_path = fixture.path + "/vx_notebook/contents/vx.json";
   const auto before = nlohmann::json::parse(read_file_content(config_path));
   EncryptionTestString attachments_before;
@@ -6498,7 +6621,6 @@ int test_encryption_unprotect_body_only() {
   ASSERT_FALSE(path_exists(source + ".vne"));
   ASSERT_FALSE(path_exists(source + ".vne.vswp"));
   ASSERT_FALSE(path_exists(source + ".vswp"));
-  ASSERT_EQ(read_file_content(fixture.key_path()), key_before);
   ASSERT(encryption_file_tree(assets.value) == assets_before);
   const auto after = nlohmann::json::parse(read_file_content(config_path));
   auto expected_record = before["files"][1];
@@ -6530,9 +6652,7 @@ int test_encryption_unprotect_body_only() {
   ASSERT_EQ(vxcore_buffer_close(context, protected_buffer.value), VXCORE_OK);
   ASSERT_EQ(assert_unprotected_note_writable(fixture, file.value, "source.md", dirty), 0);
   ASSERT(encryption_file_tree(assets.value) == assets_before);
-  ASSERT_EQ(read_file_content(fixture.key_path()), key_before);
-  ASSERT(nlohmann::json::parse(read_file_content(fixture.config_path()))
-             .at("encryptionInitialized") == true);
+  ASSERT_EQ(read_file_content(fixture.key_path()), "unrelated corrupt legacy vault");
   return 0;
 }
 
@@ -6565,7 +6685,6 @@ int test_encryption_unprotect_persisted_and_empty_body() {
     }
     const auto target = selected.substr(0, selected.size() - 4);
     const auto hash = encryption_sha256(read_file_content(fixture.path + "/" + selected));
-    const auto key_before = read_file_content(fixture.key_path());
     EncryptionTestString output;
     const char empty_body = '\0';
     ASSERT_EQ(vxcore_encryption_unprotect_note(context, notebook, selected.c_str(),
@@ -6582,7 +6701,6 @@ int test_encryption_unprotect_persisted_and_empty_body() {
     const std::string type_name = nlohmann::json::parse(type.value)["name"];
     ASSERT_EQ(type_name, std::string(item.editor) == "mindmap" ? "MindMap" : "Text");
     ASSERT_EQ(assert_unprotected_note_writable(fixture, file.value, target, expected), 0);
-    ASSERT_EQ(read_file_content(fixture.key_path()), key_before);
   }
   return 0;
 }
@@ -6624,11 +6742,11 @@ int test_encryption_unprotect_rejects_unsafe_conversion() {
   ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
   ASSERT_EQ(reject("unsafe.md.vne", digest.c_str(), VXCORE_ERR_ENCRYPTION_LOCKED), 0);
   const auto locked_tree = encryption_file_tree(fixture.path);
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook, "wrong password", 14),
+  ASSERT_EQ(vxcore_encryption_unlock_note(context, notebook, "unsafe.md.vne", "wrong password", 14),
             VXCORE_ERR_ENCRYPTION_AUTH_FAILED);
   ASSERT(encryption_file_tree(fixture.path) == locked_tree);
   ASSERT_EQ(reject("unsafe.md.vne", digest.c_str(), VXCORE_ERR_ENCRYPTION_LOCKED), 0);
-  ASSERT_EQ(vxcore_encryption_unlock_notebook(context, notebook, kEncryptionPassword.data(),
+  ASSERT_EQ(vxcore_encryption_unlock_note(context, notebook, "unsafe.md.vne", kEncryptionPassword.data(),
                                              kEncryptionPassword.size()), VXCORE_OK);
   ASSERT_EQ(reject(nullptr, digest.c_str(), VXCORE_ERR_NULL_POINTER), 0);
   ASSERT_EQ(reject("unsafe.md.vne", nullptr, VXCORE_ERR_NULL_POINTER), 0);
@@ -6680,14 +6798,8 @@ int test_encryption_unprotect_rejects_unsafe_conversion() {
   ASSERT_EQ(reject("unsafe.md.vne", digest.c_str(), VXCORE_ERR_UNSUPPORTED), 0);
   ASSERT_EQ(vxcore_filetype_set(context, configured.value), VXCORE_OK);
 
-  const auto key = read_file_content(fixture.key_path());
-  write_file(fixture.key_path(), "corrupt key envelope");
-  ASSERT_EQ(reject("unsafe.md.vne", digest.c_str(), VXCORE_ERR_ENCRYPTION_FORMAT), 0);
-  write_file(fixture.key_path(), key);
-  ASSERT_TRUE(std::filesystem::remove(utf8_to_fs_path(fixture.key_path())));
-  ASSERT_EQ(reject("unsafe.md.vne", digest.c_str(), VXCORE_ERR_ENCRYPTION_FORMAT), 0);
-  ASSERT_FALSE(path_exists(fixture.key_path()));
-  write_file(fixture.key_path(), key);
+  // Vault damage cannot influence an authenticated self-contained source.
+  write_file(fixture.key_path(), "unrelated corrupt key envelope");
   EncryptionTestString raw_notebook;
   const auto raw_path = fs_path_to_utf8(fixture.directory.path() / "raw-notebook");
   ASSERT_EQ(vxcore_notebook_create(context, raw_path.c_str(), "{\"name\":\"Raw\"}",
@@ -6735,7 +6847,7 @@ int test_encryption_unprotect_rejects_unsafe_conversion() {
       fs_path_to_utf8(physical / "private.md.vne")));
   ASSERT_EQ(reject("Linked/private.md.vne", linked_hash.c_str(), VXCORE_ERR_INVALID_PARAM), 0);
   ASSERT(encryption_file_tree(fs_path_to_utf8(physical)) == physical_before);
-  ASSERT_EQ(read_file_content(fixture.key_path()), key);
+  ASSERT_EQ(read_file_content(fixture.key_path()), "unrelated corrupt key envelope");
   return 0;
 }
 
@@ -6754,7 +6866,6 @@ int test_encryption_unprotect_conflicts_and_backups() {
   const auto source = target + ".vne";
   const auto ciphertext = read_file_content(source);
   const auto hash = encryption_sha256(ciphertext);
-  const auto key = read_file_content(fixture.key_path());
   auto reject = [&](const void *override_body, size_t size, VxCoreError error) {
     return assert_unprotect_rejected(fixture, "conflict.md.vne", override_body, size,
                                       hash.c_str(), error);
@@ -6802,7 +6913,6 @@ int test_encryption_unprotect_conflicts_and_backups() {
   ASSERT_FALSE(path_exists(target + ".vswp"));
   ASSERT_EQ(read_file_content(fixture.path + "/unrelated.md.vswp"),
             "unrelated backup is not transaction-owned");
-  ASSERT_EQ(read_file_content(fixture.key_path()), key);
   ASSERT_EQ(assert_unprotected_note_writable(fixture, file.value, "conflict.md", dirty), 0);
   return 0;
 }
@@ -6841,7 +6951,7 @@ struct UnprotectRecoveryFixture {
     ASSERT_EQ(notebook.error, VXCORE_OK);
     const auto context = notebook.context.value;
     const auto notebook_id = notebook.notebook_id.value;
-    ASSERT_EQ(initialize_test_encryption(context, notebook_id), VXCORE_OK);
+    ASSERT_EQ(initialize_legacy_encryption(notebook), 0);
     const std::string original = "# protected before interruption\r\n";
     ASSERT_EQ(vxcore_encryption_create_note(context, notebook_id, "", "recovery.md", "markdown",
         original.data(), original.size(), &file.value), VXCORE_OK);
@@ -6865,9 +6975,13 @@ struct UnprotectRecoveryFixture {
     write_file(assets_path + "/comments.json", "{\"comments\":[\"retained\"]}");
     ASSERT_EQ(vxcore_buffer_set_content_raw(context, buffer.value, body.data(), body.size()), VXCORE_OK);
     ASSERT_EQ(vxcore_buffer_write_backup(context, buffer.value), VXCORE_OK);
-    source_bytes = read_file_content(source_path);
     backup_bytes = read_file_content(source_path + ".vswp");
     ASSERT_EQ(vxcore_buffer_close(context, buffer.value), VXCORE_OK);
+    write_file(source_path + ".vswp", backup_bytes);
+    ASSERT_EQ(make_legacy_note(notebook, source_path), 0);
+    ASSERT_EQ(make_legacy_note(notebook, source_path + ".vswp"), 0);
+    source_bytes = read_file_content(source_path);
+    backup_bytes = read_file_content(source_path + ".vswp");
     ASSERT_EQ(vxcore_notebook_close(context, notebook_id), VXCORE_OK);
     ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
     vxcore_context_destroy(notebook.context.value);
@@ -7090,7 +7204,7 @@ int test_encryption_unprotect_recovery_rejects_changed_inputs() {
         fixture.journal["objects"][0]["objectId"] = "../recovery";
         break;
       case Changed::Version:
-        fixture.journal["version"] = 4;
+        fixture.journal["version"] = 99;
         break;
       case Changed::Operation:
         fixture.journal["operation"] = "decrypt-assets";
@@ -7375,6 +7489,81 @@ int test_encryption_note_and_backup_tamper() {
   ASSERT_EQ(std::string(static_cast<const char *>(data), size), body);
   ASSERT_EQ(vxcore_buffer_close(context, restored.value), VXCORE_OK);
   ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
+  return 0;
+}
+
+int test_encrypted_folder_transfer_mixed_contexts() {
+  EncryptionFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  const auto notebook = fixture.notebook_id.value;
+  ASSERT_EQ(initialize_legacy_encryption(fixture), 0);
+  EncryptionTestString folder, legacy, first, second, destination, anchor;
+  ASSERT_EQ(vxcore_folder_create(context, notebook, "", "Mixed", &folder.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "Mixed", "legacy.txt", "text",
+      "legacy content", 14, &legacy.value), VXCORE_OK);
+  ASSERT_EQ(make_legacy_note(fixture, fixture.path + "/Mixed/legacy.txt.vne"), 0);
+  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+  ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "Mixed", "first.txt", "text",
+      "first context", 13, &first.value), VXCORE_OK);
+  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+  ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "Mixed", "second.txt", "text",
+      "second context", 14, &second.value), VXCORE_OK);
+  const auto destination_path = fs_path_to_utf8(fixture.directory.path() / "mixed-destination");
+  ASSERT_EQ(vxcore_notebook_create(context, destination_path.c_str(), "{\"name\":\"Destination\"}",
+      VXCORE_NOTEBOOK_BUNDLED, &destination.value), VXCORE_OK);
+  ASSERT_EQ(initialize_test_encryption(context, destination.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_encryption_create_note(context, destination.value, "", "anchor.txt", "text",
+      "destination", 11, &anchor.value), VXCORE_OK);
+  const auto destination_key = encrypted_header(read_file_content(destination_path + "/anchor.txt.vne"));
+  ASSERT_FALSE(path_exists(destination_path + "/vx_notebook/encryption.vne"));
+  ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_OK);
+  for (const auto *path : {"Mixed/legacy.txt.vne", "Mixed/second.txt.vne"}) {
+    ASSERT_EQ(vxcore_encryption_unlock_note(context, notebook, path, kEncryptionPassword.data(),
+        kEncryptionPassword.size()), VXCORE_OK);
+  }
+  ASSERT_EQ(vxcore_encryption_unlock_note(context, destination.value, "anchor.txt.vne",
+      kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_OK);
+  const auto source_before = encryption_file_tree(fixture.path + "/Mixed");
+  const auto destination_before = encryption_file_tree(destination_path);
+  const nlohmann::json options = {{"operation", "copy"}, {"conflictPolicy", "rename"},
+      {"timestampPolicy", "reset"}, {"createMissingTags", true}, {"preserveRelativeLinks", true}};
+  VxCoreNodeTransferHandle transfer = nullptr;
+  ASSERT_EQ(vxcore_node_transfer_prepare(context, notebook, "Mixed", destination.value, "",
+      options.dump().c_str(), nullptr, nullptr, &transfer), VXCORE_ERR_ENCRYPTION_LOCKED);
+  ASSERT_NULL(transfer);
+  ASSERT(encryption_file_tree(fixture.path + "/Mixed") == source_before);
+  ASSERT(encryption_file_tree(destination_path) == destination_before);
+  ASSERT_EQ(vxcore_encryption_unlock_note(context, notebook, "Mixed/first.txt.vne",
+      kEncryptionPassword.data(), kEncryptionPassword.size()), VXCORE_OK);
+  ASSERT_EQ(vxcore_node_transfer_prepare(context, notebook, "Mixed", destination.value, "",
+      options.dump().c_str(), nullptr, nullptr, &transfer), VXCORE_OK);
+  ASSERT_EQ(vxcore_encryption_lock_all(context), VXCORE_ERR_INVALID_STATE);
+  EncryptionTestString result;
+  ASSERT_EQ(vxcore_node_transfer_commit(context, transfer, &result.value), VXCORE_OK);
+  const auto committed = nlohmann::json::parse(result.value);
+  ASSERT(committed.at("status") == "copied");
+  const auto batch = committed.at("eventBatchId").get<std::string>();
+  ASSERT_EQ(vxcore_node_transfer_dispatch_events(context, batch.c_str()), VXCORE_OK);
+  const std::pair<const char *, const char *> notes[] = {
+      {"legacy.txt.vne", "legacy content"}, {"first.txt.vne", "first context"},
+      {"second.txt.vne", "second context"}};
+  for (const auto &note : notes) {
+    const auto relative = committed.at("destinationRelativePath").get<std::string>() + "/" + note.first;
+    const auto header = encrypted_header(read_file_content(destination_path + "/" + relative));
+    const auto source_header = encrypted_header(source_before.at(note.first));
+    ASSERT(header.at("version") == 2);
+    ASSERT(header.at("notebookKeyId") == destination_key.at("notebookKeyId"));
+    ASSERT(header.at("documentId") != source_header.at("documentId"));
+    EncryptionTestString buffer;
+    ASSERT_EQ(vxcore_buffer_open(context, destination.value, relative.c_str(), &buffer.value), VXCORE_OK);
+    const void *data = nullptr;
+    size_t size = 0;
+    ASSERT_EQ(vxcore_buffer_get_content_raw(context, buffer.value, &data, &size), VXCORE_OK);
+    ASSERT_EQ(std::string(static_cast<const char *>(data), size), note.second);
+    ASSERT_EQ(vxcore_buffer_close(context, buffer.value), VXCORE_OK);
+  }
+  ASSERT(encryption_file_tree(fixture.path + "/Mixed") == source_before);
   return 0;
 }
 
@@ -8378,13 +8567,9 @@ int main() {
   RUN_TEST(test_virtual_buffer_rejected_by_regular_open);
 
   // Notebook encryption key APIs and the ordinary-buffer independence boundary.
-  RUN_TEST(test_encryption_legacy_confirmation);
-  RUN_TEST(test_encryption_sticky_marker_and_key_loss);
   RUN_TEST(test_encryption_rejects_invalid_initialization_marker);
-  RUN_TEST(test_encryption_commit_revalidates_initialization_marker);
   RUN_TEST(test_encryption_existing_key_reconciliation_is_explicit);
   RUN_TEST(test_encryption_cached_unlock_keeps_legacy_marker_unknown);
-  RUN_TEST(test_encryption_key_publication_survives_marker_failure);
   RUN_TEST(test_encryption_setup_ignores_unrelated_folder_corruption);
   RUN_TEST(test_encryption_rejects_local_and_indexed_identity_collisions);
   RUN_TEST(test_encryption_missing_key_candidate_and_runtime_guards);
@@ -8398,6 +8583,9 @@ int main() {
   RUN_TEST(test_plaintext_buffer_independent_of_key_file);
   RUN_TEST(test_buffer_hidden_encryption_magic_fails_closed);
   RUN_TEST(test_encryption_status_rejects_malformed_candidates);
+  RUN_TEST(test_self_contained_snapshot_schema);
+  RUN_TEST(test_legacy_note_and_backup_migration);
+  RUN_TEST(test_legacy_migration_rejects_unsafe_boundaries);
   RUN_TEST(test_encryption_note_through_aliased_parent);
   RUN_TEST(test_encryption_rejects_links_within_notebook);
   RUN_TEST(test_encryption_create_note_transaction);
@@ -8416,6 +8604,7 @@ int main() {
   RUN_TEST(test_encrypted_note_plaintext_assets);
   RUN_TEST(test_encryption_manifest_compatibility);
   RUN_TEST(test_encryption_note_and_backup_tamper);
+  RUN_TEST(test_encrypted_folder_transfer_mixed_contexts);
   RUN_TEST(test_encrypted_note_transfer_plaintext_assets);
 
   std::cout << "All buffer tests passed!" << std::endl;

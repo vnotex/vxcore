@@ -12,17 +12,18 @@
 #include <stdexcept>
 #include <unordered_set>
 
+#include "encryptednote.h"
+#include "encryptionkeysource.h"
 #include "folder.h"
 #include "folder_manager.h"
 #include "notebook.h"
-#include "sync/sync_encryption_guard.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 
 namespace vxcore {
 
 namespace {
-using Encryption = NotebookEncryption;
+using Encryption = EncryptedNote;
 using Json = nlohmann::json;
 namespace fs = std::filesystem;
 
@@ -148,14 +149,22 @@ void StandardBufferProvider::SetFileState(const std::string &path, const nlohman
 VxCoreError StandardBufferProvider::RequireProtectedState(bool writing) const {
   if (!encrypted_) return VXCORE_ERR_UNSUPPORTED;
   if (protection_error_ != VXCORE_OK) return protection_error_;
-  const auto conflict_error = CheckNotebookEncryptionSyncState(notebook_->GetMetadataFolder());
-  if (conflict_error != VXCORE_OK) return conflict_error;
   if (writing) {
     const auto error = notebook_->CheckWritable();
     if (error != VXCORE_OK) return error;
   }
   if (!protected_) return VXCORE_ERR_ENCRYPTION_LOCKED;
-  return VXCORE_OK;
+  std::unique_ptr<EncryptionKeySource> source;
+  const auto error = EncryptionKeySource::Read(
+      PathFromUtf8(notebook_->GetAbsolutePath(file_path_)),
+      PathFromUtf8(notebook_->GetMetadataFolder()), source);
+  if (error != VXCORE_OK) return error;
+  return Encryption::SameEnvelope(source->Envelope(), protected_->envelope)
+             ? VXCORE_OK : VXCORE_ERR_ENCRYPTION_AUTH_FAILED;
+}
+
+VxCoreError StandardBufferProvider::CheckProtectedAccess() const {
+  return ProtectedResult([&]() { return RequireProtectedState(false); });
 }
 
 VxCoreError StandardBufferProvider::ResolveProtectedPath(const std::filesystem::path &path) const {
@@ -191,23 +200,27 @@ VxCoreError StandardBufferProvider::LoadEncryptedContent(std::vector<uint8_t> &o
   return ProtectedResult([&]() -> VxCoreError {
     if (!encrypted_) return VXCORE_ERR_UNSUPPORTED;
     if (protection_error_ != VXCORE_OK) return protection_error_;
-    const auto conflict_error = CheckNotebookEncryptionSyncState(notebook_->GetMetadataFolder());
-    if (conflict_error != VXCORE_OK) return conflict_error;
+    const auto path = PathFromUtf8(notebook_->GetAbsolutePath(file_path_));
+    auto error = ResolveProtectedPath(path);
+    if (error != VXCORE_OK) return error;
+    std::unique_ptr<EncryptionKeySource> source;
+    error = EncryptionKeySource::Read(path, PathFromUtf8(notebook_->GetMetadataFolder()), source);
+    if (error != VXCORE_OK) return error;
     auto *encryption = notebook_->GetEncryption();
     if (!encryption) return VXCORE_ERR_ENCRYPTION_LOCKED;
     auto candidate = std::make_unique<ProtectedState>();
-    auto error = encryption->AcquireNotebookKey(candidate->notebook_key, &candidate->envelope);
+    candidate->header = *source->Header();
+    error = encryption->AcquireNotebookKey(candidate->notebook_key, &candidate->envelope,
+                                            &candidate->header);
     if (error != VXCORE_OK) return error;
-    const auto path = PathFromUtf8(notebook_->GetAbsolutePath(file_path_));
-    error = ResolveProtectedPath(path);
-    if (error != VXCORE_OK) return error;
-    error = Encryption::ReadObjectHeader(path, candidate->header);
-    if (error != VXCORE_OK) return error;
+    if (!Encryption::SameEnvelope(candidate->envelope, source->Envelope())) {
+      return VXCORE_ERR_ENCRYPTION_AUTH_FAILED;
+    }
     if (candidate->header.kind != "note" ||
         (protected_ && candidate->header.document_id != protected_->header.document_id)) {
       return VXCORE_ERR_ENCRYPTION_FORMAT;
     }
-    error = Encryption::UnwrapNoteKey(notebook_->GetId(), candidate->envelope.notebook_key_id,
+    error = Encryption::UnwrapNoteKey(candidate->envelope.notebook_id, candidate->envelope.notebook_key_id,
                                      *candidate->notebook_key, candidate->header, candidate->note_key);
     if (error != VXCORE_OK) return error;
     if (protected_ && !Encryption::KeysEqual(protected_->note_key, candidate->note_key)) {
@@ -222,6 +235,8 @@ VxCoreError StandardBufferProvider::LoadEncryptedContent(std::vector<uint8_t> &o
         (metadata_mode_ == 1 ? "markdown" : metadata_mode_ == 2 ? "text" : "mindmap")) {
       return VXCORE_ERR_ENCRYPTION_FORMAT;
     }
+    error = source->Revalidate();
+    if (error != VXCORE_OK) return error;
     Encryption::WipeBytes(out_body);
     out_body.swap(body.value);
     protected_.swap(candidate);
@@ -297,22 +312,28 @@ VxCoreError StandardBufferProvider::ReadEncryptedBackup(std::vector<uint8_t> &ou
   const auto path = PathFromUtf8(notebook_->GetAbsolutePath(file_path_) + ".vswp");
   auto error = ResolveProtectedPath(path);
   if (error != VXCORE_OK) return error;
-  Encryption::ObjectHeader header;
-  error = Encryption::ReadObjectHeader(path, header);
+  std::unique_ptr<EncryptionKeySource> source;
+  error = EncryptionKeySource::Read(path, PathFromUtf8(notebook_->GetMetadataFolder()), source);
   if (error != VXCORE_OK) return error;
+  const auto &header = *source->Header();
+  if (!Encryption::SameEnvelope(source->Envelope(), protected_->envelope)) {
+    return VXCORE_ERR_ENCRYPTION_AUTH_FAILED;
+  }
   if (header.kind != "backup" || header.document_id != protected_->header.document_id) {
     return VXCORE_ERR_ENCRYPTION_FORMAT;
   }
   Encryption::Key key;
-  error = Encryption::UnwrapNoteKey(notebook_->GetId(), protected_->envelope.notebook_key_id,
+  error = Encryption::UnwrapNoteKey(protected_->envelope.notebook_id, protected_->envelope.notebook_key_id,
                                    *protected_->notebook_key, header, key);
   if (error != VXCORE_OK) return error;
   if (!Encryption::KeysEqual(key, protected_->note_key)) return VXCORE_ERR_ENCRYPTION_AUTH_FAILED;
   error = Encryption::ReadNoteSnapshot(path, header, key, out_body, out_manifest,
                                        nullptr, &out_revision);
   if (error != VXCORE_OK) return error;
-  return out_manifest.at(kJsonKeyEditorType) == protected_->manifest.at(kJsonKeyEditorType)
-             ? VXCORE_OK : VXCORE_ERR_ENCRYPTION_FORMAT;
+  if (out_manifest.at(kJsonKeyEditorType) != protected_->manifest.at(kJsonKeyEditorType)) {
+    return VXCORE_ERR_ENCRYPTION_FORMAT;
+  }
+  return source->Revalidate();
 }
 
 VxCoreError StandardBufferProvider::RecoverEncryptedBackup(std::vector<uint8_t> &out_body,

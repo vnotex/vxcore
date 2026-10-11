@@ -11,6 +11,7 @@
 
 namespace vxcore {
 
+class BufferManager;
 class ConfigManager;
 class EventManager;
 
@@ -70,23 +71,30 @@ class NotebookManager {
   VxCoreError CommitNotebookEncryption(EncryptionSetup *setup);
   void FreeEncryptionSetup(EncryptionSetup *setup);
   VxCoreError UnlockNotebookEncryption(const std::string &notebook_id,
-                                       const void *password, size_t password_size);
+                                       const void *password, size_t password_size,
+                                       const char *file_path = nullptr);
+  // A null path selects explicit legacy-vault unlock; selected notes use their own source.
   // Protected candidates only: reuse an authenticated session MK to unlock this
   // independent NK, with no password/KDF. LOCKED if the vault has no cached MK;
   // AUTH_FAILED on a different password envelope or failed NK authentication.
-  VxCoreError UnlockNotebookWithCachedMaster(const std::string &notebook_id);
+  VxCoreError UnlockNotebookWithCachedMaster(const std::string &notebook_id,
+                                             const char *file_path = nullptr);
   VxCoreError GetEncryptionStatus(const std::string &notebook_id, const char *file_path,
                                   std::string &out_status_json);
+  // Caller holds maintenance and notebook IO. Rejects loaded buffers before v1
+  // mutation; v2 is a no-op. Keeps an exact NK lease and emits actual saved facts.
+  VxCoreError MigrateNoteEncryption(const std::string &notebook_id, const char *file_path,
+                                    BufferManager &buffer_manager);
   VxCoreError LockAllEncryption();
 
   // Private storage consumers retain acquired NK/MK shared_ptr leases for every
   // protected buffer/job/read, including while using a derived DK. An NK lease
   // is also its unlock-generation identity; never cache only a raw Key pointer.
   // Registry mutexes cover only lease/map changes, never KDF, IO or callbacks.
-  VxCoreError InstallMasterKey(const NotebookEncryption::KeyEnvelope &authenticated_envelope,
-                               NotebookEncryption::Key &&master_key);
+  VxCoreError InstallMasterKey(const EncryptedNote::KeyEnvelope &authenticated_envelope,
+                               EncryptedNote::Key &&master_key);
   VxCoreError AcquireMasterKey(const std::string &vault_id,
-                              std::shared_ptr<const NotebookEncryption::Key> &out_key) const;
+                              std::shared_ptr<const EncryptedNote::Key> &out_key) const;
   VxCoreError LockMasterKeys();
 
  private:
@@ -94,10 +102,10 @@ class NotebookManager {
   std::shared_ptr<EncryptionSession> GetEncryptionSession(bool create) const;
   VxCoreError RegisterEncryptionOwner(Notebook &notebook, EncryptionSession &session);
   VxCoreError InstallEncryptionKeys(Notebook &notebook, EncryptionSession &session,
-                                    const NotebookEncryption::KeyEnvelope &envelope,
-                                    std::shared_ptr<const NotebookEncryption::Key> master_key,
-                                    std::shared_ptr<const NotebookEncryption::Key> notebook_key,
-                                    const std::string *key_file_bytes);
+                                    const EncryptedNote::KeyEnvelope &envelope,
+                                    std::shared_ptr<const EncryptedNote::Key> master_key,
+                                    std::shared_ptr<const EncryptedNote::Key> notebook_key,
+                                    bool ensure_attributes = false);
   void LoadOpenNotebooks();
   Notebook *FindNotebookByRootFolder(const std::string &root_folder);
 

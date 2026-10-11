@@ -20,7 +20,7 @@
 #include <utility>
 #include <vector>
 
-#include "core/notebook.h"
+#include "core/encryptednote.h"
 #include "sync/credential_provider.h"
 #include "sync/jianguoyun/jianguoyun_state.h"
 #include "sync/jianguoyun/jianguoyun_sync_backend.h"
@@ -57,7 +57,7 @@ std::string Environment(const char *name) {
 
 std::string Identity() {
   std::string result;
-  if (NotebookEncryption::GenerateIdentity(result) != VXCORE_OK)
+  if (EncryptedNote::GenerateIdentity(result) != VXCORE_OK)
     throw std::runtime_error("Could not generate fixture identity");
   return result;
 }
@@ -583,33 +583,61 @@ EncryptedRevision Encrypted(const std::string &notebook_id, const std::string &d
                             const std::string &plaintext,
                             const EncryptedRevision *cohort = nullptr) {
   Workspace staging;
-  NotebookEncryption::KeyEnvelope envelope;
-  NotebookEncryption::Key master, notebook, note;
-  NotebookEncryption::ObjectHeader header;
+  EncryptedNote::KeyEnvelope envelope;
+  EncryptedNote::Key master, notebook, note;
+  EncryptedNote::ObjectHeader header;
   const std::string passphrase = "disposable fixture encryption passphrase";
   auto require = [](VxCoreError result) {
     if (result != VXCORE_OK)
       throw std::runtime_error("Could not construct authenticated ciphertext");
   };
   if (cohort) {
-    require(NotebookEncryption::DecodeKeyEnvelope(cohort->envelope.data(), cohort->envelope.size(),
+    require(EncryptedNote::DecodeKeyEnvelope(cohort->envelope.data(), cohort->envelope.size(),
                                                   envelope));
-    require(NotebookEncryption::UnlockKeys(envelope, notebook_id, passphrase.data(),
+    require(EncryptedNote::UnlockKeys(envelope, notebook_id, passphrase.data(),
                                            passphrase.size(), master, notebook));
   } else {
-    require(NotebookEncryption::PrepareNewKeys(notebook_id, passphrase.data(), passphrase.size(),
+    require(EncryptedNote::PrepareNewKeys(notebook_id, passphrase.data(), passphrase.size(),
                                                envelope, master, notebook));
   }
-  require(NotebookEncryption::GenerateKey(note));
+  require(EncryptedNote::GenerateKey(note));
   const std::vector<uint8_t> body(plaintext.begin(), plaintext.end());
-  require(NotebookEncryption::WriteNoteSnapshot(staging.path / "secret.vne", envelope, notebook,
+  require(EncryptedNote::WriteNoteSnapshot(staging.path / "secret.vne", envelope, notebook,
                                                 note, document_id, body,
                                                 Json{{"editorType", "markdown"}}, &header));
   EncryptedRevision result;
-  require(NotebookEncryption::EncodeKeyEnvelope(envelope, result.envelope));
+  require(EncryptedNote::EncodeKeyEnvelope(envelope, result.envelope));
   result.ciphertext = ReadBytes(staging.path / "secret.vne");
   return result;
 }
+int TestSelfContainedCiphertextWithoutVault() {
+  Control({{"action", "reset"}});
+  Client a;
+  const auto document = Identity();
+  const auto original = Encrypted(a.id, document, "portable baseline without vault");
+  a.Write("secret.vne", original.ciphertext);
+  ASSERT_FALSE(fs::exists(a.Path(managed::kEncryptionPath)));
+  ASSERT_EQ(a.Attach(), VXCORE_OK);
+  ASSERT_EQ(a.Sync(), VXCORE_OK);
+  ASSERT_EQ(LogicalBytes("secret.vne"), original.ciphertext);
+  Client b(false);
+  ASSERT_EQ(b.Clone(), VXCORE_OK);
+  ASSERT_EQ(b.Read("secret.vne"), original.ciphertext);
+  ASSERT_FALSE(fs::exists(b.Path(managed::kEncryptionPath)));
+  const auto replacement = Encrypted(a.id, document, "a different self-contained key context");
+  b.Write("secret.vne", replacement.ciphertext);
+  ASSERT_EQ(b.Sync(), VXCORE_OK);
+  ASSERT_EQ(a.Sync(), VXCORE_OK);
+  ASSERT_EQ(a.Read("secret.vne"), replacement.ciphertext);
+  ASSERT_FALSE(fs::exists(a.Path(managed::kEncryptionPath)));
+  EncryptedNote::ObjectHeader header;
+  ASSERT_EQ(EncryptedNote::ReadObjectHeader(a.Path("secret.vne"), header), VXCORE_OK);
+  ASSERT_EQ(header.version, 2);
+  ASSERT_EQ(header.document_id, document);
+  ASSERT_EQ(header.envelope.notebook_id, a.id);
+  return 0;
+}
+
 int TestMetadataCiphertext() {
   Control({{"action", "reset"}});
   Client a;
@@ -1780,6 +1808,7 @@ int main(int argc, char **argv) {
         {"delete-conflicts", TestDeleteConflicts},
         {"stale-choice", TestStaleChoice},
         {"metadata-ciphertext", TestMetadataCiphertext},
+        {"self-contained-ciphertext", TestSelfContainedCiphertextWithoutVault},
         {"encrypted-note-cohort", TestEncryptedNoteDoesNotBlockKeyCohort},
         {"disjoint", TestDisjoint},
         {"immutable-staging", TestImmutableStaging},

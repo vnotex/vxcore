@@ -23,7 +23,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #endif
 
-#include "core/notebook.h"
+#include "core/encryptednote.h"
 #include "jianguoyun_transport.h"
 #include "sync/sync_json_keys.h"
 #include "sync/webdav/webdav_state.h"
@@ -58,7 +58,7 @@ uint64_t Number(const Json &j, const char *key) {
   Require(value >= 0);
   return static_cast<uint64_t>(value);
 }
-void Uuid(const std::string &id) { Require(NotebookEncryption::IsCanonicalUuid(id)); }
+void Uuid(const std::string &id) { Require(EncryptedNote::IsCanonicalUuid(id)); }
 std::string NullableText(const Json &j, const char *key) {
   Require(j.contains(key));
   return j.at(key).is_null() ? std::string() : Text(j, key);
@@ -884,6 +884,17 @@ VxCoreError InspectRecovery(const fs::path &directory, RecoveryStatus &out) {
       // Outgoing key publication (including Keep Local) does not replace this device's
       // envelope and must not revoke its active leases. Only an incoming change does.
       status.replaces_encryption = target_known && !Same(local, target);
+      if (target_known && !status.replaces_encryption) {
+        // Self-contained notes carry their own key envelope. Incoming replacement
+        // or deletion must honor the same live-key barrier as a legacy vault.
+        const auto changes_protected = [&](const auto &versions) {
+          return std::any_of(versions.begin(), versions.end(), [&](const auto &entry) {
+            return webdav::IsEncrypted(entry.first) &&
+                   !Same(Lookup(p.local, entry.first).entry, Lookup(p.target, entry.first).entry);
+          });
+        };
+        status.replaces_encryption = changes_protected(p.local) || changes_protected(p.target);
+      }
     }
     out = status;
     return VXCORE_OK;

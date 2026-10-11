@@ -112,8 +112,6 @@ add_vxcore_test(test_search)
 add_vxcore_test(test_tag_sync)
 add_vxcore_test(test_filetype)
 add_vxcore_test(test_workspace)
-add_vxcore_test(test_buffer)
-target_link_libraries(test_buffer PRIVATE libgit2package sodium)
 add_vxcore_test(test_buffer_save_read_only)
 add_vxcore_test(test_notebook_mutators_read_only)
 # test_notebook_open_ex: T14 of open-notebook-remote-readonly plan. Verifies
@@ -477,6 +475,8 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/work_queue.cpp
     ${CMAKE_SOURCE_DIR}/src/core/folder.cpp
     ${CMAKE_SOURCE_DIR}/src/core/notebook.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/encryptednote.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/encryptionkeysource.cpp
     ${CMAKE_SOURCE_DIR}/src/core/bundled_notebook.cpp
     ${CMAKE_SOURCE_DIR}/src/core/raw_notebook.cpp
     ${CMAKE_SOURCE_DIR}/src/core/notebook_manager.cpp
@@ -485,6 +485,9 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/vxcore_session_config.cpp
     ${CMAKE_SOURCE_DIR}/src/core/filetype_config.cpp
     ${CMAKE_SOURCE_DIR}/src/core/buffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/buffer_manager.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/buffer_provider.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/history_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/standard_buffer_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/core/external_buffer_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/core/workspace.cpp
@@ -956,7 +959,7 @@ add_vxcore_test(test_vxcore_sync_clone_cancellable)
 target_link_libraries(test_vxcore_sync_clone_cancellable PRIVATE git_sync_test_helpers nlohmann_json)
 
 
-# Internal backend tests use the production source inventory, without exporting test-only ABI.
+# Internal codec/backend tests use the production source inventory, without exporting test-only ABI.
 # Keep a single core instance per process (including ConfigManager test-mode state).
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(_webdav_test_core vxcore)
@@ -980,6 +983,14 @@ if(VXCORE_BUILD_SHARED)
     endif()
     set(_webdav_test_core vxcore_webdav_test_core)
 endif()
+# Buffer regressions also exercise the private codec/key-source APIs. Use one static
+# core instance, rather than exporting internals or mixing DLL and direct-compiled state.
+add_executable(test_buffer test_buffer.cpp)
+target_include_directories(test_buffer PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
+target_link_libraries(test_buffer PRIVATE ${_webdav_test_core} libgit2package sodium)
+add_test(NAME test_buffer COMMAND test_buffer)
+
 add_executable(test_webdav_transport test_webdav_transport.cpp)
 target_include_directories(test_webdav_transport PRIVATE
     ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)

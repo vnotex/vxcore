@@ -33,10 +33,11 @@
 #include "bundled_notebook.h"
 #include "config_manager.h"
 #include "content_processor/content_processor.h"
+#include "encryptednote.h"
+#include "encryptionkeysource.h"
 #include "event_names.h"
 #include "metadata_store.h"
 #include "notebook_manager.h"
-#include "sync/sync_encryption_guard.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -62,6 +63,15 @@ constexpr const char *kPhaseCommitted = "committed";
 constexpr const char *kPhaseQuarantined = "quarantined";
 constexpr const char *kPhaseSourceCommitted = "sourceCommitted";
 
+struct ProtectedTransferSource {
+  std::filesystem::path path;
+  std::unique_ptr<EncryptionKeySource> descriptor;
+  std::shared_ptr<const EncryptedNote::Key> key;
+  EncryptedNote::Fingerprint fingerprint{};
+  EncryptedNote::Fingerprint backup_fingerprint{};
+  bool has_backup = false;
+};
+
 struct IndexedFile {
   std::string relative_path;
   FileRecord source_record;
@@ -69,6 +79,7 @@ struct IndexedFile {
   std::string source_assets_root;
   std::string staged_assets_root;
   bool has_backup = false;
+  std::unique_ptr<ProtectedTransferSource> protection;
 };
 
 struct IndexedFolder {
@@ -78,10 +89,8 @@ struct IndexedFolder {
 };
 
 struct ProtectedTransferKeys {
-  std::shared_ptr<const NotebookEncryption::Key> source;
-  std::shared_ptr<const NotebookEncryption::Key> destination;
-  NotebookEncryption::KeyEnvelope source_envelope;
-  NotebookEncryption::KeyEnvelope destination_envelope;
+  std::shared_ptr<const EncryptedNote::Key> destination;
+  EncryptedNote::KeyEnvelope destination_envelope;
 };
 
 struct PreparedNodeTransferImpl : PreparedNodeTransfer {
@@ -139,20 +148,6 @@ class BundleNotebook final : public Notebook {
   VxCoreError EmptyRecycleBin() override { return VXCORE_ERR_READ_ONLY; }
 };
 
-VxCoreError ValidateTransferEnvelope(Notebook *notebook,
-                                     const NotebookEncryption::KeyEnvelope &expected) {
-  auto error = CheckNotebookEncryptionSyncState(notebook->GetMetadataFolder());
-  if (error != VXCORE_OK) return error;
-  NotebookEncryption::KeyEnvelope current;
-  error = NotebookEncryption::ReadKeyEnvelope(
-      PathFromUtf8(notebook->GetMetadataFolder()) / "encryption.vne", current);
-  if (error != VXCORE_OK) return error;
-  std::string current_bytes, expected_bytes;
-  error = NotebookEncryption::EncodeKeyEnvelope(current, current_bytes);
-  if (error == VXCORE_OK) error = NotebookEncryption::EncodeKeyEnvelope(expected, expected_bytes);
-  return error != VXCORE_OK ? error
-      : (current_bytes == expected_bytes ? VXCORE_OK : VXCORE_ERR_ENCRYPTION_LOCKED);
-}
 
 uint64_t FnvAppend(uint64_t hash, const void *data, size_t size) {
   const auto *bytes = static_cast<const unsigned char *>(data);
@@ -443,14 +438,18 @@ bool HasUnsafeComponent(const fs::path &root, const fs::path &path) {
   return false;
 }
 
-VxCoreError ResolveAssetsRoot(Notebook *notebook, const std::string &file_path,
-                              std::string &out_root) {
-  const std::string &configured = notebook->GetConfig().assets_folder;
+bool HasEncryptedSuffix(const std::string &file_path) {
   const auto size = file_path.size();
-  const bool protected_path = size >= 4 && file_path[size - 4] == '.' &&
+  return size >= 4 && file_path[size - 4] == '.' &&
       std::tolower(static_cast<unsigned char>(file_path[size - 3])) == 'v' &&
       std::tolower(static_cast<unsigned char>(file_path[size - 2])) == 'n' &&
       std::tolower(static_cast<unsigned char>(file_path[size - 1])) == 'e';
+}
+
+VxCoreError ResolveAssetsRoot(Notebook *notebook, const std::string &file_path,
+                              std::string &out_root) {
+  const std::string &configured = notebook->GetConfig().assets_folder;
+  const bool protected_path = HasEncryptedSuffix(file_path);
   if (configured.empty() || (!protected_path && !IsSafeRelativePath(configured, false))) {
     return VXCORE_ERR_INVALID_PARAM;
   }
@@ -490,6 +489,33 @@ VxCoreError ValidateContainedPath(Notebook *notebook, const fs::path &path) {
   if (!IsPathWithin(notebook->GetRootFolder(), utf8_path, false) ||
       HasUnsafeComponent(root, path.lexically_normal())) {
     return VXCORE_ERR_INVALID_PARAM;
+  }
+  return VXCORE_OK;
+}
+
+VxCoreError RevalidateProtectedSources(const PreparedNodeTransferImpl &transfer) {
+  Notebook *source = transfer.source_override ? transfer.source_override
+      : transfer.notebook_manager->GetNotebook(transfer.source_notebook_id);
+  if (!source) return VXCORE_ERR_NOT_FOUND;
+  for (const auto &file : transfer.files) {
+    if (!file.protection) continue;
+    const auto &protection = *file.protection;
+    auto error = protection.descriptor->Revalidate();
+    if (error != VXCORE_OK) return error;
+    EncryptedNote::Fingerprint fingerprint;
+    error = EncryptedNote::FingerprintObject(protection.path, fingerprint);
+    if (error != VXCORE_OK) return error;
+    if (fingerprint != protection.fingerprint) return VXCORE_ERR_FILE_CHANGED_OUTSIDE;
+    const auto backup = PathFromUtf8(PathToUtf8(protection.path) + ".vswp");
+    bool exists = false;
+    if (!PathExistsChecked(backup, exists)) return VXCORE_ERR_IO;
+    if (exists != protection.has_backup) return VXCORE_ERR_FILE_CHANGED_OUTSIDE;
+    if (exists) {
+      error = ValidateContainedPath(source, backup);
+      if (error == VXCORE_OK) error = EncryptedNote::FingerprintObject(backup, fingerprint);
+      if (error != VXCORE_OK) return error;
+      if (fingerprint != protection.backup_fingerprint) return VXCORE_ERR_FILE_CHANGED_OUTSIDE;
+    }
   }
   return VXCORE_OK;
 }
@@ -740,7 +766,8 @@ bool IsExcluded(const fs::path &path, const std::set<std::string> &excluded) {
 
 VxCoreError CopyTree(const fs::path &source, const fs::path &destination,
                      const std::set<std::string> &excluded, const NodeTransferProgress &progress,
-                     uint64_t &completed, uint64_t total) {
+                     uint64_t &completed, uint64_t total,
+                     const std::set<std::string> *protected_paths = nullptr) {
   if (CheckReparsePoint(PathToUtf8(source)) != ReparseState::kNo) {
     return VXCORE_ERR_INVALID_PARAM;
   }
@@ -750,6 +777,14 @@ VxCoreError CopyTree(const fs::path &source, const fs::path &destination,
     return VXCORE_ERR_IO;
   }
   if (fs::is_regular_file(status)) {
+    // Opaque unindexed protected bodies cannot bypass per-note authentication/rewrapping.
+    // The separate ordinary-asset copy path deliberately does not apply this rule.
+    if (protected_paths &&
+        (HasEncryptedSuffix(PathToUtf8(source)) ||
+         (source.extension() == ".vswp" && HasEncryptedSuffix(PathToUtf8(source.stem())))) &&
+        protected_paths->count(CleanFsPath(source)) == 0) {
+      return VXCORE_ERR_ENCRYPTION_FORMAT;
+    }
     return CopyFileWithProgress(source, destination, progress, completed, total);
   }
   if (!fs::is_directory(status)) {
@@ -774,7 +809,8 @@ VxCoreError CopyTree(const fs::path &source, const fs::path &destination,
       continue;
     }
     const VxCoreError error =
-        CopyTree(entry, destination / entry.filename(), excluded, progress, completed, total);
+        CopyTree(entry, destination / entry.filename(), excluded, progress, completed, total,
+                 protected_paths);
     if (error != VXCORE_OK) {
       return error;
     }
@@ -1893,25 +1929,49 @@ VxCoreError NodeTransfer::Prepare(
     }
   }
   ApplyIdentities(*transfer, ids, GetCurrentTimestampMillis());
-  for (const auto &file : transfer->files) {
+  for (auto &file : transfer->files) {
     if (file.source_record.CheckProtectionMetadata() == VXCORE_OK) continue;
     if (!source->GetEncryption() || !destination->GetEncryption()) {
       return VXCORE_ERR_ENCRYPTION_LOCKED;
     }
-    transfer->protected_keys = std::make_unique<ProtectedTransferKeys>();
-    auto &keys = *transfer->protected_keys;
-    error = source->GetEncryption()->AcquireNotebookKey(keys.source, &keys.source_envelope);
-    if (error == VXCORE_OK) {
+    if (!transfer->protected_keys) {
+      transfer->protected_keys = std::make_unique<ProtectedTransferKeys>();
+      auto &keys = *transfer->protected_keys;
       error = destination->GetEncryption()->AcquireNotebookKey(
           keys.destination, &keys.destination_envelope);
+      if (error != VXCORE_OK) return error;
     }
+    file.protection = std::make_unique<ProtectedTransferSource>();
+    auto &protection = *file.protection;
+    const auto source_path = transfer->is_folder
+        ? ConcatenatePaths(clean_source, file.relative_path) : clean_source;
+    protection.path = PathFromUtf8(source->GetAbsolutePath(source_path));
+    error = EncryptionKeySource::Read(protection.path,
+        PathFromUtf8(source->GetMetadataFolder()), protection.descriptor);
     if (error != VXCORE_OK) return error;
-    error = ValidateTransferEnvelope(source, keys.source_envelope);
-    if (error == VXCORE_OK) {
-      error = ValidateTransferEnvelope(destination, keys.destination_envelope);
+    const auto *header = protection.descriptor->Header();
+    if (header->kind != "note" || (protection.descriptor->IsLegacy() &&
+        protection.descriptor->Envelope().notebook_id != source->GetId())) {
+      return VXCORE_ERR_ENCRYPTION_FORMAT;
     }
+    EncryptedNote::KeyEnvelope authenticated;
+    error = source->GetEncryption()->AcquireNotebookKey(protection.key, &authenticated, header);
     if (error != VXCORE_OK) return error;
-    break;
+    if (!EncryptedNote::SameEnvelope(authenticated, protection.descriptor->Envelope())) {
+      return VXCORE_ERR_ENCRYPTION_LOCKED;
+    }
+    error = EncryptedNote::FingerprintObject(protection.path, protection.fingerprint);
+    if (error != VXCORE_OK) return error;
+    const auto backup = PathFromUtf8(PathToUtf8(protection.path) + ".vswp");
+    if (!PathExistsChecked(backup, protection.has_backup)) return VXCORE_ERR_IO;
+    if (protection.has_backup) {
+      error = ValidateContainedPath(source, backup);
+      if (error == VXCORE_OK) {
+        error = EncryptedNote::FingerprintObject(backup, protection.backup_fingerprint);
+      }
+      if (error != VXCORE_OK) return error;
+    }
+    if ((error = protection.descriptor->Revalidate()) != VXCORE_OK) return error;
   }
 
   std::set<std::string> tag_paths;
@@ -1936,8 +1996,13 @@ VxCoreError NodeTransfer::Prepare(
   const fs::path staging = PathFromUtf8(transfer->staging_dir);
   const fs::path staged_content = staging / kContentName;
   std::set<std::string> excluded;
+  std::set<std::string> protected_paths;
   for (const auto &file : transfer->files) {
     excluded.insert(CleanPath(file.source_assets_root));
+    if (file.protection) {
+      protected_paths.insert(CleanFsPath(file.protection->path));
+      protected_paths.insert(CleanPath(PathToUtf8(file.protection->path) + ".vswp"));
+    }
   }
   uint64_t total = CountBytes(PathFromUtf8(source->GetAbsolutePath(clean_source)));
   for (const auto &file : transfer->files) {
@@ -1948,7 +2013,7 @@ VxCoreError NodeTransfer::Prepare(
   }
   uint64_t completed = 0;
   error = CopyTree(PathFromUtf8(source->GetAbsolutePath(clean_source)), staged_content, excluded,
-                   progress, completed, total);
+                   progress, completed, total, &protected_paths);
   if (error != VXCORE_OK) {
     RemoveQuietly(staging);
     return error;
@@ -1975,8 +2040,6 @@ VxCoreError NodeTransfer::Prepare(
     }
     if (file.source_record.CheckProtectionMetadata() != VXCORE_OK) {
       const auto &keys = *transfer->protected_keys;
-      const auto source_path = transfer->is_folder
-          ? ConcatenatePaths(clean_source, file.relative_path) : clean_source;
       const auto target_path = transfer->is_folder
           ? staged_content / PathFromUtf8(file.relative_path) : staged_content;
       const auto backup_target = transfer->is_folder
@@ -1992,20 +2055,21 @@ VxCoreError NodeTransfer::Prepare(
           std::string text;
           std::string rewritten;
           ~WipedText() {
-            NotebookEncryption::WipeString(text);
-            NotebookEncryption::WipeString(rewritten);
+            EncryptedNote::WipeString(text);
+            EncryptedNote::WipeString(rewritten);
           }
         } plaintext;
         plaintext.text.assign(reinterpret_cast<const char *>(body.data()), body.size());
         plaintext.rewritten = handler->RewriteAssetLinks(plaintext.text, old_assets, new_assets);
         if (plaintext.rewritten == plaintext.text) return false;
-        NotebookEncryption::WipeBytes(body);
+        EncryptedNote::WipeBytes(body);
         body.assign(plaintext.rewritten.begin(), plaintext.rewritten.end());
         return true;
       };
-      error = NotebookEncryption::TransferNote(
-          PathFromUtf8(source->GetAbsolutePath(source_path)),
-          keys.source_envelope, *keys.source, target_path, keys.destination_envelope,
+      error = EncryptedNote::TransferNote(
+          file.protection->path,
+          file.protection->descriptor->Envelope(), *file.protection->key,
+          target_path, keys.destination_envelope,
           *keys.destination, operation == "copy", backup_target, file.has_backup, rewrite_body);
       if (error != VXCORE_OK) {
         RemoveQuietly(staging);
@@ -2032,6 +2096,11 @@ VxCoreError NodeTransfer::Prepare(
         return VXCORE_ERR_IO;
       }
     }
+  }
+  error = RevalidateProtectedSources(*transfer);
+  if (error != VXCORE_OK) {
+    RemoveQuietly(staging);
+    return error;
   }
   std::string verified;
   error = HashSource(*transfer, verified);
@@ -2077,10 +2146,7 @@ VxCoreError NodeTransfer::Commit(NotebookManager *notebook_manager,
     return VXCORE_ERR_NOT_FOUND;
   }
   if (transfer->protected_keys) {
-    auto error = ValidateTransferEnvelope(source, transfer->protected_keys->source_envelope);
-    if (error == VXCORE_OK) {
-      error = ValidateTransferEnvelope(destination, transfer->protected_keys->destination_envelope);
-    }
+    const auto error = RevalidateProtectedSources(*transfer);
     if (error != VXCORE_OK) {
       Discard(std::move(prepared));
       return error;
@@ -2923,27 +2989,60 @@ VxCoreError NodeTransfer::PrepareBundle(
   if (!destination || !destination->GetEncryption()) return VXCORE_ERR_ENCRYPTION_LOCKED;
   const auto root = PathFromUtf8(bundle_root);
   const auto metadata = root / "vx_notebook";
-  if (!root.is_absolute() || HasUnsafeComponent(root, metadata / "config.json") ||
-      HasUnsafeComponent(root, metadata / "encryption.vne")) return VXCORE_ERR_INVALID_PARAM;
+  if (!root.is_absolute() || HasUnsafeComponent(root, metadata / "config.json")) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
   std::string bytes;
   auto error = ReadFile(metadata / "config.json", bytes);
   if (error != VXCORE_OK) return error;
   const auto config = NotebookConfig::FromJson(nlohmann::json::parse(bytes));
-  if (config.sync_enabled || !IsSafeRelativePath(config.assets_folder, false)) {
+  if (config.sync_enabled || !EncryptedNote::IsCanonicalUuid(config.id) ||
+      config.name.empty() || !IsSafeRelativePath(config.assets_folder, false)) {
     return VXCORE_ERR_ENCRYPTION_FORMAT;
   }
   auto source = std::make_unique<BundleNotebook>(bundle_root, config);
-  NotebookEncryption::KeyEnvelope envelope;
-  error = NotebookEncryption::ReadKeyEnvelope(metadata / "encryption.vne", envelope);
-  if (error != VXCORE_OK) return error;
-  NotebookEncryption::Key master, key;
-  error = NotebookEncryption::UnlockKeys(envelope, config.id, password, password_size, master, key);
-  master.Reset();
+  auto *source_manager = static_cast<BundledFolderManager *>(source->GetFolderManager());
+  PreparedNodeTransferImpl inspection;
+  std::unordered_map<std::string, std::string> ids;
+  error = CollectFolder(source_manager, source.get(), inspection, folder_name, ".", ids);
   if (error != VXCORE_OK) return error;
   NotebookEncryption *encryption = nullptr;
   error = source->EnsureEncryption(encryption);
-  if (error == VXCORE_OK) error = encryption->InstallNotebookKey(envelope, std::move(key));
   if (error != VXCORE_OK) return error;
+  bool has_protected_note = false;
+  for (const auto &file : inspection.files) {
+    if (file.source_record.CheckProtectionMetadata() == VXCORE_OK) continue;
+    has_protected_note = true;
+    const auto note_path = root / PathFromUtf8(folder_name) / PathFromUtf8(file.relative_path);
+    std::unique_ptr<EncryptionKeySource> descriptor;
+    error = EncryptionKeySource::Read(note_path, metadata, descriptor);
+    if (error != VXCORE_OK) return error;
+    if (descriptor->Header()->kind != "note" ||
+        (descriptor->IsLegacy() && descriptor->Envelope().notebook_id != config.id)) {
+      return VXCORE_ERR_ENCRYPTION_FORMAT;
+    }
+    const auto &envelope = descriptor->Envelope();
+    std::shared_ptr<const EncryptedNote::Key> cached;
+    EncryptedNote::KeyEnvelope authenticated;
+    error = encryption->AcquireNotebookKey(cached, &authenticated, descriptor->Header());
+    if (error == VXCORE_OK) {
+      if (!EncryptedNote::SameEnvelope(authenticated, envelope)) {
+        return VXCORE_ERR_ENCRYPTION_FORMAT;
+      }
+    } else {
+      if (error != VXCORE_ERR_ENCRYPTION_LOCKED) return error;
+      EncryptedNote::Key master, key;
+      error = EncryptedNote::UnlockKeys(envelope, envelope.notebook_id,
+                                        password, password_size, master, key);
+      master.Reset();
+      if (error != VXCORE_OK) return error;
+      if ((error = descriptor->Revalidate()) != VXCORE_OK) return error;
+      error = encryption->InstallNotebookKey(envelope, std::move(key));
+      if (error != VXCORE_OK) return error;
+    }
+    if ((error = descriptor->Revalidate()) != VXCORE_OK) return error;
+  }
+  if (!has_protected_note) return VXCORE_ERR_ENCRYPTION_FORMAT;
   const nlohmann::json options = {{"operation", "copy"}, {"conflictPolicy", "rename"},
                                   {"timestampPolicy", "preserve"}, {"preserveRelativeLinks", true}};
   error = Prepare(manager, source->GetId(), folder_name, destination_id, destination_folder,

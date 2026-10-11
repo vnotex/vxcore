@@ -36,10 +36,11 @@
 #include "core/content_processor/asset_utils.h"
 #include "core/content_processor/content_processor.h"
 #include "core/event_names.h"
+#include "encryptednote.h"
+#include "encryptionkeysource.h"
 #include "filetype_config.h"
 #include "metadata_store.h"
 #include "node_transfer.h"
-#include "sync/sync_encryption_guard.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/string_utils.h"
@@ -4004,7 +4005,6 @@ bool BundledFolderManager::NodeContentExistsOnDisk(const std::string &relative_p
 
 namespace {
 
-using Encryption = NotebookEncryption;
 using EncryptionJson = nlohmann::json;
 constexpr size_t kEncryptionJournalLimit = 64 * 1024 * 1024;
 
@@ -4043,7 +4043,7 @@ bool ParseEncryptionJson(const std::string &bytes, EncryptionJson &out) {
   return !duplicate && !out.is_discarded() && out.is_object();
 }
 
-std::string EncryptionHex(const Encryption::Fingerprint &hash) {
+std::string EncryptionHex(const EncryptedNote::Fingerprint &hash) {
   constexpr char digits[] = "0123456789abcdef";
   std::string result(64, '0');
   for (size_t i = 0; i < hash.size(); ++i) {
@@ -4076,8 +4076,8 @@ VxCoreError EncryptionReadConfigBytes(const fs::path &path, std::string &out) {
 }
 
 VxCoreError EncryptionHashFile(const fs::path &path, std::string &out) {
-  Encryption::Fingerprint hash;
-  const auto error = Encryption::FingerprintObject(path, hash);
+  EncryptedNote::Fingerprint hash;
+  const auto error = EncryptedNote::FingerprintObject(path, hash);
   if (error == VXCORE_OK) {
     out = EncryptionHex(hash);
   }
@@ -4085,8 +4085,8 @@ VxCoreError EncryptionHashFile(const fs::path &path, std::string &out) {
 }
 
 std::string EncryptionHashBytes(const std::string &bytes) {
-  Encryption::Fingerprint hash;
-  if (Encryption::FingerprintBytes(bytes.data(), bytes.size(), hash) != VXCORE_OK) {
+  EncryptedNote::Fingerprint hash;
+  if (EncryptedNote::FingerprintBytes(bytes.data(), bytes.size(), hash) != VXCORE_OK) {
     return {};
   }
   return EncryptionHex(hash);
@@ -4279,7 +4279,7 @@ VxCoreError CopyTransactionFile(const fs::path &notebook_root, const fs::path &s
   }
   AtomicFileWriter writer(destination);
   auto error = writer.Open();
-  std::array<char, Encryption::kRecordBytes> bytes;
+  std::array<char, EncryptedNote::kRecordBytes> bytes;
   while (error == VXCORE_OK) {
     input.read(bytes.data(), bytes.size());
     if (input.bad() || (input.fail() && !input.eof())) {
@@ -4331,8 +4331,8 @@ struct EncryptionPlaintext final {
   EncryptionJson manifest;
   std::vector<uint8_t> body;
   ~EncryptionPlaintext() {
-    Encryption::WipeJson(manifest);
-    Encryption::WipeBytes(body);
+    EncryptedNote::WipeJson(manifest);
+    EncryptedNote::WipeBytes(body);
   }
 };
 
@@ -4449,29 +4449,10 @@ VxCoreError BundledFolderManager::UnprotectNote(
   out_path.clear();
   auto error = notebook_->CheckWritable();
   if (error != VXCORE_OK) return error;
-  error = CheckNotebookEncryptionSyncState(notebook_->GetMetadataFolder());
-  if (error != VXCORE_OK) return error;
   auto *encryption = notebook_->GetEncryption();
   if (!encryption) return VXCORE_ERR_ENCRYPTION_LOCKED;
-  std::shared_ptr<const Encryption::Key> notebook_key;
-  Encryption::KeyEnvelope envelope;
-  error = encryption->AcquireNotebookKey(notebook_key, &envelope);
-  if (error != VXCORE_OK) return error;
   const auto root = PathFromUtf8(notebook_->GetRootFolder());
   const auto metadata = PathFromUtf8(notebook_->GetMetadataFolder());
-  const auto key_path = metadata / "encryption.vne";
-  Encryption::KeyEnvelope persisted_envelope;
-  std::string active_key_bytes;
-  std::string persisted_key_bytes;
-  std::string key_hash;
-  if (EncryptionSafePath(root, key_path) != VXCORE_OK ||
-      EncryptionHashFile(key_path, key_hash) != VXCORE_OK ||
-      Encryption::ReadKeyEnvelope(key_path, persisted_envelope) != VXCORE_OK ||
-      Encryption::EncodeKeyEnvelope(envelope, active_key_bytes) != VXCORE_OK ||
-      Encryption::EncodeKeyEnvelope(persisted_envelope, persisted_key_bytes) != VXCORE_OK ||
-      active_key_bytes != persisted_key_bytes) {
-    return VXCORE_ERR_ENCRYPTION_FORMAT;
-  }
   if ((!body && body_size) || !EncryptionValidHash(source_sha256) || file_path.empty() ||
       file_path.find('\0') != std::string::npos) {
     return VXCORE_ERR_INVALID_PARAM;
@@ -4522,7 +4503,7 @@ VxCoreError BundledFolderManager::UnprotectNote(
   auto *record = FindFileRecord(config, parts.second);
   if (!record) return VXCORE_ERR_NOT_FOUND;
   if (record->CheckProtectionMetadata() != VXCORE_ERR_ENCRYPTION_LOCKED ||
-      !Encryption::IsCanonicalUuid(record->id)) {
+      !EncryptedNote::IsCanonicalUuid(record->id)) {
     return VXCORE_ERR_ENCRYPTION_FORMAT;
   }
   if (std::count_if(config.files.begin(), config.files.end(), [&](const FileRecord &file) {
@@ -4546,16 +4527,28 @@ VxCoreError BundledFolderManager::UnprotectNote(
   if (!EncryptionMatches(root, source, source_sha256)) {
     return VXCORE_ERR_FILE_CHANGED_OUTSIDE;
   }
-  Encryption::ObjectHeader header;
-  if ((error = Encryption::ReadObjectHeader(source, header)) != VXCORE_OK) return error;
-  if (header.kind != "note") return VXCORE_ERR_ENCRYPTION_FORMAT;
-  Encryption::Key note_key;
-  error = Encryption::UnwrapNoteKey(notebook_->GetId(), envelope.notebook_key_id,
-                                     *notebook_key, header, note_key);
+  std::unique_ptr<EncryptionKeySource> key_source;
+  error = EncryptionKeySource::Read(source, metadata, key_source);
+  if (error != VXCORE_OK) return error;
+  const auto &header = *key_source->Header();
+  if (header.kind != "note" ||
+      (key_source->IsLegacy() && key_source->Envelope().notebook_id != notebook_->GetId())) {
+    return VXCORE_ERR_ENCRYPTION_FORMAT;
+  }
+  std::shared_ptr<const EncryptedNote::Key> notebook_key;
+  EncryptedNote::KeyEnvelope envelope;
+  error = encryption->AcquireNotebookKey(notebook_key, &envelope, &header);
+  if (error != VXCORE_OK) return error;
+  if (!EncryptedNote::SameEnvelope(envelope, key_source->Envelope())) {
+    return VXCORE_ERR_ENCRYPTION_LOCKED;
+  }
+  EncryptedNote::Key note_key;
+  error = EncryptedNote::UnwrapNoteKey(envelope.notebook_id, envelope.notebook_key_id,
+                                      *notebook_key, header, note_key);
   if (error != VXCORE_OK) return error;
   EncryptionPlaintext plaintext;
-  Encryption::Fingerprint fingerprint;
-  error = Encryption::ReadNoteSnapshot(source, header, note_key, plaintext.body,
+  EncryptedNote::Fingerprint fingerprint;
+  error = EncryptedNote::ReadNoteSnapshot(source, header, note_key, plaintext.body,
                                         plaintext.manifest, &fingerprint);
   if (error != VXCORE_OK) return error;
   if (EncryptionHex(fingerprint) != source_sha256) return VXCORE_ERR_FILE_CHANGED_OUTSIDE;
@@ -4565,9 +4558,16 @@ VxCoreError BundledFolderManager::UnprotectNote(
   const auto *type = file_types.GetBySuffix(dot == std::string::npos ? name : name.substr(dot + 1));
   if (!type || ToLowerString(type->name) != editor) return VXCORE_ERR_UNSUPPORTED;
 
-  // Retain the key hash captured before envelope validation, not a later replacement.
-  EncryptionJson preconditions = {{{"path", PathToGenericUtf8(key_path)}, {"sha256", key_hash}},
-                                  {{"path", PathToGenericUtf8(source)}, {"sha256", source_sha256}}};
+  EncryptionJson preconditions = EncryptionJson::array();
+  if (key_source->IsLegacy()) {
+    const auto key_path = metadata / "encryption.vne";
+    std::string key_hash;
+    if ((error = EncryptionHashFile(key_path, key_hash)) != VXCORE_OK) return error;
+    // Bind the legacy journal to these exact key-file bytes before revalidation.
+    if ((error = key_source->Revalidate()) != VXCORE_OK) return error;
+    preconditions.push_back({{"path", PathToGenericUtf8(key_path)}, {"sha256", key_hash}});
+  }
+  preconditions.push_back({{"path", PathToGenericUtf8(source)}, {"sha256", source_sha256}});
   EncryptionJson cleanup = {{{"path", source_path}, {"sha256", source_sha256}}};
   bool captured_backup = false;
   if (!EncryptionExists(backup, captured_backup)) return VXCORE_ERR_IO;
@@ -4582,8 +4582,8 @@ VxCoreError BundledFolderManager::UnprotectNote(
   }
   std::string transaction_id;
   std::string object_id;
-  if ((error = Encryption::GenerateIdentity(transaction_id)) != VXCORE_OK ||
-      (error = Encryption::GenerateIdentity(object_id)) != VXCORE_OK) {
+  if ((error = EncryptedNote::GenerateIdentity(transaction_id)) != VXCORE_OK ||
+      (error = EncryptedNote::GenerateIdentity(object_id)) != VXCORE_OK) {
     return error;
   }
   const auto directory = metadata / "vx_transfer" / "encryption" / PathFromUtf8(transaction_id);
@@ -4592,7 +4592,8 @@ VxCoreError BundledFolderManager::UnprotectNote(
     return VXCORE_ERR_INVALID_PARAM;
   }
   EncryptionJson journal = {
-      {"version", 3}, {"operation", "unprotect"}, {"transactionId", transaction_id},
+      {"version", key_source->IsLegacy() ? 3 : 4}, {"operation", "unprotect"},
+      {"transactionId", transaction_id},
       {"notebookId", notebook_->GetId()}, {"phase", "prepared"}, {"parentPath", parent},
       {"sourcePath", source_path}, {"targetPath", target_path}, {"fileId", file_id},
       {"documentId", header.document_id}, {"editorType", editor},
@@ -4604,7 +4605,7 @@ VxCoreError BundledFolderManager::UnprotectNote(
   journal["afterConfigSha256"] = EncryptionHashBytes(config.ToJson().dump(2));
   std::string result = target_path;
   // An override changes only the final bytes, never authentication. Do not copy it.
-  if (body) Encryption::WipeBytes(plaintext.body);
+  if (body) EncryptedNote::WipeBytes(plaintext.body);
   const void *final_body = body ? body : plaintext.body.data();
   const size_t final_size = body ? body_size : plaintext.body.size();
   bool prepared = false;
@@ -4635,6 +4636,7 @@ VxCoreError BundledFolderManager::UnprotectNote(
     std::string hash;
     if ((error = EncryptionHashFile(staged, hash)) != VXCORE_OK) return fail(error);
     journal["objects"].push_back({{"objectId", object_id}, {"kind", "plaintext"}, {"sha256", hash}});
+    if ((error = key_source->Revalidate()) != VXCORE_OK) return fail(error);
     if (!EncryptionMatches(root, config_path, journal["beforeConfigSha256"].get<std::string>())) {
       return fail(VXCORE_ERR_FILE_CHANGED_OUTSIDE);
     }
@@ -4713,8 +4715,6 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
   if (notebook_->CheckWritable() != VXCORE_OK) {
     return notebook_->CheckWritable();
   }
-  const auto conflict_error = CheckNotebookEncryptionSyncState(notebook_->GetMetadataFolder());
-  if (conflict_error != VXCORE_OK) return conflict_error;
   if ((!body && body_size) || !EncryptionRelativePath(parent_path, true) ||
       !IsSingleName(name) || name == "." || name == ".." ||
       name.find(':') != std::string::npos || name.find('\0') != std::string::npos ||
@@ -4726,25 +4726,14 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
   if (!encryption) {
     return VXCORE_ERR_ENCRYPTION_LOCKED;
   }
-  std::shared_ptr<const Encryption::Key> notebook_key;
-  Encryption::KeyEnvelope envelope;
+  std::shared_ptr<const EncryptedNote::Key> notebook_key;
+  EncryptedNote::KeyEnvelope envelope;
   auto error = encryption->AcquireNotebookKey(notebook_key, &envelope);
   if (error != VXCORE_OK) {
     return error;
   }
   const auto root = PathFromUtf8(notebook_->GetRootFolder());
   const auto metadata = PathFromUtf8(notebook_->GetMetadataFolder());
-  const auto key_path = metadata / "encryption.vne";
-  Encryption::KeyEnvelope persisted_envelope;
-  std::string active_key_bytes;
-  std::string persisted_key_bytes;
-  if (EncryptionSafePath(root, key_path) != VXCORE_OK ||
-      Encryption::ReadKeyEnvelope(key_path, persisted_envelope) != VXCORE_OK ||
-      Encryption::EncodeKeyEnvelope(envelope, active_key_bytes) != VXCORE_OK ||
-      Encryption::EncodeKeyEnvelope(persisted_envelope, persisted_key_bytes) != VXCORE_OK ||
-      active_key_bytes != persisted_key_bytes) {
-    return VXCORE_ERR_ENCRYPTION_FORMAT;
-  }
   const auto config_path = PathFromUtf8(GetConfigPath(parent_path));
   const auto target_path = ConcatenatePaths(parent_path, name + ".vne");
   const auto target = PathFromUtf8(notebook_->GetAbsolutePath(target_path));
@@ -4778,10 +4767,10 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
     return VXCORE_ERR_ENCRYPTION_FORMAT;
   }
   std::string file_id = source_record ? source_record->id : std::string();
-  if (source_record && !Encryption::IsCanonicalUuid(file_id)) {
+  if (source_record && !EncryptedNote::IsCanonicalUuid(file_id)) {
     return VXCORE_ERR_ENCRYPTION_FORMAT;
   }
-  if (!source_record && (error = Encryption::GenerateIdentity(file_id)) != VXCORE_OK) {
+  if (!source_record && (error = EncryptedNote::GenerateIdentity(file_id)) != VXCORE_OK) {
     return error;
   }
   if (!EncryptionOwnsNoteIdentity(*notebook_, config, parent_path, file_id,
@@ -4803,11 +4792,6 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
     }
     return true;
   };
-  std::string key_hash;
-  if ((error = EncryptionHashFile(key_path, key_hash)) != VXCORE_OK) {
-    return error;
-  }
-  add_source(key_path, key_hash, false);
   if (source_record) {
     const auto source = PathFromUtf8(notebook_->GetAbsolutePath(source_path));
     const auto &hash = source_sha256;
@@ -4830,15 +4814,15 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
   }
   EncryptionPlaintext plaintext;
   plaintext.manifest = {{kJsonKeyEditorType, editor_type}};
-  if ((error = Encryption::ValidateNoteManifest(plaintext.manifest)) != VXCORE_OK) {
+  if ((error = EncryptedNote::ValidateNoteManifest(plaintext.manifest)) != VXCORE_OK) {
     return error;
   }
   std::string transaction_id;
   std::string document_id;
-  Encryption::Key note_key;
-  if ((error = Encryption::GenerateIdentity(transaction_id)) != VXCORE_OK ||
-      (error = Encryption::GenerateIdentity(document_id)) != VXCORE_OK ||
-      (error = Encryption::GenerateKey(note_key)) != VXCORE_OK) {
+  EncryptedNote::Key note_key;
+  if ((error = EncryptedNote::GenerateIdentity(transaction_id)) != VXCORE_OK ||
+      (error = EncryptedNote::GenerateIdentity(document_id)) != VXCORE_OK ||
+      (error = EncryptedNote::GenerateKey(note_key)) != VXCORE_OK) {
     return error;
   }
   const auto directory = metadata / "vx_transfer" / "encryption" / PathFromUtf8(transaction_id);
@@ -4847,7 +4831,8 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
     return VXCORE_ERR_INVALID_PARAM;
   }
   EncryptionJson journal = {
-      {"version", 2}, {"transactionId", transaction_id}, {"notebookId", notebook_->GetId()},
+      {"version", 4}, {"operation", "protect"}, {"transactionId", transaction_id},
+      {"notebookId", notebook_->GetId()},
       {"phase", "prepared"}, {"parentPath", parent_path}, {"sourcePath", source_path},
       {"targetPath", target_path}, {"fileId", file_id}, {"documentId", document_id},
       {"editorType", editor_type}, {"modifiedUtc", GetCurrentTimestampMillis()},
@@ -4884,13 +4869,13 @@ VxCoreError BundledFolderManager::CommitEncryptedNote(
       return VXCORE_ERR_IO;
     }
     made_directory = true;
-    Encryption::ObjectHeader note_header;
+    EncryptedNote::ObjectHeader note_header;
     const auto staged_note = directory / "note.vne";
-    error = Encryption::WriteNoteSnapshot(staged_note, envelope, *notebook_key, note_key,
+    error = EncryptedNote::WriteNoteSnapshot(staged_note, envelope, *notebook_key, note_key,
                                            document_id, plaintext.body, plaintext.manifest,
                                            &note_header);
     if (error == VXCORE_OK) {
-      error = Encryption::VerifyObject(staged_note, note_header, note_key);
+      error = EncryptedNote::VerifyObject(staged_note, note_header, note_key);
     }
     if (error != VXCORE_OK) {
       return fail(error);
@@ -4983,9 +4968,13 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
       !journal["version"].is_number_integer()) {
     return recovery;
   }
-  const bool unprotect = journal["version"] == 3 &&
+  const bool self_contained = journal["version"] == 4;
+  const bool unprotect = (journal["version"] == 3 || self_contained) &&
       journal.value("operation", EncryptionJson()) == "unprotect";
-  if (unprotect) {
+  if (self_contained && !unprotect && journal.value("operation", EncryptionJson()) != "protect") {
+    return recovery;
+  }
+  if (unprotect || self_contained) {
     if (!EncryptionExactKeys(journal, {"version", "operation", "transactionId", "notebookId",
                                         "phase", "parentPath", "sourcePath", "targetPath", "fileId",
                                         "documentId", "editorType", "modifiedUtc",
@@ -5027,8 +5016,8 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
   const auto expected_directory = metadata / "vx_transfer" / "encryption" /
                                   PathFromUtf8(transaction_id);
   if (journal["notebookId"] != notebook_->GetId() ||
-      !Encryption::IsCanonicalUuid(transaction_id) || !Encryption::IsCanonicalUuid(file_id) ||
-      !Encryption::IsCanonicalUuid(document_id) ||
+      !EncryptedNote::IsCanonicalUuid(transaction_id) || !EncryptedNote::IsCanonicalUuid(file_id) ||
+      !EncryptedNote::IsCanonicalUuid(document_id) ||
       !EncryptionRelativePath(parent, true) || !EncryptionRelativePath(target) ||
       (unprotect ? (!EncryptionRelativePath(source) || !HasEncryptedSuffix(source) ||
                     target != source.substr(0, source.size() - 4) || HasEncryptedSuffix(target) ||
@@ -5148,21 +5137,31 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
       return recovery;
     }
   }
-  const auto key_condition = conditions.find(
-      PathToGenericUtf8(fs::weakly_canonical(metadata / "encryption.vne")));
-  if (key_condition == conditions.end() ||
-      !EncryptionMatches(root, metadata / "encryption.vne", key_condition->second) ||
-      (!source.empty() && !cleanup_paths.count(source)) ||
-      conditions.size() != cleanup_paths.size() + 1 ||
-      (source.empty() && (conditions.size() != 1 || !cleanup_paths.empty()))) {
-    return recovery;
+  if (self_contained) {
+    // V4 binds only the replaced body and its optional backup. No vault is consulted.
+    if ((!source.empty() && !cleanup_paths.count(source)) ||
+        conditions.size() != cleanup_paths.size() ||
+        (source.empty() && (!conditions.empty() || !cleanup_paths.empty()))) {
+      return recovery;
+    }
+  } else {
+    const auto key_condition = conditions.find(
+        PathToGenericUtf8(fs::weakly_canonical(metadata / "encryption.vne")));
+    if (key_condition == conditions.end() ||
+        !EncryptionMatches(root, metadata / "encryption.vne", key_condition->second) ||
+        (!source.empty() && !cleanup_paths.count(source)) ||
+        conditions.size() != cleanup_paths.size() + 1 ||
+        (source.empty() && (conditions.size() != 1 || !cleanup_paths.empty()))) {
+      return recovery;
+    }
   }
   if (unprotect && !published) {
     // The hash-checked encrypted original still binds the authenticated document ID.
     // Once metadata and cleanup are durable, recovery needs neither this body nor keys.
-    Encryption::ObjectHeader header;
-    if (Encryption::ReadObjectHeader(source_absolute, header) != VXCORE_OK ||
-        header.kind != "note" || header.document_id != document_id) {
+    EncryptedNote::ObjectHeader header;
+    if (EncryptedNote::ReadObjectHeader(source_absolute, header) != VXCORE_OK ||
+        header.kind != "note" || header.document_id != document_id ||
+        (self_contained && header.version != 2)) {
       return recovery;
     }
   }
@@ -5176,7 +5175,7 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
     const auto id = object["objectId"].get<std::string>();
     const auto kind = object["kind"].get<std::string>();
     const auto hash = object["sha256"].get<std::string>();
-    if (!Encryption::IsCanonicalUuid(id) ||
+    if (!EncryptedNote::IsCanonicalUuid(id) ||
         !EncryptionValidHash(hash) || kind != (unprotect ? "plaintext" : "note")) {
       return recovery;
     }
@@ -5201,10 +5200,11 @@ VxCoreError BundledFolderManager::CompleteEncryptionTransaction(
         return recovery;
       }
     } else {
-      // Version 2 still requires precisely the authenticated encrypted object.
-      Encryption::ObjectHeader header;
-      if (Encryption::ReadObjectHeader(live_exists ? live : staged, header) != VXCORE_OK ||
-          header.kind != kind || header.document_id != document_id || header.object_id != id) {
+      // The exact staged ciphertext was authenticated before journal publication.
+      EncryptedNote::ObjectHeader header;
+      if (EncryptedNote::ReadObjectHeader(live_exists ? live : staged, header) != VXCORE_OK ||
+          header.kind != kind || header.document_id != document_id || header.object_id != id ||
+          (self_contained && header.version != 2)) {
         return recovery;
       }
     }
@@ -5374,7 +5374,7 @@ VxCoreError BundledFolderManager::RecoverEncryptionTransactions(
     std::vector<fs::path> transactions;
     for (fs::directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec)) {
       if (EncryptionSafePath(root, it->path()) != VXCORE_OK || !it->is_directory(ec) || ec ||
-          !Encryption::IsCanonicalUuid(PathToUtf8(it->path().filename()))) {
+          !EncryptedNote::IsCanonicalUuid(PathToUtf8(it->path().filename()))) {
         return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
       }
       transactions.push_back(it->path());
@@ -5544,6 +5544,25 @@ VxCoreError BundledFolderManager::RecycleProtectedNode(const std::string &path, 
   const auto content = recycle / PathFromUtf8(portable_path);
   const auto metadata = recycle / "vx_notebook";
   auto journal = NewRelocationJournal(notebook_);
+  bool needs_legacy_key = false;
+  std::vector<std::unique_ptr<EncryptionKeySource>> key_sources;
+  const auto capture_key_source = [&](const std::string &note_path,
+                                      const FileRecord &record) -> VxCoreError {
+    const auto protection = record.CheckProtectionMetadata();
+    if (protection == VXCORE_OK) return VXCORE_OK;
+    if (protection != VXCORE_ERR_ENCRYPTION_LOCKED) return protection;
+    std::unique_ptr<EncryptionKeySource> source;
+    auto result = EncryptionKeySource::Read(PathFromUtf8(GetContentPath(note_path)),
+                                            PathFromUtf8(notebook_->GetMetadataFolder()), source);
+    if (result != VXCORE_OK) return result;
+    if (source->Header()->kind != "note" ||
+        (source->IsLegacy() && source->Envelope().notebook_id != notebook_->GetId())) {
+      return VXCORE_ERR_ENCRYPTION_FORMAT;
+    }
+    needs_legacy_key = needs_legacy_key || source->IsLegacy();
+    key_sources.push_back(std::move(source));
+    return VXCORE_OK;
+  };
   if (folder) {
     const auto source_content = PathFromUtf8(GetContentPath(path));
     error = AddRelocationTree(root, journal, source_content, content);
@@ -5558,7 +5577,10 @@ VxCoreError BundledFolderManager::RecycleProtectedNode(const std::string &path, 
       auto result = GetFolderConfig(folder_path, &config);
       if (result != VXCORE_OK) return result;
       for (const auto &record : config->files) {
-        const auto assets = PathFromUtf8(GetAssetsFolder(ConcatenatePaths(folder_path, record.name)));
+        const auto note_path = ConcatenatePaths(folder_path, record.name);
+        result = capture_key_source(note_path, record);
+        if (result != VXCORE_OK) return result;
+        const auto assets = PathFromUtf8(GetAssetsFolder(note_path));
         if (!IsPathWithin(notebook_->GetRootFolder(), PathToUtf8(assets), false)) {
           return VXCORE_ERR_INVALID_PARAM;
         }
@@ -5580,6 +5602,8 @@ VxCoreError BundledFolderManager::RecycleProtectedNode(const std::string &path, 
   } else {
     const auto *record = FindFileRecord(parent_config, parts.second);
     if (!record) return VXCORE_ERR_NOT_FOUND;
+    error = capture_key_source(path, *record);
+    if (error != VXCORE_OK) return error;
     FolderConfig recovered(PathFilename(portable_path));
     recovered.files.push_back(*record);
     const auto old_assets = PathFromUtf8(GetAssetsFolder(path)).lexically_normal();
@@ -5619,10 +5643,14 @@ VxCoreError BundledFolderManager::RecycleProtectedNode(const std::string &path, 
     error = AddRelocationConfig(journal, config_path, config.ToJson());
     child_path = ancestor.first;
   }
-  if (error == VXCORE_OK)
+  if (error == VXCORE_OK && needs_legacy_key)
     error = AddRelocationFile(root, journal,
                               PathFromUtf8(notebook_->GetMetadataFolder()) / "encryption.vne",
                               metadata / "encryption.vne", true);
+  for (const auto &source : key_sources) {
+    if (error != VXCORE_OK) break;
+    error = source->Revalidate();
+  }
   parent_config.modified_utc = GetCurrentTimestampMillis();
   if (error == VXCORE_OK) error = AddRelocationConfig(journal,
       PathFromUtf8(GetConfigPath(parts.first)), parent_config.ToJson());

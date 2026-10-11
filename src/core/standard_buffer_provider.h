@@ -33,6 +33,7 @@ class StandardBufferProvider : public IBufferProvider {
   bool IsEncrypted() const noexcept override { return encrypted_; }
   VxCoreError GetProtectionError() const noexcept override { return protection_error_; }
 
+  VxCoreError CheckProtectedAccess() const;
   VxCoreError LoadEncryptedContent(std::vector<uint8_t> &out_body);
   VxCoreError SaveEncryptedContent(const std::vector<uint8_t> &body);
   VxCoreError WriteEncryptedBackup(const std::vector<uint8_t> &body, int revision);

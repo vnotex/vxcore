@@ -5,17 +5,13 @@
 #include <fstream>
 #include <sstream>
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
 #include <vxcore/notebook_json_keys.h>
 
 #include <unordered_map>
 
+#include "buffer_manager.h"
 #include "bundled_notebook.h"
+#include "encryptionkeysource.h"
 #include "config_manager.h"
 #include "core/event_manager.h"
 #include "core/event_names.h"
@@ -31,17 +27,8 @@ namespace vxcore {
 
 namespace {
 
-using Encryption = NotebookEncryption;
+using Encryption = EncryptedNote;
 namespace fs = std::filesystem;
-
-bool SameEnvelope(const Encryption::KeyEnvelope &a, const Encryption::KeyEnvelope &b) {
-  return a.vault_id == b.vault_id && a.notebook_id == b.notebook_id &&
-         a.notebook_key_id == b.notebook_key_id && a.salt == b.salt &&
-         a.master_key.nonce == b.master_key.nonce &&
-         a.master_key.ciphertext == b.master_key.ciphertext &&
-         a.notebook_key.nonce == b.notebook_key.nonce &&
-         a.notebook_key.ciphertext == b.notebook_key.ciphertext;
-}
 
 fs::path EncryptionKeyPath(const Notebook &notebook) {
   return PathFromUtf8(notebook.GetMetadataFolder()) / "encryption.vne";
@@ -70,8 +57,6 @@ VxCoreError CheckNotebookIdentity(const Notebook &notebook, bool writable,
   if (notebook.GetType() != NotebookType::Bundled) {
     return VXCORE_ERR_UNSUPPORTED;
   }
-  const auto conflict_error = CheckNotebookEncryptionSyncState(notebook.GetMetadataFolder());
-  if (conflict_error != VXCORE_OK) return conflict_error;
   if (!Encryption::IsCanonicalUuid(notebook.GetId())) {
     return VXCORE_ERR_ENCRYPTION_FORMAT;
   }
@@ -105,11 +90,12 @@ VxCoreError CheckNotebookIdentity(const Notebook &notebook, bool writable,
   return VXCORE_OK;
 }
 
-VxCoreError ReadNotebookEnvelope(const Notebook &notebook, Encryption::KeyEnvelope &envelope,
-                                 std::string *out_bytes = nullptr) {
+VxCoreError ReadNotebookEnvelope(const Notebook &notebook, Encryption::KeyEnvelope &envelope) {
+  auto error = CheckNotebookEncryptionSyncState(notebook.GetMetadataFolder());
+  if (error != VXCORE_OK) return error;
   const auto path = EncryptionKeyPath(notebook);
   bool exists = false;
-  auto error = EntryExists(path, exists);
+  error = EntryExists(path, exists);
   if (error != VXCORE_OK || !exists) {
     return error != VXCORE_OK ? error : VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
   }
@@ -120,32 +106,136 @@ VxCoreError ReadNotebookEnvelope(const Notebook &notebook, Encryption::KeyEnvelo
   if (!fs::is_regular_file(path, ec)) {
     return ec ? VXCORE_ERR_IO : VXCORE_ERR_ENCRYPTION_FORMAT;
   }
-  std::string bytes;
-  error = ReadFileHead(path, Encryption::kMaxHeaderBytes + 1, bytes);
-  if (error == VXCORE_OK) {
-    error = Encryption::DecodeKeyEnvelope(bytes.data(), bytes.size(), envelope);
-  }
+  error = Encryption::ReadKeyEnvelope(path, envelope);
   if (error == VXCORE_OK && envelope.notebook_id != notebook.GetId()) {
     return VXCORE_ERR_ENCRYPTION_FORMAT;
-  }
-  if (error == VXCORE_OK && out_bytes) {
-    *out_bytes = std::move(bytes);
   }
   return error;
 }
 
-VxCoreError CheckEncryptionSetupAllowed(const nlohmann::json &config) {
-  if (!config.contains(kJsonKeyEncryptionInitialized)) {
-    return VXCORE_ERR_INVALID_STATE;
+struct EncryptionCandidate {
+  std::string relative_path;
+  fs::path absolute_path;
+  std::string file_id;
+  std::string editor_type;
+  bool encrypted = false;
+};
+
+VxCoreError ReadEncryptionCandidate(Notebook &notebook, const char *file_path,
+                                     EncryptionCandidate &out_candidate) {
+  if (!file_path) return VXCORE_ERR_NULL_POINTER;
+  if (!*file_path) return VXCORE_ERR_INVALID_PARAM;
+  EncryptionCandidate candidate;
+  candidate.relative_path = notebook.GetCleanRelativePath(file_path);
+  const auto relative = PathFromUtf8(candidate.relative_path);
+  if (relative.empty() || relative.is_absolute() || relative.has_root_name()) {
+    return VXCORE_ERR_INVALID_PARAM;
   }
-  return config.at(kJsonKeyEncryptionInitialized).get<bool>()
-             ? VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED : VXCORE_OK;
+  for (const auto &part : relative) {
+    if (part == ".." || part == ".") return VXCORE_ERR_INVALID_PARAM;
+  }
+  candidate.absolute_path = PathFromUtf8(notebook.GetAbsolutePath(candidate.relative_path));
+  if (!IsPathWithin(notebook.GetRootFolder(), PathToUtf8(candidate.absolute_path), false)) {
+    return VXCORE_ERR_ENCRYPTION_FORMAT;
+  }
+  auto current = PathFromUtf8(notebook.GetRootFolder());
+  for (const auto &part : relative) {
+    current /= part;
+    if (CheckReparsePoint(PathToUtf8(current)) != ReparseState::kNo) {
+      return VXCORE_ERR_ENCRYPTION_FORMAT;
+    }
+  }
+  const bool suffix = relative.extension() == ".vne";
+  const FileRecord *record = nullptr;
+  const auto error = notebook.GetFolderManager()->GetFileInfo(candidate.relative_path, &record);
+  if (error != VXCORE_OK) {
+    return suffix && error == VXCORE_ERR_NOT_FOUND ? VXCORE_ERR_ENCRYPTION_FORMAT : error;
+  }
+  if (!record) return VXCORE_ERR_ENCRYPTION_FORMAT;
+  candidate.file_id = record->id;
+  if (record->metadata.is_object() && record->metadata.contains(kJsonKeyEncrypted)) {
+    const auto &marker = record->metadata.at(kJsonKeyEncrypted);
+    if (!marker.is_boolean()) return VXCORE_ERR_ENCRYPTION_FORMAT;
+    candidate.encrypted = marker.get<bool>();
+  }
+  if (suffix != candidate.encrypted) return VXCORE_ERR_ENCRYPTION_FORMAT;
+  if (candidate.encrypted) {
+    const auto editor = record->metadata.find(kJsonKeyEditorType);
+    if (editor == record->metadata.end() ||
+        (*editor != "markdown" && *editor != "text" && *editor != "mindmap")) {
+      return VXCORE_ERR_ENCRYPTION_FORMAT;
+    }
+    candidate.editor_type = editor->get<std::string>();
+  }
+  out_candidate = std::move(candidate);
+  return VXCORE_OK;
 }
 
-VxCoreError CheckKeyFileAbsent(const Notebook &notebook) {
-  bool exists = false;
-  auto error = EntryExists(EncryptionKeyPath(notebook), exists);
-  return error != VXCORE_OK ? error : (exists ? VXCORE_ERR_ALREADY_EXISTS : VXCORE_OK);
+VxCoreError ReadEncryptionSource(Notebook &notebook, const char *file_path,
+                                  std::unique_ptr<EncryptionKeySource> &out_source,
+                                  EncryptionCandidate &out_candidate) {
+  if (file_path) {
+    const auto error = ReadEncryptionCandidate(notebook, file_path, out_candidate);
+    if (error != VXCORE_OK) return error;
+    if (!out_candidate.encrypted) return VXCORE_ERR_ENCRYPTION_FORMAT;
+  }
+  auto error = EncryptionKeySource::Read(out_candidate.absolute_path,
+                                         PathFromUtf8(notebook.GetMetadataFolder()), out_source);
+  if (error != VXCORE_OK) return error;
+  // v2 may retain an origin notebook identity after portable recovery. Only the
+  // legacy vault is required to belong to the currently registered notebook.
+  if ((out_source->IsLegacy() && out_source->Envelope().notebook_id != notebook.GetId()) ||
+      (file_path && (!out_source->Header() || out_source->Header()->kind != "note"))) {
+    return VXCORE_ERR_ENCRYPTION_FORMAT;
+  }
+  return VXCORE_OK;
+}
+
+VxCoreError RevalidateEncryptionSource(Notebook &notebook, const fs::path &root,
+                                        const EncryptionCandidate &candidate,
+                                        const EncryptionKeySource &source) {
+  fs::path current_root;
+  auto error = CheckNotebookIdentity(notebook, false, current_root);
+  if (error != VXCORE_OK) return error;
+  if (current_root != root) return VXCORE_ERR_INVALID_STATE;
+  if (!candidate.relative_path.empty()) {
+    EncryptionCandidate current;
+    error = ReadEncryptionCandidate(notebook, candidate.relative_path.c_str(), current);
+    if (error != VXCORE_OK) return error;
+    if (current.absolute_path != candidate.absolute_path ||
+        current.file_id != candidate.file_id || current.editor_type != candidate.editor_type ||
+        current.encrypted != candidate.encrypted) {
+      return VXCORE_ERR_INVALID_STATE;
+    }
+  }
+  return source.Revalidate();
+}
+
+VxCoreError AuthenticateSelectedNote(const EncryptionKeySource &source,
+                                      const Encryption::Key &notebook_key) {
+  if (!source.Header()) return VXCORE_OK;
+  Encryption::Key note_key;
+  const auto &envelope = source.Envelope();
+  return Encryption::UnwrapNoteKey(envelope.notebook_id, envelope.notebook_key_id,
+                                    notebook_key, *source.Header(), note_key);
+}
+
+VxCoreError AcquireSourceKey(const NotebookEncryption *owner, const EncryptionKeySource &source,
+                              std::shared_ptr<const Encryption::Key> &out_key) {
+  if (!owner) return VXCORE_ERR_ENCRYPTION_LOCKED;
+  Encryption::KeyEnvelope authenticated;
+  Encryption::ObjectHeader legacy_selector;
+  const auto *header = source.Header();
+  if (!header) {
+    legacy_selector.notebook_key_id = source.Envelope().notebook_key_id;
+    header = &legacy_selector;
+  }
+  auto error = owner->AcquireNotebookKey(out_key, &authenticated, header);
+  if (error == VXCORE_OK && !Encryption::SameEnvelope(authenticated, source.Envelope())) {
+    out_key.reset();
+    return VXCORE_ERR_ENCRYPTION_AUTH_FAILED;
+  }
+  return error;
 }
 
 VxCoreError EnsureEncryptedGitAttributes(const Notebook &notebook) {
@@ -205,48 +295,6 @@ VxCoreError EnsureEncryptedGitAttributes(const Notebook &notebook) {
   return WriteFileAtomic(path, bytes);
 }
 
-VxCoreError PublishKeyFile(const Notebook &notebook, const Encryption::KeyEnvelope &envelope,
-                           const std::string &bytes) {
-  // An exclusively created ciphertext-only staging directory avoids replacing any
-  // pre-existing path. Final publication is atomic NO-REPLACE, not check+rename.
-  const auto destination = EncryptionKeyPath(notebook);
-  const auto directory = destination.parent_path() /
-                         PathFromUtf8(".encryption-" + envelope.notebook_key_id);
-  const auto staged = directory / "encryption.vne";
-  std::error_code ec;
-  if (!fs::create_directory(directory, ec)) {
-    return ec ? VXCORE_ERR_IO : VXCORE_ERR_ALREADY_EXISTS;
-  }
-  struct StagingCleanup {
-    fs::path file;
-    fs::path directory;
-    ~StagingCleanup() {
-      std::error_code ignored;
-      fs::remove(file, ignored);
-      fs::remove(directory, ignored);
-    }
-  } cleanup{staged, directory};
-  auto error = WriteFileAtomic(staged, bytes);
-  if (error != VXCORE_OK) {
-    return error;
-  }
-#ifdef _WIN32
-  if (!MoveFileExW(staged.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH)) {
-    const auto win_error = GetLastError();
-    return win_error == ERROR_ALREADY_EXISTS || win_error == ERROR_FILE_EXISTS
-               ? VXCORE_ERR_ALREADY_EXISTS : VXCORE_ERR_IO;
-  }
-#else
-  // link() is an atomic no-replace publication of this already-flushed regular
-  // file on the same filesystem. Cleanup unlinks the private staging name.
-  fs::create_hard_link(staged, destination, ec);
-  if (ec) {
-    return ec == std::errc::file_exists ? VXCORE_ERR_ALREADY_EXISTS : VXCORE_ERR_IO;
-  }
-#endif
-  return VXCORE_OK;
-}
-
 }  // namespace
 
 struct NotebookManager::EncryptionSetup {
@@ -255,11 +303,11 @@ struct NotebookManager::EncryptionSetup {
     std::string source_notebook_id;
     fs::path root;
     fs::path source_root;
-    std::shared_ptr<Encryption> owner;
-    std::shared_ptr<Encryption> source_owner;
+    std::shared_ptr<NotebookEncryption> owner;
+    std::shared_ptr<NotebookEncryption> source_owner;
     Encryption::KeyEnvelope envelope;
-    std::string key_file_bytes;
-    std::string source_key_file_bytes;
+    Encryption::KeyEnvelope source_envelope;
+    std::shared_ptr<const Encryption::Key> source_notebook_key;
     std::shared_ptr<const Encryption::Key> master_key;
     std::shared_ptr<const Encryption::Key> notebook_key;
   };
@@ -287,7 +335,7 @@ struct NotebookManager::EncryptionSession {
   };
   std::mutex mutex;
   std::map<std::string, MasterKeyEntry> master_keys;
-  std::vector<std::shared_ptr<Encryption>> owners;
+  std::vector<std::shared_ptr<NotebookEncryption>> owners;
   std::map<EncryptionSetup *, std::unique_ptr<EncryptionSetup>> setups;
   size_t active_operations = 0;
   bool publishing = false;
@@ -395,42 +443,36 @@ VxCoreError NotebookManager::LockMasterKeys() { return LockAllEncryption(); }
 
 VxCoreError NotebookManager::LockAllEncryption() {
   auto session = GetEncryptionSession(false);
-  if (!session) {
-    return VXCORE_OK;
-  }
+  if (!session) return VXCORE_OK;
   decltype(EncryptionSession::master_keys) master_keys;
-  std::vector<std::shared_ptr<const Encryption::Key>> notebook_keys;
   std::unique_lock<std::mutex> lock(session->mutex);
   if (session->active_operations || session->publishing || session->locking) {
     return VXCORE_ERR_INVALID_STATE;
   }
   for (const auto &entry : session->setups) {
-    if (entry.second->prepared) {
-      return VXCORE_ERR_INVALID_STATE;
-    }
+    if (entry.second->prepared) return VXCORE_ERR_INVALID_STATE;
   }
+  std::vector<decltype(NotebookEncryption::notebook_keys_)> notebook_keys(session->owners.size());
   std::vector<std::unique_lock<std::mutex>> owner_locks;
   owner_locks.reserve(session->owners.size());
-  notebook_keys.reserve(session->owners.size());
-  for (const auto &owner : session->owners) {
-    owner_locks.emplace_back(owner->mutex_);
-  }
-  // Hold ALL sparse owner locks before checking ANY key, preventing a new lease
-  // between an earlier preflight and a later clear. No ordinary notebook walk.
+  for (const auto &owner : session->owners) owner_locks.emplace_back(owner->mutex_);
+  // Hold every sparse owner lock before checking any key: no lease can appear
+  // between an earlier preflight and detachment of a later owner's entire ring.
   for (const auto &entry : session->master_keys) {
-    if (entry.second.key.use_count() != 1) {
-      return VXCORE_ERR_INVALID_STATE;
-    }
+    if (entry.second.key.use_count() != 1) return VXCORE_ERR_INVALID_STATE;
   }
   for (const auto &owner : session->owners) {
-    if (owner->locking_ || (owner->notebook_key_ && owner->notebook_key_.use_count() != 1)) {
-      return VXCORE_ERR_INVALID_STATE;
+    if (owner->locking_) return VXCORE_ERR_INVALID_STATE;
+    for (const auto &entry : owner->notebook_keys_) {
+      if (entry.second.key.use_count() != 1) return VXCORE_ERR_INVALID_STATE;
     }
   }
   session->locking = true;
-  for (const auto &owner : session->owners) {
+  for (size_t index = 0; index < session->owners.size(); ++index) {
+    auto &owner = session->owners[index];
     owner->locking_ = true;
-    notebook_keys.push_back(std::move(owner->notebook_key_));
+    notebook_keys[index].swap(owner->notebook_keys_);
+    owner->default_key_id_.clear();
   }
   master_keys.swap(session->master_keys);
   owner_locks.clear();
@@ -464,13 +506,9 @@ VxCoreError NotebookManager::ReconcileNotebookEncryption(const std::string &note
     if (error != VXCORE_OK) return error;
     if (config.encryption_initialized == true) return VXCORE_OK;
   } else {
+    error = CheckNotebookEncryptionSyncState(notebook->GetMetadataFolder());
+    if (error != VXCORE_OK) return error;
     if (config.encryption_initialized == true) return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
-    if (auto *owner = notebook->GetEncryption()) {
-      std::lock_guard<std::mutex> lock(owner->mutex_);
-      if (!owner->envelope_.notebook_id.empty()) {
-        return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
-      }
-    }
     if (config.encryption_initialized == false) return VXCORE_OK;
     if (!confirm_uninitialized) return VXCORE_ERR_INVALID_STATE;
   }
@@ -488,36 +526,15 @@ VxCoreError NotebookManager::PrepareNotebookEncryption(
   }
   auto session = GetEncryptionSession(true);
   EncryptionSession::Operation operation(*session);
-  if (!operation.active) {
-    return VXCORE_ERR_INVALID_STATE;
-  }
+  if (!operation.active) return VXCORE_ERR_INVALID_STATE;
   auto *notebook = GetNotebook(notebook_id);
-  if (!notebook) {
-    return VXCORE_ERR_NOT_FOUND;
-  }
+  if (!notebook) return VXCORE_ERR_NOT_FOUND;
   auto prepared = std::make_unique<EncryptionSetup::Prepared>();
-  nlohmann::json config;
-  auto error = CheckNotebookIdentity(*notebook, true, prepared->root, &config);
-  if (error == VXCORE_OK) {
-    error = CheckKeyFileAbsent(*notebook);
-  }
-  if (error == VXCORE_OK) {
-    error = CheckEncryptionSetupAllowed(config);
-  }
-  if (error == VXCORE_OK) {
-    error = RegisterEncryptionOwner(*notebook, *session);
-  }
-  if (error != VXCORE_OK) {
-    return error;
-  }
+  auto error = CheckNotebookIdentity(*notebook, true, prepared->root);
+  if (error == VXCORE_OK) error = RegisterEncryptionOwner(*notebook, *session);
+  if (error != VXCORE_OK) return error;
   prepared->notebook_id = notebook_id;
   prepared->owner = std::atomic_load(&notebook->encryption_);
-  {
-    std::lock_guard<std::mutex> lock(prepared->owner->mutex_);
-    if (!prepared->owner->envelope_.notebook_id.empty()) {
-      return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
-    }
-  }
   Encryption::Key master_key, notebook_key;
   if (source_notebook_id.empty()) {
     error = Encryption::PrepareNewKeys(notebook_id, password, password_size,
@@ -526,58 +543,39 @@ VxCoreError NotebookManager::PrepareNotebookEncryption(
       prepared->master_key = std::make_shared<Encryption::Key>(std::move(master_key));
     }
   } else {
-    if (source_notebook_id == notebook_id) {
-      return VXCORE_ERR_INVALID_PARAM;
-    }
+    if (source_notebook_id == notebook_id) return VXCORE_ERR_INVALID_PARAM;
     auto *source = GetNotebook(source_notebook_id);
-    if (!source) {
-      return VXCORE_ERR_NOT_FOUND;
-    }
+    if (!source) return VXCORE_ERR_NOT_FOUND;
     error = CheckNotebookIdentity(*source, false, prepared->source_root);
-    Encryption::KeyEnvelope source_envelope;
-    if (error == VXCORE_OK) {
-      error = ReadNotebookEnvelope(*source, source_envelope, &prepared->source_key_file_bytes);
-    }
-    if (error == VXCORE_OK) {
-      error = RegisterEncryptionOwner(*source, *session);
-    }
-    if (error != VXCORE_OK) {
-      return error;
-    }
+    if (error == VXCORE_OK) error = RegisterEncryptionOwner(*source, *session);
+    if (error != VXCORE_OK) return error;
     prepared->source_notebook_id = source_notebook_id;
     prepared->source_owner = std::atomic_load(&source->encryption_);
+    error = prepared->source_owner->AcquireNotebookKey(prepared->source_notebook_key,
+                                                        &prepared->source_envelope);
+    if (error != VXCORE_OK) return error;
     if (password_size) {
       Encryption::Key source_key;
-      error = Encryption::UnlockKeys(source_envelope, source_notebook_id, password,
+      error = Encryption::UnlockKeys(prepared->source_envelope,
+                                     prepared->source_envelope.notebook_id, password,
                                      password_size, master_key, source_key);
-      source_key.Reset();
+      if (error == VXCORE_OK &&
+          !Encryption::KeysEqual(source_key, *prepared->source_notebook_key)) {
+        return VXCORE_ERR_ENCRYPTION_AUTH_FAILED;
+      }
       if (error == VXCORE_OK) {
         prepared->master_key = std::make_shared<Encryption::Key>(std::move(master_key));
       }
     } else {
-      Encryption::KeyEnvelope authenticated_envelope;
-      std::shared_ptr<const Encryption::Key> source_key;
-      error = prepared->source_owner->AcquireNotebookKey(source_key, &authenticated_envelope);
-      if (error == VXCORE_OK && !SameEnvelope(source_envelope, authenticated_envelope)) {
-        return VXCORE_ERR_ENCRYPTION_AUTH_FAILED;
-      }
-      if (error == VXCORE_OK) {
-        error = AcquireMasterKey(source_envelope.vault_id, prepared->master_key);
-      }
+      error = AcquireMasterKey(prepared->source_envelope.vault_id, prepared->master_key);
     }
     if (error == VXCORE_OK) {
-      error = Encryption::PrepareNotebookKeys(source_envelope, *prepared->master_key,
+      error = Encryption::PrepareNotebookKeys(prepared->source_envelope, *prepared->master_key,
                                               notebook_id, prepared->envelope, notebook_key);
     }
   }
-  if (error != VXCORE_OK) {
-    return error;
-  }
+  if (error != VXCORE_OK) return error;
   prepared->notebook_key = std::make_shared<Encryption::Key>(std::move(notebook_key));
-  error = Encryption::EncodeKeyEnvelope(prepared->envelope, prepared->key_file_bytes);
-  if (error != VXCORE_OK) {
-    return error;
-  }
   auto setup = std::make_unique<EncryptionSetup>();
   setup->prepared = std::move(prepared);
   auto *handle = setup.get();
@@ -592,33 +590,25 @@ VxCoreError NotebookManager::PrepareNotebookEncryption(
 VxCoreError NotebookManager::InstallEncryptionKeys(
     Notebook &notebook, EncryptionSession &session, const Encryption::KeyEnvelope &envelope,
     std::shared_ptr<const Encryption::Key> master_key,
-    std::shared_ptr<const Encryption::Key> notebook_key, const std::string *key_file_bytes) {
-  // All potentially allocating publication state is prepared BEFORE filesystem
-  // changes. The registry reservation excludes other installs without holding a
-  // mutex during filesystem IO. KDF workers and existing leases remain independent.
+    std::shared_ptr<const Encryption::Key> notebook_key, bool ensure_attributes) {
   auto owner = std::atomic_load(&notebook.encryption_);
-  auto envelope_copy = envelope;
+  if (!owner || !master_key || !master_key->IsValid() ||
+      !notebook_key || !notebook_key->IsValid()) {
+    return VXCORE_ERR_ENCRYPTION_LOCKED;
+  }
+  // Reserve the MK node before installing anything. A publication reservation
+  // excludes competing registry installs/Lock All without holding locks over IO.
   decltype(EncryptionSession::master_keys) pending_master;
   pending_master.emplace(envelope.vault_id,
                          EncryptionSession::MasterKeyEntry(envelope, std::move(master_key)));
   {
     std::lock_guard<std::mutex> lock(session.mutex);
-    std::lock_guard<std::mutex> owner_lock(owner->mutex_);
-    if (session.locking || session.publishing || owner->locking_) {
-      return VXCORE_ERR_INVALID_STATE;
-    }
+    if (session.locking || session.publishing) return VXCORE_ERR_INVALID_STATE;
     const auto found = session.master_keys.find(envelope.vault_id);
     if (found != session.master_keys.end() &&
-        (found->second.Matches(envelope) == false ||
-         Encryption::KeysEqual(*found->second.key, *pending_master.begin()->second.key) == false)) {
+        (!found->second.Matches(envelope) ||
+         !Encryption::KeysEqual(*found->second.key, *pending_master.begin()->second.key))) {
       return VXCORE_ERR_ENCRYPTION_AUTH_FAILED;
-    }
-    if (owner->notebook_key_ &&
-        (owner->envelope_.vault_id != envelope.vault_id ||
-         owner->envelope_.notebook_id != envelope.notebook_id ||
-         owner->envelope_.notebook_key_id != envelope.notebook_key_id ||
-         !Encryption::KeysEqual(*owner->notebook_key_, *notebook_key))) {
-      return VXCORE_ERR_INVALID_STATE;
     }
     session.publishing = true;
   }
@@ -629,48 +619,24 @@ VxCoreError NotebookManager::InstallEncryptionKeys(
       session.publishing = false;
     }
   } publication{session};
-  if (key_file_bytes) {
-    auto error = EnsureEncryptedGitAttributes(notebook);
-    if (error == VXCORE_OK) {
-      error = CheckKeyFileAbsent(notebook);
-    }
-    if (error == VXCORE_OK) {
-      error = PublishKeyFile(notebook, envelope, *key_file_bytes);
-    }
-    if (error == VXCORE_OK) {
-      // Never remove a published key on marker failure. Explicit reconciliation
-      // repairs this boundary; unlock/cached unlock (null bytes) remain read-only.
-      error = ReconcileNotebookEncryption(notebook.GetId(), false);
-    }
-    if (error != VXCORE_OK) {
-      return error;
-    }
-  }
+  // Only the ring's public API installs NKs; existing leased keys are never
+  // replaced. All allocating/authenticating work precedes the sole disk change.
+  const auto error = owner->InstallNotebookKey(envelope, std::move(notebook_key));
+  if (error != VXCORE_OK) return error;
   {
     std::lock_guard<std::mutex> lock(session.mutex);
-    std::lock_guard<std::mutex> owner_lock(owner->mutex_);
-    // Node insertion cannot allocate, and the reservation made the preflight
-    // invariant stable while the mutex was released for publication.
     if (session.master_keys.find(envelope.vault_id) == session.master_keys.end()) {
       session.master_keys.insert(pending_master.extract(pending_master.begin()));
     }
-    owner->envelope_ = std::move(envelope_copy);
-    if (!owner->notebook_key_) {
-      owner->notebook_key_ = std::move(notebook_key);
-    }
   }
-  return VXCORE_OK;
+  return ensure_attributes ? EnsureEncryptedGitAttributes(notebook) : VXCORE_OK;
 }
 
 VxCoreError NotebookManager::CommitNotebookEncryption(EncryptionSetup *setup) {
   auto session = GetEncryptionSession(false);
-  if (!session || !setup) {
-    return VXCORE_ERR_INVALID_PARAM;
-  }
+  if (!session || !setup) return VXCORE_ERR_INVALID_PARAM;
   EncryptionSession::Operation operation(*session);
-  if (!operation.active) {
-    return VXCORE_ERR_INVALID_STATE;
-  }
+  if (!operation.active) return VXCORE_ERR_INVALID_STATE;
   std::unique_ptr<EncryptionSetup::Prepared> prepared;
   {
     std::lock_guard<std::mutex> lock(session->mutex);
@@ -680,57 +646,35 @@ VxCoreError NotebookManager::CommitNotebookEncryption(EncryptionSetup *setup) {
     }
     prepared = std::move(found->second->prepared);
   }
-  // From here EVERY exit consumes the handle and destroys its guarded keys.
+  // Every exit consumes an owned handle. Contexts remain ephemeral: never write
+  // encryption.vne or promote the legacy encryptionInitialized marker.
   auto *notebook = GetNotebook(prepared->notebook_id);
   if (!notebook || notebook->GetEncryption() != prepared->owner.get()) {
     return VXCORE_ERR_INVALID_STATE;
   }
   fs::path root;
-  nlohmann::json config;
-  auto error = CheckNotebookIdentity(*notebook, true, root, &config);
-  if (error == VXCORE_OK && root != prepared->root) {
-    return VXCORE_ERR_INVALID_STATE;
-  }
-  if (error == VXCORE_OK) {
-    error = CheckKeyFileAbsent(*notebook);
-  }
-  if (error == VXCORE_OK) {
-    error = CheckEncryptionSetupAllowed(config);
-  }
-  if (error != VXCORE_OK) {
-    return error;
-  }
-  {
-    std::lock_guard<std::mutex> lock(prepared->owner->mutex_);
-    if (!prepared->owner->envelope_.notebook_id.empty()) {
-      return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
-    }
-  }
+  auto error = CheckNotebookIdentity(*notebook, true, root);
+  if (error != VXCORE_OK) return error;
+  if (root != prepared->root) return VXCORE_ERR_INVALID_STATE;
   if (!prepared->source_notebook_id.empty()) {
     auto *source = GetNotebook(prepared->source_notebook_id);
     if (!source || source->GetEncryption() != prepared->source_owner.get()) {
       return VXCORE_ERR_INVALID_STATE;
     }
     error = CheckNotebookIdentity(*source, false, root);
-    if (error != VXCORE_OK) {
-      return error;
-    }
-    if (root != prepared->source_root) {
-      return VXCORE_ERR_INVALID_STATE;
-    }
-    Encryption::KeyEnvelope source_envelope;
-    std::string bytes;
-    error = ReadNotebookEnvelope(*source, source_envelope, &bytes);
-    if (error != VXCORE_OK) {
-      return error;
-    }
-    if (bytes != prepared->source_key_file_bytes) {
-      return VXCORE_ERR_INVALID_STATE;
-    }
+    if (error != VXCORE_OK) return error;
+    if (root != prepared->source_root) return VXCORE_ERR_INVALID_STATE;
+    Encryption::ObjectHeader selector;
+    selector.version = 2;
+    selector.notebook_key_id = prepared->source_envelope.notebook_key_id;
+    selector.envelope = prepared->source_envelope;
+    std::shared_ptr<const Encryption::Key> source_key;
+    error = prepared->source_owner->AcquireNotebookKey(source_key, nullptr, &selector);
+    if (error != VXCORE_OK) return error;
+    if (source_key != prepared->source_notebook_key) return VXCORE_ERR_INVALID_STATE;
   }
   return InstallEncryptionKeys(*notebook, *session, prepared->envelope,
-                                prepared->master_key, prepared->notebook_key,
-                                &prepared->key_file_bytes);
+                                prepared->master_key, prepared->notebook_key, true);
 }
 
 void NotebookManager::FreeEncryptionSetup(EncryptionSetup *setup) {
@@ -753,126 +697,79 @@ void NotebookManager::FreeEncryptionSetup(EncryptionSetup *setup) {
 
 VxCoreError NotebookManager::UnlockNotebookEncryption(const std::string &notebook_id,
                                                        const void *password,
-                                                       size_t password_size) {
-  if (!password && password_size) {
-    return VXCORE_ERR_NULL_POINTER;
-  }
+                                                       size_t password_size,
+                                                       const char *file_path) {
+  if (!password && password_size) return VXCORE_ERR_NULL_POINTER;
   auto session = GetEncryptionSession(true);
   EncryptionSession::Operation operation(*session);
-  if (!operation.active) {
-    return VXCORE_ERR_INVALID_STATE;
-  }
+  if (!operation.active) return VXCORE_ERR_INVALID_STATE;
   auto *notebook = GetNotebook(notebook_id);
-  if (!notebook) {
-    return VXCORE_ERR_NOT_FOUND;
-  }
+  if (!notebook) return VXCORE_ERR_NOT_FOUND;
   fs::path root;
   auto error = CheckNotebookIdentity(*notebook, false, root);
-  Encryption::KeyEnvelope envelope;
-  std::string bytes;
-  if (error == VXCORE_OK) {
-    error = ReadNotebookEnvelope(*notebook, envelope, &bytes);
-  }
+  EncryptionCandidate candidate;
+  std::unique_ptr<EncryptionKeySource> source;
+  if (error == VXCORE_OK) error = ReadEncryptionSource(*notebook, file_path, source, candidate);
+  if (error != VXCORE_OK) return error;
+  const auto &envelope = source->Envelope();
   Encryption::Key master_key, notebook_key;
-  if (error == VXCORE_OK) {
-    error = Encryption::UnlockKeys(envelope, notebook_id, password, password_size,
-                                   master_key, notebook_key);
-  }
-  if (error != VXCORE_OK) {
-    return error;
-  }
-  // A checkout/key-file replacement during KDF must not install a stale snapshot.
-  fs::path current_root;
-  error = CheckNotebookIdentity(*notebook, false, current_root);
-  if (error != VXCORE_OK) {
-    return error;
-  }
-  Encryption::KeyEnvelope current_envelope;
-  std::string current_bytes;
-  error = ReadNotebookEnvelope(*notebook, current_envelope, &current_bytes);
-  if (error != VXCORE_OK) {
-    return error;
-  }
-  if (current_root != root || current_bytes != bytes) {
-    return VXCORE_ERR_INVALID_STATE;
-  }
-  error = RegisterEncryptionOwner(*notebook, *session);
-  if (error != VXCORE_OK) {
-    return error;
-  }
+  // Embedded envelopes carry their authenticated origin identity, independent of
+  // the current containing notebook. No registry mutex or IO gate covers this KDF.
+  error = Encryption::UnlockKeys(envelope, envelope.notebook_id, password, password_size,
+                                 master_key, notebook_key);
+  if (error == VXCORE_OK) error = AuthenticateSelectedNote(*source, notebook_key);
+  if (error != VXCORE_OK) return error;
+  // Recheck identity, candidate metadata/path and complete source after the KDF.
+  error = RevalidateEncryptionSource(*notebook, root, candidate, *source);
+  if (error == VXCORE_OK) error = RegisterEncryptionOwner(*notebook, *session);
+  if (error != VXCORE_OK) return error;
   return InstallEncryptionKeys(*notebook, *session, envelope,
                                 std::make_shared<Encryption::Key>(std::move(master_key)),
-                                std::make_shared<Encryption::Key>(std::move(notebook_key)), nullptr);
+                                std::make_shared<Encryption::Key>(std::move(notebook_key)));
 }
 
-VxCoreError NotebookManager::UnlockNotebookWithCachedMaster(const std::string &notebook_id) {
-  // This entry point belongs exclusively to the protected-candidate open/load
-  // path. Public unlock(password) still authenticates those exact password bytes.
+VxCoreError NotebookManager::UnlockNotebookWithCachedMaster(const std::string &notebook_id,
+                                                           const char *file_path) {
+  // Protected candidates only. Public password unlock still authenticates the
+  // supplied password even when an equivalent MK/NK is already in memory.
   try {
     auto *notebook = GetNotebook(notebook_id);
-    if (!notebook) {
-      return VXCORE_ERR_NOT_FOUND;
-    }
-    if (notebook->GetType() != NotebookType::Bundled) {
-      return VXCORE_ERR_UNSUPPORTED;
-    }
-    auto session = GetEncryptionSession(false);
-    if (!session) {
-      return VXCORE_ERR_ENCRYPTION_LOCKED;
-    }
-    EncryptionSession::Operation operation(*session);
-    if (!operation.active) {
-      return VXCORE_ERR_INVALID_STATE;
-    }
+    if (!notebook) return VXCORE_ERR_NOT_FOUND;
     fs::path root;
     auto error = CheckNotebookIdentity(*notebook, false, root);
-    Encryption::KeyEnvelope envelope;
-    std::string bytes;
+    EncryptionCandidate candidate;
+    std::unique_ptr<EncryptionKeySource> source;
+    if (error == VXCORE_OK) error = ReadEncryptionSource(*notebook, file_path, source, candidate);
+    if (error != VXCORE_OK) return error;
+    auto session = GetEncryptionSession(false);
+    if (!session) return VXCORE_ERR_ENCRYPTION_LOCKED;
+    EncryptionSession::Operation operation(*session);
+    if (!operation.active) return VXCORE_ERR_INVALID_STATE;
+    std::shared_ptr<const Encryption::Key> cached_notebook_key;
+    error = AcquireSourceKey(notebook->GetEncryption(), *source, cached_notebook_key);
     if (error == VXCORE_OK) {
-      error = ReadNotebookEnvelope(*notebook, envelope, &bytes);
+      error = AuthenticateSelectedNote(*source, *cached_notebook_key);
+      return error == VXCORE_OK ? RevalidateEncryptionSource(*notebook, root, candidate, *source)
+                               : error;
     }
-    if (error != VXCORE_OK) {
-      return error;
-    }
+    if (error != VXCORE_ERR_ENCRYPTION_LOCKED) return error;
+    const auto &envelope = source->Envelope();
     std::shared_ptr<const Encryption::Key> master_key;
     {
       std::lock_guard<std::mutex> lock(session->mutex);
       const auto found = session->master_keys.find(envelope.vault_id);
-      if (found == session->master_keys.end()) {
-        return VXCORE_ERR_ENCRYPTION_LOCKED;
-      }
-      if (found->second.Matches(envelope) == false) {
-        return VXCORE_ERR_ENCRYPTION_AUTH_FAILED;
-      }
+      if (found == session->master_keys.end()) return VXCORE_ERR_ENCRYPTION_LOCKED;
+      if (!found->second.Matches(envelope)) return VXCORE_ERR_ENCRYPTION_AUTH_FAILED;
       master_key = found->second.key;
     }
     Encryption::Key notebook_key;
     error = Encryption::UnlockNotebookKey(envelope, *master_key, notebook_key);
-    if (error != VXCORE_OK) {
-      return error;
-    }
-    // Revalidate both identity and complete key-file bytes before any installation;
-    // the borrowed MK lease and active operation exclude Lock All throughout.
-    fs::path current_root;
-    error = CheckNotebookIdentity(*notebook, false, current_root);
-    if (error != VXCORE_OK) {
-      return error;
-    }
-    Encryption::KeyEnvelope current_envelope;
-    std::string current_bytes;
-    error = ReadNotebookEnvelope(*notebook, current_envelope, &current_bytes);
-    if (error != VXCORE_OK) {
-      return error;
-    }
-    if (current_root != root || current_bytes != bytes) {
-      return VXCORE_ERR_INVALID_STATE;
-    }
-    error = RegisterEncryptionOwner(*notebook, *session);
-    if (error != VXCORE_OK) {
-      return error;
-    }
+    if (error == VXCORE_OK) error = AuthenticateSelectedNote(*source, notebook_key);
+    if (error == VXCORE_OK) error = RevalidateEncryptionSource(*notebook, root, candidate, *source);
+    if (error == VXCORE_OK) error = RegisterEncryptionOwner(*notebook, *session);
+    if (error != VXCORE_OK) return error;
     return InstallEncryptionKeys(*notebook, *session, envelope, std::move(master_key),
-                                  std::make_shared<Encryption::Key>(std::move(notebook_key)), nullptr);
+                                  std::make_shared<Encryption::Key>(std::move(notebook_key)));
   } catch (const std::bad_alloc &) {
     return VXCORE_ERR_OUT_OF_MEMORY;
   } catch (const std::length_error &) {
@@ -891,111 +788,120 @@ VxCoreError NotebookManager::GetEncryptionStatus(const std::string &notebook_id,
                                                   std::string &out_status_json) {
   out_status_json.clear();
   auto *notebook = GetNotebook(notebook_id);
-  if (!notebook) {
-    return VXCORE_ERR_NOT_FOUND;
-  }
-  if (notebook->GetType() != NotebookType::Bundled) {
-    return VXCORE_ERR_UNSUPPORTED;
-  }
+  if (!notebook) return VXCORE_ERR_NOT_FOUND;
   fs::path root;
   nlohmann::json config;
   auto error = CheckNotebookIdentity(*notebook, false, root, &config);
   if (error != VXCORE_OK) return error;
-  bool encrypted = false;
-  Encryption::ObjectHeader header;
+  EncryptionCandidate candidate;
   if (file_path) {
-    if (!*file_path) {
-      return VXCORE_ERR_INVALID_PARAM;
-    }
-    const auto relative = notebook->GetCleanRelativePath(file_path);
-    const auto relative_path = PathFromUtf8(relative);
-    if (relative.empty() || relative_path.is_absolute()) {
-      return VXCORE_ERR_INVALID_PARAM;
-    }
-    for (const auto &part : relative_path) {
-      if (part == "..") {
-        return VXCORE_ERR_INVALID_PARAM;
-      }
-    }
-    const bool suffix = relative_path.extension() == ".vne";
-    const FileRecord *record = nullptr;
-    auto error = notebook->GetFolderManager()->GetFileInfo(relative, &record);
-    if (error != VXCORE_OK) {
-      return suffix && error == VXCORE_ERR_NOT_FOUND ? VXCORE_ERR_ENCRYPTION_FORMAT : error;
-    }
-    if (record->metadata.is_object() && record->metadata.contains(kJsonKeyEncrypted)) {
-      const auto &marker = record->metadata.at(kJsonKeyEncrypted);
-      if (!marker.is_boolean()) {
-        return VXCORE_ERR_ENCRYPTION_FORMAT;
-      }
-      encrypted = marker.get<bool>();
-    }
-    if (suffix != encrypted) {
-      return VXCORE_ERR_ENCRYPTION_FORMAT;
-    }
-    if (encrypted) {
-      const auto editor = record->metadata.find(kJsonKeyEditorType);
-      if (editor == record->metadata.end() ||
-          (*editor != "markdown" && *editor != "text" && *editor != "mindmap")) {
-        return VXCORE_ERR_ENCRYPTION_FORMAT;
-      }
-      const auto absolute = PathFromUtf8(notebook->GetAbsolutePath(relative));
-      if (!IsPathWithin(notebook->GetRootFolder(), PathToUtf8(absolute), false)) {
-        return VXCORE_ERR_ENCRYPTION_FORMAT;
-      }
-      auto current = PathFromUtf8(notebook->GetRootFolder());
-      for (const auto &part : relative_path) {
-        current /= part;
-        if (CheckReparsePoint(PathToUtf8(current)) != ReparseState::kNo) {
-          return VXCORE_ERR_ENCRYPTION_FORMAT;
-        }
-      }
-      error = Encryption::ReadObjectHeader(absolute, header);
-      if (error != VXCORE_OK) {
-        return error;
-      }
-      if (header.kind != "note") {
-        return VXCORE_ERR_ENCRYPTION_FORMAT;
-      }
-    }
-  }
-  bool initialized = false;
-  error = EntryExists(EncryptionKeyPath(*notebook), initialized);
-  if (error != VXCORE_OK) {
-    return error;
+    error = ReadEncryptionCandidate(*notebook, file_path, candidate);
+    if (error != VXCORE_OK) return error;
   }
   Encryption::KeyEnvelope envelope;
+  bool initialized = false;
   bool unlocked = false;
-  if (initialized) {
-    error = ReadNotebookEnvelope(*notebook, envelope);
-    if (error != VXCORE_OK) {
-      return error;
-    }
-    if (encrypted && header.notebook_key_id != envelope.notebook_key_id) {
+  int version = 0;
+  if (candidate.encrypted) {
+    std::unique_ptr<EncryptionKeySource> source;
+    error = EncryptionKeySource::Read(candidate.absolute_path,
+                                       PathFromUtf8(notebook->GetMetadataFolder()), source);
+    if (error != VXCORE_OK) return error;
+    if (!source->Header() || source->Header()->kind != "note" ||
+        (source->IsLegacy() && source->Envelope().notebook_id != notebook_id)) {
       return VXCORE_ERR_ENCRYPTION_FORMAT;
     }
-    if (auto *owner = notebook->GetEncryption()) {
-      std::lock_guard<std::mutex> lock(owner->mutex_);
-      unlocked = !owner->locking_ && owner->notebook_key_ && SameEnvelope(envelope, owner->envelope_);
-    }
+    envelope = source->Envelope();
+    version = source->Header()->version;
+    initialized = true;
+    std::shared_ptr<const Encryption::Key> key;
+    error = AcquireSourceKey(notebook->GetEncryption(), *source, key);
+    if (error != VXCORE_OK && error != VXCORE_ERR_ENCRYPTION_LOCKED &&
+        error != VXCORE_ERR_ENCRYPTION_AUTH_FAILED) return error;
+    unlocked = error == VXCORE_OK;
   } else {
-    if (encrypted || config.value(kJsonKeyEncryptionInitialized, false)) {
-      return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
-    }
+    // A creation/status query describes the in-memory default first. It never
+    // resolves an empty-path source or turns legacy-only errors into a v2 gate.
     if (auto *owner = notebook->GetEncryption()) {
-      std::lock_guard<std::mutex> lock(owner->mutex_);
-      if (!owner->envelope_.notebook_id.empty()) {
-        return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
+      std::shared_ptr<const Encryption::Key> key;
+      error = owner->AcquireNotebookKey(key, &envelope);
+      if (error != VXCORE_OK && error != VXCORE_ERR_ENCRYPTION_LOCKED) return error;
+      initialized = unlocked = error == VXCORE_OK;
+    }
+    if (!initialized) {
+      Encryption::KeyEnvelope legacy;
+      if (ReadNotebookEnvelope(*notebook, legacy) == VXCORE_OK) {
+        envelope = std::move(legacy);
+        initialized = true;
       }
     }
   }
-  out_status_json = nlohmann::json{{kJsonKeyInitialized, initialized},
-                                  {kJsonKeyEncryptionInitialized,
-                                   config.value(kJsonKeyEncryptionInitialized, nlohmann::json())},
-                                  {kJsonKeyUnlocked, unlocked},
-                                  {kJsonKeyEncrypted, encrypted},
-                                  {kJsonKeyVaultId, envelope.vault_id}}.dump();
+  nlohmann::json status{{kJsonKeyInitialized, initialized},
+                        {kJsonKeyEncryptionInitialized,
+                         config.value(kJsonKeyEncryptionInitialized, nlohmann::json())},
+                        {kJsonKeyUnlocked, unlocked},
+                        {kJsonKeyEncrypted, candidate.encrypted},
+                        {kJsonKeyVaultId, envelope.vault_id}};
+  if (candidate.encrypted) status[kJsonKeyVersion] = version;
+  out_status_json = status.dump();
   return VXCORE_OK;
+}
+
+VxCoreError NotebookManager::MigrateNoteEncryption(const std::string &notebook_id,
+                                                   const char *file_path,
+                                                   BufferManager &buffer_manager) {
+  if (!file_path) return VXCORE_ERR_NULL_POINTER;
+  if (!*file_path) return VXCORE_ERR_INVALID_PARAM;
+  auto *notebook = GetNotebook(notebook_id);
+  if (!notebook) return VXCORE_ERR_NOT_FOUND;
+  fs::path root;
+  auto error = CheckNotebookIdentity(*notebook, true, root);
+  EncryptionCandidate candidate;
+  std::unique_ptr<EncryptionKeySource> source;
+  if (error == VXCORE_OK) error = ReadEncryptionSource(*notebook, file_path, source, candidate);
+  if (error != VXCORE_OK) return error;
+  // A v2 note needs no mutation, even if an existing buffer already owns it.
+  if (source->Header()->version == 2) return source->Revalidate();
+  // Caller maintenance prevents new loads while this preflight and migration run.
+  // Compare filesystem identity too, so path aliases cannot bypass a live lease.
+  for (const auto *buffer : buffer_manager.ListBuffers()) {
+    if (buffer->IsVirtual() || !buffer->IsContentLoaded() ||
+        buffer->GetNotebookId() != notebook_id) continue;
+    const auto path = PathFromUtf8(notebook->GetAbsolutePath(buffer->GetFilePath()));
+    std::error_code ec;
+    if (path == candidate.absolute_path || fs::equivalent(path, candidate.absolute_path, ec)) {
+      return VXCORE_ERR_INVALID_STATE;
+    }
+    if (ec && ec != std::errc::no_such_file_or_directory) return VXCORE_ERR_IO;
+  }
+  auto session = GetEncryptionSession(false);
+  if (!session) return VXCORE_ERR_ENCRYPTION_LOCKED;
+  EncryptionSession::Operation operation(*session);
+  if (!operation.active) return VXCORE_ERR_INVALID_STATE;
+  std::shared_ptr<const Encryption::Key> notebook_key;
+  error = AcquireSourceKey(notebook->GetEncryption(), *source, notebook_key);
+  if (error == VXCORE_ERR_ENCRYPTION_LOCKED) {
+    error = UnlockNotebookWithCachedMaster(notebook_id, file_path);
+    if (error == VXCORE_OK) {
+      error = AcquireSourceKey(notebook->GetEncryption(), *source, notebook_key);
+    }
+  }
+  if (error != VXCORE_OK) return error;
+  error = RevalidateEncryptionSource(*notebook, root, candidate, *source);
+  if (error != VXCORE_OK) return error;
+  // Reserve event data before publication. The codec reports a durable backup
+  // rewrite even if the later note rewrite fails; every actual mutation is dirty.
+  const nlohmann::json event{{kJsonKeyNotebookId, notebook_id}, {"path", candidate.relative_path}};
+  bool changed = false;
+  error = Encryption::MigrateNote(candidate.absolute_path, source->Envelope(), *notebook_key, changed);
+  if (changed && event_manager_) {
+    try {
+      event_manager_->Emit(events::kFileSaved, event);
+    } catch (...) {
+      VXCORE_LOG_ERROR("Encrypted note migration committed; mutation listener failed");
+    }
+  }
+  return error;
 }
 
 NotebookManager::NotebookManager(ConfigManager *config_manager) : config_manager_(config_manager) {

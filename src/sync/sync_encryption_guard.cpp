@@ -14,6 +14,7 @@
 #include "sync/git/libgit2_init.h"
 #include "sync/jianguoyun/jianguoyun_state.h"
 #include "sync/sync_json_keys.h"
+#include "sync/webdav/webdav_state.h"
 #include "utils/file_utils.h"
 #include "vxcore/notebook_json_keys.h"
 
@@ -82,7 +83,7 @@ Json ReadState(const fs::path &path) {
   auto json = Json::parse(input);
   Require(!input.bad() && json.is_object() && json.at("version").is_number_integer() &&
           json.at("version") == 1 && json.at(kJsonKeyNotebookId).is_string() &&
-          NotebookEncryption::IsCanonicalUuid(json.at(kJsonKeyNotebookId).get<std::string>()) &&
+          EncryptedNote::IsCanonicalUuid(json.at(kJsonKeyNotebookId).get<std::string>()) &&
           json.at(kJsonKeyRemoteUrl).is_string() &&
           !json.at(kJsonKeyRemoteUrl).get_ref<const std::string &>().empty() &&
           Hash(json.at("usernameHash")));
@@ -134,7 +135,7 @@ KeyState InspectWebDav(const fs::path &directory) {
             pending.at(kJsonKeyRemoteUrl) == state.at(kJsonKeyRemoteUrl) &&
             pending.at("usernameHash") == state.at("usernameHash") &&
             pending.at("operationId").is_string() &&
-            NotebookEncryption::IsCanonicalUuid(pending.at("operationId").get<std::string>()) &&
+            EncryptedNote::IsCanonicalUuid(pending.at("operationId").get<std::string>()) &&
             pending.at("operations").is_array() && pending.at("operations").size() <= 500000);
     for (const auto &op : pending.at("operations")) {
       Require(op.is_object() && op.at("path").is_string());
@@ -148,6 +149,10 @@ KeyState InspectWebDav(const fs::path &directory) {
       Require(stage == "prepared" || stage == "remoteConfirmed" || stage == "localConfirmed" ||
               stage == "baselineConfirmed");
       result.any_pending = true;
+      if (webdav::IsEncrypted(path) &&
+          (action == "upsertLocal" || action == "deleteLocal")) {
+        result.replace_local = true;
+      }
       if (!KeyPath(path)) continue;
       Require(op.at("kind") == "file" && action != "mkdirLocal" && action != "mkdirRemote" &&
               action != "removeLocalCollection");
@@ -155,8 +160,6 @@ KeyState InspectWebDav(const fs::path &directory) {
         Require(op.at(field).is_null() || Hash(op.at(field)));
       Require((action != "upsertLocal" && action != "upsertRemote") || Hash(op.at("newSha256")));
       result.pending = true;
-      result.replace_local =
-          result.replace_local || action == "upsertLocal" || action == "deleteLocal";
     }
   }
   return result;
@@ -173,7 +176,7 @@ VxCoreError CheckWebDav(const fs::path &directory, bool all_paths) {
   const auto retired = directory / "retired";
   if (Directory(retired)) {
     for (const auto &entry : fs::directory_iterator(retired)) {
-      Require(NotebookEncryption::IsCanonicalUuid(PathToUtf8(entry.path().filename())));
+      Require(EncryptedNote::IsCanonicalUuid(PathToUtf8(entry.path().filename())));
       if (unresolved(InspectWebDav(entry.path()))) return VXCORE_ERR_SYNC_CONFLICT;
     }
   }
@@ -195,7 +198,7 @@ VxCoreError CheckJianguoyun(const fs::path &directory, bool all_paths) {
   const auto retired = directory / "retired";
   if (Directory(retired)) {
     for (const auto &entry : fs::directory_iterator(retired)) {
-      Require(NotebookEncryption::IsCanonicalUuid(PathToUtf8(entry.path().filename())));
+      Require(EncryptedNote::IsCanonicalUuid(PathToUtf8(entry.path().filename())));
       const auto archived = check(entry.path());
       if (archived != VXCORE_OK) return archived;
     }

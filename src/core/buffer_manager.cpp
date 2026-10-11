@@ -14,7 +14,7 @@
 #include "metadata_store.h"
 #include "notebook.h"
 #include "notebook_manager.h"
-#include "sync/sync_encryption_guard.h"
+#include "standard_buffer_provider.h"
 #include "utils/file_utils.h"
 #include "utils/logger.h"
 #include "utils/utils.h"
@@ -307,15 +307,15 @@ VxCoreError BufferManager::EnsureProtectedContent(Buffer &buffer) {
     return buffer.GetProtectionError();
   }
   if (buffer.IsContentLoaded()) {
-    const auto *notebook = buffer.GetNotebook();
-    return notebook ? CheckNotebookEncryptionSyncState(notebook->GetMetadataFolder())
-                    : VXCORE_ERR_UNSUPPORTED;
+    const auto *provider = dynamic_cast<const StandardBufferProvider *>(buffer.GetProvider());
+    return provider ? provider->CheckProtectedAccess() : VXCORE_ERR_UNSUPPORTED;
   }
   if (!buffer.GetNotebook() || !notebook_manager_) {
     return VXCORE_ERR_UNSUPPORTED;
   }
   const auto error =
-      notebook_manager_->UnlockNotebookWithCachedMaster(buffer.GetNotebookId());
+      notebook_manager_->UnlockNotebookWithCachedMaster(buffer.GetNotebookId(),
+                                                         buffer.GetFilePath().c_str());
   if (error != VXCORE_OK) {
     return error;
   }
