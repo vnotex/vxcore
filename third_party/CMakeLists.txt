@@ -50,6 +50,8 @@ endif()
 # and _RTC_StackFailure crashes on first log call). Generator expression:
 # MultiThreadedDLL in Release, MultiThreadedDebugDLL in Debug.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL" CACHE STRING "" FORCE)
+# libgit2 also selects CRT flags explicitly through its own option.
+set(STATIC_CRT OFF CACHE BOOL "Link the static CRT libraries" FORCE)
 # Suppress all warnings from libgit2 internal targets (C5287 etc.) by
 # injecting /w (MSVC) or -w (GCC/Clang) into the C/CXX flags for this scope.
 set(_saved_c_flags "${CMAKE_C_FLAGS}")
