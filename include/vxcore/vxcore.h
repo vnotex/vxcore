@@ -780,6 +780,19 @@ VXCORE_API VxCoreError vxcore_node_finalize_transfer_move(VxCoreContextHandle co
 VXCORE_API VxCoreError vxcore_node_get_config(VxCoreContextHandle context, const char *notebook_id,
                                               const char *node_path, char **out_config_json);
 
+// Query the current saved file length in bytes, not allocated disk space or
+// unsaved buffer content. Encrypted files include their on-disk envelope.
+// Does not read file contents, query metadata, or cache the result. Separate
+// from get_config so ordinary metadata queries gain no size-related disk IO.
+// file_path is UTF-8, relative to an open notebook; rooted/escaping paths are
+// invalid. Filesystem symlinks are followed; metadata indexing is not required.
+// *out_size is zero on failure (when non-NULL). Returns INVALID_PARAM for null
+// arguments or invalid paths, NOT_FOUND for a missing notebook/file,
+// PERMISSION_DENIED for access errors, and IO for non-regular files/other IO errors.
+VXCORE_API VxCoreError vxcore_node_get_file_size(VxCoreContextHandle context,
+                                                 const char *notebook_id,
+                                                 const char *file_path, uint64_t *out_size);
+
 // Delete node (file or folder)
 VXCORE_API VxCoreError vxcore_node_delete(VxCoreContextHandle context, const char *notebook_id,
                                           const char *node_path);

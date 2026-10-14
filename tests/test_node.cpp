@@ -612,12 +612,88 @@ int test_node_invalid_params() {
   return 0;
 }
 
+int test_node_get_file_size() {
+  std::cout << "  Running test_node_get_file_size (bundled and raw)..." << std::endl;
+  for (const auto type : {VXCORE_NOTEBOOK_BUNDLED, VXCORE_NOTEBOOK_RAW}) {
+    const auto root = get_test_path(type == VXCORE_NOTEBOOK_BUNDLED
+                                       ? "test_node_file_size_bundled"
+                                       : "test_node_file_size_raw");
+    cleanup_test_dir(root);
+    VxCoreContextHandle ctx = nullptr;
+    ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+    char *notebook_id = nullptr;
+    ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), "{\"name\":\"Size\"}", type,
+                                    &notebook_id), VXCORE_OK);
+    char *folder_id = nullptr;
+    ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "nested", &folder_id), VXCORE_OK);
+    vxcore_string_free(folder_id);
+    const std::string name = u8"\u7b14\u8bb0.md";
+    const std::string relative = "nested/" + name;
+    const std::string disk_path = root + "/" + relative;
+    char *file_id = nullptr;
+    ASSERT_EQ(vxcore_file_create(ctx, notebook_id, "nested", name.c_str(), &file_id), VXCORE_OK);
+    vxcore_string_free(file_id);
+
+    uint64_t size = 99;
+    ASSERT_EQ(vxcore_node_get_file_size(ctx, notebook_id, relative.c_str(), &size), VXCORE_OK);
+    ASSERT_EQ(size, 0U);
+    // Byte count, not character count; embedded NUL and CRLF must count too.
+    write_file(disk_path, std::string("A\0B\r\n", 5) + u8"\u03bb");
+    ASSERT_EQ(vxcore_node_get_file_size(ctx, notebook_id, relative.c_str(), &size), VXCORE_OK);
+    ASSERT_EQ(size, 7U);
+    // An external rewrite must be visible without refreshing notebook metadata.
+    write_file(disk_path, "new");
+    ASSERT_EQ(vxcore_node_get_file_size(ctx, notebook_id, relative.c_str(), &size), VXCORE_OK);
+    ASSERT_EQ(size, 3U);
+
+    ASSERT_TRUE(std::filesystem::remove(utf8_to_fs_path(disk_path)));
+    ASSERT_EQ(vxcore_node_get_file_size(ctx, notebook_id, relative.c_str(), &size),
+              VXCORE_ERR_NOT_FOUND);
+    ASSERT_EQ(size, 0U);
+    size = 99;
+    ASSERT_EQ(vxcore_node_get_file_size(ctx, notebook_id, "nested", &size), VXCORE_ERR_IO);
+    ASSERT_EQ(size, 0U);
+    size = 99;
+    ASSERT_EQ(vxcore_node_get_file_size(ctx, "unknown-notebook", relative.c_str(), &size),
+              VXCORE_ERR_NOT_FOUND);
+    ASSERT_EQ(size, 0U);
+
+    for (const char *path : {"", "..", "../outside.md", "nested/../../outside.md", "/note.md"
+#ifdef _WIN32
+                            , "C:note.md", "C:/note.md", "\\\\server\\share\\note.md"
+#endif
+         }) {
+      size = 99;
+      ASSERT_EQ(vxcore_node_get_file_size(ctx, notebook_id, path, &size), VXCORE_ERR_INVALID_PARAM);
+      ASSERT_EQ(size, 0U);
+    }
+    size = 99;
+    ASSERT_EQ(vxcore_node_get_file_size(nullptr, notebook_id, "note.md", &size),
+              VXCORE_ERR_INVALID_PARAM);
+    ASSERT_EQ(size, 0U);
+    size = 99;
+    ASSERT_EQ(vxcore_node_get_file_size(ctx, nullptr, "note.md", &size), VXCORE_ERR_INVALID_PARAM);
+    ASSERT_EQ(size, 0U);
+    size = 99;
+    ASSERT_EQ(vxcore_node_get_file_size(ctx, notebook_id, nullptr, &size), VXCORE_ERR_INVALID_PARAM);
+    ASSERT_EQ(size, 0U);
+    ASSERT_EQ(vxcore_node_get_file_size(ctx, notebook_id, "note.md", nullptr),
+              VXCORE_ERR_INVALID_PARAM);
+
+    vxcore_string_free(notebook_id);
+    vxcore_context_destroy(ctx);
+    cleanup_test_dir(root);
+  }
+  return 0;
+}
+
 int main() {
   vxcore_set_test_mode(1);
   vxcore_clear_test_directory();
 
   std::cout << "Running unified node API tests..." << std::endl;
 
+  RUN_TEST(test_node_get_file_size);
   RUN_TEST(test_node_get_config_file);
   RUN_TEST(test_node_get_config_folder);
   RUN_TEST(test_node_get_config_not_found);

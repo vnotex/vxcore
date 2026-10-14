@@ -450,6 +450,60 @@ VXCORE_API VxCoreError vxcore_node_finalize_transfer_move(VxCoreContextHandle co
   }
 }
 
+VXCORE_API VxCoreError vxcore_node_get_file_size(VxCoreContextHandle context,
+                                                 const char *notebook_id,
+                                                 const char *file_path, uint64_t *out_size) {
+  if (out_size) {
+    *out_size = 0;
+  }
+  if (!context || !notebook_id || !file_path || !out_size || !*file_path) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    const auto relative = vxcore::PathFromUtf8(file_path).lexically_normal();
+    if (relative.has_root_path() || relative.empty() || *relative.begin() == "..") {
+      ctx->last_error = "Expected a notebook-relative file path";
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+    const auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    const auto path = vxcore::PathFromUtf8(
+        notebook->GetAbsolutePath(vxcore::PathToGenericUtf8(relative)));
+    std::error_code error;
+    const auto status = std::filesystem::status(path, error);
+    if (!error && !std::filesystem::exists(status)) {
+      error = std::make_error_code(std::errc::no_such_file_or_directory);
+    }
+    if (!error && !std::filesystem::is_regular_file(status)) {
+      ctx->last_error = "Node is not a regular file";
+      return VXCORE_ERR_IO;
+    }
+    if (!error) {
+      const auto size = std::filesystem::file_size(path, error);
+      if (!error) {
+        *out_size = size;
+        return VXCORE_OK;
+      }
+    }
+    ctx->last_error = error.message();
+    if (error == std::errc::no_such_file_or_directory || error == std::errc::not_a_directory) {
+      return VXCORE_ERR_NOT_FOUND;
+    }
+    return error == std::errc::permission_denied ? VXCORE_ERR_PERMISSION_DENIED : VXCORE_ERR_IO;
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const std::exception &e) {
+    ctx->last_error = e.what();
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_node_get_config(VxCoreContextHandle context, const char *notebook_id,
                                               const char *node_path, char **out_config_json) {
   if (!context || !notebook_id || !node_path || !out_config_json) {
