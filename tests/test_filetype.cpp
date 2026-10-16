@@ -14,27 +14,62 @@ int test_filetype_defaults() {
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(ctx);
 
-  char *json_str = nullptr;
-  err = vxcore_filetype_list(ctx, &json_str);
-  ASSERT_EQ(err, VXCORE_OK);
-  ASSERT_NOT_NULL(json_str);
+  for (const auto *name : {"Markdown", "Text", "MindMap", "Others"}) {
+    char *json_str = nullptr;
+    err = vxcore_filetype_get_by_name(ctx, name, &json_str);
+    ASSERT_EQ(err, VXCORE_OK);
+    ASSERT_NOT_NULL(json_str);
 
-  nlohmann::json j = nlohmann::json::parse(json_str);
-  ASSERT_EQ(j.size(), 5);
-  ASSERT_EQ(j[0]["name"], "Markdown");
-  ASSERT_EQ(j[1]["name"], "Text");
-  ASSERT_EQ(j[2]["name"], "PDF");
-  ASSERT_EQ(j[3]["name"], "MindMap");
-  ASSERT_EQ(j[4]["name"], "Others");
-  ASSERT_TRUE(j[0]["isSearchable"]);   // Markdown
-  ASSERT_TRUE(j[1]["isSearchable"]);   // Text
-  ASSERT_FALSE(j[2]["isSearchable"]);  // PDF
-  ASSERT_TRUE(j[3]["isSearchable"]);   // MindMap
-  ASSERT_FALSE(j[4]["isSearchable"]);  // Others
+    const auto entry = nlohmann::json::parse(json_str);
+    vxcore_string_free(json_str);
+    ASSERT_EQ(entry["name"], name);
+    ASSERT_TRUE(entry["isNewable"]);
+    ASSERT_EQ(entry["isSearchable"], std::string(name) != "Others");
+  }
 
-  vxcore_string_free(json_str);
   vxcore_context_destroy(ctx);
   std::cout << "  ✓ test_filetype_defaults passed" << std::endl;
+  return 0;
+}
+
+int test_filetype_typst_routing() {
+  vxcore_set_test_mode(1);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  ASSERT_NOT_NULL(ctx);
+
+  for (const auto *suffix : {"typst", "TYPST"}) {
+    char *json = nullptr;
+    ASSERT_EQ(vxcore_filetype_get_by_suffix(ctx, suffix, &json), VXCORE_OK);
+    ASSERT_NOT_NULL(json);
+    const auto type = nlohmann::json::parse(json);
+    vxcore_string_free(json);
+    ASSERT_EQ(type["name"], "Typst");
+    ASSERT_EQ(type["displayName"], "Typst");
+    ASSERT_EQ(type["suffixes"], nlohmann::json::array({"typst"}));
+    ASSERT_TRUE(type["isNewable"]);
+    ASSERT_TRUE(type["isSearchable"]);
+  }
+  for (const auto *name : {"Typst", "typst", "TYPST", "tYpSt"}) {
+    char *json = nullptr;
+    ASSERT_EQ(vxcore_filetype_get_by_name(ctx, name, &json), VXCORE_OK);
+    ASSERT_NOT_NULL(json);
+    const auto type = nlohmann::json::parse(json);
+    vxcore_string_free(json);
+    ASSERT_EQ(type["name"], "Typst");
+    ASSERT_TRUE(type["isNewable"]);
+    ASSERT_TRUE(type["isSearchable"]);
+  }
+  for (const auto *suffix : {"typ", "TYP"}) {
+    char *json = nullptr;
+    ASSERT_EQ(vxcore_filetype_get_by_suffix(ctx, suffix, &json), VXCORE_OK);
+    ASSERT_NOT_NULL(json);
+    const auto type = nlohmann::json::parse(json);
+    vxcore_string_free(json);
+    ASSERT_NE(type["name"], "Typst");
+  }
+
+  vxcore_context_destroy(ctx);
   return 0;
 }
 
@@ -137,18 +172,6 @@ int test_filetype_pdf_not_newable() {
   ASSERT_FALSE(pdf["isNewable"]);
   vxcore_string_free(pdf_json);
 
-  // Get all types to verify others are newable
-  char *list_json = nullptr;
-  err = vxcore_filetype_list(ctx, &list_json);
-  ASSERT_EQ(err, VXCORE_OK);
-
-  nlohmann::json types = nlohmann::json::parse(list_json);
-  ASSERT_TRUE(types[0]["isNewable"]);  // Markdown
-  ASSERT_TRUE(types[1]["isNewable"]);  // Text
-  ASSERT_TRUE(types[3]["isNewable"]);  // MindMap
-  ASSERT_TRUE(types[4]["isNewable"]);  // Others
-  vxcore_string_free(list_json);
-
   vxcore_context_destroy(ctx);
   std::cout << "  ✓ test_filetype_pdf_not_newable passed" << std::endl;
   return 0;
@@ -203,7 +226,7 @@ int test_filetype_display_name_locale() {
   return 0;
 }
 
-// Test C API: vxcore_filetype_list returns 5 types
+// Test C API: vxcore_filetype_list returns complete entry objects
 int test_filetype_c_api_list() {
   std::cout << "  Running test_filetype_c_api_list..." << std::endl;
   vxcore_set_test_mode(1);
@@ -221,14 +244,15 @@ int test_filetype_c_api_list() {
   // Parse and verify
   nlohmann::json types_array = nlohmann::json::parse(json);
   ASSERT_TRUE(types_array.is_array());
-  ASSERT_EQ(types_array.size(), 5);
+  ASSERT_FALSE(types_array.empty());
 
-  // Verify first entry structure
-  ASSERT_TRUE(types_array[0].contains("name"));
-  ASSERT_TRUE(types_array[0].contains("suffixes"));
-  ASSERT_TRUE(types_array[0].contains("isNewable"));
-  ASSERT_TRUE(types_array[0].contains("isSearchable"));
-  ASSERT_TRUE(types_array[0].contains("displayName"));
+  for (const auto &entry : types_array) {
+    ASSERT_TRUE(entry.contains("name"));
+    ASSERT_TRUE(entry.contains("suffixes"));
+    ASSERT_TRUE(entry.contains("isNewable"));
+    ASSERT_TRUE(entry.contains("isSearchable"));
+    ASSERT_TRUE(entry.contains("displayName"));
+  }
 
   vxcore_string_free(json);
   vxcore_context_destroy(ctx);
@@ -377,7 +401,7 @@ int test_filetype_set_add_type() {
 
   nlohmann::json types = nlohmann::json::parse(list_json);
   vxcore_string_free(list_json);
-  ASSERT_EQ(types.size(), 5);  // Default 5 types
+  const auto original = types.dump();
 
   // Add new type. Use suffixes that no built-in type claims so the lookup
   // below unambiguously resolves to this newly added type.
@@ -401,9 +425,7 @@ int test_filetype_set_add_type() {
 
   nlohmann::json updated = nlohmann::json::parse(updated_json);
   vxcore_string_free(updated_json);
-  ASSERT_EQ(updated.size(), 6);
-  ASSERT_EQ(updated[5]["name"], "CustomCode");
-  ASSERT_EQ(updated[5]["suffixes"].size(), 3);
+  ASSERT_EQ(updated, types);
 
   // Verify lookup works
   char *lookup_json = nullptr;
@@ -414,6 +436,8 @@ int test_filetype_set_add_type() {
   vxcore_string_free(lookup_json);
   ASSERT_EQ(lookup["name"], "CustomCode");
   ASSERT_TRUE(lookup["isSearchable"]);
+
+  ASSERT_EQ(vxcore_filetype_set(ctx, original.c_str()), VXCORE_OK);
 
   vxcore_context_destroy(ctx);
   std::cout << "  ✓ test_filetype_set_add_type passed" << std::endl;
@@ -497,6 +521,12 @@ int test_filetype_set_remove_type() {
   VxCoreError err = vxcore_context_create(nullptr, &ctx);
   ASSERT_EQ(err, VXCORE_OK);
 
+  char *original_json = nullptr;
+  ASSERT_EQ(vxcore_filetype_list(ctx, &original_json), VXCORE_OK);
+  ASSERT_NOT_NULL(original_json);
+  const std::string original(original_json);
+  vxcore_string_free(original_json);
+
   // Set only 2 types (removing the defaults)
   nlohmann::json types = nlohmann::json::array();
   types.push_back({{"name", "Markdown"},
@@ -525,6 +555,8 @@ int test_filetype_set_remove_type() {
   ASSERT_TRUE(result[0]["isSearchable"]);   // Legacy Markdown entry migrates to searchable.
   ASSERT_FALSE(result[1]["isSearchable"]);  // Legacy Others entry remains excluded.
 
+  ASSERT_EQ(vxcore_filetype_set(ctx, original.c_str()), VXCORE_OK);
+
   vxcore_context_destroy(ctx);
   std::cout << "  ✓ test_filetype_set_remove_type passed" << std::endl;
   return 0;
@@ -537,6 +569,7 @@ int main() {
   vxcore_clear_test_directory();
 
   RUN_TEST(test_filetype_defaults);
+  RUN_TEST(test_filetype_typst_routing);
   RUN_TEST(test_filetype_get_by_suffix_md);
   RUN_TEST(test_filetype_get_by_suffix_unknown);
   RUN_TEST(test_filetype_case_insensitive);

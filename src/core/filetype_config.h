@@ -1,6 +1,7 @@
 #ifndef VXCORE_FILETYPE_CONFIG_H
 #define VXCORE_FILETYPE_CONFIG_H
 
+#include <cstdint>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
@@ -49,6 +50,8 @@ struct SetTypesResult {
 
 struct FileTypesConfig {
   std::vector<FileTypeEntry> types;
+  // Registry-local migration version; replacements preserve deliberate deletions.
+  std::uint64_t schema_version = 1;
 
   FileTypesConfig();
 

@@ -111,6 +111,20 @@ add_vxcore_test(test_missing_nodes)
 add_vxcore_test(test_search)
 add_vxcore_test(test_tag_sync)
 add_vxcore_test(test_filetype)
+
+# FileTypesConfig has no public C++ exports; test migration without a backend context.
+add_executable(test_filetype_config
+    test_filetype_config.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/filetype_config.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/utils/string_utils.cpp
+)
+target_include_directories(test_filetype_config PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
+target_link_libraries(test_filetype_config PRIVATE nlohmann_json)
+add_test(NAME test_filetype_config COMMAND test_filetype_config)
+
 add_vxcore_test(test_workspace)
 add_vxcore_test(test_buffer_save_read_only)
 add_vxcore_test(test_notebook_mutators_read_only)

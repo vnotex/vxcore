@@ -1,5 +1,6 @@
 #include "filetype_config.h"
 
+#include <algorithm>
 #include <set>
 
 #include "utils/string_utils.h"
@@ -50,8 +51,8 @@ FileTypeEntry FileTypeEntry::FromJson(const nlohmann::json &json) {
   } else {
     // Migration for configs written before isSearchable existed.
     const std::string lower_name = ToLowerString(entry.name);
-    entry.is_searchable =
-        lower_name == "markdown" || lower_name == "text" || lower_name == "mindmap";
+    entry.is_searchable = lower_name == "markdown" || lower_name == "text" ||
+                          lower_name == "mindmap" || lower_name == "typst";
   }
 
   if (json.contains("displayName") && json["displayName"].is_string()) {
@@ -114,6 +115,7 @@ FileTypesConfig::FileTypesConfig() {
                     true, "Text", true));
   types.push_back(FileTypeEntry("PDF", {"pdf"}, false, "Portable Document Format", false));
   types.push_back(FileTypeEntry("MindMap", {"mmm", "emind"}, true, "Mind Map", true));
+  types.push_back(FileTypeEntry("Typst", {"typst"}, true, "Typst", true));
   types.push_back(FileTypeEntry("Others", {}, true, "Others", false));
 }
 
@@ -168,11 +170,32 @@ SetTypesResult FileTypesConfig::SetTypes(std::vector<FileTypeEntry> new_types) {
 
 FileTypesConfig FileTypesConfig::FromJson(const nlohmann::json &json) {
   FileTypesConfig config;
+  const auto version = json.find("schemaVersion");
+  const bool legacy = version == json.end() || !version->is_number_integer() ||
+                      (version->is_number_unsigned() ? version->get<std::uint64_t>() < 1
+                                                     : version->get<std::int64_t>() < 1);
+  if (!legacy) {
+    config.schema_version = version->get<std::uint64_t>();
+  }
 
   if (json.contains("fileTypes") && json["fileTypes"].is_array()) {
     config.types.clear();
     for (const auto &entry_json : json["fileTypes"]) {
       config.types.push_back(FileTypeEntry::FromJson(entry_json));
+    }
+    // Only legacy, nonempty saved registries gain the built-in. User rows and
+    // existing suffix ownership remain authoritative, including empty Typst rows.
+    if (legacy && !config.types.empty() && !config.GetByName("Typst")) {
+      const bool claimed = std::any_of(config.types.begin(), config.types.end(),
+                                       [](const FileTypeEntry &entry) {
+        return std::any_of(entry.suffixes.begin(), entry.suffixes.end(),
+                           [](const std::string &suffix) {
+          return ToLowerString(suffix) == "typst";
+        });
+      });
+      config.types.emplace_back("Typst", claimed ? std::vector<std::string>{}
+                                                 : std::vector<std::string>{"typst"},
+                                true, "Typst", true);
     }
   }
 
@@ -188,6 +211,7 @@ nlohmann::json FileTypesConfig::ToJson() const {
   }
 
   json["fileTypes"] = types_array;
+  json["schemaVersion"] = schema_version;
   return json;
 }
 
