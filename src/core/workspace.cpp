@@ -1,5 +1,7 @@
 #include "workspace.h"
 
+#include "vxcore/notebook_json_keys.h"
+
 namespace vxcore {
 
 WorkspaceConfig::WorkspaceConfig() : metadata(nlohmann::json::object()) {}
@@ -11,6 +13,9 @@ WorkspaceConfig WorkspaceConfig::FromJson(const nlohmann::json &json) {
   }
   if (json.contains("name") && json["name"].is_string()) {
     config.name = json["name"].get<std::string>();
+  }
+  if (json.contains(kJsonKeyIsPreview) && json[kJsonKeyIsPreview].is_boolean()) {
+    config.is_preview = json[kJsonKeyIsPreview].get<bool>();
   }
   if (json.contains("bufferIds") && json["bufferIds"].is_array()) {
     for (const auto &id : json["bufferIds"]) {
@@ -39,6 +44,7 @@ nlohmann::json WorkspaceConfig::ToJson() const {
   nlohmann::json json = nlohmann::json::object();
   json["id"] = id;
   json["name"] = name;
+  json[kJsonKeyIsPreview] = is_preview;
   nlohmann::json buffer_ids_array = nlohmann::json::array();
   for (const auto &buffer_id : buffer_ids) {
     buffer_ids_array.push_back(buffer_id);
@@ -63,6 +69,9 @@ WorkspaceRecord WorkspaceRecord::FromJson(const nlohmann::json &json) {
   }
   if (json.contains("name") && json["name"].is_string()) {
     record.name = json["name"].get<std::string>();
+  }
+  if (json.contains(kJsonKeyIsPreview) && json[kJsonKeyIsPreview].is_boolean()) {
+    record.is_preview = json[kJsonKeyIsPreview].get<bool>();
   }
   if (json.contains("bufferIds") && json["bufferIds"].is_array()) {
     for (const auto &id : json["bufferIds"]) {
@@ -91,6 +100,7 @@ nlohmann::json WorkspaceRecord::ToJson() const {
   nlohmann::json json = nlohmann::json::object();
   json["id"] = id;
   json["name"] = name;
+  json[kJsonKeyIsPreview] = is_preview;
   nlohmann::json buffer_ids_array = nlohmann::json::array();
   for (const auto &buffer_id : buffer_ids) {
     buffer_ids_array.push_back(buffer_id);

@@ -1016,6 +1016,13 @@ VXCORE_API VxCoreError vxcore_path_build_absolute(VxCoreContextHandle context,
 VXCORE_API VxCoreError vxcore_workspace_create(VxCoreContextHandle context, const char *name,
                                                char **out_id);
 
+// Create a transient, editable preview workspace with immutable isPreview=true.
+// Runtime get/list include it and its buffers. Sessions omit the workspace and
+// buffers owned only by previews; buffers shared with ordinary workspaces remain.
+// Returns the workspace ID in out_id (caller must free with vxcore_string_free).
+VXCORE_API VxCoreError vxcore_workspace_create_preview(VxCoreContextHandle context,
+                                                       const char *name, char **out_id);
+
 // Delete a workspace by ID.
 // If this is the current workspace, the current workspace is set to another workspace.
 VXCORE_API VxCoreError vxcore_workspace_delete(VxCoreContextHandle context, const char *id);

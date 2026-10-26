@@ -3,6 +3,7 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
 
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
@@ -750,6 +751,434 @@ int test_workspace_buffer_metadata_in_workspace_json() {
   return 0;
 }
 
+static std::filesystem::path ws_session_path() {
+  return std::filesystem::temp_directory_path() / "vxcore_test_config" / "local" / "vxsession.json";
+}
+
+static nlohmann::json read_ws_session() {
+  std::ifstream file(ws_session_path());
+  return nlohmann::json::parse(file);
+}
+
+static bool ws_has_record(const nlohmann::json &records, const std::string &id) {
+  return std::any_of(records.begin(), records.end(),
+                     [&id](const auto &record) { return record.at("id") == id; });
+}
+
+static int check_ws_session(const nlohmann::json &session,
+                            const std::vector<std::string> &workspace_ids,
+                            const std::vector<std::string> &buffer_ids,
+                            const std::string &current_id) {
+  const auto &workspaces = session.at("workspaces");
+  const auto &buffers = session.at("buffers");
+  ASSERT_EQ(workspaces.size(), workspace_ids.size());
+  ASSERT_EQ(buffers.size(), buffer_ids.size());
+  for (const auto &id : workspace_ids) {
+    ASSERT_TRUE(ws_has_record(workspaces, id));
+  }
+  for (const auto &workspace : workspaces) {
+    ASSERT_TRUE(workspace.at("isPreview").is_boolean());
+    ASSERT_FALSE(workspace.at("isPreview").get<bool>());
+  }
+  for (const auto &id : buffer_ids) {
+    ASSERT_TRUE(ws_has_record(buffers, id));
+  }
+  ASSERT_EQ(session.at("currentWorkspaceId").get<std::string>(), current_id);
+  return 0;
+}
+
+static int check_ws_runtime_buffers(VxCoreContextHandle ctx,
+                                    const std::vector<std::string> &expected,
+                                    const std::vector<std::string> &excluded = {}) {
+  char *out = nullptr;
+  ASSERT_EQ(vxcore_buffer_list(ctx, &out), VXCORE_OK);
+  const auto buffers = nlohmann::json::parse(out);
+  vxcore_string_free(out);
+  ASSERT_EQ(buffers.size(), expected.size());
+  for (const auto &id : expected) {
+    ASSERT_TRUE(ws_has_record(buffers, id));
+    out = nullptr;
+    ASSERT_EQ(vxcore_buffer_get(ctx, id.c_str(), &out), VXCORE_OK);
+    vxcore_string_free(out);
+  }
+  for (const auto &id : excluded) {
+    out = nullptr;
+    ASSERT_EQ(vxcore_buffer_get(ctx, id.c_str(), &out), VXCORE_ERR_BUFFER_NOT_FOUND);
+    vxcore_string_free(out);
+  }
+  return 0;
+}
+
+static int open_ws_preview_test_buffers(VxCoreContextHandle ctx, std::vector<std::string> &ids) {
+  for (const char *name :
+       {"ordinary.md", "preview-a.md", "preview-b.md", "shared.md", "unowned.md"}) {
+    const auto path = create_ws_temp_file(name, "# Preview persistence\n");
+    char *id = nullptr;
+    ASSERT_EQ(vxcore_buffer_open(ctx, nullptr, path.c_str(), &id), VXCORE_OK);
+    ASSERT_NOT_NULL(id);
+    ids.emplace_back(id);
+    vxcore_string_free(id);
+  }
+  return 0;
+}
+
+int test_workspace_preview_creation_contract() {
+  std::cout << "  Running test_workspace_preview_creation_contract..." << std::endl;
+  vxcore_clear_test_directory();
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  char *id = nullptr;
+  ASSERT_EQ(vxcore_workspace_create_preview(nullptr, "Preview", &id), VXCORE_ERR_NULL_POINTER);
+  ASSERT_EQ(vxcore_workspace_create_preview(ctx, nullptr, &id), VXCORE_ERR_NULL_POINTER);
+  ASSERT_EQ(vxcore_workspace_create_preview(ctx, "Preview", nullptr), VXCORE_ERR_NULL_POINTER);
+  ASSERT_NULL(id);
+
+  // Names and arbitrary metadata must not determine or mutate preview identity.
+  ASSERT_EQ(vxcore_workspace_create(ctx, "Preview", &id), VXCORE_OK);
+  const std::string ordinary_id(id);
+  vxcore_string_free(id);
+  id = nullptr;
+  ASSERT_EQ(vxcore_workspace_create_preview(ctx, "Ordinary", &id), VXCORE_OK);
+  ASSERT_NOT_NULL(id);
+  const std::string preview_id(id);
+  vxcore_string_free(id);
+  ASSERT_EQ(vxcore_workspace_rename(ctx, preview_id.c_str(), "Renamed"), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_set_metadata(ctx, preview_id.c_str(), R"({"isPreview":false})"),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_set_metadata(ctx, ordinary_id.c_str(), R"({"isPreview":true})"),
+            VXCORE_OK);
+
+  for (const auto &workspace_id : {ordinary_id, preview_id}) {
+    char *out = nullptr;
+    ASSERT_EQ(vxcore_workspace_get(ctx, workspace_id.c_str(), &out), VXCORE_OK);
+    const auto workspace = nlohmann::json::parse(out);
+    vxcore_string_free(out);
+    ASSERT_TRUE(workspace.at("isPreview").is_boolean());
+    ASSERT_EQ(workspace.at("isPreview").get<bool>(), workspace_id == preview_id);
+  }
+  char *out = nullptr;
+  ASSERT_EQ(vxcore_workspace_list(ctx, &out), VXCORE_OK);
+  const auto workspaces = nlohmann::json::parse(out);
+  vxcore_string_free(out);
+  ASSERT_EQ(workspaces.size(), 2u);
+  for (const auto &workspace : workspaces) {
+    ASSERT_EQ(workspace.at("isPreview").get<bool>(), workspace.at("id") == preview_id);
+  }
+  ASSERT_EQ(check_ws_session(read_ws_session(), {ordinary_id}, {}, ""), 0);
+  vxcore_context_destroy(ctx);
+  return 0;
+}
+
+int test_workspace_preview_runtime_persistence() {
+  std::cout << "  Running test_workspace_preview_runtime_persistence..." << std::endl;
+  vxcore_clear_test_directory();
+  cleanup_ws_temp_files();
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  std::vector<std::string> buffers;
+  ASSERT_EQ(open_ws_preview_test_buffers(ctx, buffers), 0);
+  const auto &ordinary_buffer = buffers[0];
+  const auto &preview_buffer = buffers[1];
+  const auto &other_preview_buffer = buffers[2];
+  const auto &shared_buffer = buffers[3];
+  const auto &unowned_buffer = buffers[4];
+
+  char *id = nullptr;
+  ASSERT_EQ(vxcore_workspace_create(ctx, "Ordinary", &id), VXCORE_OK);
+  const std::string ordinary_id(id);
+  vxcore_string_free(id);
+  ASSERT_EQ(vxcore_workspace_create(ctx, "Other ordinary", &id), VXCORE_OK);
+  const std::string other_ordinary_id(id);
+  vxcore_string_free(id);
+  ASSERT_EQ(vxcore_workspace_create_preview(ctx, "Preview A", &id), VXCORE_OK);
+  const std::string preview_id(id);
+  vxcore_string_free(id);
+  ASSERT_EQ(vxcore_workspace_create_preview(ctx, "Preview B", &id), VXCORE_OK);
+  const std::string other_preview_id(id);
+  vxcore_string_free(id);
+
+  ASSERT_EQ(vxcore_workspace_add_buffer(ctx, ordinary_id.c_str(), ordinary_buffer.c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_add_buffer(ctx, ordinary_id.c_str(), shared_buffer.c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_add_buffer(ctx, preview_id.c_str(), preview_buffer.c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_add_buffer(ctx, preview_id.c_str(), shared_buffer.c_str()), VXCORE_OK);
+  ASSERT_EQ(
+      vxcore_workspace_add_buffer(ctx, other_preview_id.c_str(), other_preview_buffer.c_str()),
+      VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_add_buffer(ctx, other_preview_id.c_str(), shared_buffer.c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_set_current_buffer(ctx, ordinary_id.c_str(), shared_buffer.c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_set_current_buffer(ctx, preview_id.c_str(), preview_buffer.c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_set_current(ctx, preview_id.c_str()), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_rename(ctx, ordinary_id.c_str(), "Saved while preview is live"),
+            VXCORE_OK);
+
+  char *out = nullptr;
+  ASSERT_EQ(vxcore_workspace_list(ctx, &out), VXCORE_OK);
+  const auto live_workspaces = nlohmann::json::parse(out);
+  vxcore_string_free(out);
+  ASSERT_EQ(live_workspaces.size(), 4u);
+  std::string first_ordinary_id;
+  for (const auto &workspace : live_workspaces) {
+    if (!workspace.at("isPreview").get<bool>() && first_ordinary_id.empty()) {
+      first_ordinary_id = workspace.at("id").get<std::string>();
+    }
+    if (workspace.at("isPreview").get<bool>()) {
+      ASSERT_EQ(workspace.at("bufferIds").size(), 2u);
+      ASSERT_TRUE(std::find(workspace.at("bufferIds").begin(), workspace.at("bufferIds").end(),
+                            shared_buffer) != workspace.at("bufferIds").end());
+    }
+  }
+  const std::vector<std::string> retained = {ordinary_buffer, shared_buffer, unowned_buffer};
+  ASSERT_EQ(check_ws_session(read_ws_session(), {ordinary_id, other_ordinary_id}, retained,
+                             first_ordinary_id),
+            0);
+  ASSERT_EQ(check_ws_runtime_buffers(ctx, buffers), 0);
+  out = nullptr;
+  ASSERT_EQ(vxcore_workspace_get_current(ctx, &out), VXCORE_OK);
+  ASSERT_EQ(std::string(out), preview_id);
+  vxcore_string_free(out);
+
+  // Runtime ownership must still see preview owners after the ordinary owner closes.
+  ASSERT_EQ(vxcore_workspace_remove_buffer(ctx, ordinary_id.c_str(), shared_buffer.c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_remove_buffer(ctx, preview_id.c_str(), shared_buffer.c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(check_ws_runtime_buffers(ctx, buffers), 0);
+  ASSERT_EQ(check_ws_session(read_ws_session(), {ordinary_id, other_ordinary_id},
+                             {ordinary_buffer, unowned_buffer}, first_ordinary_id),
+            0);
+  ASSERT_EQ(vxcore_workspace_add_buffer(ctx, ordinary_id.c_str(), shared_buffer.c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_remove_buffer(ctx, other_preview_id.c_str(), shared_buffer.c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(check_ws_runtime_buffers(ctx, buffers), 0);
+
+  ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
+  const auto snapshot = read_ws_session();
+  ASSERT_EQ(
+      check_ws_session(snapshot, {ordinary_id, other_ordinary_id}, retained, first_ordinary_id), 0);
+  // Closing live buffers after the shutdown snapshot must not publish previews or erase it.
+  ASSERT_EQ(vxcore_workspace_remove_buffer(ctx, preview_id.c_str(), preview_buffer.c_str()),
+            VXCORE_OK);
+  vxcore_context_destroy(ctx);
+  ASSERT_EQ(read_ws_session(), snapshot);
+
+  ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  ASSERT_EQ(check_ws_runtime_buffers(ctx, retained, {preview_buffer, other_preview_buffer}), 0);
+  for (const auto &workspace_id : {preview_id, other_preview_id}) {
+    out = nullptr;
+    ASSERT_EQ(vxcore_workspace_get(ctx, workspace_id.c_str(), &out),
+              VXCORE_ERR_WORKSPACE_NOT_FOUND);
+    vxcore_string_free(out);
+  }
+  out = nullptr;
+  ASSERT_EQ(vxcore_workspace_get(ctx, ordinary_id.c_str(), &out), VXCORE_OK);
+  const auto ordinary = nlohmann::json::parse(out);
+  vxcore_string_free(out);
+  ASSERT_EQ(ordinary.at("name").get<std::string>(), std::string("Saved while preview is live"));
+  ASSERT_EQ(ordinary.at("bufferIds"), nlohmann::json::array({ordinary_buffer, shared_buffer}));
+  out = nullptr;
+  ASSERT_EQ(vxcore_workspace_get_current(ctx, &out), VXCORE_OK);
+  ASSERT_EQ(std::string(out), first_ordinary_id);
+  vxcore_string_free(out);
+  vxcore_context_destroy(ctx);
+  cleanup_ws_temp_files();
+  return 0;
+}
+
+int test_workspace_preview_only_current_is_empty() {
+  std::cout << "  Running test_workspace_preview_only_current_is_empty..." << std::endl;
+  vxcore_clear_test_directory();
+  cleanup_ws_temp_files();
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *workspace_id = nullptr;
+  ASSERT_EQ(vxcore_workspace_create_preview(ctx, "Only preview", &workspace_id), VXCORE_OK);
+  const auto path = create_ws_temp_file("only-preview.md", "# Only preview\n");
+  char *buffer_id = nullptr;
+  ASSERT_EQ(vxcore_buffer_open(ctx, nullptr, path.c_str(), &buffer_id), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_add_buffer(ctx, workspace_id, buffer_id), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_set_current(ctx, workspace_id), VXCORE_OK);
+  ASSERT_EQ(check_ws_session(read_ws_session(), {}, {}, ""), 0);
+  char *current_id = nullptr;
+  ASSERT_EQ(vxcore_workspace_get_current(ctx, &current_id), VXCORE_OK);
+  ASSERT_EQ(std::string(current_id), std::string(workspace_id));
+  vxcore_string_free(current_id);
+  ASSERT_EQ(check_ws_runtime_buffers(ctx, {buffer_id}), 0);
+  ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
+  vxcore_string_free(workspace_id);
+  vxcore_string_free(buffer_id);
+  vxcore_context_destroy(ctx);
+  ASSERT_EQ(check_ws_session(read_ws_session(), {}, {}, ""), 0);
+
+  ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  ASSERT_EQ(check_ws_runtime_buffers(ctx, {}), 0);
+  current_id = nullptr;
+  ASSERT_EQ(vxcore_workspace_get_current(ctx, &current_id), VXCORE_OK);
+  ASSERT_EQ(std::string(current_id), std::string());
+  vxcore_string_free(current_id);
+  vxcore_context_destroy(ctx);
+  cleanup_ws_temp_files();
+  return 0;
+}
+
+int test_workspace_saved_preview_records_are_filtered() {
+  std::cout << "  Running test_workspace_saved_preview_records_are_filtered..." << std::endl;
+  // Exercise both ordinary fallback (in saved order, not map order) and no fallback.
+  for (const bool with_ordinary : {true, false}) {
+    vxcore_clear_test_directory();
+    cleanup_ws_temp_files();
+    VxCoreContextHandle ctx = nullptr;
+    ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+    std::vector<std::string> buffers;
+    ASSERT_EQ(open_ws_preview_test_buffers(ctx, buffers), 0);
+    ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
+    vxcore_context_destroy(ctx);
+    auto session = read_ws_session();
+    session["workspaces"] = nlohmann::json::array({{{"id", "preview-a"},
+                                                    {"name", "Preview A"},
+                                                    {"isPreview", true},
+                                                    {"bufferIds", {buffers[1], buffers[3]}},
+                                                    {"currentBufferId", buffers[1]}},
+                                                   {{"id", "preview-b"},
+                                                    {"name", "Preview B"},
+                                                    {"isPreview", true},
+                                                    {"bufferIds", {buffers[2], buffers[3]}}}});
+    std::vector<std::string> expected_workspaces;
+    std::vector<std::string> retained = {buffers[0], buffers[4]};
+    std::vector<std::string> excluded = {buffers[1], buffers[2]};
+    std::string expected_current;
+    if (with_ordinary) {
+      session["workspaces"].push_back({{"id", "z-first"},
+                                       {"name", "First ordinary"},
+                                       {"isPreview", false},
+                                       {"bufferIds", {buffers[0], buffers[3]}},
+                                       {"currentBufferId", buffers[3]}});
+      session["workspaces"].push_back({{"id", "a-second"}, {"name", "Second ordinary"}});
+      expected_workspaces = {"z-first", "a-second"};
+      expected_current = "z-first";
+      retained.push_back(buffers[3]);
+    } else {
+      excluded.push_back(buffers[3]);
+    }
+    session["currentWorkspaceId"] = "preview-a";
+    {
+      std::ofstream file(ws_session_path());
+      ASSERT_TRUE(file.is_open());
+      file << session.dump(2);
+    }
+
+    ctx = nullptr;
+    ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+    ASSERT_EQ(check_ws_runtime_buffers(ctx, retained, excluded), 0);
+    char *out = nullptr;
+    ASSERT_EQ(vxcore_workspace_list(ctx, &out), VXCORE_OK);
+    const auto workspaces = nlohmann::json::parse(out);
+    vxcore_string_free(out);
+    ASSERT_EQ(workspaces.size(), expected_workspaces.size());
+    for (const auto &id : expected_workspaces) {
+      ASSERT_TRUE(ws_has_record(workspaces, id));
+    }
+    for (const char *id : {"preview-a", "preview-b"}) {
+      out = nullptr;
+      ASSERT_EQ(vxcore_workspace_get(ctx, id, &out), VXCORE_ERR_WORKSPACE_NOT_FOUND);
+      vxcore_string_free(out);
+    }
+    out = nullptr;
+    ASSERT_EQ(vxcore_workspace_get_current(ctx, &out), VXCORE_OK);
+    ASSERT_EQ(std::string(out), expected_current);
+    vxcore_string_free(out);
+    if (with_ordinary) {
+      out = nullptr;
+      ASSERT_EQ(vxcore_workspace_get(ctx, "z-first", &out), VXCORE_OK);
+      const auto ordinary = nlohmann::json::parse(out);
+      vxcore_string_free(out);
+      ASSERT_EQ(ordinary.at("bufferIds"), nlohmann::json::array({buffers[0], buffers[3]}));
+      ASSERT_EQ(ordinary.at("currentBufferId").get<std::string>(), buffers[3]);
+      ASSERT_EQ(vxcore_workspace_rename(ctx, "z-first", "Restored ordinary"), VXCORE_OK);
+      ASSERT_EQ(
+          check_ws_session(read_ws_session(), expected_workspaces, retained, expected_current), 0);
+    }
+    ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
+    ASSERT_EQ(check_ws_session(read_ws_session(), expected_workspaces, retained, expected_current),
+              0);
+    vxcore_context_destroy(ctx);
+    cleanup_ws_temp_files();
+  }
+  return 0;
+}
+
+int test_workspace_legacy_and_malformed_preview_restore() {
+  std::cout << "  Running test_workspace_legacy_and_malformed_preview_restore..." << std::endl;
+  vxcore_clear_test_directory();
+  cleanup_ws_temp_files();
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  const auto path = create_ws_temp_file("legacy-preview.md", "# Legacy workspace\n");
+  char *id = nullptr;
+  ASSERT_EQ(vxcore_buffer_open(ctx, nullptr, path.c_str(), &id), VXCORE_OK);
+  const std::string buffer_id(id);
+  vxcore_string_free(id);
+  ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
+  vxcore_context_destroy(ctx);
+  auto session = read_ws_session();
+  session["workspaces"] = nlohmann::json::array();
+  // Missing, explicit false, null, strings, numbers, arrays and objects are ordinary.
+  const auto values = nlohmann::json::array(
+      {false, nullptr, "true", 1, 0, 1.5, nlohmann::json::array(), nlohmann::json::object()});
+  std::vector<std::string> workspace_ids;
+  for (size_t index = 0; index <= values.size(); ++index) {
+    const auto workspace_id = "ordinary-" + std::to_string(index);
+    nlohmann::json workspace = {{"id", workspace_id},
+                                {"name", "Preview"},
+                                {"bufferIds", {buffer_id}},
+                                {"currentBufferId", buffer_id},
+                                {"metadata", {{"isPreview", true}}}};
+    if (index != 0) {
+      workspace["isPreview"] = values[index - 1];
+    }
+    workspace_ids.push_back(workspace_id);
+    session["workspaces"].push_back(std::move(workspace));
+  }
+  session["currentWorkspaceId"] = workspace_ids.back();
+  {
+    std::ofstream file(ws_session_path());
+    ASSERT_TRUE(file.is_open());
+    file << session.dump(2);
+  }
+  ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  ASSERT_EQ(check_ws_runtime_buffers(ctx, {buffer_id}), 0);
+  for (const auto &workspace_id : workspace_ids) {
+    char *out = nullptr;
+    ASSERT_EQ(vxcore_workspace_get(ctx, workspace_id.c_str(), &out), VXCORE_OK);
+    const auto workspace = nlohmann::json::parse(out);
+    vxcore_string_free(out);
+    ASSERT_TRUE(workspace.at("isPreview").is_boolean());
+    ASSERT_FALSE(workspace.at("isPreview").get<bool>());
+    ASSERT_EQ(workspace.at("bufferIds"), nlohmann::json::array({buffer_id}));
+    ASSERT_EQ(workspace.at("currentBufferId").get<std::string>(), buffer_id);
+  }
+  char *current = nullptr;
+  ASSERT_EQ(vxcore_workspace_get_current(ctx, &current), VXCORE_OK);
+  ASSERT_EQ(std::string(current), workspace_ids.back());
+  vxcore_string_free(current);
+  ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
+  ASSERT_EQ(check_ws_session(read_ws_session(), workspace_ids, {buffer_id}, workspace_ids.back()),
+            0);
+  vxcore_context_destroy(ctx);
+  cleanup_ws_temp_files();
+  return 0;
+}
+
 int main() {
   std::cout << "Running workspace tests..." << std::endl;
 
@@ -773,6 +1202,11 @@ int main() {
   RUN_TEST(test_workspace_buffer_metadata_cleanup_on_remove);
   RUN_TEST(test_workspace_buffer_metadata_persistence);
   RUN_TEST(test_workspace_buffer_metadata_in_workspace_json);
+  RUN_TEST(test_workspace_preview_creation_contract);
+  RUN_TEST(test_workspace_preview_runtime_persistence);
+  RUN_TEST(test_workspace_preview_only_current_is_empty);
+  RUN_TEST(test_workspace_saved_preview_records_are_filtered);
+  RUN_TEST(test_workspace_legacy_and_malformed_preview_restore);
 
   std::cout << "All workspace tests passed!" << std::endl;
   return 0;

@@ -93,6 +93,10 @@ inline constexpr const char *kJsonKeyParent = "parent";  // tag parent within ta
 // `kJsonKeyId` (above) is also the buffer id field in this schema.
 inline constexpr const char *kJsonKeyNotebookId = "notebookId";
 
+// ---------- Workspace keys (runtime API and session records) ----------------
+// Preview identity is fixed at creation; preview records are not persisted.
+inline constexpr const char *kJsonKeyIsPreview = "isPreview";
+
 // ---------- HookEvent / SyncClone keys --------------------------------------
 // Typed event payloads (NotebookCloneEvent, FileBeforeOpenEvent, etc.) sent
 // to Qt-side hook subscribers and plugins. These ARE shared-schema in the

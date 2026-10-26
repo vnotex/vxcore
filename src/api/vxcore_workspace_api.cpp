@@ -5,8 +5,10 @@
 #include "core/workspace_manager.h"
 #include "vxcore/vxcore.h"
 
-VXCORE_API VxCoreError vxcore_workspace_create(VxCoreContextHandle context, const char *name,
-                                               char **out_id) {
+namespace {
+
+VxCoreError CreateWorkspace(VxCoreContextHandle context, const char *name, char **out_id,
+                            bool is_preview) {
   if (!context || !name || !out_id) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -17,7 +19,7 @@ VXCORE_API VxCoreError vxcore_workspace_create(VxCoreContextHandle context, cons
   }
 
   try {
-    std::string id = ctx->workspace_manager->CreateWorkspace(name);
+    std::string id = ctx->workspace_manager->CreateWorkspace(name, is_preview);
     *out_id = vxcore_strdup(id.c_str());
     vxcore::PersistSession(ctx);
     return VXCORE_OK;
@@ -25,6 +27,18 @@ VXCORE_API VxCoreError vxcore_workspace_create(VxCoreContextHandle context, cons
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
   }
+}
+
+}  // namespace
+
+VXCORE_API VxCoreError vxcore_workspace_create(VxCoreContextHandle context, const char *name,
+                                               char **out_id) {
+  return CreateWorkspace(context, name, out_id, false);
+}
+
+VXCORE_API VxCoreError vxcore_workspace_create_preview(VxCoreContextHandle context,
+                                                       const char *name, char **out_id) {
+  return CreateWorkspace(context, name, out_id, true);
 }
 
 VXCORE_API VxCoreError vxcore_workspace_delete(VxCoreContextHandle context, const char *id) {

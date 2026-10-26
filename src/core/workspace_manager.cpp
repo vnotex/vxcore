@@ -37,6 +37,7 @@ void WorkspaceManager::LoadWorkspaces() {
     auto workspace = std::make_unique<WorkspaceConfig>();
     workspace->id = record.id;
     workspace->name = record.name;
+    workspace->is_preview = record.is_preview;
     workspace->metadata = record.metadata;
     workspace->buffer_metadata = record.buffer_metadata;
 
@@ -93,6 +94,7 @@ void WorkspaceManager::UpdateSessionWorkspaces() {
     WorkspaceRecord record;
     record.id = pair.second->id;
     record.name = pair.second->name;
+    record.is_preview = pair.second->is_preview;
     record.buffer_ids = pair.second->buffer_ids;
     record.current_buffer_id = pair.second->current_buffer_id;
     record.metadata = pair.second->metadata;
@@ -110,10 +112,11 @@ void WorkspaceManager::SaveWorkspaces() {
   VXCORE_LOG_DEBUG("Saved %zu workspaces to session", workspaces_.size());
 }
 
-std::string WorkspaceManager::CreateWorkspace(const std::string &name) {
+std::string WorkspaceManager::CreateWorkspace(const std::string &name, bool is_preview) {
   auto workspace = std::make_unique<WorkspaceConfig>();
   workspace->id = GenerateUUID();
   workspace->name = name;
+  workspace->is_preview = is_preview;
   workspace->metadata = nlohmann::json::object();
 
   std::string id = workspace->id;

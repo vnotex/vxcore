@@ -18,8 +18,8 @@ class WorkspaceManager {
   explicit WorkspaceManager(ConfigManager *config_manager, BufferManager *buffer_manager);
   ~WorkspaceManager();
 
-  // Create a new workspace with the given name, returns new workspace ID
-  std::string CreateWorkspace(const std::string &name);
+  // Preview classification is fixed at creation. Returns the new workspace ID.
+  std::string CreateWorkspace(const std::string &name, bool is_preview = false);
 
   // Delete a workspace by ID, returns true if successful
   bool DeleteWorkspace(const std::string &id);
