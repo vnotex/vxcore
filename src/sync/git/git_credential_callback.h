@@ -56,9 +56,9 @@ int GitSyncBackendCredentialCb(git_credential **out, const char *url,
                                 const char *username_from_url,
                                 unsigned int allowed_types, void *payload);
 
-// WinHTTP preemptive Basic auth: retain an explicit URL username, or use
+// WinHTTP preemptive Basic auth for HTTP/HTTPS: retain an explicit URL username, or use
 // "x-access-token" when absent, and URL-encode the PAT as the password.
-// Non-HTTPS URLs, empty PATs and existing passwords are left unchanged.
+// Non-HTTP/HTTPS URLs, empty PATs and existing passwords are left unchanged.
 // The result is secret: use only for an in-memory remote instance, NEVER
 // persist it to remote.origin.url / notebook config or include it in logs.
 std::string MaybeEmbedPatInUrl(const std::string &url, const std::string &pat);
@@ -72,7 +72,7 @@ std::string MaybeEmbedPatInUrl(const std::string &url, const std::string &pat);
 // When |provider| is null OR provider->GetCredentials returns false, the
 // payload's PAT is left empty — the callback will then return GIT_PASSTHROUGH
 // and libgit2 falls through to anonymous transport (correct for public
-// HTTPS remotes).
+// HTTP/HTTPS remotes).
 //
 // Snapshot semantics: the provider is queried EXACTLY ONCE per libgit2
 // operation, even if libgit2 re-invokes the credential callback multiple

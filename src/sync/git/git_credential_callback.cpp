@@ -42,8 +42,10 @@ int GitSyncBackendCredentialCb(git_credential **out, const char *url,
 }
 
 std::string MaybeEmbedPatInUrl(const std::string &url, const std::string &pat) {
-  if (pat.empty() || url.compare(0, 8, "https://") != 0) return url;
-  const size_t scheme_end = 8;
+  if (pat.empty()) return url;
+  const size_t scheme_end = url.compare(0, 8, "https://") == 0 ? 8
+                            : url.compare(0, 7, "http://") == 0 ? 7 : 0;
+  if (scheme_end == 0) return url;
   const size_t authority_end = url.find_first_of("/?#", scheme_end);
   const size_t at_pos = url.find('@', scheme_end);
   const bool has_userinfo = at_pos != std::string::npos &&
@@ -57,7 +59,8 @@ std::string MaybeEmbedPatInUrl(const std::string &url, const std::string &pat) {
   if (has_userinfo && at_pos > scheme_end) {
     result.append(url, 0, at_pos);  // Preserve the URL-encoded account login.
   } else {
-    result = "https://x-access-token";
+    result.append(url, 0, scheme_end);
+    result += "x-access-token";
   }
   result += ':';
   constexpr char hex[] = "0123456789ABCDEF";

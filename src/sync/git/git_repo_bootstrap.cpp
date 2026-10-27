@@ -19,16 +19,21 @@ namespace vxcore {
 
 namespace {
 
-std::string WithoutHttpsUsername(const std::string &url) {
-  if (url.compare(0, 8, "https://") != 0) return url;
-  const auto authority_end = url.find_first_of("/?#", 8);
-  const auto at = url.find('@', 8);
+std::string WithoutHttpUsername(const std::string &url) {
+  const std::string::size_type scheme_length =
+      url.compare(0, 8, "https://") == 0 ? 8 :
+      url.compare(0, 7, "http://") == 0 ? 7 : 0;
+  if (scheme_length == 0) return url;
+  const auto authority_end = url.find_first_of("/?#", scheme_length);
+  const auto at = url.find('@', scheme_length);
   if (at == std::string::npos ||
       (authority_end != std::string::npos && at >= authority_end) ||
-      url.find(':', 8) < at) {
+      url.find(':', scheme_length) < at) {
     return url;
   }
-  return url.substr(0, 8) + url.substr(at + 1);
+  std::string stripped = url.substr(0, scheme_length);
+  stripped.append(url, at + 1, std::string::npos);
+  return stripped;
 }
 
 // File-scope notify_cb wired into BootstrapFromEmptyRemote's checkout. Pure
@@ -182,7 +187,7 @@ VxCoreError OpenExistingRepo(const std::string &root_folder,
   const char *remote_url = git_remote_url(remote.get());
   if (remote_url == nullptr || config.remote_url != remote_url) {
     if (remote_url == nullptr ||
-        WithoutHttpsUsername(config.remote_url) != WithoutHttpsUsername(remote_url)) {
+        WithoutHttpUsername(config.remote_url) != WithoutHttpUsername(remote_url)) {
       VXCORE_LOG_ERROR(
           "GitSyncBackend::Initialize: origin URL mismatch (existing='%s' config='%s')",
           remote_url ? remote_url : "(null)", config.remote_url.c_str());
@@ -243,6 +248,15 @@ VxCoreError BootstrapFromEmptyRemote(const std::string &root_folder,
 
   git_fetch_options fopts = GIT_FETCH_OPTIONS_INIT;
   auto bundle = MakeRemoteCallbacks(creds_provider.get(), config.remote_url, cancellation);
+  // Reuse the callback credential snapshot without persisting the secret URL.
+  const std::string embedded_url =
+      MaybeEmbedPatInUrl(config.remote_url, bundle.payload.personal_access_token);
+  if (embedded_url != config.remote_url) {
+    rc = git_remote_set_instance_url(remote.get(), embedded_url.c_str());
+    if (rc != 0) {
+      return fetch_log.Finish(TranslateGitError(rc));
+    }
+  }
   fopts.callbacks = bundle.callbacks;
 
   rc = git_remote_fetch(remote.get(), /*refspecs=*/nullptr, &fopts,

@@ -104,19 +104,25 @@ int test_git_callbacks_survive_bundle_move() {
 }
 
 int test_git_preemptive_auth_preserves_account_and_encodes_token() {
-  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("https://contributor@gitee.com/team/notes.git", "token"),
-            "https://contributor:token@gitee.com/team/notes.git");
-  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("https://github.com/team/notes.git", "token"),
-            "https://x-access-token:token@github.com/team/notes.git");
-  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("https://user%40mail.test@host/repo.git", "a@:/?#%"),
-            "https://user%40mail.test:a%40%3A%2F%3F%23%25@host/repo.git");
-  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("https://host/path@repo.git", "token"),
-            "https://x-access-token:token@host/path@repo.git");
-  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("https://user:existing@host/repo.git", "token"),
-            "https://user:existing@host/repo.git");
-  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("https://user@host/repo.git", ""),
-            "https://user@host/repo.git");
+  for (const std::string scheme : {"http://", "https://"}) {
+    ASSERT_EQ(vxcore::MaybeEmbedPatInUrl(scheme + "contributor@gitee.com/team/notes.git", "token"),
+              scheme + "contributor:token@gitee.com/team/notes.git");
+    ASSERT_EQ(vxcore::MaybeEmbedPatInUrl(scheme + "github.com/team/notes.git", "token"),
+              scheme + "x-access-token:token@github.com/team/notes.git");
+    ASSERT_EQ(vxcore::MaybeEmbedPatInUrl(scheme + "user%40mail.test@host/repo.git", "a@:/?#%"),
+              scheme + "user%40mail.test:a%40%3A%2F%3F%23%25@host/repo.git");
+    ASSERT_EQ(vxcore::MaybeEmbedPatInUrl(scheme + "host/path@repo.git", "token"),
+              scheme + "x-access-token:token@host/path@repo.git");
+    ASSERT_EQ(vxcore::MaybeEmbedPatInUrl(scheme + "user:existing@host/repo.git", "token"),
+              scheme + "user:existing@host/repo.git");
+    ASSERT_EQ(vxcore::MaybeEmbedPatInUrl(scheme + "user@host/repo.git", ""),
+              scheme + "user@host/repo.git");
+    ASSERT_EQ(vxcore::MaybeEmbedPatInUrl(scheme + "user@host:8080/repo.git?key=value#ref", "token"),
+              scheme + "user:token@host:8080/repo.git?key=value#ref");
+  }
   ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("file:///repo.git", "token"), "file:///repo.git");
+  ASSERT_EQ(vxcore::MaybeEmbedPatInUrl("ssh://git@host/repo.git", "token"),
+            "ssh://git@host/repo.git");
   return 0;
 }
 

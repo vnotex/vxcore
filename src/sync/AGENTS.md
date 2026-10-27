@@ -6,6 +6,16 @@ GitSyncBackend, WebDavSyncBackend and JianguoyunSyncBackend are implemented. The
 recognizes exactly `git`, `webdav` and `jianguoyun`; managed Jianguoyun storage never weakens the
 strict ordinary-file WebDAV protocol.
 
+## Git HTTP authentication
+
+`MaybeEmbedPatInUrl()` supports HTTP and HTTPS without changing the scheme. Its PAT-bearing
+result is transient: use only detached/in-memory libgit2 remotes, never persisted origin or
+notebook config, logs, or credential-provider lookup keys. Initial bootstrap fetch reuses the
+`MakeRemoteCallbacks()` credential snapshot, just like later pipeline operations.
+Reopening an existing repository may rebind username-only HTTP/HTTPS userinfo without losing
+history. Password-bearing URLs and changes to scheme, host, port, path, query or fragment
+remain distinct endpoints. HTTP provides no transport encryption; clients own disclosure.
+
 ## Architecture
 
 ```
