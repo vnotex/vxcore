@@ -99,6 +99,21 @@ void WorkspaceManager::UpdateSessionWorkspaces() {
     record.current_buffer_id = pair.second->current_buffer_id;
     record.metadata = pair.second->metadata;
     record.buffer_metadata = pair.second->buffer_metadata;
+    if (buffer_manager_) {
+      // Exclude known runtime-only sources from the session copy, not the live workspace.
+      // Unknown IDs can have persisted metadata; retain their historical behavior.
+      record.buffer_ids.erase(
+          std::remove_if(record.buffer_ids.begin(), record.buffer_ids.end(),
+                         [this](const auto &id) { return buffer_manager_->IsVirtualBuffer(id); }),
+          record.buffer_ids.end());
+      if (buffer_manager_->IsVirtualBuffer(record.current_buffer_id)) {
+        record.current_buffer_id.clear();
+      }
+      for (auto it = record.buffer_metadata.begin(); it != record.buffer_metadata.end();) {
+        if (buffer_manager_->IsVirtualBuffer(it->first)) it = record.buffer_metadata.erase(it);
+        else ++it;
+      }
+    }
     session_config.workspaces.push_back(record);
   }
 

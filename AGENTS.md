@@ -562,6 +562,36 @@ The build-system invariant is the real guarantee.
 - `src/utils/string_utils.h`: `ToLowerString()`, `MatchesPattern()`, `MatchesPatterns()`
 - `src/utils/logger.h`: `VXCORE_LOG_TRACE/DEBUG/INFO/WARN/ERROR/FATAL`
 
+### Buffer body persistence and memory sources
+
+`IBufferProvider::LoadContent` / `SaveContent` separate body persistence from the editable
+bytes/revision in `Buffer`. Standard providers dispatch protected bodies through private
+authenticated encryption operations; ordinary providers and provider-less unindexed files
+reuse the shared filesystem body helpers. Missing attachment metadata must not prevent ordinary
+body IO or invent attachment identity. Protected classification, wiping and backup checks stay
+in their existing guarded paths; no encrypted failure falls back to callbacks/plaintext IO.
+
+`vxcore_buffer_open_memory` creates a new session-only document with explicit display/editor
+metadata, initial bytes, and optional owned callbacks. Load appends binary chunks through a
+borrowed core sink; sticky sink errors cannot be hidden by the loader. No cross-CRT allocation
+ownership is transferred for body data. Callback userdata transfers only on successful unique
+open; all duplicate/collision/errors retain caller ownership. Widget virtual opens reject a
+memory occupant. Missing load/save and memory backups return `UNSUPPORTED`, not no-op success.
+Memory resource reads require an explicit absolute base; absent base is unsupported, not cwd.
+
+Prepared memory saves (`prepare_save`, `execute_save`, `complete_save`, `save_free`) retain an
+immutable snapshot and its provider. Prepare/complete are owner-thread operations; execute
+touches neither Buffer nor Context and may finish after they close. Execute and completion are
+single-use. Completion accepts only the stored execution result and matching buffer/provider;
+only an unchanged captured revision becomes clean. Callers serialize saves per source and must
+not free a handle during execution. File/encrypted buffers reject prepared-memory operations
+and retain their existing consumer-owned IO gates/leases. Core owns no worker or scheduling.
+
+Session workspace copies exclude known runtime buffers without mutating live membership or
+unrelated metadata. Runtime callback pointers/bytes are never serialized. `test_buffer` covers
+memory ownership/errors/revisions and file/encrypted compatibility; `test_workspace` covers
+ordinary session behavior.
+
 ### Buffer external-change detection (`Buffer::CheckExternalChanges`)
 
 `Buffer::CheckExternalChanges` (`src/core/buffer.cpp`) decides whether an open buffer's

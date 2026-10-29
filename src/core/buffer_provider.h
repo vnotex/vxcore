@@ -12,7 +12,7 @@ namespace vxcore {
 
 class Notebook;
 
-// Abstract interface for buffer asset/attachment operations.
+// Common body persistence and buffer asset/attachment operations.
 // Different implementations handle different file types/layouts:
 // - StandardBufferProvider: regular notebook files (assets in vx_assets/<file_uuid>/)
 // - ExternalBufferProvider: external files (assets in <filename>_assets/)
@@ -23,14 +23,21 @@ class Notebook;
 // - "Attachment": A resource tracked in the attachment list
 // Assets, attachments and their metadata remain plaintext even when the note body is protected.
 //
-// Lifecycle: created when buffer opens, destroyed when buffer closes.
-// Provider is owned by BufferManager, one per buffer.
+// Lifecycle: shared by one buffer and any accepted immutable save snapshots.
 class IBufferProvider {
  public:
   virtual ~IBufferProvider() = default;
 
   // Get the type identifier for this provider (for debugging/logging)
   virtual std::string GetType() const = 0;
+
+  // Body persistence. Ordinary files use the default filesystem implementation.
+  virtual VxCoreError LoadContent(const std::string &full_path, std::vector<uint8_t> &out_body);
+  virtual VxCoreError SaveContent(const std::string &full_path, const std::vector<uint8_t> &body);
+  virtual bool IsMemoryBacked() const noexcept { return false; }
+  virtual bool IsReadOnly() const noexcept { return false; }
+  virtual bool CanSave() const noexcept { return true; }
+  virtual bool CanReload() const noexcept { return true; }
 
   // Cached classification only; no filesystem or key lookup on the ordinary path.
   virtual bool IsEncrypted() const noexcept { return false; }
@@ -149,17 +156,22 @@ class IBufferProvider {
   virtual VxCoreError GetAttachmentsFolder(std::string &out_path) = 0;
 };
 
+// Common ordinary body IO, independent of attachment metadata/provider construction.
+// Buffer must perform protected classification/access checks before using these functions.
+VxCoreError LoadBufferFileContent(const std::string &full_path, std::vector<uint8_t> &out_body);
+VxCoreError SaveBufferFileContent(const std::string &full_path, const std::vector<uint8_t> &body);
+
 // Factory function to create appropriate provider for a notebook file.
-// Returns nullptr only if notebook is null. Both bundled and raw notebooks get
-// a StandardBufferProvider (attachment methods are internally gated to bundled).
+// Returns nullptr if notebook or file metadata is unavailable. Both bundled and raw
+// notebooks otherwise get a StandardBufferProvider (attachments are gated to bundled).
 // notebook: the notebook containing the file
 // file_path: relative path within the notebook
-std::unique_ptr<IBufferProvider> CreateBufferProvider(Notebook *notebook,
+std::shared_ptr<IBufferProvider> CreateBufferProvider(Notebook *notebook,
                                                       const std::string &file_path);
 
 // Factory function to create provider for an external file (no notebook).
 // absolute_file_path: absolute filesystem path to the file
-std::unique_ptr<IBufferProvider> CreateBufferProviderForExternal(
+std::shared_ptr<IBufferProvider> CreateBufferProviderForExternal(
     const std::string &absolute_file_path);
 
 }  // namespace vxcore

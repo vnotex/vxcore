@@ -29,8 +29,13 @@ class BufferManager {
   VxCoreError OpenBuffer(const std::string &notebook_id, const std::string &file_path,
                         std::string &out_id);
 
-  // Open a virtual buffer for a non-file-backed address, returns buffer ID
-  std::string OpenVirtualBuffer(const std::string &address);
+  // Widget virtual addresses deduplicate only with other widgets.
+  VxCoreError OpenVirtualBuffer(const std::string &address, std::string &out_id);
+
+  // Provisional open: caller adopts provider userdata only after its output allocation succeeds.
+  VxCoreError OpenMemoryBuffer(const std::string &address, const nlohmann::json &options,
+                              const void *initial_data, size_t initial_size,
+                              VxCoreBufferContentCallbacks callbacks, std::string &out_id);
 
   // Close a buffer and free its content
   bool CloseBuffer(const std::string &id);
@@ -109,6 +114,7 @@ class BufferManager {
   EventManager *event_manager_ = nullptr;
   std::map<std::string, std::unique_ptr<Buffer>> buffers_;
   std::unique_ptr<std::unordered_set<Buffer *>> protected_buffers_;
+  std::unordered_set<std::string> opening_memory_addresses_;
   bool shutdown_called_ = false;
 };
 

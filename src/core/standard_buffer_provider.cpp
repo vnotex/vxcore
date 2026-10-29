@@ -196,6 +196,17 @@ VxCoreError StandardBufferProvider::ResolveProtectedPath(const std::filesystem::
 }
 
 
+VxCoreError StandardBufferProvider::LoadContent(const std::string &full_path,
+                                               std::vector<uint8_t> &out_body) {
+  return encrypted_ ? LoadEncryptedContent(out_body)
+                    : IBufferProvider::LoadContent(full_path, out_body);
+}
+
+VxCoreError StandardBufferProvider::SaveContent(const std::string &full_path,
+                                               const std::vector<uint8_t> &body) {
+  return encrypted_ ? SaveEncryptedContent(body) : IBufferProvider::SaveContent(full_path, body);
+}
+
 VxCoreError StandardBufferProvider::LoadEncryptedContent(std::vector<uint8_t> &out_body) {
   return ProtectedResult([&]() -> VxCoreError {
     if (!encrypted_) return VXCORE_ERR_UNSUPPORTED;

@@ -14,6 +14,7 @@
 #include "core/context.h"
 #include "core/folder_manager.h"
 #include "core/metadata_store.h"
+#include "core/memory_buffer_provider.h"
 #include "core/notebook.h"
 #include "core/notebook_manager.h"
 #include "sync/git/git_error_translator.h"
@@ -39,12 +40,26 @@ VxCoreError CheckBufferNotebookReadOnly(vxcore::VxCoreContext *ctx, const char *
   if (!buffer) {
     return VXCORE_OK;
   }
+  if (buffer->IsReadOnly()) return VXCORE_ERR_READ_ONLY;
   auto *notebook = buffer->GetNotebook();
   if (notebook) return notebook->CheckWritable();
   return VXCORE_OK;
 }
 
-void AddBufferProtectionInfo(const vxcore::Buffer &buffer, nlohmann::json &json) {
+void AddBufferSourceInfo(const vxcore::Buffer &buffer, nlohmann::json &json) {
+  json[vxcore::kJsonKeyIsVirtual] = buffer.IsVirtual();
+  json[vxcore::kJsonKeyIsMemoryBacked] = buffer.IsMemoryBacked();
+  json[vxcore::kJsonKeyCanSave] = buffer.CanSave();
+  json[vxcore::kJsonKeyCanReload] = buffer.CanReload();
+  if (buffer.IsMemoryBacked()) {
+    json[vxcore::kJsonKeyDisplayName] = buffer.GetDisplayName();
+    json[vxcore::kJsonKeyEditorType] = buffer.GetEditorType();
+    json[vxcore::kJsonKeyReadOnly] = buffer.IsReadOnly();
+    std::string base;
+    if (buffer.GetProvider()->GetResourceBasePath(base) == VXCORE_OK) {
+      json[vxcore::kJsonKeyResourceBasePath] = base;
+    }
+  }
   if (!buffer.IsEncrypted()) {
     return;
   }
@@ -195,6 +210,7 @@ VXCORE_API VxCoreError vxcore_buffer_open(VxCoreContextHandle context, const cha
 
 VXCORE_API VxCoreError vxcore_buffer_open_virtual(VxCoreContextHandle context, const char *address,
                                                   char **out_id) {
+  if (out_id) *out_id = nullptr;
   if (!context || !address || !out_id) {
     return VXCORE_ERR_NULL_POINTER;
   }
@@ -205,13 +221,83 @@ VXCORE_API VxCoreError vxcore_buffer_open_virtual(VxCoreContextHandle context, c
   }
 
   try {
-    std::string id = ctx->buffer_manager->OpenVirtualBuffer(address);
+    std::string id;
+    const auto error = ctx->buffer_manager->OpenVirtualBuffer(address, id);
+    if (error != VXCORE_OK) return error;
     *out_id = vxcore_strdup(id.c_str());
-    return VXCORE_OK;
+    return *out_id ? VXCORE_OK : VXCORE_ERR_OUT_OF_MEMORY;
   } catch (const std::exception &e) {
     ctx->last_error = std::string("Exception: ") + e.what();
     return VXCORE_ERR_UNKNOWN;
   }
+}
+
+VXCORE_API VxCoreError vxcore_buffer_open_memory(VxCoreContextHandle context, const char *address,
+                                                 const char *options_json,
+                                                 const void *initial_data, size_t initial_size,
+                                                 const VxCoreBufferContentCallbacks *callbacks,
+                                                 char **out_id) {
+  if (out_id) *out_id = nullptr;
+  if (!context || !address || !options_json || !out_id || (!initial_data && initial_size)) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  return ResourceResult([&]() -> VxCoreError {
+    if (!ctx->buffer_manager) return VXCORE_ERR_NOT_INITIALIZED;
+    if (!ctx->buffer_manager->FindBufferByPath("", address).empty()) return VXCORE_ERR_ALREADY_EXISTS;
+    const auto options = nlohmann::json::parse(options_json, nullptr, false);
+    if (options.is_discarded()) return VXCORE_ERR_JSON_PARSE;
+    std::string id;
+    const auto error = ctx->buffer_manager->OpenMemoryBuffer(address, options, initial_data,
+        initial_size, callbacks ? *callbacks : VxCoreBufferContentCallbacks{}, id);
+    if (error != VXCORE_OK) return error;
+    *out_id = vxcore_strdup(id.c_str());
+    if (!*out_id) {
+      ctx->buffer_manager->CloseBuffer(id);
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    }
+    static_cast<vxcore::MemoryBufferProvider *>(ctx->buffer_manager->GetProvider(id))->AdoptUserdata();
+    return VXCORE_OK;
+  });
+}
+
+VXCORE_API VxCoreError vxcore_buffer_prepare_save(VxCoreContextHandle context, const char *id,
+                                                  VxCoreBufferSaveHandle *out_handle) {
+  if (out_handle) *out_handle = nullptr;
+  if (!context || !id || !out_handle) return VXCORE_ERR_NULL_POINTER;
+  return ResourceResult([&]() -> VxCoreError {
+    auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+    if (!ctx->buffer_manager) return VXCORE_ERR_NOT_INITIALIZED;
+    auto *buffer = ctx->buffer_manager->GetBuffer(id);
+    if (!buffer) return VXCORE_ERR_BUFFER_NOT_FOUND;
+    std::unique_ptr<vxcore::BufferSaveSnapshot> snapshot;
+    const auto error = buffer->PrepareSave(snapshot);
+    if (error == VXCORE_OK) {
+      *out_handle = reinterpret_cast<VxCoreBufferSaveHandle>(snapshot.release());
+    }
+    return error;
+  });
+}
+
+VXCORE_API VxCoreError vxcore_buffer_execute_save(VxCoreBufferSaveHandle handle) {
+  if (!handle) return VXCORE_ERR_NULL_POINTER;
+  return ResourceResult([&]() { return reinterpret_cast<vxcore::BufferSaveSnapshot *>(handle)->Execute(); });
+}
+
+VXCORE_API VxCoreError vxcore_buffer_complete_save(VxCoreContextHandle context, const char *id,
+                                                   VxCoreBufferSaveHandle handle) {
+  if (!context || !id || !handle) return VXCORE_ERR_NULL_POINTER;
+  return ResourceResult([&]() -> VxCoreError {
+    auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+    if (!ctx->buffer_manager) return VXCORE_ERR_NOT_INITIALIZED;
+    auto *buffer = ctx->buffer_manager->GetBuffer(id);
+    if (!buffer) return VXCORE_ERR_BUFFER_NOT_FOUND;
+    return buffer->CompleteSave(*reinterpret_cast<vxcore::BufferSaveSnapshot *>(handle));
+  });
+}
+
+VXCORE_API void vxcore_buffer_save_free(VxCoreBufferSaveHandle handle) {
+  delete reinterpret_cast<vxcore::BufferSaveSnapshot *>(handle);
 }
 
 VXCORE_API VxCoreError vxcore_buffer_open_by_node_id(VxCoreContextHandle context,
@@ -323,7 +409,7 @@ VXCORE_API VxCoreError vxcore_buffer_get(VxCoreContextHandle context, const char
     json[vxcore::kJsonKeyMetadata] = buffer->GetMetadata();
     json["lastModifiedTime"] = buffer->GetLastModifiedTime();
     json["contentLoaded"] = buffer->IsContentLoaded();
-    AddBufferProtectionInfo(*buffer, json);
+    AddBufferSourceInfo(*buffer, json);
     // Note: content field omitted (retrieved separately via get_content APIs)
 
     std::string json_str = json.dump();
@@ -394,7 +480,7 @@ VXCORE_API VxCoreError vxcore_buffer_list(VxCoreContextHandle context, char **ou
       buf_json[vxcore::kJsonKeyMetadata] = buf->GetMetadata();
       buf_json["lastModifiedTime"] = buf->GetLastModifiedTime();
       buf_json["contentLoaded"] = buf->IsContentLoaded();
-      AddBufferProtectionInfo(*buf, buf_json);
+      AddBufferSourceInfo(*buf, buf_json);
       json.push_back(buf_json);
     }
     std::string json_str = json.dump();

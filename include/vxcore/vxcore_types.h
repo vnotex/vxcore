@@ -88,6 +88,24 @@ typedef enum {
 typedef enum { VXCORE_DATA_APP = 0, VXCORE_DATA_LOCAL = 1 } VxCoreDataLocation;
 
 typedef struct VxCoreContext *VxCoreContextHandle;
+typedef struct VxCoreBufferSave *VxCoreBufferSaveHandle;
+
+// Load appends zero or more binary chunks to sink. No chunks means empty content.
+// NULL data is valid only with size zero. A sink error remains fatal even if ignored.
+// All byte pointers and the sink are borrowed for the callback duration only.
+// Callbacks must not reenter vxcore; save/destroy may run on a consumer worker.
+typedef VxCoreError (*VxCoreBufferContentSink)(void *sink_userdata, const void *data, size_t size);
+typedef VxCoreError (*VxCoreBufferContentLoad)(void *userdata, VxCoreBufferContentSink sink,
+                                             void *sink_userdata);
+typedef VxCoreError (*VxCoreBufferContentSave)(void *userdata, const void *data, size_t size);
+typedef void (*VxCoreBufferContentDestroy)(void *userdata);
+
+typedef struct {
+  void *userdata;
+  VxCoreBufferContentLoad load;
+  VxCoreBufferContentSave save;
+  VxCoreBufferContentDestroy destroy;
+} VxCoreBufferContentCallbacks;
 
 typedef struct {
   uint32_t major;

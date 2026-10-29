@@ -1,11 +1,13 @@
 #include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <set>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -4245,6 +4247,32 @@ int test_buffer_open_auto_resolve_unindexed_file() {
   ASSERT_NOT_NULL(content_ptr);
   std::string retrieved(static_cast<const char *>(content_ptr), content_size);
   ASSERT_EQ(retrieved, std::string("unindexed content"));
+  ASSERT_TRUE(buf_data.at("canSave").get<bool>());
+  ASSERT_TRUE(buf_data.at("canReload").get<bool>());
+
+  // Body persistence must not depend on a cached metadata/attachment provider.
+  const std::string changed("updated\0unindexed", 17);
+  ASSERT_EQ(vxcore_buffer_set_content_raw(ctx, buffer_id, changed.data(), changed.size()), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_save(ctx, buffer_id), VXCORE_OK);
+  ASSERT_EQ(read_file_content(abs_path), changed);
+  write_file(abs_path, "reloaded unindexed");
+  ASSERT_EQ(vxcore_buffer_reload(ctx, buffer_id), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_get_content_raw(ctx, buffer_id, &content_ptr, &content_size), VXCORE_OK);
+  ASSERT_EQ(std::string(static_cast<const char *>(content_ptr), content_size), "reloaded unindexed");
+  EncryptionTestString asset;
+  ASSERT_EQ(vxcore_buffer_get_assets_folder(ctx, buffer_id, &asset.value), VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(asset.value);
+
+  // The metadata-free path still enforces notebook write policy and detects ciphertext.
+  ASSERT_EQ(vxcore_notebook_set_read_only(ctx, notebook_id, true), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_save(ctx, buffer_id), VXCORE_ERR_READ_ONLY);
+  ASSERT_EQ(read_file_content(abs_path), "reloaded unindexed");
+  ASSERT_EQ(vxcore_notebook_set_read_only(ctx, notebook_id, false), VXCORE_OK);
+  const std::string ciphertext("VNOTEE1\0unindexed", 17);
+  write_file(abs_path, ciphertext);
+  ASSERT_EQ(vxcore_buffer_reload(ctx, buffer_id), VXCORE_ERR_ENCRYPTION_FORMAT);
+  ASSERT_EQ(vxcore_buffer_save(ctx, buffer_id), VXCORE_ERR_ENCRYPTION_FORMAT);
+  ASSERT_EQ(read_file_content(abs_path), ciphertext);
 
   vxcore_string_free(buffer_json);
   vxcore_string_free(buffer_id);
@@ -8452,6 +8480,505 @@ int test_reconfiguration_refuses_unregistered_index_conflicts() {
   return 0;
 }
 
+namespace {
+const char *const kMemoryOptions = R"({"displayName":"Memory document","editorType":"text"})";
+
+struct MemorySourceState {
+  std::string persisted;
+  std::vector<std::string> writes;
+  int loads = 0;
+  int destroys = 0;
+  VxCoreError load_error = VXCORE_OK;
+  VxCoreError save_error = VXCORE_OK;
+  bool throw_load = false;
+  bool throw_save = false;
+  bool throw_destroy = false;
+  bool invalid_sink = false;
+  bool empty_without_sink = false;
+  std::mutex mutex;
+  std::condition_variable condition;
+  bool block_save = false;
+  bool save_entered = false;
+  bool release_save = false;
+
+  static VxCoreError Load(void *userdata, VxCoreBufferContentSink sink, void *sink_userdata) {
+    auto &source = *static_cast<MemorySourceState *>(userdata);
+    ++source.loads;
+    if (source.throw_load) throw 42;
+    if (source.invalid_sink) {
+      sink(sink_userdata, nullptr, 1);  // Deliberately ignore error; core must retain it.
+      sink(sink_userdata, "discard", 7);
+      return VXCORE_OK;
+    }
+    if (source.empty_without_sink) return source.load_error;
+    auto error = sink(sink_userdata, nullptr, 0);
+    if (error != VXCORE_OK) return error;
+    const auto split = source.persisted.size() / 2;
+    error = sink(sink_userdata, source.persisted.data(), split);
+    if (error != VXCORE_OK) return error;
+    error = sink(sink_userdata, source.persisted.data() + split, source.persisted.size() - split);
+    return error == VXCORE_OK ? source.load_error : error;
+  }
+
+  static VxCoreError Save(void *userdata, const void *data, size_t size) {
+    auto &source = *static_cast<MemorySourceState *>(userdata);
+    {
+      std::unique_lock<std::mutex> lock(source.mutex);
+      source.save_entered = true;
+      source.condition.notify_all();
+      if (source.block_save) source.condition.wait(lock, [&]() { return source.release_save; });
+    }
+    source.writes.emplace_back(size ? std::string(static_cast<const char *>(data), size) : "");
+    if (source.throw_save) throw 42;
+    if (source.save_error != VXCORE_OK) return source.save_error;
+    source.persisted = source.writes.back();
+    return VXCORE_OK;
+  }
+
+  static void Destroy(void *userdata) {
+    auto &source = *static_cast<MemorySourceState *>(userdata);
+    ++source.destroys;
+    if (source.throw_destroy) throw 42;
+  }
+
+  VxCoreBufferContentCallbacks Callbacks(bool load = true, bool save = true) {
+    return {this, load ? Load : nullptr, save ? Save : nullptr, Destroy};
+  }
+};
+
+struct MemorySaveHandle {
+  VxCoreBufferSaveHandle value = nullptr;
+  ~MemorySaveHandle() { vxcore_buffer_save_free(value); }
+};
+
+struct MemorySaveWorker {
+  MemorySourceState &source;
+  VxCoreError result = VXCORE_ERR_UNKNOWN;
+  std::thread thread;
+  MemorySaveWorker(MemorySourceState &state, VxCoreBufferSaveHandle handle)
+      : source(state), thread([this, handle]() { result = vxcore_buffer_execute_save(handle); }) {}
+  bool WaitStarted() {
+    std::unique_lock<std::mutex> lock(source.mutex);
+    return source.condition.wait_for(lock, std::chrono::seconds(5), [&]() {
+      return source.save_entered;
+    });
+  }
+  void Finish() {
+    {
+      std::lock_guard<std::mutex> lock(source.mutex);
+      source.release_save = true;
+      source.condition.notify_all();
+    }
+    if (thread.joinable()) thread.join();
+  }
+  ~MemorySaveWorker() { Finish(); }
+};
+
+nlohmann::json memory_buffer_facts(VxCoreContextHandle context, const char *id) {
+  EncryptionTestString json;
+  if (vxcore_buffer_get(context, id, &json.value) != VXCORE_OK) return nullptr;
+  return nlohmann::json::parse(json.value);
+}
+
+int assert_memory_body(VxCoreContextHandle context, const char *id, const std::string &expected,
+                       int revision, bool modified) {
+  const void *data = nullptr;
+  size_t size = 0;
+  ASSERT_EQ(vxcore_buffer_get_content_raw(context, id, &data, &size), VXCORE_OK);
+  ASSERT_EQ(size, expected.size());
+  ASSERT_EQ(size ? std::string(static_cast<const char *>(data), size) : "", expected);
+  const auto facts = memory_buffer_facts(context, id);
+  ASSERT_EQ(facts.at("revision").get<int>(), revision);
+  ASSERT_EQ(facts.at("modified").get<bool>(), modified);
+  return 0;
+}
+}  // namespace
+
+int test_memory_buffer_body_and_failures() {
+  MemorySourceState source;
+  source.persisted = std::string("A\0\xff\r\nB", 6);
+  EncryptionTestContext context;
+  ASSERT_EQ(vxcore_context_create(nullptr, &context.value), VXCORE_OK);
+  const auto callbacks = source.Callbacks();
+  EncryptionTestString id;
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://binary.vne", kMemoryOptions,
+      "ignored", 7, &callbacks, &id.value), VXCORE_OK);
+  ASSERT_EQ(source.loads, 1);
+  ASSERT_EQ(assert_memory_body(context.value, id.value, source.persisted, 0, false), 0);
+  const auto facts = memory_buffer_facts(context.value, id.value);
+  ASSERT_TRUE(facts.at("isMemoryBacked").get<bool>());
+  ASSERT_TRUE(facts.at("isVirtual").get<bool>());
+  ASSERT_TRUE(facts.at("canSave").get<bool>());
+  ASSERT_TRUE(facts.at("canReload").get<bool>());
+  ASSERT_EQ(facts.at("editorType"), "text");
+  ASSERT_EQ(facts.at("displayName"), "Memory document");
+  ASSERT_FALSE(facts.value("encrypted", false));
+
+  const std::string changed("new\0body", 8);
+  ASSERT_EQ(vxcore_buffer_set_content_raw(context.value, id.value, changed.data(), changed.size()), VXCORE_OK);
+  source.load_error = VXCORE_ERR_IO;
+  ASSERT_EQ(vxcore_buffer_reload(context.value, id.value), VXCORE_ERR_IO);
+  ASSERT_EQ(assert_memory_body(context.value, id.value, changed, 1, true), 0);
+  source.load_error = VXCORE_OK;
+  source.invalid_sink = true;
+  ASSERT_EQ(vxcore_buffer_reload(context.value, id.value), VXCORE_ERR_NULL_POINTER);
+  ASSERT_EQ(assert_memory_body(context.value, id.value, changed, 1, true), 0);
+  source.invalid_sink = false;
+  source.throw_load = true;
+  ASSERT_EQ(vxcore_buffer_reload(context.value, id.value), VXCORE_ERR_UNKNOWN);
+  ASSERT_EQ(assert_memory_body(context.value, id.value, changed, 1, true), 0);
+  source.throw_load = false;
+  const auto original = source.persisted;
+  source.save_error = VXCORE_ERR_IO;
+  ASSERT_EQ(vxcore_buffer_save(context.value, id.value), VXCORE_ERR_IO);
+  ASSERT_EQ(assert_memory_body(context.value, id.value, changed, 1, true), 0);
+  ASSERT_EQ(source.persisted, original);
+  ASSERT_EQ(memory_buffer_facts(context.value, id.value).at("state"), VXCORE_BUFFER_SAVE_FAILED);
+  source.save_error = VXCORE_OK;
+  source.throw_save = true;
+  ASSERT_EQ(vxcore_buffer_save(context.value, id.value), VXCORE_ERR_UNKNOWN);
+  ASSERT_EQ(assert_memory_body(context.value, id.value, changed, 1, true), 0);
+  source.throw_save = false;
+  ASSERT_EQ(vxcore_buffer_save(context.value, id.value), VXCORE_OK);
+  ASSERT_EQ(source.persisted, changed);
+  ASSERT_EQ(assert_memory_body(context.value, id.value, changed, 1, false), 0);
+  source.empty_without_sink = true;
+  ASSERT_EQ(vxcore_buffer_reload(context.value, id.value), VXCORE_OK);
+  ASSERT_EQ(assert_memory_body(context.value, id.value, "", 2, false), 0);
+  ASSERT_EQ(vxcore_buffer_set_content_raw(context.value, id.value, nullptr, 0), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_save(context.value, id.value), VXCORE_OK);
+  ASSERT_TRUE(source.persisted.empty());
+  source.throw_destroy = true;
+  ASSERT_EQ(vxcore_buffer_close(context.value, id.value), VXCORE_OK);
+  ASSERT_EQ(source.destroys, 1);
+  return 0;
+}
+
+int test_memory_buffer_scratch_read_only_and_resources() {
+  BufferTestTempDirectory directory;
+  ASSERT_TRUE(directory.valid());
+  MemorySourceState source;
+  source.persisted = "read only";
+  EncryptionTestContext context;
+  ASSERT_EQ(vxcore_context_create(nullptr, &context.value), VXCORE_OK);
+  EncryptionTestString scratch, readonly, save_only, output, resource_base;
+  const std::string binary("VNOTEE1\0raw bytes", 16);
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://scratch", kMemoryOptions,
+      binary.data(), binary.size(), nullptr, &scratch.value), VXCORE_OK);
+  ASSERT_EQ(assert_memory_body(context.value, scratch.value, binary, 0, false), 0);
+  ASSERT_FALSE(memory_buffer_facts(context.value, scratch.value).at("canSave").get<bool>());
+  ASSERT_FALSE(memory_buffer_facts(context.value, scratch.value).at("canReload").get<bool>());
+  ASSERT_EQ(vxcore_buffer_save(context.value, scratch.value), VXCORE_ERR_UNSUPPORTED);
+  ASSERT_EQ(vxcore_buffer_reload(context.value, scratch.value), VXCORE_ERR_UNSUPPORTED);
+  MemorySaveHandle snapshot;
+  ASSERT_EQ(vxcore_buffer_prepare_save(context.value, scratch.value, &snapshot.value), VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(snapshot.value);
+  ASSERT_EQ(vxcore_buffer_write_backup(context.value, scratch.value), VXCORE_ERR_UNSUPPORTED);
+  ASSERT_EQ(vxcore_buffer_recover_backup(context.value, scratch.value), VXCORE_ERR_UNSUPPORTED);
+  ASSERT_EQ(vxcore_buffer_discard_backup(context.value, scratch.value), VXCORE_ERR_UNSUPPORTED);
+  ASSERT_EQ(vxcore_buffer_get_backup_path(context.value, scratch.value, &output.value), VXCORE_ERR_UNSUPPORTED);
+  int has_backup = 1;
+  ASSERT_EQ(vxcore_buffer_has_backup(context.value, scratch.value, &has_backup), VXCORE_OK);
+  ASSERT_EQ(has_backup, 0);
+  ASSERT_EQ(vxcore_buffer_get_resource_base_path(context.value, scratch.value, &output.value), VXCORE_ERR_UNSUPPORTED);
+  EncryptionResourceCapture capture;
+  ASSERT_EQ(vxcore_buffer_read_resource(context.value, scratch.value, "CMakeLists.txt",
+      capture_encryption_resource, &capture), VXCORE_ERR_UNSUPPORTED);
+  ASSERT_EQ(capture.calls, 0);
+  ASSERT_EQ(vxcore_buffer_check_external_changes(context.value, scratch.value), VXCORE_OK);
+
+  auto callbacks = source.Callbacks(false);
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://save-only", kMemoryOptions,
+      binary.data(), binary.size(), &callbacks, &save_only.value), VXCORE_OK);
+  ASSERT_EQ(source.loads, 0);
+  ASSERT_EQ(vxcore_buffer_save(context.value, save_only.value), VXCORE_OK);
+  ASSERT_EQ(source.persisted, binary);
+  ASSERT_EQ(vxcore_buffer_reload(context.value, save_only.value), VXCORE_ERR_UNSUPPORTED);
+  ASSERT_EQ(vxcore_buffer_close(context.value, save_only.value), VXCORE_OK);
+
+  callbacks = source.Callbacks();
+  const auto root_path = fs_path_to_utf8(directory.path());
+  const auto options = nlohmann::json({{"displayName", "Readonly"}, {"editorType", "text"},
+      {"readOnly", true}, {"resourceBasePath", root_path}}).dump();
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://readonly", options.c_str(),
+      nullptr, 0, &callbacks, &readonly.value), VXCORE_OK);
+  ASSERT_FALSE(memory_buffer_facts(context.value, readonly.value).at("canSave").get<bool>());
+  ASSERT_TRUE(memory_buffer_facts(context.value, readonly.value).at("readOnly").get<bool>());
+  ASSERT_EQ(vxcore_buffer_set_content_raw(context.value, readonly.value, "bad", 3), VXCORE_ERR_READ_ONLY);
+  ASSERT_EQ(vxcore_buffer_save(context.value, readonly.value), VXCORE_ERR_READ_ONLY);
+  ASSERT_EQ(vxcore_buffer_prepare_save(context.value, readonly.value, &snapshot.value), VXCORE_ERR_READ_ONLY);
+  ASSERT_EQ(assert_memory_body(context.value, readonly.value, binary, 0, false), 0);
+  source.persisted = "updated externally";
+  ASSERT_EQ(vxcore_buffer_reload(context.value, readonly.value), VXCORE_OK);
+  ASSERT_EQ(assert_memory_body(context.value, readonly.value, source.persisted, 1, false), 0);
+  ASSERT_EQ(vxcore_buffer_get_resource_base_path(context.value, readonly.value, &resource_base.value), VXCORE_OK);
+  ASSERT_EQ(std::string(resource_base.value), root_path);
+  const std::string resource("asset\0bytes", 11);
+  write_file(root_path + "/resource.bin", resource);
+  ASSERT_EQ(vxcore_buffer_read_resource(context.value, readonly.value, "resource.bin",
+      capture_encryption_resource, &capture), VXCORE_OK);
+  ASSERT_EQ(capture.bytes, resource);
+  ASSERT_EQ(vxcore_buffer_read_resource(context.value, readonly.value, "../outside.bin",
+      capture_encryption_resource, &capture), VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(capture.calls, 1);
+  ASSERT_EQ(vxcore_buffer_get_assets_folder(context.value, scratch.value, &output.value), VXCORE_ERR_UNSUPPORTED);
+  ASSERT_EQ(vxcore_buffer_insert_asset_raw(context.value, scratch.value, "asset", "x", 1,
+      &output.value), VXCORE_ERR_UNSUPPORTED);
+  return 0;
+}
+
+int test_memory_buffer_open_failures_and_ownership() {
+  MemorySourceState source, rejected;
+  EncryptionTestContext context;
+  ASSERT_EQ(vxcore_context_create(nullptr, &context.value), VXCORE_OK);
+  auto callbacks = source.Callbacks();
+  EncryptionTestString id, duplicate, widget;
+  source.load_error = VXCORE_ERR_IO;
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://ownership", kMemoryOptions,
+      nullptr, 0, &callbacks, &id.value), VXCORE_ERR_IO);
+  ASSERT_NULL(id.value);
+  ASSERT_EQ(source.destroys, 0);
+  source.throw_load = true;
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://ownership", kMemoryOptions,
+      nullptr, 0, &callbacks, &id.value), VXCORE_ERR_UNKNOWN);
+  ASSERT_EQ(source.destroys, 0);
+  source.throw_load = false;
+  source.load_error = VXCORE_OK;
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://ownership", kMemoryOptions,
+      nullptr, 0, &callbacks, &id.value), VXCORE_OK);
+  callbacks = rejected.Callbacks();
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://ownership", kMemoryOptions,
+      "different", 9, &callbacks, &duplicate.value), VXCORE_ERR_ALREADY_EXISTS);
+  ASSERT_NULL(duplicate.value);
+  ASSERT_EQ(rejected.loads, 0);
+  ASSERT_EQ(rejected.destroys, 0);
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://ownership", "{",
+      nullptr, 0, &callbacks, &duplicate.value), VXCORE_ERR_ALREADY_EXISTS);
+  ASSERT_EQ(vxcore_buffer_open_virtual(context.value, "vx://ownership", &duplicate.value), VXCORE_ERR_ALREADY_EXISTS);
+  ASSERT_NULL(duplicate.value);
+  ASSERT_EQ(vxcore_buffer_open_virtual(context.value, "vx://widget-collision", &widget.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://widget-collision", kMemoryOptions,
+      nullptr, 0, &callbacks, &duplicate.value), VXCORE_ERR_ALREADY_EXISTS);
+  for (const auto *address : {"", "vx://", "file.txt"}) {
+    ASSERT_EQ(vxcore_buffer_open_memory(context.value, address, kMemoryOptions,
+        nullptr, 0, &callbacks, &duplicate.value), VXCORE_ERR_INVALID_PARAM);
+  }
+  for (const auto *options : {"[]", "{}", R"({"displayName":"d","editorType":""})",
+       R"({"displayName":"d","editorType":"text","readOnly":1})",
+       R"({"displayName":"d","editorType":"text","resourceBasePath":"."})"}) {
+    ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://invalid", options,
+        nullptr, 0, &callbacks, &duplicate.value), VXCORE_ERR_INVALID_PARAM);
+  }
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://invalid", "{",
+      nullptr, 0, &callbacks, &duplicate.value), VXCORE_ERR_JSON_PARSE);
+  ASSERT_EQ(rejected.loads, 0);
+  ASSERT_EQ(rejected.destroys, 0);
+  ASSERT_EQ(vxcore_buffer_close(context.value, id.value), VXCORE_OK);
+  ASSERT_EQ(source.destroys, 1);
+
+  struct ReentrantOpen {
+    VxCoreContextHandle context;
+    VxCoreError memory_error = VXCORE_OK;
+    VxCoreError widget_error = VXCORE_OK;
+    static VxCoreError Load(void *userdata, VxCoreBufferContentSink, void *) {
+      auto &self = *static_cast<ReentrantOpen *>(userdata);
+      EncryptionTestString memory, widget;
+      self.memory_error = vxcore_buffer_open_memory(self.context, "vx://opening", kMemoryOptions,
+          nullptr, 0, nullptr, &memory.value);
+      self.widget_error = vxcore_buffer_open_virtual(self.context, "vx://opening", &widget.value);
+      return VXCORE_OK;
+    }
+  } opening{context.value};
+  const VxCoreBufferContentCallbacks recursive{&opening, ReentrantOpen::Load, nullptr, nullptr};
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://opening", kMemoryOptions,
+      nullptr, 0, &recursive, &duplicate.value), VXCORE_OK);
+  ASSERT_EQ(opening.memory_error, VXCORE_ERR_ALREADY_EXISTS);
+  ASSERT_EQ(opening.widget_error, VXCORE_ERR_ALREADY_EXISTS);
+  return 0;
+}
+
+int test_memory_buffer_prepared_save_transitions() {
+  MemorySourceState source;
+  EncryptionTestContext context;
+  ASSERT_EQ(vxcore_context_create(nullptr, &context.value), VXCORE_OK);
+  const auto callbacks = source.Callbacks();
+  EncryptionTestString id, other;
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://snapshot", kMemoryOptions,
+      nullptr, 0, &callbacks, &id.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://other", kMemoryOptions,
+      nullptr, 0, nullptr, &other.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_set_content_raw(context.value, id.value, "first", 5), VXCORE_OK);
+  MemorySaveHandle first;
+  ASSERT_EQ(vxcore_buffer_prepare_save(context.value, id.value, &first.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_complete_save(context.value, id.value, first.value), VXCORE_ERR_INVALID_STATE);
+  ASSERT_TRUE(source.writes.empty());
+  source.block_save = true;
+  MemorySaveWorker worker(source, first.value);
+  ASSERT_TRUE(worker.WaitStarted());
+  ASSERT_EQ(vxcore_buffer_execute_save(first.value), VXCORE_ERR_INVALID_STATE);
+  ASSERT_EQ(vxcore_buffer_complete_save(context.value, id.value, first.value), VXCORE_ERR_INVALID_STATE);
+  ASSERT_EQ(vxcore_buffer_reload(context.value, id.value), VXCORE_ERR_INVALID_STATE);
+  ASSERT_EQ(vxcore_buffer_set_content_raw(context.value, id.value, "second", 6), VXCORE_OK);
+  worker.Finish();
+  ASSERT_EQ(worker.result, VXCORE_OK);
+  ASSERT_EQ(source.persisted, "first");
+  ASSERT_EQ(source.writes.size(), size_t(1));
+  ASSERT_EQ(vxcore_buffer_execute_save(first.value), VXCORE_ERR_INVALID_STATE);
+  ASSERT_EQ(vxcore_buffer_complete_save(context.value, other.value, first.value), VXCORE_ERR_INVALID_STATE);
+  VxCoreError wrong_thread = VXCORE_OK;
+  std::thread wrong_owner([&]() {
+    wrong_thread = vxcore_buffer_complete_save(context.value, id.value, first.value);
+  });
+  wrong_owner.join();
+  ASSERT_EQ(wrong_thread, VXCORE_ERR_INVALID_STATE);
+  ASSERT_EQ(vxcore_buffer_complete_save(context.value, id.value, first.value), VXCORE_OK);
+  ASSERT_EQ(assert_memory_body(context.value, id.value, "second", 2, true), 0);
+  ASSERT_EQ(vxcore_buffer_complete_save(context.value, id.value, first.value), VXCORE_ERR_INVALID_STATE);
+
+  MemorySaveHandle failed;
+  source.save_error = VXCORE_ERR_IO;
+  ASSERT_EQ(vxcore_buffer_prepare_save(context.value, id.value, &failed.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_execute_save(failed.value), VXCORE_ERR_IO);
+  ASSERT_EQ(vxcore_buffer_complete_save(context.value, id.value, failed.value), VXCORE_ERR_IO);
+  ASSERT_EQ(assert_memory_body(context.value, id.value, "second", 2, true), 0);
+  ASSERT_EQ(source.persisted, "first");
+  ASSERT_EQ(vxcore_buffer_execute_save(failed.value), VXCORE_ERR_INVALID_STATE);
+  ASSERT_EQ(source.writes.size(), size_t(2));
+  MemorySaveHandle current;
+  source.save_error = VXCORE_OK;
+  ASSERT_EQ(vxcore_buffer_prepare_save(context.value, id.value, &current.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_execute_save(current.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_complete_save(context.value, id.value, current.value), VXCORE_OK);
+  ASSERT_EQ(assert_memory_body(context.value, id.value, "second", 2, false), 0);
+  ASSERT_EQ(source.persisted, "second");
+  return 0;
+}
+
+int test_memory_buffer_prepared_save_lifetime() {
+  MemorySourceState original, replacement, detached;
+  EncryptionTestContext context;
+  ASSERT_EQ(vxcore_context_create(nullptr, &context.value), VXCORE_OK);
+  auto callbacks = original.Callbacks(false);
+  EncryptionTestString id, reopened, detached_id;
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://lifetime", kMemoryOptions,
+      "original", 8, &callbacks, &id.value), VXCORE_OK);
+  MemorySaveHandle saved;
+  ASSERT_EQ(vxcore_buffer_prepare_save(context.value, id.value, &saved.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_close(context.value, id.value), VXCORE_OK);
+  ASSERT_EQ(original.destroys, 0);
+  callbacks = replacement.Callbacks(false);
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://lifetime", kMemoryOptions,
+      "replacement", 11, &callbacks, &reopened.value), VXCORE_OK);
+  ASSERT_NE(std::string(id.value), std::string(reopened.value));
+  ASSERT_EQ(vxcore_buffer_set_content_raw(context.value, reopened.value, "new edit", 8), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_execute_save(saved.value), VXCORE_OK);
+  ASSERT_EQ(original.persisted, "original");
+  ASSERT_TRUE(replacement.writes.empty());
+  ASSERT_EQ(vxcore_buffer_complete_save(context.value, id.value, saved.value), VXCORE_ERR_BUFFER_NOT_FOUND);
+  ASSERT_EQ(vxcore_buffer_complete_save(context.value, reopened.value, saved.value), VXCORE_ERR_INVALID_STATE);
+  ASSERT_EQ(assert_memory_body(context.value, reopened.value, "new edit", 1, true), 0);
+  vxcore_buffer_save_free(saved.value);
+  saved.value = nullptr;
+  ASSERT_EQ(original.destroys, 1);
+
+  callbacks = detached.Callbacks(false);
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://context-gone", kMemoryOptions,
+      "retained", 8, &callbacks, &detached_id.value), VXCORE_OK);
+  MemorySaveHandle contextless;
+  ASSERT_EQ(vxcore_buffer_prepare_save(context.value, detached_id.value, &contextless.value), VXCORE_OK);
+  vxcore_context_destroy(context.value);
+  context.value = nullptr;
+  ASSERT_EQ(replacement.destroys, 1);
+  ASSERT_EQ(detached.destroys, 0);
+  ASSERT_EQ(vxcore_buffer_execute_save(contextless.value), VXCORE_OK);
+  ASSERT_EQ(detached.persisted, "retained");
+  vxcore_buffer_save_free(contextless.value);
+  contextless.value = nullptr;
+  ASSERT_EQ(detached.destroys, 1);
+  return 0;
+}
+
+int test_memory_buffer_session_preserves_live_workspace() {
+  BufferTestTempDirectory directory;
+  ASSERT_TRUE(directory.valid());
+  EncryptionTestContext context;
+  ASSERT_EQ(vxcore_context_create(nullptr, &context.value), VXCORE_OK);
+  EncryptionTestString memory, file, workspace, preview, workspace_before, session, workspace_after;
+  ASSERT_EQ(vxcore_buffer_open_memory(context.value, "vx://session", kMemoryOptions,
+      "unsaved", 7, nullptr, &memory.value), VXCORE_OK);
+  const auto path = fs_path_to_utf8(directory.path() / "persisted.txt");
+  write_file(path, "file");
+  ASSERT_EQ(vxcore_buffer_open(context.value, nullptr, path.c_str(), &file.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_create(context.value, "Memory session", &workspace.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_create_preview(context.value, "Preview", &preview.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_add_buffer(context.value, workspace.value, file.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_add_buffer(context.value, workspace.value, memory.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_add_buffer(context.value, preview.value, file.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_add_buffer(context.value, preview.value, memory.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_set_current_buffer(context.value, workspace.value, memory.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_set_buffer_metadata(context.value, workspace.value, memory.value,
+      R"({"cursor":42})"), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_set_buffer_metadata(context.value, workspace.value, file.value,
+      R"({"cursor":3})"), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_set_buffer_metadata(context.value, workspace.value, "unknown-buffer",
+      R"({"cursor":9})"), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_get(context.value, workspace.value, &workspace_before.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_prepare_shutdown(context.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_context_get_session_config(context.value, &session.value), VXCORE_OK);
+  const auto saved = nlohmann::json::parse(session.value);
+  for (const auto &buffer : saved.at("buffers")) ASSERT_NE(buffer.at("id"), memory.value);
+  bool found = false;
+  for (const auto &record : saved.at("workspaces")) {
+    ASSERT_NE(record.at("id"), preview.value);
+    if (record.at("id") != workspace.value) continue;
+    found = true;
+    ASSERT_EQ(record.at("bufferIds"), nlohmann::json::array({file.value}));
+    ASSERT_EQ(record.at("currentBufferId"), "");
+    ASSERT_FALSE(record.at("bufferMetadata").contains(memory.value));
+    ASSERT_EQ(record.at("bufferMetadata").at(file.value).at("cursor"), 3);
+    ASSERT_EQ(record.at("bufferMetadata").at("unknown-buffer").at("cursor"), 9);
+  }
+  ASSERT_TRUE(found);
+  ASSERT_EQ(vxcore_cancel_shutdown(context.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_get(context.value, workspace.value, &workspace_after.value), VXCORE_OK);
+  ASSERT_EQ(nlohmann::json::parse(workspace_before.value), nlohmann::json::parse(workspace_after.value));
+  ASSERT_EQ(assert_memory_body(context.value, memory.value, "unsaved", 0, false), 0);
+  return 0;
+}
+
+int test_prepared_save_rejects_file_and_encrypted_buffers() {
+  EncryptionFixture fixture;
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  const auto notebook = fixture.notebook_id.value;
+  EncryptionTestString ordinary, protected_id, protected_buffer;
+  const auto path = fixture.path + "/ordinary.txt";
+  write_file(path, "ordinary");
+  ASSERT_EQ(vxcore_buffer_open(context, nullptr, path.c_str(), &ordinary.value), VXCORE_OK);
+  MemorySaveHandle handle;
+  ASSERT_EQ(vxcore_buffer_prepare_save(context, ordinary.value, &handle.value), VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(handle.value);
+  ASSERT_EQ(read_file_content(path), "ordinary");
+  ASSERT_EQ(initialize_test_encryption(context, notebook), VXCORE_OK);
+  ASSERT_EQ(vxcore_encryption_create_note(context, notebook, "", "prepared.txt", "text",
+      "secret", 6, &protected_id.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open_by_node_id(context, protected_id.value, &protected_buffer.value), VXCORE_OK);
+  const auto protected_path = fixture.path + "/prepared.txt.vne";
+  const auto encrypted = read_file_content(protected_path);
+  ASSERT_EQ(encrypted.substr(0, 8), std::string("VNOTEE1\0", 8));
+  ASSERT_EQ(vxcore_buffer_prepare_save(context, protected_buffer.value, &handle.value), VXCORE_ERR_UNSUPPORTED);
+  ASSERT_NULL(handle.value);
+  ASSERT_EQ(read_file_content(protected_path), encrypted);
+  ASSERT_EQ(vxcore_buffer_set_content_raw(context, protected_buffer.value, "updated", 7), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_save(context, protected_buffer.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_reload(context, protected_buffer.value), VXCORE_OK);
+  const void *data = nullptr;
+  size_t size = 0;
+  ASSERT_EQ(vxcore_buffer_get_content_raw(context, protected_buffer.value, &data, &size), VXCORE_OK);
+  ASSERT_EQ(std::string(static_cast<const char *>(data), size), "updated");
+  return 0;
+}
+
 int main() {
   BufferTestTempDirectory test_directory;
   ASSERT_TRUE(test_directory.valid());
@@ -8461,6 +8988,14 @@ int main() {
   vxcore_clear_test_directory();
 
   RUN_TEST(test_reconfiguration_refuses_unregistered_index_conflicts);
+
+  RUN_TEST(test_memory_buffer_body_and_failures);
+  RUN_TEST(test_memory_buffer_scratch_read_only_and_resources);
+  RUN_TEST(test_memory_buffer_open_failures_and_ownership);
+  RUN_TEST(test_memory_buffer_prepared_save_transitions);
+  RUN_TEST(test_memory_buffer_prepared_save_lifetime);
+  RUN_TEST(test_memory_buffer_session_preserves_live_workspace);
+  RUN_TEST(test_prepared_save_rejects_file_and_encrypted_buffers);
 
   RUN_TEST(test_buffer_open_close);
   RUN_TEST(test_buffer_get);

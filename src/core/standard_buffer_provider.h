@@ -34,8 +34,8 @@ class StandardBufferProvider : public IBufferProvider {
   VxCoreError GetProtectionError() const noexcept override { return protection_error_; }
 
   VxCoreError CheckProtectedAccess() const;
-  VxCoreError LoadEncryptedContent(std::vector<uint8_t> &out_body);
-  VxCoreError SaveEncryptedContent(const std::vector<uint8_t> &body);
+  VxCoreError LoadContent(const std::string &full_path, std::vector<uint8_t> &out_body) override;
+  VxCoreError SaveContent(const std::string &full_path, const std::vector<uint8_t> &body) override;
   VxCoreError WriteEncryptedBackup(const std::vector<uint8_t> &body, int revision);
   VxCoreError RecoverEncryptedBackup(std::vector<uint8_t> &out_body, int &out_revision);
   VxCoreError CheckEncryptedSnapshot(bool &out_matches);
@@ -81,6 +81,8 @@ class StandardBufferProvider : public IBufferProvider {
 
  private:
   struct ProtectedState;
+  VxCoreError LoadEncryptedContent(std::vector<uint8_t> &out_body);
+  VxCoreError SaveEncryptedContent(const std::vector<uint8_t> &body);
   VxCoreError RequireProtectedState(bool writing) const;
   VxCoreError RequireUnchangedSnapshot();
   VxCoreError ResolveProtectedPath(const std::filesystem::path &path) const;

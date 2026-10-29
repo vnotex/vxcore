@@ -1,10 +1,12 @@
 #ifndef VXCORE_BUFFER_H
 #define VXCORE_BUFFER_H
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "vxcore/vxcore_types.h"
@@ -14,6 +16,8 @@ namespace vxcore {
 class IBufferProvider;
 class Notebook;
 class StandardBufferProvider;
+class MemoryBufferProvider;
+class BufferSaveSnapshot;
 
 class BufferManager;
 
@@ -28,6 +32,8 @@ class Buffer {
   // Constructor for virtual buffers (non-file-backed address)
   explicit Buffer(const std::string &address, bool virtual_flag);
 
+  Buffer(const std::string &address, std::shared_ptr<MemoryBufferProvider> provider);
+
   ~Buffer();
 
   // Accessors
@@ -38,6 +44,12 @@ class Buffer {
   int GetRevision() const { return revision_; }
   bool IsModified() const { return modified_; }
   bool IsVirtual() const { return is_virtual_; }
+  bool IsMemoryBacked() const noexcept { return is_memory_backed_; }
+  bool IsReadOnly() const noexcept;
+  bool CanSave() const noexcept;
+  bool CanReload() const noexcept;
+  std::string GetDisplayName() const;
+  std::string GetEditorType() const;
   bool IsEncrypted() const noexcept { return is_encrypted_; }
   VxCoreError GetProtectionError() const noexcept { return protection_error_; }
   std::string GetAuthenticatedEditorType() const;
@@ -55,6 +67,8 @@ class Buffer {
   // Content management methods
   VxCoreError LoadContent(const std::string &full_path);
   VxCoreError SaveContent(const std::string &full_path);
+  VxCoreError PrepareSave(std::unique_ptr<BufferSaveSnapshot> &out_snapshot);
+  VxCoreError CompleteSave(BufferSaveSnapshot &snapshot);
   const std::vector<uint8_t> &GetContent() const;
   void SetContent(const std::vector<uint8_t> &data);
   VxCoreError CheckExternalChanges(const std::string &full_path);
@@ -109,11 +123,31 @@ class Buffer {
   int64_t last_modified_time_;    // File timestamp for change detection
   bool content_loaded_;           // True if content has been loaded from disk
   bool is_virtual_ = false;       // True if this buffer has no filesystem backing
+  bool is_memory_backed_ = false;
   bool is_encrypted_ = false;     // Cached provider classification, never a key/disk lookup
   bool discovered_encryption_ = false;  // Latches unmarked ciphertext until this handle closes
   VxCoreError protection_error_ = VXCORE_OK;
-  std::unique_ptr<IBufferProvider> provider_;
+  std::shared_ptr<IBufferProvider> provider_;
   std::string backup_file_path_;  // Cached backup file path (<full_path>.vswp)
+};
+
+// Created only by Buffer::PrepareSave. Execute never dereferences a Buffer or context.
+class BufferSaveSnapshot {
+ public:
+  VxCoreError Execute();
+
+ private:
+  friend class Buffer;
+  enum class Stage { Prepared, Executing, Executed, Completed };
+  BufferSaveSnapshot(const Buffer &buffer, std::shared_ptr<IBufferProvider> provider);
+  const Buffer *const buffer_;
+  const std::string buffer_id_;
+  const std::shared_ptr<IBufferProvider> provider_;
+  const std::vector<uint8_t> content_;
+  const int revision_;
+  const std::thread::id owner_thread_;
+  std::atomic<Stage> stage_{Stage::Prepared};
+  VxCoreError result_ = VXCORE_ERR_INVALID_STATE;
 };
 
 struct BufferRecord {

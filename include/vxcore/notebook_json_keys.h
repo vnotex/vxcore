@@ -155,6 +155,14 @@ inline constexpr const char *kJsonKeyWrappedNoteKey = "wrappedNoteKey";
 // Reader-only compatibility with persisted empty legacy manifests.
 inline constexpr const char *kJsonKeyResources = "resources";
 
+// ---------- Runtime buffer source options and facts -------------------------
+inline constexpr const char *kJsonKeyIsVirtual = "isVirtual";
+inline constexpr const char *kJsonKeyIsMemoryBacked = "isMemoryBacked";
+inline constexpr const char *kJsonKeyDisplayName = "displayName";
+inline constexpr const char *kJsonKeyResourceBasePath = "resourceBasePath";
+inline constexpr const char *kJsonKeyCanSave = "canSave";
+inline constexpr const char *kJsonKeyCanReload = "canReload";
+
 }  // namespace vxcore
 
 #endif  // VXCORE_NOTEBOOK_JSON_KEYS_H

@@ -40,6 +40,7 @@ set(VXCORE_SOURCES
     core/buffer_provider.cpp
     core/standard_buffer_provider.cpp
     core/external_buffer_provider.cpp
+    core/memory_buffer_provider.cpp
     core/notebook.cpp
     core/encryptednote.cpp
     core/encryptionkeysource.cpp

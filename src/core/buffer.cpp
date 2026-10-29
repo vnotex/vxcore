@@ -13,6 +13,7 @@
 #include "buffer_provider.h"
 #include "encryptednote.h"
 #include "external_buffer_provider.h"
+#include "memory_buffer_provider.h"
 #include "notebook.h"
 #include "standard_buffer_provider.h"
 #include "utils/file_utils.h"
@@ -113,6 +114,34 @@ Buffer::Buffer(const std::string &address, bool virtual_flag)
   id_ = GenerateUUID();
 }
 
+Buffer::Buffer(const std::string &address, std::shared_ptr<MemoryBufferProvider> provider)
+    : Buffer(address, true) {
+  provider_ = std::move(provider);
+  is_memory_backed_ = true;
+}
+
+bool Buffer::IsReadOnly() const noexcept {
+  return is_memory_backed_ && provider_->IsReadOnly();
+}
+
+bool Buffer::CanSave() const noexcept {
+  return provider_ ? provider_->CanSave() : !is_virtual_ && !is_encrypted_;
+}
+
+bool Buffer::CanReload() const noexcept {
+  return provider_ ? provider_->CanReload() : !is_virtual_ && !is_encrypted_;
+}
+
+std::string Buffer::GetDisplayName() const {
+  return is_memory_backed_ ? static_cast<MemoryBufferProvider *>(provider_.get())->GetDisplayName()
+                           : std::string();
+}
+
+std::string Buffer::GetEditorType() const {
+  return is_memory_backed_ ? static_cast<MemoryBufferProvider *>(provider_.get())->GetEditorType()
+                           : GetAuthenticatedEditorType();
+}
+
 Buffer::~Buffer() {
   if (is_encrypted_) {
     EncryptedNote::WipeBytes(content_);
@@ -204,6 +233,7 @@ void Buffer::UpdateProtectedTimestamp(const std::string &full_path) noexcept {
 std::string Buffer::GetNotebookId() const { return notebook_ ? notebook_->GetId() : ""; }
 
 std::string Buffer::ResolveFullPath() const {
+  if (is_memory_backed_) return {};
   if (is_virtual_) {
     return file_path_;
   }
@@ -235,6 +265,7 @@ std::string Buffer::GetBackupFilePath() {
 }
 
 VxCoreError Buffer::WriteBackup() {
+  if (is_memory_backed_) return VXCORE_ERR_UNSUPPORTED;
   if (is_virtual_) {
     return VXCORE_OK;
   }
@@ -304,6 +335,7 @@ bool Buffer::HasBackup() {
 }
 
 VxCoreError Buffer::RecoverBackup() {
+  if (is_memory_backed_) return VXCORE_ERR_UNSUPPORTED;
   if (is_virtual_) {
     return VXCORE_OK;
   }
@@ -422,7 +454,7 @@ void Buffer::CreateProvider() {
   if (!notebook_) {
     // External file
     try {
-      provider_ = std::make_unique<ExternalBufferProvider>(file_path_);
+      provider_ = std::make_shared<ExternalBufferProvider>(file_path_);
       VXCORE_LOG_DEBUG("Created ExternalBufferProvider for: %s", file_path_.c_str());
     } catch (const std::exception &e) {
       VXCORE_LOG_ERROR("Failed to create ExternalBufferProvider: %s", e.what());
@@ -435,7 +467,7 @@ void Buffer::CreateProvider() {
   // StandardBufferProvider (generic FolderManager capabilities). Attachment
   // methods internally gate to bundled notebooks; raw stays UNSUPPORTED.
   try {
-    provider_ = std::make_unique<StandardBufferProvider>(notebook_, file_path_);
+    provider_ = std::make_shared<StandardBufferProvider>(notebook_, file_path_);
     VXCORE_LOG_DEBUG("Created StandardBufferProvider for: %s", file_path_.c_str());
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Failed to create StandardBufferProvider: %s", e.what());
@@ -444,6 +476,15 @@ void Buffer::CreateProvider() {
 }
 
 VxCoreError Buffer::LoadContent(const std::string &full_path) {
+  if (is_memory_backed_) {
+    const auto error = provider_->LoadContent(full_path, content_);
+    if (error != VXCORE_OK) return error;
+    content_loaded_ = true;
+    modified_ = false;
+    ++revision_;
+    state_ = VXCORE_BUFFER_NORMAL;
+    return VXCORE_OK;
+  }
   if (is_virtual_) {
     return VXCORE_OK;
   }
@@ -457,7 +498,7 @@ VxCoreError Buffer::LoadContent(const std::string &full_path) {
       }
       std::vector<uint8_t> candidate;
       ProtectedContentWiper wipe{candidate};
-      error = provider->LoadEncryptedContent(candidate);
+      error = provider_->LoadContent(full_path, candidate);
       if (error != VXCORE_OK) {
         return error;
       }
@@ -472,34 +513,12 @@ VxCoreError Buffer::LoadContent(const std::string &full_path) {
   }
 
   try {
-    std::filesystem::path fs_path = PathFromUtf8(full_path);
-    if (!std::filesystem::exists(fs_path)) {
+    // Metadata-free notebook files have no asset provider but retain ordinary body IO.
+    const auto error = provider_ ? provider_->LoadContent(full_path, content_)
+                                 : LoadBufferFileContent(full_path, content_);
+    if (error != VXCORE_OK) {
       state_ = VXCORE_BUFFER_FILE_MISSING;
-      VXCORE_LOG_ERROR("File not found: %s", full_path.c_str());
-      return VXCORE_ERR_NOT_FOUND;
-    }
-
-    // Read file content as binary
-    std::ifstream file(fs_path, std::ios::binary | std::ios::ate);
-    if (!file.is_open()) {
-      state_ = VXCORE_BUFFER_FILE_MISSING;
-      VXCORE_LOG_ERROR("Failed to open file: %s", full_path.c_str());
-      return VXCORE_ERR_IO;
-    }
-
-    std::streamsize size = file.tellg();
-    if (size < 0) {
-      state_ = VXCORE_BUFFER_FILE_MISSING;
-      return VXCORE_ERR_IO;
-    }
-    file.seekg(0, std::ios::beg);
-
-    content_.resize(static_cast<size_t>(size));
-    if (!file.read(reinterpret_cast<char *>(content_.data()), size)) {
-      state_ = VXCORE_BUFFER_FILE_MISSING;
-      VXCORE_LOG_ERROR("Failed to read file: %s", full_path.c_str());
-      content_.clear();
-      return VXCORE_ERR_IO;
+      return error;
     }
 
     // Classification consumes only bytes obtained by the existing load.
@@ -510,7 +529,7 @@ VxCoreError Buffer::LoadContent(const std::string &full_path) {
     }
 
     // Update last modified time
-    auto ftime = std::filesystem::last_write_time(fs_path);
+    auto ftime = std::filesystem::last_write_time(PathFromUtf8(full_path));
     last_modified_time_ =
         std::chrono::duration_cast<std::chrono::milliseconds>(ftime.time_since_epoch()).count();
     state_ = VXCORE_BUFFER_NORMAL;
@@ -529,6 +548,12 @@ VxCoreError Buffer::LoadContent(const std::string &full_path) {
 }
 
 VxCoreError Buffer::SaveContent(const std::string &full_path) {
+  if (is_memory_backed_) {
+    const auto error = provider_->SaveContent(full_path, content_);
+    state_ = error == VXCORE_OK ? VXCORE_BUFFER_NORMAL : VXCORE_BUFFER_SAVE_FAILED;
+    if (error == VXCORE_OK) modified_ = false;
+    return error;
+  }
   if (is_virtual_) {
     return VXCORE_OK;
   }
@@ -546,7 +571,7 @@ VxCoreError Buffer::SaveContent(const std::string &full_path) {
       if (!content_loaded_) {
         return VXCORE_ERR_ENCRYPTION_LOCKED;
       }
-      return provider->SaveEncryptedContent(content_);
+      return provider_->SaveContent(full_path, content_);
     });
     if (error != VXCORE_OK) {
       state_ = error == VXCORE_ERR_FILE_CHANGED_OUTSIDE ? VXCORE_BUFFER_FILE_CHANGED
@@ -561,36 +586,13 @@ VxCoreError Buffer::SaveContent(const std::string &full_path) {
   }
 
   try {
-    std::filesystem::path fs_path = PathFromUtf8(full_path);
-
-    // Ensure parent directory exists
-    std::filesystem::path parent = fs_path.parent_path();
-    if (!parent.empty() && !std::filesystem::exists(parent)) {
-      std::filesystem::create_directories(parent);
-    }
-
-    // Write content as binary
-    std::ofstream file(fs_path, std::ios::binary);
-    if (!file.is_open()) {
+    const auto error = provider_ ? provider_->SaveContent(full_path, content_)
+                                 : SaveBufferFileContent(full_path, content_);
+    if (error != VXCORE_OK) {
       state_ = VXCORE_BUFFER_SAVE_FAILED;
-      VXCORE_LOG_ERROR("Failed to open file for writing: %s", full_path.c_str());
-      return VXCORE_ERR_IO;
+      return error;
     }
-
-    if (!file.write(reinterpret_cast<const char *>(content_.data()), content_.size())) {
-      state_ = VXCORE_BUFFER_SAVE_FAILED;
-      VXCORE_LOG_ERROR("Failed to write file: %s", full_path.c_str());
-      return VXCORE_ERR_IO;
-    }
-
-    file.close();
-    if (file.fail()) {
-      state_ = VXCORE_BUFFER_SAVE_FAILED;
-      return VXCORE_ERR_IO;
-    }
-
-    // Update last modified time
-    auto ftime = std::filesystem::last_write_time(fs_path);
+    auto ftime = std::filesystem::last_write_time(PathFromUtf8(full_path));
     last_modified_time_ =
         std::chrono::duration_cast<std::chrono::milliseconds>(ftime.time_since_epoch()).count();
 
@@ -605,6 +607,47 @@ VxCoreError Buffer::SaveContent(const std::string &full_path) {
     VXCORE_LOG_ERROR("Exception saving file %s: %s", full_path.c_str(), e.what());
     return VXCORE_ERR_IO;
   }
+}
+
+BufferSaveSnapshot::BufferSaveSnapshot(const Buffer &buffer,
+                                       std::shared_ptr<IBufferProvider> provider)
+    : buffer_(&buffer), buffer_id_(buffer.GetId()), provider_(std::move(provider)),
+      content_(buffer.GetContent()), revision_(buffer.GetRevision()),
+      owner_thread_(std::this_thread::get_id()) {}
+
+VxCoreError Buffer::PrepareSave(std::unique_ptr<BufferSaveSnapshot> &out_snapshot) {
+  out_snapshot.reset();
+  if (!is_memory_backed_) return VXCORE_ERR_UNSUPPORTED;
+  if (IsReadOnly()) return VXCORE_ERR_READ_ONLY;
+  if (!CanSave()) return VXCORE_ERR_UNSUPPORTED;
+  out_snapshot.reset(new BufferSaveSnapshot(*this, provider_));
+  return VXCORE_OK;
+}
+
+VxCoreError BufferSaveSnapshot::Execute() {
+  auto expected = Stage::Prepared;
+  if (!stage_.compare_exchange_strong(expected, Stage::Executing, std::memory_order_acq_rel)) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+  // Memory provider contains callback exceptions, including non-standard exceptions.
+  result_ = provider_->SaveContent({}, content_);
+  stage_.store(Stage::Executed, std::memory_order_release);
+  return result_;
+}
+
+VxCoreError Buffer::CompleteSave(BufferSaveSnapshot &snapshot) {
+  if (snapshot.owner_thread_ != std::this_thread::get_id() || snapshot.buffer_ != this ||
+      snapshot.buffer_id_ != id_ || snapshot.provider_.get() != provider_.get()) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+  auto expected = BufferSaveSnapshot::Stage::Executed;
+  if (!snapshot.stage_.compare_exchange_strong(expected, BufferSaveSnapshot::Stage::Completed,
+                                               std::memory_order_acq_rel)) {
+    return VXCORE_ERR_INVALID_STATE;
+  }
+  state_ = snapshot.result_ == VXCORE_OK ? VXCORE_BUFFER_NORMAL : VXCORE_BUFFER_SAVE_FAILED;
+  if (snapshot.result_ == VXCORE_OK && snapshot.revision_ == revision_) modified_ = false;
+  return snapshot.result_;
 }
 
 const std::vector<uint8_t> &Buffer::GetContent() const { return content_; }

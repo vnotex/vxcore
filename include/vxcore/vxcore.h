@@ -1114,9 +1114,38 @@ VXCORE_API VxCoreError vxcore_buffer_open_by_node_id(VxCoreContextHandle context
 // Open a virtual buffer (no filesystem backing).
 // address: Virtual address (e.g., "vx://settings"). Must not be NULL.
 // Returns the buffer ID in out_id (caller must free with vxcore_string_free).
-// If the buffer is already open, returns the existing buffer ID (dedup).
+// Existing widget addresses deduplicate; memory/file collisions return ALREADY_EXISTS.
 VXCORE_API VxCoreError vxcore_buffer_open_virtual(VxCoreContextHandle context, const char *address,
                                                   char **out_id);
+
+// Open a new runtime-only memory document, never a widget virtual buffer.
+// address must start with vx:// and contain a nonempty identity. options_json is an object:
+// displayName/editorType (required nonempty strings), resourceBasePath (optional absolute
+// existing directory), readOnly (optional bool). Loader, when present, supplies initial bytes;
+// otherwise initial_data is copied. Missing load/save means reload/save is UNSUPPORTED.
+// A NULL callbacks pointer creates scratch content. Descriptor is copied, not retained.
+// Ownership of userdata transfers ONLY on VXCORE_OK; destroy is never called on failure.
+// Existing addresses return ALREADY_EXISTS (no callback or ownership transfer).
+// out_id is NULL on failure; free successful IDs using vxcore_string_free.
+VXCORE_API VxCoreError vxcore_buffer_open_memory(VxCoreContextHandle context, const char *address,
+                                                 const char *options_json,
+                                                 const void *initial_data, size_t initial_size,
+                                                 const VxCoreBufferContentCallbacks *callbacks,
+                                                 char **out_id);
+
+// Memory-only immutable save snapshots. Ordinary/encrypted buffers return UNSUPPORTED.
+// Prepare/complete run on the same owner thread; execute uses only the retained provider
+// and bytes, and may run on a worker after the buffer/context closes. Serialize saves per
+// source. Execute is single-use; completion accepts only its actual result, once. Success
+// clears modified only if the captured revision is still current; it does not advance revision.
+// A closed/replaced buffer cannot be completed. Free every handle, including failed saves;
+// free must not race execute/complete. Completion does not free the handle.
+VXCORE_API VxCoreError vxcore_buffer_prepare_save(VxCoreContextHandle context, const char *id,
+                                                  VxCoreBufferSaveHandle *out_handle);
+VXCORE_API VxCoreError vxcore_buffer_execute_save(VxCoreBufferSaveHandle handle);
+VXCORE_API VxCoreError vxcore_buffer_complete_save(VxCoreContextHandle context, const char *id,
+                                                   VxCoreBufferSaveHandle handle);
+VXCORE_API void vxcore_buffer_save_free(VxCoreBufferSaveHandle handle);
 
 // Close a buffer by ID.
 VXCORE_API VxCoreError vxcore_buffer_close(VxCoreContextHandle context, const char *id);
@@ -1183,7 +1212,8 @@ VXCORE_API VxCoreError vxcore_buffer_is_modified(VxCoreContextHandle context, co
 
 // Get buffer content revision number.
 // Lightweight — avoids full JSON serialization of vxcore_buffer_get.
-// The revision is incremented on content changes (SetContent, Save, Reload).
+// Revision advances on SetContent/Reload and successful file-backed Save.
+// Memory saves retain the captured revision so newer editor changes remain distinguishable.
 // out_revision: receives current revision counter.
 VXCORE_API VxCoreError vxcore_buffer_get_revision(VxCoreContextHandle context, const char *id,
                                                   int *out_revision);

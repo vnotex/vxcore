@@ -504,6 +504,7 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/history_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/standard_buffer_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/core/external_buffer_provider.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/memory_buffer_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/core/workspace.cpp
     ${CMAKE_SOURCE_DIR}/src/db/db_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/db/file_db.cpp

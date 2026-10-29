@@ -12,6 +12,7 @@
 #include "folder_manager.h"
 #include "history_manager.h"
 #include "metadata_store.h"
+#include "memory_buffer_provider.h"
 #include "notebook.h"
 #include "notebook_manager.h"
 #include "standard_buffer_provider.h"
@@ -356,20 +357,47 @@ bool BufferManager::HasProtectedBuffers() const noexcept {
   return protected_buffers_ && !protected_buffers_->empty();
 }
 
-std::string BufferManager::OpenVirtualBuffer(const std::string &address) {
-  std::string existing_id = FindBufferByPath("", address);
+VxCoreError BufferManager::OpenVirtualBuffer(const std::string &address, std::string &out_id) {
+  out_id.clear();
+  if (opening_memory_addresses_.count(address)) return VXCORE_ERR_ALREADY_EXISTS;
+  const auto existing_id = FindBufferByPath("", address);
   if (!existing_id.empty()) {
-    VXCORE_LOG_DEBUG("Virtual buffer already open: id=%s, address=%s", existing_id.c_str(),
-                     address.c_str());
-    return existing_id;
+    const auto *existing = GetBuffer(existing_id);
+    if (!existing->IsVirtual() || existing->IsMemoryBacked()) return VXCORE_ERR_ALREADY_EXISTS;
+    out_id = existing_id;
+    return VXCORE_OK;
   }
-
   auto buffer = std::make_unique<Buffer>(address, true);
-  std::string id = buffer->GetId();
-  buffers_[id] = std::move(buffer);
+  out_id = buffer->GetId();
+  buffers_.emplace(out_id, std::move(buffer));
+  return VXCORE_OK;
+}
 
-  VXCORE_LOG_INFO("Opened virtual buffer: id=%s, address=%s", id.c_str(), address.c_str());
-  return id;
+VxCoreError BufferManager::OpenMemoryBuffer(const std::string &address,
+                                           const nlohmann::json &options,
+                                           const void *initial_data, size_t initial_size,
+                                           VxCoreBufferContentCallbacks callbacks,
+                                           std::string &out_id) {
+  out_id.clear();
+  if (address.rfind("vx://", 0) != 0 || address.size() == 5) return VXCORE_ERR_INVALID_PARAM;
+  if (!FindBufferByPath("", address).empty() || opening_memory_addresses_.count(address)) {
+    return VXCORE_ERR_ALREADY_EXISTS;
+  }
+  auto error = MemoryBufferProvider::ValidateOptions(options);
+  if (error != VXCORE_OK) return error;
+  opening_memory_addresses_.insert(address);
+  struct Reservation {
+    std::unordered_set<std::string> &addresses;
+    const std::string &address;
+    ~Reservation() { addresses.erase(address); }
+  } reservation{opening_memory_addresses_, address};
+  auto provider = std::make_shared<MemoryBufferProvider>(options, callbacks);
+  auto buffer = std::make_unique<Buffer>(address, provider);
+  error = provider->LoadInitialContent(initial_data, initial_size, buffer->content_);
+  if (error != VXCORE_OK) return error;
+  out_id = buffer->GetId();
+  buffers_.emplace(out_id, std::move(buffer));
+  return VXCORE_OK;
 }
 
 bool BufferManager::CloseBuffer(const std::string &id) {
@@ -432,9 +460,8 @@ VxCoreError BufferManager::SaveBuffer(const std::string &id) {
     return buffer->GetNotebook()->CheckWritable();
   }
 
-  if (buffer->IsVirtual()) {
-    return VXCORE_OK;
-  }
+  if (buffer->IsVirtual() && !buffer->IsMemoryBacked()) return VXCORE_OK;
+  if (buffer->IsMemoryBacked()) return buffer->SaveContent({});
 
   // Resolve full path for saving
   std::string full_path = buffer->ResolveFullPath();
@@ -471,9 +498,8 @@ VxCoreError BufferManager::ReloadBuffer(const std::string &id) {
     return VXCORE_ERR_BUFFER_NOT_FOUND;
   }
 
-  if (buffer->IsVirtual()) {
-    return VXCORE_OK;
-  }
+  if (buffer->IsVirtual() && !buffer->IsMemoryBacked()) return VXCORE_OK;
+  if (buffer->IsMemoryBacked()) return buffer->LoadContent({});
 
   // Resolve full path for loading
   std::string full_path = buffer->ResolveFullPath();
@@ -571,6 +597,7 @@ VxCoreError BufferManager::SetBufferContent(const std::string &id, const void *d
     VXCORE_LOG_ERROR("Cannot set content: buffer not found: id=%s", id.c_str());
     return VXCORE_ERR_BUFFER_NOT_FOUND;
   }
+  if (buffer->IsReadOnly()) return VXCORE_ERR_READ_ONLY;
   if (buffer->GetNotebook() && buffer->GetNotebook()->IsEncryptionRecoveryRequired()) {
     return VXCORE_ERR_ENCRYPTION_RECOVERY_REQUIRED;
   }
@@ -663,6 +690,7 @@ VxCoreError BufferManager::DiscardBackup(const std::string &id) {
     return buffer->GetNotebook()->CheckWritable();
   }
 
+  if (buffer->IsMemoryBacked()) return VXCORE_ERR_UNSUPPORTED;
   buffer->DiscardBackup();
   VXCORE_LOG_INFO("Discarded backup for buffer: id=%s", id.c_str());
   return VXCORE_OK;
@@ -676,6 +704,7 @@ VxCoreError BufferManager::GetBackupPath(const std::string &id, std::string &out
   }
 
   out_path = buffer->GetBackupFilePath();
+  if (buffer->IsMemoryBacked()) return VXCORE_ERR_UNSUPPORTED;
   VXCORE_LOG_DEBUG("Got backup path for buffer: id=%s, path=%s", id.c_str(), out_path.c_str());
   return VXCORE_OK;
 }
