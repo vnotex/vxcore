@@ -686,9 +686,10 @@ Permanent rules:
 
 ### Logging
 
-Shared note operations are also reached by the HTTP API. Open/save/create/rename, metadata
-persistence, node resolution and both search backends must not log note names, paths, bodies,
-queries or raw exception text, including at debug level. Keep existing stable IDs, counts and
+Shared note operations in both raw and bundled backends are also reached by the HTTP API.
+Open/save/create/rename, metadata persistence, node resolution and both search backends must not
+log note names, paths, bodies, queries or raw exception text, including at debug level.
+Keep existing stable IDs, counts and
 error codes; never print candidate paths or the constructed ripgrep command.
 
 ```cpp

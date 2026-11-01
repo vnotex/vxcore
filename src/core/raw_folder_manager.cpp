@@ -1010,16 +1010,16 @@ VxCoreError RawFolderManager::CreateFile(const std::string &folder_path,
   auto fs_file = PathFromUtf8(file_abs);
 
   if (fs::exists(fs_file)) {
-    VXCORE_LOG_WARN("File already exists: %s", file_abs.c_str());
+    VXCORE_LOG_WARN("CreateFile: file already exists");
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
   // Filesystem first
   try {
     std::ofstream(fs_file).close();
-    VXCORE_LOG_DEBUG("Created file: %s", file_abs.c_str());
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("Failed to create file: %s", e.what());
+    VXCORE_LOG_DEBUG("Created file");
+  } catch (const std::exception &) {
+    VXCORE_LOG_ERROR("Failed to create file");
     return VXCORE_ERR_IO;
   }
 
@@ -1028,7 +1028,7 @@ VxCoreError RawFolderManager::CreateFile(const std::string &folder_path,
   if (store) {
     err = EnsureFolderAncestorChain(clean_folder);
     if (err != VXCORE_OK) {
-      VXCORE_LOG_WARN("Failed to ensure ancestor chain for: %s", clean_folder.c_str());
+      VXCORE_LOG_WARN("CreateFile: failed to ensure ancestor chain: error=%d", err);
     } else {
       std::string folder_id = FindFolderIdByPath(store, root_folder_id_, clean_folder);
       if (!folder_id.empty()) {
@@ -1301,7 +1301,7 @@ VxCoreError RawFolderManager::RenameFile(const std::string &file_path,
 
   const auto clean_path = GetCleanRelativePath(file_path);
   const auto [folder_path, old_name] = SplitPath(clean_path);
-  VXCORE_LOG_INFO("RenameFile: file_path=%s, new_name=%s", clean_path.c_str(), new_name.c_str());
+  VXCORE_LOG_INFO("Renaming file");
 
   const bool is_root = folder_path.empty() || folder_path == ".";
   const std::string folder_abs =
@@ -1344,8 +1344,7 @@ VxCoreError RawFolderManager::RenameFile(const std::string &file_path,
     }
   }
 
-  VXCORE_LOG_INFO("RenameFile successful: %s -> %s", clean_path.c_str(),
-                  ConcatenatePaths(folder_path, new_name).c_str());
+  VXCORE_LOG_INFO("RenameFile successful");
   return VXCORE_OK;
 }
 
