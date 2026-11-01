@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "vxcore/vxcore_types.h"
 

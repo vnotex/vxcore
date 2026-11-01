@@ -12,6 +12,70 @@ vxcore is a cross-platform C/C++ library providing notebook management functiona
 
 ## API Usage
 
+### Platform-selected mobile extension
+
+The shared C API remains in `vxcore/vxcore.h`. Default Windows, Linux and macOS
+builds retain `vxcore_context_create(config_json, &context)` and its existing
+platform/portable/test-mode roots. They do not declare, compile or install the
+mobile context extension.
+
+Android and iOS targets additionally expose `vxcore/mobile/vxcore_mobile.h`:
+
+```c
+#include <vxcore/mobile/vxcore_mobile.h>
+
+VxCoreContextHandle context = NULL;
+VxCoreError error = vxcore_context_create_with_paths(
+    NULL, absolute_app_data_utf8, absolute_local_data_utf8, &context);
+```
+
+CMake selects `src/mobile/context_mobile.cpp` and
+`src/mobile/config_manager_mobile.cpp` and publishes `VXCORE_MOBILE_API=1` to
+linked consumers. Both factories share manager initialization; the mobile factory
+copies both UTF-8 paths before configuration loading and never changes global
+path defaults. `config_json` remains ignored in both factories. App data holds
+`vxcore.json`; local data holds `vxsession.json`, activity and notebook-local state.
+The embedding app supplies persistent sandbox locations, not cache directories.
+
+Both nonempty absolute roots are validated before creating directories or loading
+configuration. Existing ancestors are resolved; equal/containing roots and aliases
+are rejected. Invalid UTF-8, null/empty/relative or overlapping roots return
+`VXCORE_ERR_INVALID_PARAM`; inaccessible/non-directory ancestors return
+`VXCORE_ERR_IO`. A null output returns `VXCORE_ERR_NULL_POINTER`; otherwise output
+is null on failure. Allocation and JSON errors retain their specific codes.
+Partial resources are released, but created directories are not rolled back.
+Consumers serialize operations and protect roots from concurrent mutation; this is
+not an adversarial filesystem sandbox.
+
+For desktop-hosted mobile bridge tests only,
+`-DVXCORE_ENABLE_MOBILE_TEST_API=ON -DVXCORE_INSTALL=OFF` compiles the extension,
+including host path validation. This explicit option never selects mobile save
+semantics and cannot install a desktop SDK containing the test-only extension.
+
+### Ordinary buffer writes
+
+CMake selects exactly one `SaveBufferFileContent` implementation by **target**:
+
+- Desktop: `src/platform/buffer_file_save_desktop.cpp` retains the original
+  in-place writer from `c3319ca`, including stream-size checks and error mapping.
+  Hardlink/symlink identity and writable handles that deny deletion keep their
+  existing behavior. No Windows DACL modification or recovery-directory protocol
+  is added. Generic `AtomicFileWriter` retains its pre-mobile implementation.
+- Android/iOS: `src/mobile/buffer_file_save_mobile.cpp` uses the POSIX-only
+  `MobileFileWriter`. It writes bytes directly to an exclusive sibling, flushes
+  the file, checks destination identity/type/mode, preserves mode bits, renames,
+  and flushes the parent directory. Readonly, linked and nonregular destinations
+  are rejected without changing their old bytes before publication. Failures do
+  not mark buffers clean. A directory-flush error can occur after publication;
+  an IO error does not universally mean the old body remains at the path.
+
+The mobile policy targets app-owned files. It does not claim to copy arbitrary
+ownership, ACLs or extended attributes; iOS file-protection and interruption
+behavior still require device verification. Encrypted providers keep their existing
+persistence path. No text decoding or EOL conversion occurs in either ordinary
+writer. Neither desktop host tests nor file flushing establishes power-loss safety,
+unsaved-draft journaling or startup recovery.
+
 ### Unified Node API
 
 The library provides unified APIs for working with both files and folders using a consistent `(notebook_id, node_path)` interface. The returned JSON includes a `"type"` field (`"file"` or `"folder"`) for automatic type identification.
@@ -60,6 +124,11 @@ vxcore_string_free(metadata_json);
 
 
 ## Build
+
+iOS explicitly uses bundled curl and target OpenSSL; desktop Apple keeps SDK
+libcurl/SecureTransport. Cross-compilers must supply the target OpenSSL paths, not
+host libraries. All notebook, Git, encryption and WebDAV features remain linked.
+This selection alone is not evidence of an exercised iOS build or TLS trust setup.
 
 ### Configure
 ```bash

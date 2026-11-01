@@ -15,6 +15,13 @@ namespace vxcore {
 class ConfigManager {
  public:
   ConfigManager();
+#if defined(VXCORE_MOBILE_API) && VXCORE_MOBILE_API
+  // Explicit roots are validated before construction and never consult process defaults.
+  ConfigManager(std::filesystem::path app_data_path, std::filesystem::path local_data_path);
+  static VxCoreError ValidateDataPaths(const char *app_data_path, const char *local_data_path,
+                                      std::filesystem::path &out_app,
+                                      std::filesystem::path &out_local);
+#endif
 
   VxCoreError LoadConfigs();
 

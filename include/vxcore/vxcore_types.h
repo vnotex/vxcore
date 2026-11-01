@@ -125,8 +125,10 @@ typedef void (*VxCoreEventCallback)(const char *event_name, const char *json_dat
 #endif
 
 // C++ only types
+#ifdef __cplusplus
 namespace vxcore {
 enum class NodeType { File, Folder };
 }  // namespace vxcore
+#endif
 
 #endif

@@ -44,6 +44,23 @@ function(add_vxcore_test test_name)
 endfunction()
 
 add_vxcore_test(test_core)
+if(VXCORE_MOBILE_API_ENABLED)
+    add_vxcore_test(test_context_paths)
+    target_link_libraries(test_context_paths PRIVATE nlohmann_json)
+endif()
+
+if(VXCORE_MOBILE_PLATFORM)
+    # Exercise internal mobile writer errors as well as the public buffer boundary.
+    add_executable(test_atomic_buffer_save
+        test_atomic_buffer_save.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/mobile/file_writer_mobile.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/utils/file_utils.cpp)
+    target_include_directories(test_atomic_buffer_save PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(test_atomic_buffer_save PRIVATE vxcore nlohmann_json)
+    add_test(NAME test_atomic_buffer_save COMMAND test_atomic_buffer_save)
+else()
+    add_vxcore_test(test_buffer_save_desktop)
+endif()
 add_vxcore_test(test_error_codes)
 add_vxcore_test(test_notebook)
 
@@ -501,6 +518,7 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/buffer.cpp
     ${CMAKE_SOURCE_DIR}/src/core/buffer_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/buffer_provider.cpp
+    ${VXCORE_BUFFER_SAVE_SOURCES}
     ${CMAKE_SOURCE_DIR}/src/core/history_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/core/standard_buffer_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/core/external_buffer_provider.cpp

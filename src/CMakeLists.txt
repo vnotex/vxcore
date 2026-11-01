@@ -96,12 +96,23 @@ sync/sync_progress_dispatcher.cpp
     core/content_processor/asset_utils.cpp
 )
 
+list(APPEND VXCORE_SOURCES ${VXCORE_BUFFER_SAVE_SOURCES})
+if(VXCORE_MOBILE_API_ENABLED)
+    list(APPEND VXCORE_SOURCES
+        mobile/context_mobile.cpp
+        mobile/config_manager_mobile.cpp)
+endif()
+
 if(VXCORE_BUILD_SHARED)
     add_library(vxcore SHARED ${VXCORE_SOURCES} ${VXCORE_PUBLIC_HEADERS})
     target_compile_definitions(vxcore PRIVATE VXCORE_BUILD_DLL)
     target_compile_definitions(vxcore PUBLIC VXCORE_SHARED)
 else()
     add_library(vxcore STATIC ${VXCORE_SOURCES} ${VXCORE_PUBLIC_HEADERS})
+endif()
+
+if(VXCORE_MOBILE_API_ENABLED)
+    target_compile_definitions(vxcore PUBLIC VXCORE_MOBILE_API=1)
 endif()
 
 target_include_directories(vxcore

@@ -4,6 +4,8 @@
 #include <memory>
 #include <string>
 
+#include "vxcore/vxcore_types.h"
+
 namespace vxcore {
 
 class ConfigManager;
@@ -42,6 +44,9 @@ struct VxCoreContext {
   std::string locale = "en";
   bool shutdown_called = false;
 };
+
+VxCoreError InitializeContext(std::unique_ptr<ConfigManager> config_manager,
+                              VxCoreContextHandle *out_context);
 
 }  // namespace vxcore
 

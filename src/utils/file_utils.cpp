@@ -160,7 +160,8 @@ bool GetFilesystemTimes(const std::string &utf8_path, int64_t *out_created_ms,
   return true;
 #else
   // Linux / other POSIX: prefer statx for birth time; fall back to stat.
-#if defined(__linux__) && defined(STATX_BTIME)
+#if defined(__linux__) && defined(STATX_BTIME) && \
+    (!defined(__ANDROID__) || __ANDROID_API__ >= 30)
   struct statx stx;
   if (::statx(AT_FDCWD, utf8_path.c_str(), AT_STATX_SYNC_AS_STAT, STATX_BTIME | STATX_MTIME,
               &stx) == 0) {
