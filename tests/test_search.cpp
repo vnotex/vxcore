@@ -1392,6 +1392,113 @@ static void capi_stream_cb(int batch_index, int total_batches, const char *batch
   c->by_index[batch_index] = std::move(parsed);
 }
 
+int test_content_search_first_match_per_file() {
+  std::cout << "  Running test_content_search_first_match_per_file..." << std::endl;
+  const std::string root = get_test_path("test_first_match_capi");
+  cleanup_test_dir(root);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["simple"]}})"),
+            VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"First match"})",
+                                  VXCORE_NOTEBOOK_BUNDLED, &notebook_id), VXCORE_OK);
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id), VXCORE_OK);
+  const std::string id = file_id;
+  vxcore_string_free(file_id);
+  const std::string line = u8"\U0001F600needle needle";
+  write_file(root + "/note.md", "skip needle\n" + line + "\nneedle later\n");
+  const char *input = R"({"files":["note.md"]})";
+  nlohmann::json query = {{"pattern", "needle"}, {"excludePatterns", {"skip"}},
+                           {"firstMatchPerFile", true}};
+  char *results = nullptr;
+  ASSERT_EQ(vxcore_search_content(ctx, notebook_id, query.dump().c_str(), input, &results),
+            VXCORE_OK);
+  const auto bounded = nlohmann::json::parse(results);
+  vxcore_string_free(results);
+  ASSERT_EQ(bounded["matchCount"].get<int>(), 1);
+  ASSERT_EQ(bounded["matches"].size(), 1);
+  ASSERT_FALSE(bounded["truncated"].get<bool>());
+  const auto &file = bounded["matches"][0];
+  ASSERT_EQ(file["id"].get<std::string>(), id);
+  ASSERT_EQ(file["path"].get<std::string>(), "note.md");
+  ASSERT_EQ(file["matchCount"].get<int>(), 1);
+  ASSERT_EQ(file["matches"].size(), 1);
+  ASSERT_EQ(file["matches"][0]["lineNumber"].get<int>(), 2);
+  ASSERT_EQ(file["matches"][0]["columnStart"].get<int>(), 2);
+  ASSERT_EQ(file["matches"][0]["columnEnd"].get<int>(), 8);
+  ASSERT_EQ(file["matches"][0]["lineText"].get<std::string>(), line);
+
+  CApiStreamCollector collector;
+  ASSERT_EQ(vxcore_search_content_streaming(ctx, notebook_id, query.dump().c_str(), input, 1,
+                                           capi_stream_cb, &collector, nullptr), VXCORE_OK);
+  ASSERT_EQ(collector.callback_count, 1);
+  ASSERT_TRUE(collector.by_index.at(0) == bounded);
+  results = nullptr;
+  ASSERT_EQ(vxcore_search_content_ex(ctx, notebook_id, query.dump().c_str(), input, nullptr,
+                                    &results), VXCORE_OK);
+  ASSERT_TRUE(nlohmann::json::parse(results) == bounded);
+  vxcore_string_free(results);
+
+  // Explicit false and absent both preserve the ordinary per-occurrence response.
+  query["firstMatchPerFile"] = false;
+  results = nullptr;
+  ASSERT_EQ(vxcore_search_content(ctx, notebook_id, query.dump().c_str(), input, &results),
+            VXCORE_OK);
+  const auto ordinary = nlohmann::json::parse(results);
+  vxcore_string_free(results);
+  ASSERT_EQ(ordinary["matches"][0]["matches"].size(), 3);
+  query.erase("firstMatchPerFile");
+  results = nullptr;
+  ASSERT_EQ(vxcore_search_content(ctx, notebook_id, query.dump().c_str(), input, &results),
+            VXCORE_OK);
+  ASSERT_TRUE(nlohmann::json::parse(results) == ordinary);
+  vxcore_string_free(results);
+  CApiStreamCollector ordinary_collector;
+  ASSERT_EQ(vxcore_search_content_streaming(ctx, notebook_id, query.dump().c_str(), input, 1,
+                                           capi_stream_cb, &ordinary_collector, nullptr), VXCORE_OK);
+  ASSERT_TRUE(ordinary_collector.by_index.at(0) == ordinary);
+
+  query["firstMatchPerFile"] = "true";
+  results = nullptr;
+  ASSERT_EQ(vxcore_search_content(ctx, notebook_id, query.dump().c_str(), input, &results),
+            VXCORE_ERR_JSON_PARSE);
+  ASSERT_TRUE(results == nullptr);
+  CApiStreamCollector invalid_collector;
+  ASSERT_EQ(vxcore_search_content_streaming(ctx, notebook_id, query.dump().c_str(), input, 1,
+                                           capi_stream_cb, &invalid_collector, nullptr),
+            VXCORE_ERR_JSON_PARSE);
+  ASSERT_EQ(invalid_collector.callback_count, 0);
+
+  // rg selection falls back to simple when unavailable. It must either explicitly reject
+  // this query or honor it via that fallback, never silently emit all rg occurrences.
+  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["rg"]}})"), VXCORE_OK);
+  query["firstMatchPerFile"] = true;
+  results = nullptr;
+  const auto rg_error = vxcore_search_content(ctx, notebook_id, query.dump().c_str(), input,
+                                             &results);
+  ASSERT_TRUE(rg_error == VXCORE_ERR_UNSUPPORTED || rg_error == VXCORE_OK);
+  CApiStreamCollector rg_collector;
+  ASSERT_EQ(vxcore_search_content_streaming(ctx, notebook_id, query.dump().c_str(), input, 1,
+                                           capi_stream_cb, &rg_collector, nullptr), rg_error);
+  if (rg_error == VXCORE_ERR_UNSUPPORTED) {
+    ASSERT_TRUE(results == nullptr);
+    ASSERT_EQ(rg_collector.callback_count, 0);
+  } else {
+    ASSERT_TRUE(nlohmann::json::parse(results) == bounded);
+    ASSERT_TRUE(rg_collector.by_index.at(0) == bounded);
+    vxcore_string_free(results);
+    std::cout << "    rg unavailable: verified simple fallback" << std::endl;
+  }
+  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["simple"]}})"),
+            VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  return 0;
+}
+
 // Streaming C-API delivers, across all chunks, the SAME matched-file set as the blob API.
 int test_streaming_capi_blob_parity() {
   std::cout << "  Running test_streaming_capi_blob_parity..." << std::endl;
@@ -4673,6 +4780,7 @@ int main() {
   RUN_TEST(test_search_file_and_exclude_patterns);
 
   RUN_TEST(test_search_content_exclude_patterns);
+  RUN_TEST(test_content_search_first_match_per_file);
   RUN_TEST(test_streaming_capi_blob_parity);
   RUN_TEST(test_streaming_capi_cancel);
   RUN_TEST(test_search_by_tags_with_exclude_tags);

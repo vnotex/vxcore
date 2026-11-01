@@ -119,6 +119,11 @@ VxCoreError SearchManager::SearchContent(const std::string &query_json,
                                          std::string &out_results_json) {
   try {
     auto query = SearchContentQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
+    // Reject unsupported bounded mode before enumeration or any callback, including no files.
+    if ((query.options & SearchOption::kFirstMatchPerFile) != SearchOption::kNone &&
+        !dynamic_cast<SimpleSearchBackend *>(search_backend_.get())) {
+      return VXCORE_ERR_UNSUPPORTED;
+    }
     size_t encrypted_skipped = 0;
     auto filtered_files = FetchFilesToSearch(query.scope, input_files_json, false,
                                               &encrypted_skipped);
@@ -192,6 +197,11 @@ VxCoreError SearchManager::SearchContentStreaming(const std::string &query_json,
                                                   const SearchContentBatchFn &on_batch) {
   try {
     auto query = SearchContentQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
+    // Reject unsupported bounded mode before enumeration or any callback, including no files.
+    if ((query.options & SearchOption::kFirstMatchPerFile) != SearchOption::kNone &&
+        !dynamic_cast<SimpleSearchBackend *>(search_backend_.get())) {
+      return VXCORE_ERR_UNSUPPORTED;
+    }
     size_t encrypted_skipped = 0;
     auto filtered_files = FetchFilesToSearch(query.scope, input_files_json, false,
                                               &encrypted_skipped);

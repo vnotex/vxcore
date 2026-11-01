@@ -12,6 +12,24 @@ vxcore is a cross-platform C/C++ library providing notebook management functiona
 
 ## API Usage
 
+### First-match content search and existing tag assignments
+
+Content search queries may set `"firstMatchPerFile": true` with the simple
+backend. Both blob and streaming APIs return only the first qualifying occurrence
+in each matched file, retaining the usual line number and UTF-16 columns. Literal,
+regex, case, whole-word and excluded-line rules still apply. The matchers stop
+before copying a second matching line, avoiding repeated-line allocation growth.
+The default remains every occurrence; non-simple backends reject the opt-in with
+`VXCORE_ERR_UNSUPPORTED`. File count, source size and result transport still need
+consumer bounds; the streaming API does not enforce `maxResults`.
+
+For bundled notes, `vxcore_file_update_tags` accepts a replacement name when it is
+a current notebook definition **or already assigned to that same file**. This
+preserves legacy/orphan assignments without recreating definitions. Newly
+introduced undefined names are rejected before replacement; omitting an orphan
+removes it, and it cannot then be reintroduced unless defined. All other file
+metadata and content retain their existing update behavior.
+
 ### Platform-selected mobile extension
 
 The shared C API remains in `vxcore/vxcore.h`. Default Windows, Linux and macOS

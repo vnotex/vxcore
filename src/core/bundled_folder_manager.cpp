@@ -1349,8 +1349,11 @@ VxCoreError BundledFolderManager::UpdateFileTags(const std::string &file_path,
 
     std::vector<std::string> new_tags = tags.get<std::vector<std::string>>();
 
+    // Preserve existing orphan assignments, but never introduce a new undefined name.
+    // Validate against the old assignment list before mutating it.
     for (const auto &tag_name : new_tags) {
-      if (!notebook_->FindTag(tag_name)) {
+      if (!notebook_->FindTag(tag_name) &&
+          std::find(file->tags.begin(), file->tags.end(), tag_name) == file->tags.end()) {
         return VXCORE_ERR_INVALID_PARAM;
       }
     }

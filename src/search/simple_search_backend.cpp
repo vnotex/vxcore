@@ -263,7 +263,8 @@ void RunWorkItemProbeHook() {
 SimpleSearchBackend::SimpleSearchBackend(std::vector<std::string> encodings)
     : encodings_(encodings.empty() ? DefaultSearchEncodings() : std::move(encodings)) {}
 
-bool DoRegexMatch(const std::regex &pattern_regex, const std::string &line, int line_number,
+bool DoRegexMatch(const std::regex &pattern_regex, bool first_match_per_file,
+                  const std::string &line, int line_number,
                   std::vector<SearchMatch> &out_matches) {
   auto begin = std::sregex_iterator(line.begin(), line.end(), pattern_regex);
   auto end = std::sregex_iterator();
@@ -272,18 +273,21 @@ bool DoRegexMatch(const std::regex &pattern_regex, const std::string &line, int 
   for (std::sregex_iterator it = begin; it != end; ++it) {
     has_match = true;
     SearchMatch match;
-    // TODO: optimize to avoid copying line multiple times
     match.line_text = line;
     match.line_number = line_number;
     match.column_start = Utf16ColumnForByteOffset(line, static_cast<size_t>(it->position()));
     match.column_end = Utf16ColumnForByteOffset(
         line, static_cast<size_t>(it->position()) + static_cast<size_t>(it->length()));
     out_matches.push_back(std::move(match));
+    if (first_match_per_file) {
+      return true;
+    }
   }
   return has_match;
 }
 
 bool DoPatternMatch(const std::string &transformed_pattern, bool case_sensitive, bool whole_word,
+                    bool first_match_per_file,
                     const std::string &line, int line_number,
                     std::vector<SearchMatch> &out_matches) {
   std::string lowercased_line = case_sensitive ? std::string() : ToLowerString(line);
@@ -306,12 +310,14 @@ bool DoPatternMatch(const std::string &transformed_pattern, bool case_sensitive,
 
     has_match = true;
     SearchMatch match;
-    // TODO: optimize to avoid copying line multiple times
     match.line_text = line;
     match.line_number = line_number;
     match.column_start = Utf16ColumnForByteOffset(line, pos);
     match.column_end = Utf16ColumnForByteOffset(line, pos + transformed_pattern.length());
     out_matches.push_back(std::move(match));
+    if (first_match_per_file) {
+      return true;
+    }
 
     pos += transformed_pattern.length();
   }
@@ -325,6 +331,7 @@ bool SimpleSearchBackend::MatchesPattern(const std::string &line, const std::str
   bool case_sensitive = HasFlag(options, SearchOption::kCaseSensitive);
   bool whole_word = HasFlag(options, SearchOption::kWholeWord);
   bool regex = HasFlag(options, SearchOption::kRegex);
+  bool first_match_per_file = HasFlag(options, SearchOption::kFirstMatchPerFile);
 
   std::regex pattern_regex;
   std::string lowercased_pattern;
@@ -341,11 +348,12 @@ bool SimpleSearchBackend::MatchesPattern(const std::string &line, const std::str
   }
 
   if (regex) {
-    return DoRegexMatch(pattern_regex, line, 0, out_matches);
+    return DoRegexMatch(pattern_regex, first_match_per_file, line, 0, out_matches);
   } else if (!case_sensitive) {
-    return DoPatternMatch(lowercased_pattern, false, whole_word, line, 0, out_matches);
+    return DoPatternMatch(lowercased_pattern, false, whole_word, first_match_per_file, line, 0,
+                          out_matches);
   } else {
-    return DoPatternMatch(pattern, true, whole_word, line, 0, out_matches);
+    return DoPatternMatch(pattern, true, whole_word, first_match_per_file, line, 0, out_matches);
   }
 }
 
@@ -374,13 +382,15 @@ void SimpleSearchBackend::TestArmScanThrowOnce() {
 bool SimpleSearchBackend::RunMatch(const MatchContext &ctx, const std::string &line,
                                    int line_number, std::vector<SearchMatch> &out_matches) {
   if (ctx.regex) {
-    return DoRegexMatch(ctx.pattern_regex, line, line_number, out_matches);
+    return DoRegexMatch(ctx.pattern_regex, ctx.first_match_per_file, line, line_number,
+                        out_matches);
   }
   if (!ctx.case_sensitive) {
-    return DoPatternMatch(ctx.lowercased_pattern, false, ctx.whole_word, line, line_number,
-                          out_matches);
+    return DoPatternMatch(ctx.lowercased_pattern, false, ctx.whole_word, ctx.first_match_per_file,
+                          line, line_number, out_matches);
   }
-  return DoPatternMatch(ctx.literal_pattern, true, ctx.whole_word, line, line_number, out_matches);
+  return DoPatternMatch(ctx.literal_pattern, true, ctx.whole_word, ctx.first_match_per_file, line,
+                        line_number, out_matches);
 }
 
 VxCoreError SimpleSearchBackend::BuildMatchContext(
@@ -389,6 +399,7 @@ VxCoreError SimpleSearchBackend::BuildMatchContext(
   out_ctx.case_sensitive = HasFlag(options, SearchOption::kCaseSensitive);
   out_ctx.whole_word = HasFlag(options, SearchOption::kWholeWord);
   out_ctx.regex = HasFlag(options, SearchOption::kRegex);
+  out_ctx.first_match_per_file = HasFlag(options, SearchOption::kFirstMatchPerFile);
 
   if (out_ctx.regex) {
     try {
@@ -446,6 +457,9 @@ void SimpleSearchBackend::ScanChunk(const std::vector<SearchFileInfo> &files, si
         if (RunMatch(ctx, line, line_number, line_matches)) {
           for (auto &match : line_matches) {
             file_matches.push_back(std::move(match));
+          }
+          if (ctx.first_match_per_file) {
+            break;
           }
         }
       }

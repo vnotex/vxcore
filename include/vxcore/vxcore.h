@@ -644,6 +644,9 @@ VXCORE_API VxCoreError vxcore_folder_import(VxCoreContextHandle context, const c
                                             const char *external_folder_path,
                                             const char *suffix_allowlist, char **out_folder_id);
 
+// Replace a bundled file's tags with tags_json (an array of names). New names must have
+// notebook definitions; existing undefined assignments may be preserved or explicitly removed.
+// Once removed, an undefined name cannot be assigned again until its definition exists.
 VXCORE_API VxCoreError vxcore_file_update_tags(VxCoreContextHandle context, const char *notebook_id,
                                                const char *file_path, const char *tags_json);
 
@@ -931,6 +934,13 @@ VXCORE_API VxCoreError vxcore_search_files(VxCoreContextHandle context, const ch
                                            const char *query_json, const char *input_files_json,
                                            char **out_results_json);
 
+// Content query_json optionally accepts "firstMatchPerFile": true (default false).
+// The simple backend then returns only the first qualifying occurrence in each file, after
+// applying ordinary options and line exclusions, with unchanged line/UTF-16 column offsets.
+// It stops matching before allocating another occurrence's lineText, avoiding repeated-match
+// quadratic allocation. This is not a file-size cap or filesystem snapshot. Other active
+// backends return VXCORE_ERR_UNSUPPORTED for this mode. Applies to all content search APIs;
+// omitted/false preserves ordinary multiple-match results and maxResults behavior.
 VXCORE_API VxCoreError vxcore_search_content(VxCoreContextHandle context, const char *notebook_id,
                                              const char *query_json, const char *input_files_json,
                                              char **out_results_json);
@@ -964,8 +974,9 @@ VXCORE_API VxCoreError vxcore_search_content_ex(VxCoreContextHandle context,
 //   batch_json:    a JSON object in the existing content-search shape, scoped to that chunk's
 //                  files: {"matchCount":N,"truncated":false,"matches":[{path,id,matchCount,
 //                  matches:[{lineNumber,columnStart,columnEnd,lineText}]}]}. "truncated" is
-//                  ALWAYS false — the streaming primitive owns no truncation; it emits every
-//                  match. The pointer is valid ONLY for the callback's duration; copy/parse
+//                  ALWAYS false — the streaming primitive owns no result cap; it emits every
+//                  match selected by the query (at most one per file with firstMatchPerFile).
+//                  The pointer is valid ONLY for the callback's duration; copy/parse
 //                  before returning.
 //   userdata:      opaque pointer supplied by the caller; valid for the call's duration.
 //

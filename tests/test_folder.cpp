@@ -191,6 +191,120 @@ int test_file_create() {
   return 0;
 }
 
+int test_file_update_tags_preserves_existing_orphans() {
+  std::cout << "  Running test_file_update_tags_preserves_existing_orphans..." << std::endl;
+  const std::string root = get_test_path("test_file_orphan_tags_nb");
+  cleanup_test_dir(root);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Orphan tags"})",
+                                  VXCORE_NOTEBOOK_BUNDLED, &notebook_id), VXCORE_OK);
+  const std::string original_notebook_id = notebook_id;
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id), VXCORE_OK);
+  const std::string original_file_id = file_id;
+  vxcore_string_free(file_id);
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "other.md", &file_id), VXCORE_OK);
+  vxcore_string_free(file_id);
+  const std::string body = "# Keep this note\r\n\r\nOriginal saved body.\r\n";
+  ASSERT(WriteTestFile(root + "/note.md", body));
+  ASSERT_EQ(vxcore_node_update_metadata(ctx, notebook_id, "note.md",
+                                        R"({"author":"keep","custom":{"values":[1,"two"]}})"),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_tag_create(ctx, notebook_id, "work"), VXCORE_OK);
+  ASSERT_EQ(vxcore_tag_create(ctx, notebook_id, "urgent"), VXCORE_OK);
+  ASSERT_EQ(vxcore_file_update_tags(ctx, notebook_id, "note.md", R"(["work"])"), VXCORE_OK);
+  char *json = nullptr;
+  ASSERT_EQ(vxcore_tag_list(ctx, notebook_id, &json), VXCORE_OK);
+  const auto original_definitions = nlohmann::json::parse(json);
+  vxcore_string_free(json);
+  ASSERT_EQ(vxcore_notebook_close(ctx, notebook_id), VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  notebook_id = nullptr;
+
+  // Seed a valid desktop-style orphan assignment while the notebook is closed.
+  const std::string config_path = root + "/vx_notebook/contents/vx.json";
+  std::ifstream input(PathFromUtf8ForTest(config_path), std::ios::binary);
+  ASSERT(input.is_open());
+  nlohmann::json config;
+  input >> config;
+  input.close();
+  bool seeded = false;
+  for (auto &file : config["files"]) {
+    if (file["name"] == "note.md") {
+      file["tags"] = nlohmann::json::array({"orphan", "work"});
+      seeded = true;
+    }
+  }
+  ASSERT_TRUE(seeded);
+  config["modifiedUtc"] = config["modifiedUtc"].get<int64_t>() + 1000;
+  ASSERT(WriteTestFile(config_path, config.dump(2)));
+  ASSERT_EQ(vxcore_notebook_open(ctx, root.c_str(), &notebook_id), VXCORE_OK);
+  ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, "note.md", &json), VXCORE_OK);
+  const auto original_file = nlohmann::json::parse(json);
+  vxcore_string_free(json);
+  ASSERT_EQ(original_file["id"].get<std::string>(), original_file_id);
+  ASSERT(original_file["tags"] == nlohmann::json::array({"orphan", "work"}));
+
+  // Being assigned to another file never permits a new undefined assignment here.
+  ASSERT_EQ(vxcore_file_update_tags(ctx, notebook_id, "other.md", R"(["orphan"])"),
+            VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, "other.md", &json), VXCORE_OK);
+  ASSERT_TRUE(nlohmann::json::parse(json)["tags"].empty());
+  vxcore_string_free(json);
+
+  for (bool preserve_orphan : {true, false}) {
+    const auto desired = preserve_orphan ? nlohmann::json::array({"orphan", "urgent"})
+                                         : nlohmann::json::array({"urgent"});
+    ASSERT_EQ(vxcore_file_update_tags(ctx, notebook_id, "note.md", desired.dump().c_str()),
+              VXCORE_OK);
+    ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, "note.md", &json), VXCORE_OK);
+    const auto before_rejection = nlohmann::json::parse(json);
+    vxcore_string_free(json);
+    // Reject the whole replacement before mutation, including when a valid old orphan
+    // precedes a new unknown name. A removed orphan is also a new undefined assignment.
+    const char *invalid = preserve_orphan ? R"(["orphan","unknown"])"
+                                          : R"(["urgent","orphan"])";
+    ASSERT_EQ(vxcore_file_update_tags(ctx, notebook_id, "note.md", invalid),
+              VXCORE_ERR_INVALID_PARAM);
+    ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, "note.md", &json), VXCORE_OK);
+    ASSERT(nlohmann::json::parse(json) == before_rejection);
+    vxcore_string_free(json);
+
+    ASSERT_EQ(vxcore_notebook_close(ctx, notebook_id), VXCORE_OK);
+    vxcore_string_free(notebook_id);
+    notebook_id = nullptr;
+    ASSERT_EQ(vxcore_notebook_open(ctx, root.c_str(), &notebook_id), VXCORE_OK);
+    ASSERT_EQ(std::string(notebook_id), original_notebook_id);
+    ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, "note.md", &json), VXCORE_OK);
+    const auto reopened = nlohmann::json::parse(json);
+    vxcore_string_free(json);
+    ASSERT(reopened == before_rejection);
+    auto expected = original_file;
+    expected["tags"] = desired;
+    expected["modifiedUtc"] = reopened["modifiedUtc"];
+    // IDs, creation time, source fields and all custom metadata remain unchanged.
+    ASSERT(reopened == expected);
+    std::ifstream source(PathFromUtf8ForTest(root + "/note.md"), std::ios::binary);
+    ASSERT(source.is_open());
+    const std::string reopened_body((std::istreambuf_iterator<char>(source)),
+                                    std::istreambuf_iterator<char>());
+    ASSERT_EQ(reopened_body, body);
+    ASSERT_EQ(vxcore_tag_list(ctx, notebook_id, &json), VXCORE_OK);
+    ASSERT(nlohmann::json::parse(json) == original_definitions);
+    vxcore_string_free(json);
+  }
+  // Reintroduction becomes valid only after the missing definition is explicitly created.
+  ASSERT_EQ(vxcore_tag_create(ctx, notebook_id, "orphan"), VXCORE_OK);
+  ASSERT_EQ(vxcore_file_update_tags(ctx, notebook_id, "note.md", R"(["orphan","urgent"])"),
+            VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  return 0;
+}
+
 int test_file_metadata_and_tags() {
   std::cout << "  Running test_file_metadata_and_tags..." << std::endl;
   cleanup_test_dir(get_test_path("test_file_meta_nb"));
@@ -10483,6 +10597,7 @@ int main() {
   RUN_TEST(test_folder_create);
   RUN_TEST(test_file_create);
   RUN_TEST(test_file_metadata_and_tags);
+  RUN_TEST(test_file_update_tags_preserves_existing_orphans);
   RUN_TEST(test_folder_delete);
   RUN_TEST(test_folder_create_duplicate);
   RUN_TEST(test_file_create_duplicate);

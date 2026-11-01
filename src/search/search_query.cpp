@@ -161,6 +161,9 @@ SearchContentQuery SearchContentQuery::FromJson(const Notebook *notebook,
   if (json.value("regex", false)) {
     query.options |= SearchOption::kRegex;
   }
+  if (json.value("firstMatchPerFile", false)) {
+    query.options |= SearchOption::kFirstMatchPerFile;
+  }
 
   if (json.contains("scope")) {
     query.scope = SearchScope::FromJson(notebook, json["scope"]);

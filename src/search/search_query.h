@@ -14,7 +14,9 @@ enum class SearchOption : uint32_t {
   kNone = 0,
   kCaseSensitive = 1 << 0,
   kWholeWord = 1 << 1,
-  kRegex = 1 << 2
+  kRegex = 1 << 2,
+  // Simple backend only: emit the first qualifying occurrence per file; default off.
+  kFirstMatchPerFile = 1 << 3
 };
 
 inline SearchOption operator|(SearchOption lhs, SearchOption rhs) {

@@ -42,8 +42,9 @@ struct ContentSearchResult {
 //                  threads; identity is the index, NOT arrival order.
 //   total_batches: fixed up front (== number of chunks). Zero-file search yields no calls.
 //   batch_files:   the matched files for THIS chunk only, in input-file order within the
-//                  chunk. NO truncation is applied (the streaming primitive owns no
-//                  truncation). Passed by mutable reference so an accumulating consumer may
+//                  chunk. No result cap is applied; kFirstMatchPerFile selects only the first
+//                  qualifying occurrence per file on the simple backend. Passed by mutable
+//                  reference so an accumulating consumer may
 //                  move out of it; valid only for the callback's duration.
 // May be invoked concurrently from multiple drain threads; implementations MUST be
 // thread-safe. Only the chunk's own thread ever touches its batch_files, so cross-chunk
@@ -61,8 +62,9 @@ class ISearchBackend {
                              int max_results, ContentSearchResult &out_result) = 0;
 
   // Streaming content search primitive. Scans |files| in chunks of |batch_size| files
-  // (0 selects kDefaultSearchChunkSize) and invokes |emit_batch| once per chunk. Applies NO
-  // truncation — every match is emitted; the caller owns any cap/reassembly. Blocks on the
+  // (0 selects kDefaultSearchChunkSize) and invokes |emit_batch| once per chunk. Applies no
+  // result cap; every match is emitted unless kFirstMatchPerFile selects the first qualifying
+  // occurrence per file (simple backend only). The caller owns any cap/reassembly. Blocks on the
   // calling thread (help-draining the work queue when one is configured) and returns when the
   // scan completes. Returns VXCORE_ERR_CANCELLED if a configured cancel flag was observed.
   virtual VxCoreError SearchStreaming(const std::vector<SearchFileInfo> &files,
