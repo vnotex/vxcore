@@ -613,6 +613,33 @@ VXCORE_API VxCoreError vxcore_node_delete(VxCoreContextHandle context, const cha
   }
 }
 
+VXCORE_API VxCoreError vxcore_node_trash(VxCoreContextHandle context, const char *notebook_id,
+                                         const char *node_path, bool *out_trashed,
+                                         bool *out_recovery_required) {
+  if (out_trashed) *out_trashed = false;
+  if (out_recovery_required) *out_recovery_required = false;
+  if (!context || !notebook_id || !node_path || !out_trashed || !out_recovery_required ||
+      out_trashed == out_recovery_required) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) return VXCORE_ERR_NOT_FOUND;
+    const auto writable = notebook->CheckWritable();
+    if (writable != VXCORE_OK) return writable;
+    auto *manager = notebook->GetFolderManager();
+    if (!manager) return VXCORE_ERR_INVALID_STATE;
+    // Do not DetectNodeType here: lazy config loading can mutate the store even
+    // for an unsupported operation. The opted-in backend validates without it.
+    return manager->TrashFile(node_path, *out_trashed, *out_recovery_required);
+  } catch (const std::exception &) {
+    return VXCORE_ERR_IO;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_node_rename(VxCoreContextHandle context, const char *notebook_id,
                                           const char *node_path, const char *new_name) {
   if (!context || !notebook_id || !node_path || !new_name) {

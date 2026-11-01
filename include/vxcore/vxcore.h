@@ -797,6 +797,22 @@ VXCORE_API VxCoreError vxcore_node_get_file_size(VxCoreContextHandle context,
 VXCORE_API VxCoreError vxcore_node_delete(VxCoreContextHandle context, const char *notebook_id,
                                           const char *node_path);
 
+// Strictly recycle one indexed ordinary file. Unlike node_delete, this never
+// falls back to permanent deletion. Raw backends, folders, protected notes and
+// cross-filesystem recycle destinations are unsupported. Read-only wins first.
+// node_path must be a normalized notebook-relative path with no links/reparse points.
+// Both output pointers are required and initialized false (also on invalid input).
+// OK means the body, folder metadata and metadata store committed: trashed=true.
+// On failure trashed=false; recovery_required=true means a partial mutation needs
+// reconciliation. Recoverable bytes and the original identity remain in the source
+// or a recycle directory containing the note and vx_trash.json. Never blindly retry
+// a recovery-required result. Attachments/assets are left at their existing paths.
+// Caller owns editor/save quiescence, identity guards and exclusive notebook IO;
+// events are synchronous, so consumers must not reenter a mutation from callbacks.
+VXCORE_API VxCoreError vxcore_node_trash(VxCoreContextHandle context, const char *notebook_id,
+                                         const char *node_path, bool *out_trashed,
+                                         bool *out_recovery_required);
+
 // Rename node (file or folder)
 VXCORE_API VxCoreError vxcore_node_rename(VxCoreContextHandle context, const char *notebook_id,
                                           const char *node_path, const char *new_name);

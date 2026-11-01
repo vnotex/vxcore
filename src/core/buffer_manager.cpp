@@ -30,12 +30,11 @@ static std::optional<StoreFileRecord> TrySyncAndGetFile(Notebook *notebook, Meta
     return std::nullopt;
   }
   auto [parent, name] = SplitPath(file_path);
-  VXCORE_LOG_INFO("TrySyncAndGetFile: syncing parent folder '%s' for file '%s'", parent.c_str(),
-                   file_path.c_str());
+  VXCORE_LOG_INFO("TrySyncAndGetFile: syncing parent folder metadata");
   std::string config_json;
   VxCoreError err = folder_mgr->GetFolderConfig(parent, config_json);
   if (err != VXCORE_OK) {
-    VXCORE_LOG_INFO("TrySyncAndGetFile: GetFolderConfig('%s') failed: %d", parent.c_str(), err);
+    VXCORE_LOG_INFO("TrySyncAndGetFile: GetFolderConfig failed: %d", err);
     return std::nullopt;
   }
   auto result = store->GetFileByPath(file_path);
@@ -213,8 +212,7 @@ void BufferManager::UpdatePaths(const std::string &notebook_id) {
       UpdateProtectedRegistration(*buffer);
     }
 
-    VXCORE_LOG_INFO("UpdatePaths: buffer id=%s, old=%s, new=%s", buffer->GetId().c_str(),
-                    old_path.c_str(), current_path.c_str());
+    VXCORE_LOG_INFO("UpdatePaths: buffer id=%s", buffer->GetId().c_str());
     updated = true;
   }
 
@@ -298,8 +296,8 @@ VxCoreError BufferManager::OpenBuffer(const std::string &notebook_id,
     RecordFileOpen(store, file_record->id);
   }
   out_id = existing_id;
-  VXCORE_LOG_INFO("Opened buffer: id=%s, notebook_id=%s, file_path=%s", out_id.c_str(),
-                  effective_notebook_id.c_str(), effective_path.c_str());
+  VXCORE_LOG_INFO("Opened buffer: id=%s, notebook_id=%s", out_id.c_str(),
+                  effective_notebook_id.c_str());
   return VXCORE_OK;
 }
 

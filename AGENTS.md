@@ -53,6 +53,44 @@ The vxcore submodule currently has **no git tags**, so there is no formal releas
 - Enum additions MUST be appended before the `VXCORE_ERR_UNKNOWN = 999` sentinel with an explicit value; never reorder existing enumerators.
 - Cut `v0.1.0` at the next stable point and adopt SemVer thereafter (MAJOR for `!` commits, MINOR for pure additions, PATCH for internal fixes).
 
+## Strict ordinary-file trash
+
+`vxcore_node_trash(context, notebook_id, node_path, out_trashed, out_recovery_required)`
+is an additive, fail-closed alternative to the legacy UI `vxcore_node_delete`.
+Both distinct output pointers are required and reset to false. `VXCORE_OK` means
+`trashed=true`: the body relocation, authoritative folder config and metadata-store
+transaction all committed. A failure leaves `trashed=false`; `recovery_required=true`
+means partial filesystem/metadata/index state needs reconciliation, not a safe retry.
+The caller owns editor/save quiescence, fresh UUID/path guards, and exclusive notebook IO.
+Callbacks are synchronous; they must not reenter notebook mutation while that gate is held.
+
+`FolderManager::TrashFile` is opt-in and defaults to `VXCORE_ERR_UNSUPPORTED` without
+mutation. Only the bundled backend implements it. Raw backends, folders, protected
+metadata/suffixes/ciphertext and cross-filesystem relocation are unsupported; notebook
+read-only status wins before capability checks. Unindexed/missing files and unsafe
+relative paths, symlinks/junctions/reparse paths and identity conflicts are rejected.
+The strict implementation must NEVER call `DeleteFile`, legacy `MoveToRecycleBin`, or
+their permanent-delete fallbacks. Existing UI deletion behavior remains unchanged.
+
+Each strict recycle entry is an exclusively reserved `<name>.trash-<uuid>` directory
+under the configured recycle bin. `contents/<name>` preserves the actual body;
+`vx_trash.json` records format version 1, notebook/parent identity, parent path and the
+original full file record (UUID/tags/attachments included). Assets/attachments stay at
+their existing locations. Moves and rollback never replace an occupied path, never
+copy across volumes, and never discard the last body copy. Folder metadata is installed
+atomically and store deletion runs in a transaction. Ordinary failures restore the
+source and its exact config; failed rollback retains the body/identity manifest for
+owner-assisted reconciliation. Do not empty the recycle bin before resolving such a
+result. No automatic retry or recovery silently creates a new identity.
+
+Publish `folder.config_changed` / `file.deleted` only for committed or unresolved actual
+mutations, not a rejected operation or completely rolled-back attempt. The existing
+event payload shape is unchanged; the required C outparameter carries recovery state.
+`tests/test_node.cpp` exercises real
+recycle obstruction and metadata failures, byte/UUID preservation and exact outputs;
+the config-installation permission test is explicitly skipped under POSIX root, where
+mode bits cannot force failure (the malformed-metadata regression still runs).
+
 ## Logging API
 
 vxcore writes log lines through an internal `Logger` (see `src/utils/logger.h`). By default the logger fans messages out to stderr and, if configured, to a rotating file. Embedders that want to capture those messages and route them through their own logging system (e.g., Qt's `qInstallMessageHandler` pipeline in VNote) can install a custom handler via the C ABI declared in `include/vxcore/vxcore_log.h`.
@@ -648,11 +686,16 @@ Permanent rules:
 
 ### Logging
 
+Shared note operations are also reached by the HTTP API. Open/save/create/rename, metadata
+persistence, node resolution and both search backends must not log note names, paths, bodies,
+queries or raw exception text, including at debug level. Keep existing stable IDs, counts and
+error codes; never print candidate paths or the constructed ripgrep command.
+
 ```cpp
 #include "utils/logger.h"
 
-VXCORE_LOG_INFO("Opening notebook: %s", path.c_str());
-VXCORE_LOG_ERROR("Failed to open database: %s", db_path.c_str());
+VXCORE_LOG_INFO("Opened buffer: id=%s", buffer_id.c_str());
+VXCORE_LOG_ERROR("Operation failed: error=%d", error);
 ```
 
 ### Context locale

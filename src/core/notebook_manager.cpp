@@ -1428,8 +1428,7 @@ VxCoreError NotebookManager::ResolveNodeById(const std::string &node_id,
     if (!path.empty()) {
       out_notebook_id = pair.first;
       out_relative_path = path;
-      VXCORE_LOG_DEBUG("Resolved node %s to notebook %s, relative path %s", node_id.c_str(),
-                       out_notebook_id.c_str(), out_relative_path.c_str());
+      VXCORE_LOG_DEBUG("Resolved node %s to notebook %s", node_id.c_str(), out_notebook_id.c_str());
       return VXCORE_OK;
     }
   }

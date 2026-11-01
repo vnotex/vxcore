@@ -42,7 +42,7 @@ VxCoreError RgSearchBackend::Search(const std::vector<SearchFileInfo> &files,
   std::string command =
       BuildCommand(files, pattern, options, content_exclude_patterns, max_results);
 
-  VXCORE_LOG_DEBUG("Executing search command: %s", command.c_str());
+  VXCORE_LOG_DEBUG("Executing search command for %zu files", files.size());
 
   ProcessUtils::ProcessResult proc_result;
   if (!ProcessUtils::ExecuteCommand(command, proc_result)) {
@@ -158,8 +158,6 @@ std::string RgSearchBackend::BuildCommand(const std::vector<SearchFileInfo> &fil
     cmd << " " << ProcessUtils::EscapeShellArg(finfo.absolute_path);
   }
 
-  VXCORE_LOG_DEBUG("Constructed rg command: %s", cmd.str().c_str());
-
   return cmd.str();
 }
 
@@ -226,8 +224,8 @@ void RgSearchBackend::ParseOutput(
 
         current_result.matches.push_back(match);
       }
-    } catch (const std::exception &e) {
-      VXCORE_LOG_WARN("Failed to parse rg output line: %s", e.what());
+    } catch (const std::exception &) {
+      VXCORE_LOG_WARN("Failed to parse rg output line");
     }
   }
 

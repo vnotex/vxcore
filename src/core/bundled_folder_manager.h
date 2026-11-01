@@ -52,6 +52,9 @@ class BundledFolderManager : public FolderManager {
 
   VxCoreError DeleteFile(const std::string &file_path) override;
 
+  VxCoreError TrashFile(const std::string &file_path, bool &out_trashed,
+                        bool &out_recovery_required) override;
+
   VxCoreError UpdateFileMetadata(const std::string &file_path,
                                  const std::string &metadata_json) override;
 

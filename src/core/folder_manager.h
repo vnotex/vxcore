@@ -64,6 +64,17 @@ class FolderManager {
 
   virtual VxCoreError DeleteFile(const std::string &file_path) = 0;
 
+  // Opt-in strict trash capability. Never dispatch through DeleteFile or the
+  // legacy MoveToRecycleBin fallback. Failure keeps source or recoverable bytes;
+  // recovery_required distinguishes an unresolved partial mutation from rollback.
+  virtual VxCoreError TrashFile(const std::string &file_path, bool &out_trashed,
+                                bool &out_recovery_required) {
+    (void)file_path;
+    out_trashed = false;
+    out_recovery_required = false;
+    return VXCORE_ERR_UNSUPPORTED;
+  }
+
   // Move a node to recycle bin when supported by notebook type.
   // Default implementation falls back to permanent deletion.
   virtual VxCoreError MoveToRecycleBin(const std::filesystem::path &source_path);

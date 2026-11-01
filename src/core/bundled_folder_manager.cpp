@@ -107,8 +107,7 @@ void SyncFilesToStore(MetadataStore *store, const std::string &folder_id,
   // Delete orphaned files (in store but not in config)
   for (const auto &store_file : store_files) {
     if (config_file_ids.find(store_file.id) == config_file_ids.end()) {
-      VXCORE_LOG_DEBUG("SyncFilesToStore: Deleting orphaned file: id=%s, name=%s",
-                       store_file.id.c_str(), store_file.name.c_str());
+      VXCORE_LOG_DEBUG("SyncFilesToStore: Deleting orphaned file: id=%s", store_file.id.c_str());
       if (!store->DeleteFile(store_file.id)) {
         VXCORE_LOG_WARN("SyncFilesToStore: Failed to delete orphaned file: id=%s",
                         store_file.id.c_str());
@@ -282,7 +281,7 @@ VxCoreError BundledFolderManager::SaveFolderConfig(const std::string &folder_pat
 
     std::ofstream file(config_file_path);
     if (!file.is_open()) {
-      VXCORE_LOG_ERROR("SaveFolderConfig: cannot open %s for writing", config_path.c_str());
+      VXCORE_LOG_ERROR("SaveFolderConfig: cannot open metadata for writing");
       return VXCORE_ERR_IO;
     }
 
@@ -290,14 +289,14 @@ VxCoreError BundledFolderManager::SaveFolderConfig(const std::string &folder_pat
     file << json.dump(2);
     file.close();
     if (file.fail()) {
-      VXCORE_LOG_ERROR("SaveFolderConfig: write failed for %s", config_path.c_str());
+      VXCORE_LOG_ERROR("SaveFolderConfig: metadata write failed");
       return VXCORE_ERR_IO;
     }
     EmitEvent(events::kFolderConfigChanged,
               {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", folder_path}});
     return VXCORE_OK;
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("SaveFolderConfig: failed to write %s: %s", config_path.c_str(), e.what());
+  } catch (const std::exception &) {
+    VXCORE_LOG_ERROR("SaveFolderConfig: metadata write exception");
     return VXCORE_ERR_IO;
   }
 }
@@ -1152,8 +1151,7 @@ VxCoreError BundledFolderManager::CreateFile(const std::string &folder_path,
                                              const std::string &file_name,
                                              std::string &out_file_id) {
   if (notebook_ && notebook_->CheckWritable() != VXCORE_OK) { return notebook_->CheckWritable(); }
-  VXCORE_LOG_INFO("Creating file: folder=%s, name=%s", folder_path.c_str(), file_name.c_str());
-  VXCORE_LOG_DEBUG("CreateFile: file_name bytes=[%s] len=%zu", file_name.c_str(), file_name.size());
+  VXCORE_LOG_INFO("Creating file");
 
   const auto clean_folder_path = GetCleanRelativePath(folder_path);
 
@@ -1161,28 +1159,27 @@ VxCoreError BundledFolderManager::CreateFile(const std::string &folder_path,
   fs::path file_path = PathFromUtf8(content_path) / PathFromUtf8(file_name);
 
   if (fs::exists(file_path)) {
-    VXCORE_LOG_WARN("File already exists: %s", PathToUtf8(file_path).c_str());
+    VXCORE_LOG_WARN("CreateFile: file already exists");
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(clean_folder_path, &config);
   if (error != VXCORE_OK) {
-    VXCORE_LOG_ERROR("Failed to get folder config: folder=%s, error=%d", clean_folder_path.c_str(),
-                     error);
+    VXCORE_LOG_ERROR("CreateFile: failed to get folder config: error=%d", error);
     return error;
   }
 
   if (FindFileRecord(*config, file_name)) {
-    VXCORE_LOG_WARN("File already exists in config: %s", file_name.c_str());
+    VXCORE_LOG_WARN("CreateFile: file already exists in config");
     return VXCORE_ERR_ALREADY_EXISTS;
   }
 
   try {
     std::ofstream(file_path).close();
-    VXCORE_LOG_DEBUG("Created file: %s", PathToUtf8(file_path).c_str());
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("Failed to create file: %s", e.what());
+    VXCORE_LOG_DEBUG("Created file");
+  } catch (const std::exception &) {
+    VXCORE_LOG_ERROR("Failed to create file");
     return VXCORE_ERR_IO;
   }
 
@@ -1534,9 +1531,7 @@ VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
   const auto clean_file_path = GetCleanRelativePath(file_path);
 
   const auto [folder_path, old_name] = SplitPath(clean_file_path);
-  VXCORE_LOG_INFO("RenameFile: file_path=%s, new_name=%s", clean_file_path.c_str(),
-                  new_name.c_str());
-  VXCORE_LOG_DEBUG("RenameFile: new_name bytes=[%s] len=%zu", new_name.c_str(), new_name.size());
+  VXCORE_LOG_INFO("Renaming file");
 
   FolderConfig *config = nullptr;
   VxCoreError error = GetFolderConfig(folder_path, &config);
@@ -1597,8 +1592,7 @@ VxCoreError BundledFolderManager::RenameFile(const std::string &file_path,
     }
   }
 
-  VXCORE_LOG_INFO("RenameFile successful: file renamed from %s to %s", clean_file_path.c_str(),
-                  ConcatenatePaths(folder_path, new_name).c_str());
+  VXCORE_LOG_INFO("RenameFile successful: id=%s", file->id.c_str());
   EmitEvent(events::kFileMoved, {{kJsonKeyNotebookId, notebook_->GetId()},
                                  {"oldPath", clean_file_path},
                                  {"newPath", ConcatenatePaths(folder_path, new_name)}});
@@ -4098,7 +4092,7 @@ bool EncryptionRelativePath(const std::string &value, bool root_allowed = false)
     return false;
   }
   const auto path = PathFromUtf8(value);
-  if (path.empty() || path.is_absolute() || path.has_root_name()) {
+  if (path.empty() || path.is_absolute() || path.has_root_name() || path.has_root_directory()) {
     return false;
   }
   if (value == ".") {
@@ -4417,7 +4411,238 @@ bool EncryptionTransformConfig(FolderConfig &config, const EncryptionJson &journ
   return true;
 }
 
+// Exclusive same-filesystem relocation, including rollback. Never replace an
+// occupied destination and never fall back to copying then deleting a body.
+VxCoreError MoveTrashFile(const fs::path &source, const fs::path &destination, bool &moved,
+                          bool &residue) {
+  moved = false;
+  residue = false;
+#ifdef _WIN32
+  if (!MoveFileExW(source.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH)) {
+    const auto error = GetLastError();
+    if (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS)
+      return VXCORE_ERR_ALREADY_EXISTS;
+    return error == ERROR_NOT_SAME_DEVICE ? VXCORE_ERR_UNSUPPORTED : VXCORE_ERR_IO;
+  }
+  moved = true;
+#else
+  std::error_code ec;
+  fs::create_hard_link(source, destination, ec);
+  if (ec) {
+    if (ec == std::errc::file_exists) return VXCORE_ERR_ALREADY_EXISTS;
+    return ec == std::errc::cross_device_link ? VXCORE_ERR_UNSUPPORTED : VXCORE_ERR_IO;
+  }
+  residue = true;
+  if (!EncryptionFlushDirectory(destination.parent_path()) || ::unlink(source.c_str()) != 0) {
+    // Source is still live. Removing our additional link cannot destroy its bytes.
+    if (::unlink(destination.c_str()) == 0) residue = false;
+    return VXCORE_ERR_IO;
+  }
+  moved = true;
+  residue = false;
+  if (!EncryptionFlushDirectory(source.parent_path())) return VXCORE_ERR_IO;
+#endif
+  return VXCORE_OK;
+}
+
 }  // namespace
+
+VxCoreError BundledFolderManager::TrashFile(const std::string &file_path, bool &out_trashed,
+                                            bool &out_recovery_required) {
+  out_trashed = false;
+  out_recovery_required = false;
+  if (!notebook_) return VXCORE_ERR_INVALID_STATE;
+  auto error = notebook_->CheckWritable();
+  if (error != VXCORE_OK) return error;
+  if (file_path == ".") return VXCORE_ERR_UNSUPPORTED;
+  if (!EncryptionRelativePath(file_path)) return VXCORE_ERR_INVALID_PARAM;
+
+  try {
+    const auto root = PathFromUtf8(notebook_->GetRootFolder());
+    const auto source = root / PathFromUtf8(file_path);
+    for (const auto &part : PathFromUtf8(file_path)) {
+      const auto name = PathToUtf8(part);
+      if (name.back() == '.' || name.back() == ' ' ||
+          name.find_first_of("<>\"|?*") != std::string::npos)
+        return VXCORE_ERR_INVALID_PARAM;
+    }
+    if ((error = EncryptionSafePath(root, source)) != VXCORE_OK) return error;
+    std::error_code ec;
+    if (fs::is_directory(source, ec)) return VXCORE_ERR_UNSUPPORTED;
+    if (ec || !fs::is_regular_file(source, ec) || ec) return VXCORE_ERR_IO;
+    const auto source_permissions = fs::status(source, ec).permissions();
+    if (ec) return VXCORE_ERR_IO;
+    if ((source_permissions & (fs::perms::owner_write | fs::perms::group_write |
+                               fs::perms::others_write)) == fs::perms::none)
+      return VXCORE_ERR_PERMISSION_DENIED;
+
+    const auto [parent, name] = SplitPath(file_path);
+    const auto config_path = PathFromUtf8(GetConfigPath(parent));
+    if ((error = EncryptionSafePath(root, config_path)) != VXCORE_OK) return error;
+    std::string before;
+    if ((error = ReadFile(config_path, before)) != VXCORE_OK) return error;
+    auto json = nlohmann::json::parse(before);
+    if (!json.is_object() || !json.contains(kJsonKeyFiles) || !json[kJsonKeyFiles].is_array())
+      return VXCORE_ERR_INVALID_STATE;
+    const auto config = FolderConfig::FromJson(json);
+    const auto it = std::find_if(config.files.begin(), config.files.end(),
+                                 [&](const FileRecord &file) { return file.name == name; });
+    if (it == config.files.end()) return VXCORE_ERR_NOT_FOUND;
+    if (it->CheckProtectionMetadata() != VXCORE_OK) return VXCORE_ERR_UNSUPPORTED;
+    if (config.id.empty() || it->id.empty() ||
+        std::count_if(config.files.begin(), config.files.end(),
+                      [&](const FileRecord &file) { return file.name == name; }) != 1 ||
+        !EncryptionOwnsNoteIdentity(*notebook_, config, parent, it->id, name, name, 1))
+      return VXCORE_ERR_INVALID_STATE;
+    std::string prefix;
+    if ((error = ReadFileHead(source, 8, prefix)) != VXCORE_OK) return error;
+    if (prefix.compare(0, 7, "VNOTEE1") == 0) return VXCORE_ERR_UNSUPPORTED;
+
+    // Read the authoritative config directly: GetFolderConfig can lazily repair
+    // the store, which is forbidden on a rejected strict-trash request.
+    auto *store = notebook_->GetMetadataStore();
+    if (!store || !store->IsOpen()) return VXCORE_ERR_INVALID_STATE;
+    for (const auto &part : PathFromUtf8(notebook_->GetConfig().recycle_bin_folder)) {
+      if (part == "..") return VXCORE_ERR_INVALID_PARAM;
+    }
+    const auto recycle = PathFromUtf8(GetRecycleBinPath());
+    if (notebook_->GetConfig().recycle_bin_folder.empty() || recycle == root ||
+        IsPathWithin(PathToUtf8(source), PathToUtf8(recycle), false))
+      return VXCORE_ERR_INVALID_PARAM;
+    if ((error = EncryptionSafePath(root, recycle, true)) != VXCORE_OK) return error;
+    fs::create_directories(recycle, ec);
+    if (ec || EncryptionSafePath(root, recycle) != VXCORE_OK) return VXCORE_ERR_IO;
+    const auto directory = recycle / PathFromUtf8(name + ".trash-" + GenerateUUID());
+    const auto contents = directory / "contents";
+    const auto payload = contents / PathFromUtf8(name);
+    const auto manifest_path = directory / "vx_trash.json";
+    const auto index = static_cast<size_t>(std::distance(config.files.begin(), it));
+    const nlohmann::json manifest = {{"version", 1},
+                                     {"notebookId", notebook_->GetId()},
+                                     {"parentPath", parent},
+                                     {"parentId", config.id},
+                                     {"file", json[kJsonKeyFiles][index]}};
+    json[kJsonKeyFiles].erase(index);
+    json[kJsonKeyModifiedUtc] = GetCurrentTimestampMillis();
+    const auto after = json.dump(2);
+    const nlohmann::json file_event = {{kJsonKeyNotebookId, notebook_->GetId()},
+                                       {"path", file_path}};
+    const nlohmann::json config_event = {{kJsonKeyNotebookId, notebook_->GetId()},
+                                         {"path", parent}};
+    if (!fs::create_directory(directory, ec) || ec) return VXCORE_ERR_ALREADY_EXISTS;
+
+    bool moved = false;
+    bool residue = false;
+    bool published = false;
+    bool transaction = false;
+    auto cleanup = [&]() {
+      // Only our journal and empty directory, never any note body or unknown file.
+      if (EncryptionSafePath(root, directory) != VXCORE_OK) return;
+      std::error_code cleanup_ec;
+      fs::remove(manifest_path, cleanup_ec);
+      fs::remove(contents, cleanup_ec);
+      fs::remove(directory, cleanup_ec);
+    };
+    auto rollback = [&](VxCoreError failure) {
+      bool reconciled = true;
+      if (transaction) {
+        reconciled = store->RollbackTransaction();
+        transaction = false;
+      }
+      if (published) {
+        std::string current;
+        if (EncryptionSafePath(root, config_path) == VXCORE_OK &&
+            ReadFile(config_path, current) == VXCORE_OK && current == after &&
+            WriteFileAtomic(config_path, before) == VXCORE_OK) {
+          published = false;
+        } else {
+          reconciled = false;
+        }
+      }
+      if (moved && reconciled) {
+        std::string current;
+        if (EncryptionSafePath(root, config_path) != VXCORE_OK ||
+            ReadFile(config_path, current) != VXCORE_OK || current != before)
+          reconciled = false;
+      }
+      if (moved && reconciled) {
+        bool restored = false;
+        bool restore_residue = false;
+        if (EncryptionSafePath(root, payload) != VXCORE_OK ||
+            EncryptionSafePath(root, source, true) != VXCORE_OK ||
+            MoveTrashFile(payload, source, restored, restore_residue) != VXCORE_OK) {
+          reconciled = false;
+        }
+        if (restored) moved = false;
+        residue = residue || restore_residue;
+      }
+      out_recovery_required = !reconciled || moved || residue || published;
+      if (!out_recovery_required) cleanup();
+      if (published) {
+        InvalidateCache(parent);
+        EmitEvent(events::kFolderConfigChanged, config_event);
+      }
+      if (moved) {
+        EmitEvent(events::kFileDeleted, file_event);
+      }
+      return failure;
+    };
+    try {
+      if (!fs::create_directory(contents, ec) || ec) return rollback(VXCORE_ERR_IO);
+      error = WriteFileAtomic(manifest_path, manifest.dump(2));
+      if (error != VXCORE_OK) return rollback(error);
+#ifndef _WIN32
+      if (!EncryptionFlushDirectory(directory) || !EncryptionFlushDirectory(recycle))
+        return rollback(VXCORE_ERR_IO);
+#endif
+      if (!store->BeginTransaction()) return rollback(VXCORE_ERR_DATABASE);
+      transaction = true;
+      // Recheck paths and metadata after preparation, before the first note mutation.
+      std::string current;
+      if (EncryptionSafePath(root, source) != VXCORE_OK ||
+          EncryptionSafePath(root, payload, true) != VXCORE_OK ||
+          EncryptionSafePath(root, config_path) != VXCORE_OK ||
+          ReadFile(config_path, current) != VXCORE_OK || current != before)
+        return rollback(VXCORE_ERR_INVALID_STATE);
+      error = MoveTrashFile(source, payload, moved, residue);
+      if (error != VXCORE_OK) return rollback(error);
+      if (!store->DeleteFile(it->id) ||
+          (store->GetFolder(config.id) &&
+           !store->UpdateFolder(config.id, config.name, json[kJsonKeyModifiedUtc].get<int64_t>(),
+                                config.metadata.dump())))
+        return rollback(VXCORE_ERR_DATABASE);
+      if (EncryptionSafePath(root, config_path) != VXCORE_OK ||
+          ReadFile(config_path, current) != VXCORE_OK || current != before)
+        return rollback(VXCORE_ERR_INVALID_STATE);
+      error = WriteFileAtomic(config_path, after);
+      if (error != VXCORE_OK) return rollback(error);
+      published = true;
+#ifndef _WIN32
+      if (!EncryptionFlushDirectory(config_path.parent_path())) return rollback(VXCORE_ERR_IO);
+#endif
+      if (!store->CommitTransaction()) return rollback(VXCORE_ERR_DATABASE);
+      transaction = false;
+    } catch (...) {
+      // Rollback failures never discard the payload or the identity manifest.
+      try {
+        return rollback(VXCORE_ERR_IO);
+      } catch (...) {
+        out_recovery_required = true;
+        return VXCORE_ERR_IO;
+      }
+    }
+    InvalidateCache(parent);
+    out_trashed = true;
+    // A recycle entry's retention age starts now, not at the note's old save time.
+    fs::last_write_time(directory, fs::file_time_type::clock::now(), ec);
+    EmitEvent(events::kFolderConfigChanged, config_event);
+    EmitEvent(events::kFileDeleted, file_event);
+    return VXCORE_OK;
+  } catch (...) {
+    // Once committed, event-publication failure cannot turn trash into no change.
+    return out_trashed ? VXCORE_OK : VXCORE_ERR_IO;
+  }
+}
 
 VxCoreError BundledFolderManager::ProtectNote(const std::string &file_path, const void *body,
                                                size_t body_size, const std::string &source_sha256,

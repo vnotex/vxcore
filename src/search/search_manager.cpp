@@ -73,24 +73,15 @@ VxCoreError SearchManager::SearchFiles(const std::string &query_json,
                                        const std::string &input_files_json,
                                        std::string &out_results_json) {
   try {
-    VXCORE_LOG_DEBUG("SearchManager::SearchFiles: query_json=%s", query_json.c_str());
-    VXCORE_LOG_DEBUG("SearchManager::SearchFiles: input_files_json=%s",
-                     input_files_json.empty() ? "(empty)" : input_files_json.c_str());
-
     auto query = SearchFilesQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
     VXCORE_LOG_DEBUG(
-        "SearchManager::SearchFiles: parsed pattern='%s' includeFiles=%d "
-        "includeFolders=%d matchTarget=%d maxResults=%d",
-        query.pattern.c_str(), query.include_files, query.include_folders,
-        static_cast<int>(query.match_target), query.max_results);
+        "SearchManager::SearchFiles: includeFiles=%d includeFolders=%d matchTarget=%d "
+        "maxResults=%d",
+        query.include_files, query.include_folders, static_cast<int>(query.match_target),
+        query.max_results);
 
     auto filtered_files = FetchFilesToSearch(query.scope, input_files_json, query.include_folders);
     VXCORE_LOG_DEBUG("SearchManager::SearchFiles: filtered_files count=%zu", filtered_files.size());
-    for (size_t i = 0; i < filtered_files.size() && i < 20; ++i) {
-      VXCORE_LOG_DEBUG("SearchManager::SearchFiles: file[%zu] name='%s' path='%s' is_folder=%d", i,
-                       filtered_files[i].name.c_str(), filtered_files[i].path.c_str(),
-                       filtered_files[i].is_folder);
-    }
 
     auto matched_files =
         GetMatchedFilesByPattern(std::move(filtered_files), query.pattern, query.include_files,
@@ -99,11 +90,11 @@ VxCoreError SearchManager::SearchFiles(const std::string &query_json,
 
     out_results_json = SerializeFileResults(matched_files, query.max_results);
     return VXCORE_OK;
-  } catch (const nlohmann::json::exception &e) {
-    VXCORE_LOG_ERROR("SearchFiles JSON error: %s", e.what());
+  } catch (const nlohmann::json::exception &) {
+    VXCORE_LOG_ERROR("SearchFiles JSON error");
     return VXCORE_ERR_JSON_PARSE;
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("SearchFiles error: %s", e.what());
+  } catch (const std::exception &) {
+    VXCORE_LOG_ERROR("SearchFiles error");
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -120,8 +111,8 @@ VxCoreError SearchManager::SearchContent(const std::string &query_json,
   try {
     auto query = SearchContentQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
     size_t encrypted_skipped = 0;
-    auto filtered_files = FetchFilesToSearch(query.scope, input_files_json, false,
-                                              &encrypted_skipped);
+    auto filtered_files =
+        FetchFilesToSearch(query.scope, input_files_json, false, &encrypted_skipped);
     FilterDefaultContentFileTypes(filtered_files, query.scope);
     CalculateAbsolutePaths(filtered_files);
 
@@ -177,11 +168,11 @@ VxCoreError SearchManager::SearchContent(const std::string &query_json,
 
     out_results_json = result.dump();
     return VXCORE_OK;
-  } catch (const nlohmann::json::exception &e) {
-    VXCORE_LOG_ERROR("SearchContent JSON error: %s", e.what());
+  } catch (const nlohmann::json::exception &) {
+    VXCORE_LOG_ERROR("SearchContent JSON error");
     return VXCORE_ERR_JSON_PARSE;
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("SearchContent error: %s", e.what());
+  } catch (const std::exception &) {
+    VXCORE_LOG_ERROR("SearchContent error");
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -193,8 +184,8 @@ VxCoreError SearchManager::SearchContentStreaming(const std::string &query_json,
   try {
     auto query = SearchContentQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
     size_t encrypted_skipped = 0;
-    auto filtered_files = FetchFilesToSearch(query.scope, input_files_json, false,
-                                              &encrypted_skipped);
+    auto filtered_files =
+        FetchFilesToSearch(query.scope, input_files_json, false, &encrypted_skipped);
     FilterDefaultContentFileTypes(filtered_files, query.scope);
     CalculateAbsolutePaths(filtered_files);
 
@@ -254,11 +245,11 @@ VxCoreError SearchManager::SearchContentStreaming(const std::string &query_json,
       return VXCORE_ERR_CANCELLED;
     }
     return err;
-  } catch (const nlohmann::json::exception &e) {
-    VXCORE_LOG_ERROR("SearchContentStreaming JSON error: %s", e.what());
+  } catch (const nlohmann::json::exception &) {
+    VXCORE_LOG_ERROR("SearchContentStreaming JSON error");
     return VXCORE_ERR_JSON_PARSE;
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("SearchContentStreaming error: %s", e.what());
+  } catch (const std::exception &) {
+    VXCORE_LOG_ERROR("SearchContentStreaming error");
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -275,11 +266,11 @@ VxCoreError SearchManager::SearchByTags(const std::string &query_json,
 
     out_results_json = SerializeFileResults(matched_files, query.max_results);
     return VXCORE_OK;
-  } catch (const nlohmann::json::exception &e) {
-    VXCORE_LOG_ERROR("SearchByTags JSON error: %s", e.what());
+  } catch (const nlohmann::json::exception &) {
+    VXCORE_LOG_ERROR("SearchByTags JSON error");
     return VXCORE_ERR_JSON_PARSE;
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("SearchByTags error: %s", e.what());
+  } catch (const std::exception &) {
+    VXCORE_LOG_ERROR("SearchByTags error");
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -409,28 +400,21 @@ std::vector<SearchFileInfo> SearchManager::GetAllFiles(const SearchScope &scope,
             SkipEncryptedCandidate(file_path, *record, scope, *encrypted_skipped)) {
           continue;
         }
-        VXCORE_LOG_DEBUG("SearchManager::GetAllFiles: GetFileInfo OK for '%s' name='%s'",
-                         file_path.c_str(), record->name.c_str());
         result.push_back(SearchFileInfo::FromFileRecord(file_path, *record));
       } else {
-        VXCORE_LOG_WARN("SearchManager::GetAllFiles: GetFileInfo FAILED for '%s' error=%d",
-                        file_path.c_str(), err);
+        VXCORE_LOG_WARN("SearchManager::GetAllFiles: GetFileInfo failed with error=%d", err);
       }
     }
 
     for (const auto &folder_path : input_files->folders) {
-      VXCORE_LOG_DEBUG("SearchManager::GetAllFiles: collecting folder '%s'", folder_path.c_str());
-      CollectFilesInFolder(folder_path, scope, lower_path_patterns,
-                           lower_exclude_path_patterns, include_folders, result,
-                           encrypted_skipped);
+      CollectFilesInFolder(folder_path, scope, lower_path_patterns, lower_exclude_path_patterns,
+                           include_folders, result, encrypted_skipped);
     }
   } else {
     const std::string start_path = scope.folder_path.empty() ? "." : scope.folder_path;
-    VXCORE_LOG_DEBUG("SearchManager::GetAllFiles: no input_files, scanning from '%s'",
-                     start_path.c_str());
-    CollectFilesInFolder(start_path, scope, lower_path_patterns,
-                         lower_exclude_path_patterns, include_folders, result,
-                         encrypted_skipped);
+    VXCORE_LOG_DEBUG("SearchManager::GetAllFiles: scanning configured scope");
+    CollectFilesInFolder(start_path, scope, lower_path_patterns, lower_exclude_path_patterns,
+                         include_folders, result, encrypted_skipped);
   }
 
   VXCORE_LOG_DEBUG("SearchManager::GetAllFiles: total files collected=%zu", result.size());
@@ -504,8 +488,7 @@ void SearchManager::CollectFilesInFolder(
     if (!lower_path_patterns.empty() && !MatchesPatterns(lower_file_path, lower_path_patterns)) {
       continue;
     }
-    if (encrypted_skipped &&
-        SkipEncryptedCandidate(file_path, file, scope, *encrypted_skipped)) {
+    if (encrypted_skipped && SkipEncryptedCandidate(file_path, file, scope, *encrypted_skipped)) {
       continue;
     }
     out_files.push_back(SearchFileInfo::FromFileRecord(file_path, file));
@@ -524,24 +507,23 @@ void SearchManager::CollectFilesInFolder(
     }
 
     if (scope.recursive) {
-      CollectFilesInFolder(subfolder_path, scope, lower_path_patterns,
-                           lower_exclude_path_patterns, include_folders, out_files,
-                           encrypted_skipped);
+      CollectFilesInFolder(subfolder_path, scope, lower_path_patterns, lower_exclude_path_patterns,
+                           include_folders, out_files, encrypted_skipped);
     }
   }
 }
 
 bool SearchManager::SkipEncryptedCandidate(const std::string &path, const FileRecord &record,
-                                            const SearchScope &scope,
-                                            size_t &encrypted_skipped) const {
+                                           const SearchScope &scope,
+                                           size_t &encrypted_skipped) const {
   const size_t size = path.size();
   const bool suffix = size >= 4 && path[size - 4] == '.' &&
                       (path[size - 3] == 'v' || path[size - 3] == 'V') &&
                       (path[size - 2] == 'n' || path[size - 2] == 'N') &&
                       (path[size - 1] == 'e' || path[size - 1] == 'E');
   const auto marker = record.metadata.find(kJsonKeyEncrypted);
-  if (!suffix && (marker == record.metadata.end() ||
-                  (marker->is_boolean() && !marker->get<bool>()))) {
+  if (!suffix &&
+      (marker == record.metadata.end() || (marker->is_boolean() && !marker->get<bool>()))) {
     return false;
   }
 
@@ -556,8 +538,9 @@ bool SearchManager::SkipEncryptedCandidate(const std::string &path, const FileRe
     }
   }
   if (!scope.date_filter_field.empty()) {
-    const int64_t timestamp = scope.date_filter_field == "created" ? record.created_utc
-                              : scope.date_filter_field == "modified" ? record.modified_utc : 0;
+    const int64_t timestamp = scope.date_filter_field == "created"    ? record.created_utc
+                              : scope.date_filter_field == "modified" ? record.modified_utc
+                                                                      : 0;
     if (!MatchesDateFilter(timestamp, scope)) {
       return true;
     }
@@ -632,10 +615,6 @@ std::vector<SearchFileInfo> SearchManager::FetchFilesToSearch(const SearchScope 
     VXCORE_LOG_DEBUG(
         "SearchManager::FetchFilesToSearch: parsed input_files - files=%zu folders=%zu",
         input_files.files.size(), input_files.folders.size());
-    for (size_t i = 0; i < input_files.files.size() && i < 20; ++i) {
-      VXCORE_LOG_DEBUG("SearchManager::FetchFilesToSearch: input file[%zu]='%s'", i,
-                       input_files.files[i].c_str());
-    }
   } else {
     VXCORE_LOG_DEBUG("SearchManager::FetchFilesToSearch: no input_files_json provided");
   }

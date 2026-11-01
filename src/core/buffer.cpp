@@ -318,10 +318,10 @@ VxCoreError Buffer::WriteBackup() {
       return VXCORE_ERR_IO;
     }
 
-    VXCORE_LOG_DEBUG("Wrote backup file: %s", backup_path.c_str());
+    VXCORE_LOG_DEBUG("Wrote backup for buffer: id=%s", id_.c_str());
     return VXCORE_OK;
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("Failed to write backup for %s: %s", ResolveFullPath().c_str(), e.what());
+  } catch (const std::exception &) {
+    VXCORE_LOG_ERROR("Failed to write backup for buffer: id=%s", id_.c_str());
     return VXCORE_ERR_IO;
   }
 }
@@ -443,10 +443,10 @@ void Buffer::DiscardBackup() {
     const std::string backup_path = GetBackupFilePath();
     if (std::filesystem::exists(PathFromUtf8(backup_path)) &&
         std::filesystem::remove(PathFromUtf8(backup_path))) {
-      VXCORE_LOG_DEBUG("Discarded backup file: %s", backup_path.c_str());
+      VXCORE_LOG_DEBUG("Discarded backup for buffer: id=%s", id_.c_str());
     }
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("Failed to discard backup for %s: %s", ResolveFullPath().c_str(), e.what());
+  } catch (const std::exception &) {
+    VXCORE_LOG_ERROR("Failed to discard backup for buffer: id=%s", id_.c_str());
   }
 }
 
@@ -468,9 +468,9 @@ void Buffer::CreateProvider() {
   // methods internally gate to bundled notebooks; raw stays UNSUPPORTED.
   try {
     provider_ = std::make_shared<StandardBufferProvider>(notebook_, file_path_);
-    VXCORE_LOG_DEBUG("Created StandardBufferProvider for: %s", file_path_.c_str());
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("Failed to create StandardBufferProvider: %s", e.what());
+    VXCORE_LOG_DEBUG("Created StandardBufferProvider: buffer id=%s", id_.c_str());
+  } catch (const std::exception &) {
+    VXCORE_LOG_ERROR("Failed to create StandardBufferProvider: buffer id=%s", id_.c_str());
   }
   RefreshProtectionState();
 }
@@ -536,12 +536,11 @@ VxCoreError Buffer::LoadContent(const std::string &full_path) {
     modified_ = false;
     content_loaded_ = true;
     revision_++;
-    VXCORE_LOG_DEBUG("Loaded file content: %s (%zu bytes, revision %d)", full_path.c_str(),
-                     content_.size(), revision_);
+    VXCORE_LOG_DEBUG("Loaded buffer content: id=%s, revision=%d", id_.c_str(), revision_);
     return VXCORE_OK;
-  } catch (const std::exception &e) {
+  } catch (const std::exception &) {
     state_ = VXCORE_BUFFER_FILE_MISSING;
-    VXCORE_LOG_ERROR("Exception loading file %s: %s", full_path.c_str(), e.what());
+    VXCORE_LOG_ERROR("Exception loading buffer content: id=%s", id_.c_str());
     content_.clear();
     return VXCORE_ERR_IO;
   }
@@ -599,12 +598,11 @@ VxCoreError Buffer::SaveContent(const std::string &full_path) {
     state_ = VXCORE_BUFFER_NORMAL;
     modified_ = false;
     revision_++;
-    VXCORE_LOG_DEBUG("Saved file content: %s (%zu bytes, revision %d)", full_path.c_str(),
-                     content_.size(), revision_);
+    VXCORE_LOG_DEBUG("Saved buffer content: id=%s, revision=%d", id_.c_str(), revision_);
     return VXCORE_OK;
-  } catch (const std::exception &e) {
+  } catch (const std::exception &) {
     state_ = VXCORE_BUFFER_SAVE_FAILED;
-    VXCORE_LOG_ERROR("Exception saving file %s: %s", full_path.c_str(), e.what());
+    VXCORE_LOG_ERROR("Exception saving buffer content: id=%s", id_.c_str());
     return VXCORE_ERR_IO;
   }
 }
@@ -709,7 +707,7 @@ VxCoreError Buffer::CheckExternalChanges(const std::string &full_path) {
     if (!std::filesystem::exists(fs_path)) {
       if (state_ != VXCORE_BUFFER_FILE_MISSING) {
         state_ = VXCORE_BUFFER_FILE_MISSING;
-        VXCORE_LOG_WARN("File no longer exists: %s", full_path.c_str());
+        VXCORE_LOG_WARN("Buffer file no longer exists: id=%s", id_.c_str());
       }
       return VXCORE_OK;
     }
@@ -752,10 +750,10 @@ VxCoreError Buffer::CheckExternalChanges(const std::string &full_path) {
     // Real external modification: content differs. Leave last_modified_time_
     // UNTOUCHED so repeated checks keep flagging until the user resolves it.
     state_ = VXCORE_BUFFER_FILE_CHANGED;
-    VXCORE_LOG_DEBUG("File changed externally: %s", full_path.c_str());
+    VXCORE_LOG_DEBUG("Buffer file changed externally: id=%s", id_.c_str());
     return is_encrypted_ ? protection_error_ : VXCORE_OK;
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("Exception checking file changes for %s: %s", full_path.c_str(), e.what());
+  } catch (const std::exception &) {
+    VXCORE_LOG_ERROR("Exception checking buffer file changes: id=%s", id_.c_str());
     return VXCORE_ERR_IO;
   }
 }
