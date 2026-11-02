@@ -55,6 +55,15 @@ path defaults. `config_json` remains ignored in both factories. App data holds
 `vxcore.json`; local data holds `vxsession.json`, activity and notebook-local state.
 The embedding app supplies persistent sandbox locations, not cache directories.
 
+Explicit-root contexts start with no open notebooks, buffers or workspaces. They
+do not read `vxsession.json`, including stale or malformed legacy session data;
+the embedding app owns recovery and explicitly admits each notebook. User
+`vxcore.json` configuration still loads normally and is not rewritten by this
+policy. Later explicit operations/shutdown may persist session state, but a fresh
+explicit-root context never restores it. Default desktop context creation retains
+its existing session restoration. This prevents untracked restored buffers and
+unrequested notebook recovery from crossing app-owned context lifetimes.
+
 Both nonempty absolute roots are validated before creating directories or loading
 configuration. Existing ancestors are resolved; equal/containing roots and aliases
 are rejected. Invalid UTF-8, null/empty/relative or overlapping roots return

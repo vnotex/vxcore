@@ -19,6 +19,10 @@ extern "C" {
 // config_json remains ignored, just as in vxcore_context_create. Explicit roots
 // override desktop/portable/test-mode defaults for this context only. Callers must
 // serialize context operations and protect roots against concurrent filesystem changes.
+// Explicit-root contexts do not load vxsession.json or implicitly reopen notebooks,
+// buffers, or workspaces. The embedding app owns recovery and explicit admission.
+// User configuration still loads normally; default desktop context creation retains
+// its existing session restoration. Later explicit operations may save session state.
 VXCORE_API VxCoreError vxcore_context_create_with_paths(
     const char *config_json, const char *app_data_path, const char *local_data_path,
     VxCoreContextHandle *out_context);

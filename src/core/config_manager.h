@@ -68,6 +68,7 @@ class ConfigManager {
   VxCoreSessionConfig session_config_;
   std::filesystem::path app_data_path_;
   std::filesystem::path local_data_path_;
+  bool load_session_config_ = true; // Legacy contexts restore; explicit-root owners start empty.
 
   static bool test_mode_;
   static std::string org_name_;

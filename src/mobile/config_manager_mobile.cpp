@@ -171,7 +171,8 @@ bool ContainsDataRoot(const std::filesystem::path &parent, const std::filesystem
 
 ConfigManager::ConfigManager(std::filesystem::path app_data_path,
                              std::filesystem::path local_data_path)
-    : app_data_path_(std::move(app_data_path)), local_data_path_(std::move(local_data_path)) {}
+    : app_data_path_(std::move(app_data_path)), local_data_path_(std::move(local_data_path)),
+      load_session_config_(false) {}
 
 VxCoreError ConfigManager::ValidateDataPaths(const char *app_data_path, const char *local_data_path,
                                             std::filesystem::path &out_app,

@@ -1,4 +1,5 @@
 #include <chrono>
+#include <iterator>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <vector>
@@ -53,7 +54,7 @@ int ExpectFailure(const char *app, const char *local, VxCoreError expected) {
   return 0;
 }
 
-int test_config_session_and_owned_roots() {
+int test_config_and_owned_roots() {
   TempLeaf leaf("roundtrip");
   const auto app = leaf.path / utf8_to_fs_path("设置") / "app";
   const auto local = leaf.path / utf8_to_fs_path("本机") / "local";
@@ -90,21 +91,71 @@ int test_config_session_and_owned_roots() {
   ASSERT_FALSE(fs::exists(app / "vxsession.json"));
   context.Reset();
   ASSERT_EQ(Open(context, app, local), VXCORE_OK);
-  CoreString config, session, app_copy, local_copy;
+  CoreString config, app_copy, local_copy;
   ASSERT_EQ(vxcore_context_get_config(context.value, &config.value), VXCORE_OK);
   const auto config_json = nlohmann::json::parse(config.value);
   ASSERT_EQ(config_json["recoverLastSession"], false);
   ASSERT_EQ(config_json["autoSyncDebounceSeconds"], 17);
-  ASSERT_EQ(vxcore_context_get_session_config(context.value, &session.value), VXCORE_OK);
-  const auto session_json = nlohmann::json::parse(session.value);
-  ASSERT_EQ(session_json["notebooks"].size(), 1u);
-  ASSERT_EQ(session_json["notebooks"][0]["id"], notebook.value);
   ASSERT_EQ(vxcore_context_get_config_by_name(context.value, VXCORE_DATA_APP, "same",
                                               &app_copy.value), VXCORE_OK);
   ASSERT_EQ(vxcore_context_get_config_by_name(context.value, VXCORE_DATA_LOCAL, "same",
                                               &local_copy.value), VXCORE_OK);
   ASSERT_EQ(std::string(app_copy.value), "app value");
   ASSERT_EQ(std::string(local_copy.value), "local value");
+  return 0;
+}
+
+int test_explicit_context_does_not_restore_legacy_session() {
+  TempLeaf leaf("cold-session");
+  const auto app = leaf.path / "app", local = leaf.path / "local";
+  const auto notebook_path = fs_path_to_utf8(leaf.path / "notebook");
+  const std::string source = "saved source\r\n";
+  Context context;
+  ASSERT_EQ(Open(context, app, local), VXCORE_OK);
+  ASSERT_EQ(vxcore_context_update_config(context.value, R"({"recoverLastSession":true})"), VXCORE_OK);
+  CoreString notebook, file, buffer, workspace;
+  ASSERT_EQ(vxcore_notebook_create(context.value, notebook_path.c_str(), "{\"name\":\"Cold session\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_file_create(context.value, notebook.value, ".", "Source.md", &file.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_open(context.value, notebook.value, "Source.md", &buffer.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_set_content_raw(context.value, buffer.value, source.data(), source.size()), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_save(context.value, buffer.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_create(context.value, "Open source", &workspace.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_add_buffer(context.value, workspace.value, buffer.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_set_current(context.value, workspace.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_prepare_shutdown(context.value), VXCORE_OK);
+  context.Reset(); // Retain real populated session records, as an interrupted owner would.
+  const auto bytes = [](const fs::path &path) {
+    std::ifstream stream(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+  };
+  const auto config_before = bytes(app / "vxcore.json");
+  const auto session_before = bytes(local / "vxsession.json");
+  const auto seeded = nlohmann::json::parse(session_before);
+  ASSERT_EQ(seeded.at("notebooks").at(0).at("id"), notebook.value);
+  ASSERT_EQ(seeded.at("buffers").at(0).at("id"), buffer.value);
+  ASSERT_EQ(seeded.at("workspaces").at(0).at("id"), workspace.value);
+  ASSERT_EQ(Open(context, app, local), VXCORE_OK);
+  CoreString notebooks, buffers, workspaces;
+  ASSERT_EQ(vxcore_notebook_list(context.value, &notebooks.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_list(context.value, &buffers.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_workspace_list(context.value, &workspaces.value), VXCORE_OK);
+  ASSERT_TRUE(nlohmann::json::parse(notebooks.value).empty());
+  ASSERT_TRUE(nlohmann::json::parse(buffers.value).empty());
+  ASSERT_TRUE(nlohmann::json::parse(workspaces.value).empty());
+  ASSERT_EQ(bytes(app / "vxcore.json"), config_before);
+  ASSERT_EQ(bytes(local / "vxsession.json"), session_before);
+  CoreString reopened, reopened_buffer;
+  ASSERT_EQ(vxcore_notebook_open_ex(context.value, notebook_path.c_str(), "{}", &reopened.value), VXCORE_OK);
+  ASSERT_EQ(std::string(reopened.value), std::string(notebook.value));
+  ASSERT_EQ(vxcore_buffer_open(context.value, reopened.value, "Source.md", &reopened_buffer.value), VXCORE_OK);
+  const void *raw = nullptr;
+  size_t size = 0;
+  ASSERT_EQ(vxcore_buffer_get_content_raw(context.value, reopened_buffer.value, &raw, &size), VXCORE_OK);
+  ASSERT_EQ(std::string(static_cast<const char *>(raw), size), source);
+  ASSERT_EQ(vxcore_buffer_close(context.value, reopened_buffer.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_close(context.value, reopened.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_prepare_shutdown(context.value), VXCORE_OK);
   return 0;
 }
 
@@ -236,8 +287,10 @@ int test_load_failure_never_publishes_context() {
   ASSERT_FALSE(fs::exists(local / "vxsession.json"));
   write_file(fs_path_to_utf8(app / "vxcore.json"), "{}");
   write_file(fs_path_to_utf8(local / "vxsession.json"), "{ invalid");
-  ASSERT_EQ(ExpectFailure(fs_path_to_utf8(app).c_str(), fs_path_to_utf8(local).c_str(),
-                          VXCORE_ERR_JSON_PARSE), 0);
+  Context context;
+  ASSERT_EQ(Open(context, app, local), VXCORE_OK);
+  std::ifstream stream(local / "vxsession.json", std::ios::binary);
+  ASSERT_EQ(std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()), "{ invalid");
   return 0;
 }
 
@@ -276,7 +329,8 @@ Snapshot DefaultProfileSnapshot() {
 int main() {
   vxcore_set_test_mode(1);
   const auto defaults_before = DefaultProfileSnapshot();
-  RUN_TEST(test_config_session_and_owned_roots);
+  RUN_TEST(test_config_and_owned_roots);
+  RUN_TEST(test_explicit_context_does_not_restore_legacy_session);
   RUN_TEST(test_two_contexts_are_isolated);
   RUN_TEST(test_invalid_paths_have_no_side_effects);
   RUN_TEST(test_aliases_and_inaccessible_roots);
