@@ -27,6 +27,8 @@
 //   - content:  <notebook_root>/<relative_path>
 //   - metadata: <notebook_root>/vx_notebook/contents/<relative_path>/vx.json
 
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -37,6 +39,10 @@
 
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 namespace {
 
@@ -66,6 +72,42 @@ nlohmann::json read_json(const std::string &path) {
 
 void write_json(const std::string &path, const nlohmann::json &json) {
   write_file(path, json.dump(2));
+}
+
+std::string binary_bytes(const std::string &path) {
+  std::ifstream input(utf8_to_fs_path(path), std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+// Capture the real directory identity in the journal's platform-neutral shape.
+// The tests link only the public API; no private DLL exports are required.
+nlohmann::json directory_identity(const std::string &path) {
+  uint64_t device = 0, low = 0, high = 0, links = 0;
+#ifdef _WIN32
+  HANDLE handle = CreateFileW(utf8_to_fs_path(path).c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+      FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return nullptr;
+  BY_HANDLE_FILE_INFORMATION info{};
+  FILE_ID_INFO id{};
+  const bool valid = GetFileInformationByHandle(handle, &info) &&
+      GetFileInformationByHandleEx(handle, FileIdInfo, &id, sizeof(id)) &&
+      (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+      !(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT);
+  CloseHandle(handle);
+  if (!valid) return nullptr;
+  device = id.VolumeSerialNumber;
+  std::memcpy(&low, id.FileId.Identifier, sizeof(low));
+  std::memcpy(&high, id.FileId.Identifier + sizeof(low), sizeof(high));
+  links = info.nNumberOfLinks;
+#else
+  struct stat info{};
+  if (::lstat(utf8_to_fs_path(path).c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) return nullptr;
+  device = static_cast<uint64_t>(info.st_dev);
+  low = static_cast<uint64_t>(info.st_ino);
+  links = static_cast<uint64_t>(info.st_nlink);
+#endif
+  return {{"device", device}, {"low", low}, {"high", high}, {"links", links}, {"directory", true}};
 }
 
 char *make_notebook(VxCoreContextHandle ctx, const std::string &nb_path,
@@ -166,6 +208,21 @@ StagedBundle stage_bundle(const std::string &nb, const std::string &token,
   write_json(bundle.dir + "/metadata/Sub/vx.json", sub_config);
 
   return bundle;
+}
+
+nlohmann::json schema2_journal(const std::string &notebook_id, const StagedBundle &bundle,
+                                const std::string &before, const std::string &phase = "init") {
+  auto after = nlohmann::json::parse(before);
+  after["folders"].push_back("Alpha");
+  after["modifiedUtc"] = 2000000000;
+  return {{"schema", 2}, {"notebookId", notebook_id}, {"phase", phase},
+      {"destPath", "."}, {"finalName", "Alpha"}, {"parentId", after["id"]},
+      {"rootFolderId", bundle.root_folder_id},
+      {"ids", {bundle.root_folder_id, bundle.child_folder_id, bundle.file_id, bundle.nested_file_id}},
+      {"parentConfigBytes", before}, {"parentAfterBytes", after.dump(2)},
+      {"stagingIdentity", directory_identity(bundle.dir)},
+      {"contentIdentity", directory_identity(bundle.dir + "/content")},
+      {"metadataIdentity", directory_identity(bundle.dir + "/metadata")}};
 }
 
 std::vector<std::string> collect_ids(VxCoreContextHandle ctx, const char *nb_id) {
@@ -745,52 +802,59 @@ void plant_crash_state(const std::string &nb, const std::string &phase,
 
 }  // namespace
 
-// A crash BEFORE the commit point rolls back: the half-published tree is
-// removed and the parent index is restored from the journal's recorded bytes,
-// so the notebook is exactly as it was before the import started.
+// Schema2 rollback requires exact parent before-bytes and recorded directory
+// identities. It removes owned private trees without rewriting the parent.
 int test_recovery_rolls_back_uncommitted_phases() {
-  std::cout << "  Running test_recovery_rolls_back_uncommitted_phases..." << std::endl;
-
   for (const std::string phase : {"init", "content", "metadata", "db"}) {
     const std::string nb = get_test_path("test_recover_rb_nb_" + phase);
     cleanup_test_dir(nb);
-
     VxCoreContextHandle ctx = nullptr;
     ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
     char *nb_id = make_notebook(ctx, nb);
     ASSERT_NOT_NULL(nb_id);
-
-    const std::string parent_bytes = [&] {
-      std::ifstream file(utf8_to_fs_path(folder_config_path(nb, "")), std::ios::binary);
-      return std::string((std::istreambuf_iterator<char>(file)),
-                         std::istreambuf_iterator<char>());
-    }();
-
+    std::string before;
+    for (const char ch : binary_bytes(folder_config_path(nb, ""))) {
+      if (ch == '\n') before += '\r';
+      before += ch;
+    }
+    write_file(folder_config_path(nb, ""), before);
+    const auto bundle = stage_bundle(nb, "crash", "Alpha", "rollback-" + phase);
+    auto journal = schema2_journal(nb_id, bundle, before, phase);
+    ASSERT_TRUE(journal["stagingIdentity"].is_object());
+    if (phase == "db") {
+      // Seed real committed derived rows, then reproduce the state just before
+      // parent publication. Recovery must actually remove those ghost rows.
+      char *id = nullptr;
+      ASSERT_EQ(vxcore_folder_attach_imported(ctx, nb_id, ".", "Alpha", bundle.dir.c_str(), &id), VXCORE_OK);
+      vxcore_string_free(id);
+      write_file(folder_config_path(nb, ""), before);
+      create_directory(bundle.dir);
+      journal["stagingIdentity"] = directory_identity(bundle.dir);
+    } else {
+      if (phase != "init")
+        std::filesystem::rename(utf8_to_fs_path(bundle.dir + "/content"), utf8_to_fs_path(nb + "/Alpha"));
+      if (phase == "metadata")
+        std::filesystem::rename(utf8_to_fs_path(bundle.dir + "/metadata"), utf8_to_fs_path(metadata_dir(nb, "Alpha")));
+    }
+    write_json(bundle.dir + "/journal.json", journal);
     ASSERT_EQ(vxcore_notebook_close(ctx, nb_id), VXCORE_OK);
     vxcore_string_free(nb_id);
     vxcore_context_destroy(ctx);
-
-    plant_crash_state(nb, phase, "Alpha", "", {"crash-folder-id", "crash-file-id"},
-                      parent_bytes);
-
-    // Reopening the notebook must repair it.
     ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
     char *reopened = nullptr;
     ASSERT_EQ(vxcore_notebook_open(ctx, nb.c_str(), &reopened), VXCORE_OK);
-
-    ASSERT_FALSE(path_exists(staging_root(nb) + "/crash"));
+    ASSERT_FALSE(path_exists(bundle.dir));
     ASSERT_FALSE(path_exists(nb + "/Alpha"));
     ASSERT_FALSE(path_exists(metadata_dir(nb, "Alpha")));
-    const std::vector<std::string> children = disk_child_folders(nb, "");
-    ASSERT_TRUE(std::find(children.begin(), children.end(), std::string("Alpha")) ==
-                children.end());
-
+    ASSERT_EQ(binary_bytes(folder_config_path(nb, "")), before);
+    char *resolved = nullptr;
+    ASSERT_NE(vxcore_node_get_path_by_id(ctx, reopened, bundle.file_id.c_str(), &resolved), VXCORE_OK);
+    vxcore_string_free(resolved);
+    ASSERT_EQ(vxcore_notebook_close(ctx, reopened), VXCORE_OK);
     vxcore_string_free(reopened);
     vxcore_context_destroy(ctx);
     cleanup_test_dir(nb);
   }
-
-  std::cout << "  ✓ test_recovery_rolls_back_uncommitted_phases passed" << std::endl;
   return 0;
 }
 
@@ -826,7 +890,6 @@ int test_recovery_rolls_forward_committed_phase() {
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
   char *reopened = nullptr;
   ASSERT_EQ(vxcore_notebook_open(ctx, nb.c_str(), &reopened), VXCORE_OK);
-  ASSERT_EQ(vxcore_notebook_rebuild_cache(ctx, reopened), VXCORE_OK);
 
   ASSERT_FALSE(path_exists(staging_root(nb) + "/crash"));
   ASSERT_TRUE(path_exists(nb + "/Alpha/note.md"));
@@ -835,6 +898,11 @@ int test_recovery_rolls_forward_committed_phase() {
   const std::vector<std::string> children = disk_child_folders(nb, "");
   ASSERT_TRUE(std::find(children.begin(), children.end(), std::string("Alpha")) !=
               children.end());
+
+  char *resolved = nullptr;
+  ASSERT_EQ(vxcore_node_get_path_by_id(ctx, reopened, "crash-folder-id", &resolved), VXCORE_OK);
+  ASSERT_EQ(std::string(resolved), "Alpha");
+  vxcore_string_free(resolved);
 
   // The rolled-forward folder is reachable through the normal API.
   char *config_json = nullptr;
@@ -870,11 +938,336 @@ int test_recovery_is_noop_without_journals() {
   return 0;
 }
 
+
+int test_recovery_keeps_visible_cohort_despite_stale_phase() {
+  const std::string nb = get_test_path("test_recover_visible_stale_phase");
+  cleanup_test_dir(nb);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *notebook = make_notebook(ctx, nb);
+  ASSERT_NOT_NULL(notebook);
+  const auto binary = [](const std::string &path) {
+    std::ifstream input(utf8_to_fs_path(path), std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  };
+  const auto before_parent = binary(folder_config_path(nb, ""));
+  const auto staged = stage_bundle(nb, "visible", "Alpha", "visible-stale");
+  char *folder = nullptr;
+  ASSERT_EQ(vxcore_folder_attach_imported(ctx, notebook, ".", "Alpha", staged.dir.c_str(), &folder), VXCORE_OK);
+  vxcore_string_free(folder);
+  ASSERT_EQ(vxcore_notebook_close(ctx, notebook), VXCORE_OK);
+  vxcore_string_free(notebook);
+  vxcore_context_destroy(ctx);
+  auto parent = read_json(folder_config_path(nb, ""));
+  parent["metadata"]["laterEdit"] = "preserve this newer metadata";
+  write_json(folder_config_path(nb, ""), parent);
+  const auto visible_parent = binary(folder_config_path(nb, ""));
+  const auto note_bytes = binary(nb + "/Alpha/note.md");
+  const auto journal_dir = staging_root(nb) + "/late-receipt";
+  create_directory(journal_dir);
+  write_json(journal_dir + "/journal.json", {
+      {"phase", "db"}, {"destPath", "."}, {"finalName", "Alpha"},
+      {"contentTarget", nb + "/Alpha"}, {"metadataTarget", metadata_dir(nb, "Alpha")},
+      {"rootFolderId", staged.root_folder_id},
+      {"ids", {staged.root_folder_id, staged.child_folder_id, staged.file_id, staged.nested_file_id}},
+      {"parentConfigBytes", before_parent}});
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *reopened = nullptr;
+  const auto open = vxcore_notebook_open(ctx, nb.c_str(), &reopened);
+  const bool preserved = path_exists(nb + "/Alpha/note.md") &&
+      binary(nb + "/Alpha/note.md") == note_bytes &&
+      binary(folder_config_path(nb, "")) == visible_parent;
+  std::cout << "  Stale-phase visible cohort: open=" << open << ", preserved=" << preserved << std::endl;
+  vxcore_string_free(reopened);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb);
+  ASSERT_EQ(open, VXCORE_OK);
+  ASSERT_TRUE(preserved);
+  return 0;
+}
+
+int test_recovery_preserves_unprovable_journals() {
+  for (const std::string mode : {"malformed", "unreadable", "foreign", "legacy", "parent-edit", "identity"}) {
+    const auto nb = get_test_path("test_recovery_preserve_" + mode);
+    const auto outside = get_test_path("test_recovery_outside_" + mode);
+    cleanup_test_dir(nb);
+    cleanup_test_dir(outside);
+    VxCoreContextHandle ctx = nullptr;
+    ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+    char *id = make_notebook(ctx, nb);
+    ASSERT_NOT_NULL(id);
+    const auto before = binary_bytes(folder_config_path(nb, ""));
+    const auto bundle = stage_bundle(nb, "crash", "Alpha", "unprovable-" + mode);
+    auto journal = schema2_journal(id, bundle, before);
+    if (mode == "foreign" || mode == "legacy") {
+      journal = {{"phase", "db"}, {"destPath", "."}, {"finalName", "Alpha"},
+          {"contentTarget", mode == "foreign" ? outside : nb + "/Alpha"},
+          {"metadataTarget", metadata_dir(nb, "Alpha")}, {"rootFolderId", bundle.root_folder_id},
+          {"ids", {bundle.root_folder_id, bundle.child_folder_id, bundle.file_id, bundle.nested_file_id}},
+          {"parentConfigBytes", before}};
+      create_directory(outside);
+      write_file(outside + "/unrelated.bin", std::string("foreign\0bytes", 13));
+    }
+    std::filesystem::rename(utf8_to_fs_path(bundle.dir + "/content"), utf8_to_fs_path(nb + "/Alpha"));
+    std::filesystem::rename(utf8_to_fs_path(bundle.dir + "/metadata"), utf8_to_fs_path(metadata_dir(nb, "Alpha")));
+    if (mode == "parent-edit") {
+      auto parent = read_json(folder_config_path(nb, ""));
+      parent["metadata"]["newer"] = "do not clobber";
+      write_json(folder_config_path(nb, ""), parent);
+    }
+    if (mode == "identity") {
+      std::filesystem::rename(utf8_to_fs_path(nb + "/Alpha"), utf8_to_fs_path(nb + "/original-owned"));
+      create_directory(nb + "/Alpha");
+      write_file(nb + "/Alpha/note.md", "foreign replacement");
+    }
+    const auto parent_bytes = binary_bytes(folder_config_path(nb, ""));
+    const auto note_bytes = binary_bytes(nb + "/Alpha/note.md");
+    if (mode == "unreadable") create_directory(bundle.dir + "/journal.json");
+    else if (mode == "malformed") write_file(bundle.dir + "/journal.json", "not JSON\r\n");
+    else write_json(bundle.dir + "/journal.json", journal);
+    const auto journal_bytes = mode == "unreadable" ? std::string() : binary_bytes(bundle.dir + "/journal.json");
+    int recovered = -1;
+    ASSERT_NE(vxcore_notebook_recover_imports(ctx, id, &recovered), VXCORE_OK);
+    ASSERT_EQ(recovered, 0);
+    ASSERT_TRUE(path_exists(bundle.dir + "/journal.json"));
+    if (mode != "unreadable") ASSERT_EQ(binary_bytes(bundle.dir + "/journal.json"), journal_bytes);
+    ASSERT_EQ(binary_bytes(folder_config_path(nb, "")), parent_bytes);
+    ASSERT_EQ(binary_bytes(nb + "/Alpha/note.md"), note_bytes);
+    ASSERT_TRUE(path_exists(folder_config_path(nb, "Alpha")));
+    if (mode == "foreign") ASSERT_EQ(binary_bytes(outside + "/unrelated.bin"), std::string("foreign\0bytes", 13));
+    ASSERT_EQ(vxcore_notebook_close(ctx, id), VXCORE_OK);
+    vxcore_string_free(id);
+    vxcore_context_destroy(ctx);
+    cleanup_test_dir(nb);
+    cleanup_test_dir(outside);
+  }
+  return 0;
+}
+
+int test_schema2_stale_phase_survives_rename_and_descendant_edits() {
+  const auto nb = get_test_path("test_schema2_later_edits");
+  cleanup_test_dir(nb);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *id = make_notebook(ctx, nb);
+  ASSERT_NOT_NULL(id);
+  const auto before = binary_bytes(folder_config_path(nb, ""));
+  const auto bundle = stage_bundle(nb, "receipt", "Alpha", "later-edits");
+  auto journal = schema2_journal(id, bundle, before, "db");
+  char *folder = nullptr;
+  ASSERT_EQ(vxcore_folder_attach_imported(ctx, id, ".", "Alpha", bundle.dir.c_str(), &folder), VXCORE_OK);
+  ASSERT_EQ(std::string(folder), bundle.root_folder_id);
+  vxcore_string_free(folder);
+  ASSERT_EQ(vxcore_node_rename(ctx, id, "Alpha", "Renamed"), VXCORE_OK);
+  ASSERT_EQ(vxcore_node_delete(ctx, id, "Renamed/Sub/deep.md"), VXCORE_OK);
+  ASSERT_EQ(vxcore_node_update_metadata(ctx, id, "Renamed", "{\"later\":\"keep\"}"), VXCORE_OK);
+  char *new_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, id, "Renamed", "later.md", &new_id), VXCORE_OK);
+  write_file(nb + "/Renamed/later.md", std::string("new\0body\r\n", 10));
+  const auto parent = binary_bytes(folder_config_path(nb, ""));
+  const auto renamed = binary_bytes(folder_config_path(nb, "Renamed"));
+  create_directory(bundle.dir);
+  journal["stagingIdentity"] = directory_identity(bundle.dir);
+  write_json(bundle.dir + "/journal.json", journal);
+  int recovered = 0;
+  ASSERT_EQ(vxcore_notebook_recover_imports(ctx, id, &recovered), VXCORE_OK);
+  ASSERT_EQ(recovered, 1);
+  ASSERT_FALSE(path_exists(bundle.dir));
+  ASSERT_EQ(binary_bytes(folder_config_path(nb, "")), parent);
+  ASSERT_EQ(binary_bytes(folder_config_path(nb, "Renamed")), renamed);
+  ASSERT_EQ(binary_bytes(nb + "/Renamed/note.md"), "# note\n");
+  ASSERT_EQ(binary_bytes(nb + "/Renamed/later.md"), std::string("new\0body\r\n", 10));
+  char *resolved = nullptr;
+  ASSERT_EQ(vxcore_node_get_path_by_id(ctx, id, bundle.root_folder_id.c_str(), &resolved), VXCORE_OK);
+  ASSERT_EQ(std::string(resolved), "Renamed");
+  vxcore_string_free(resolved);
+  resolved = nullptr;
+  ASSERT_NE(vxcore_node_get_path_by_id(ctx, id, bundle.nested_file_id.c_str(), &resolved), VXCORE_OK);
+  vxcore_string_free(resolved);
+  resolved = nullptr;
+  ASSERT_EQ(vxcore_node_get_path_by_id(ctx, id, new_id, &resolved), VXCORE_OK);
+  ASSERT_EQ(std::string(resolved), "Renamed/later.md");
+  vxcore_string_free(resolved);
+  vxcore_string_free(new_id);
+  ASSERT_EQ(vxcore_notebook_close(ctx, id), VXCORE_OK);
+  vxcore_string_free(id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb);
+  return 0;
+}
+
+int test_schema2_committed_receipt_survives_delete_and_cleanup_lock() {
+  const auto nb = get_test_path("test_schema2_committed_residue");
+  cleanup_test_dir(nb);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *id = make_notebook(ctx, nb);
+  ASSERT_NOT_NULL(id);
+  const auto before = binary_bytes(folder_config_path(nb, ""));
+  const auto bundle = stage_bundle(nb, "receipt", "Alpha", "committed-residue");
+  auto journal = schema2_journal(id, bundle, before, "committed");
+  char *folder = nullptr;
+  ASSERT_EQ(vxcore_folder_attach_imported(ctx, id, ".", "Alpha", bundle.dir.c_str(), &folder), VXCORE_OK);
+  vxcore_string_free(folder);
+  create_directory(bundle.dir);
+  journal["stagingIdentity"] = directory_identity(bundle.dir);
+  write_json(bundle.dir + "/journal.json", journal);
+#ifdef _WIN32
+  HANDLE locked = CreateFileW(utf8_to_fs_path(bundle.dir + "/journal.json").c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  ASSERT_TRUE(locked != INVALID_HANDLE_VALUE);
+  int recovered = 0;
+  const auto locked_recovery = vxcore_notebook_recover_imports(ctx, id, &recovered);
+  const bool retained = path_exists(bundle.dir + "/journal.json");
+  CloseHandle(locked);
+  ASSERT_EQ(locked_recovery, VXCORE_OK);
+  ASSERT_EQ(recovered, 1);
+  ASSERT_TRUE(retained);
+#endif
+  ASSERT_EQ(vxcore_node_delete(ctx, id, "Alpha"), VXCORE_OK);
+  const auto deleted_parent = binary_bytes(folder_config_path(nb, ""));
+  ASSERT_EQ(vxcore_notebook_close(ctx, id), VXCORE_OK);
+  vxcore_string_free(id);
+  vxcore_context_destroy(ctx);
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *reopened = nullptr;
+  ASSERT_EQ(vxcore_notebook_open(ctx, nb.c_str(), &reopened), VXCORE_OK);
+  ASSERT_FALSE(path_exists(bundle.dir));
+  ASSERT_FALSE(path_exists(nb + "/Alpha"));
+  ASSERT_EQ(binary_bytes(folder_config_path(nb, "")), deleted_parent);
+  char *resolved = nullptr;
+  ASSERT_NE(vxcore_node_get_path_by_id(ctx, reopened, bundle.root_folder_id.c_str(), &resolved), VXCORE_OK);
+  vxcore_string_free(resolved);
+  ASSERT_EQ(vxcore_notebook_close(ctx, reopened), VXCORE_OK);
+  vxcore_string_free(reopened);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb);
+  return 0;
+}
+
+int test_schema2_uncommitted_cleanup_failure_retains_journal() {
+#ifdef _WIN32
+  const auto nb = get_test_path("test_schema2_rollback_lock");
+  cleanup_test_dir(nb);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *id = make_notebook(ctx, nb);
+  ASSERT_NOT_NULL(id);
+  const auto before = binary_bytes(folder_config_path(nb, ""));
+  const auto bundle = stage_bundle(nb, "receipt", "Alpha", "rollback-lock");
+  const auto journal = schema2_journal(id, bundle, before, "metadata");
+  std::filesystem::rename(utf8_to_fs_path(bundle.dir + "/content"), utf8_to_fs_path(nb + "/Alpha"));
+  std::filesystem::rename(utf8_to_fs_path(bundle.dir + "/metadata"), utf8_to_fs_path(metadata_dir(nb, "Alpha")));
+  write_json(bundle.dir + "/journal.json", journal);
+  HANDLE locked = CreateFileW(utf8_to_fs_path(nb + "/Alpha/note.md").c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  ASSERT_TRUE(locked != INVALID_HANDLE_VALUE);
+  int recovered = 0;
+  const auto error = vxcore_notebook_recover_imports(ctx, id, &recovered);
+  const bool retained = path_exists(bundle.dir + "/journal.json");
+  CloseHandle(locked);
+  ASSERT_NE(error, VXCORE_OK);
+  ASSERT_EQ(recovered, 0);
+  ASSERT_TRUE(retained);
+  ASSERT_EQ(binary_bytes(folder_config_path(nb, "")), before);
+  ASSERT_EQ(vxcore_notebook_recover_imports(ctx, id, &recovered), VXCORE_OK);
+  ASSERT_FALSE(path_exists(bundle.dir));
+  ASSERT_FALSE(path_exists(nb + "/Alpha"));
+  ASSERT_EQ(vxcore_notebook_close(ctx, id), VXCORE_OK);
+  vxcore_string_free(id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb);
+#endif
+  return 0;
+}
+
+int test_attach_rejects_noncontained_staging() {
+  const auto nb = get_test_path("test_attach_contained_nb");
+  const auto outside = get_test_path("test_attach_contained_outside");
+  cleanup_test_dir(nb);
+  cleanup_test_dir(outside);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *id = make_notebook(ctx, nb);
+  ASSERT_NOT_NULL(id);
+  const auto bundle = stage_bundle(nb, "escape", "Alpha", "outside");
+  std::filesystem::rename(utf8_to_fs_path(bundle.dir), utf8_to_fs_path(outside));
+  const auto parent = binary_bytes(folder_config_path(nb, ""));
+  char *folder = nullptr;
+  ASSERT_NE(vxcore_folder_attach_imported(ctx, id, ".", "Alpha", outside.c_str(), &folder), VXCORE_OK);
+  ASSERT_NULL(folder);
+  ASSERT_TRUE(path_exists(outside + "/content/note.md"));
+  ASSERT_EQ(binary_bytes(folder_config_path(nb, "")), parent);
+  ASSERT_FALSE(path_exists(nb + "/Alpha"));
+  ASSERT_EQ(vxcore_notebook_close(ctx, id), VXCORE_OK);
+  vxcore_string_free(id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb);
+  cleanup_test_dir(outside);
+  return 0;
+}
+
+int test_attach_reports_failed_committed_marker_without_rollback() {
+#ifdef _WIN32
+  const auto nb = get_test_path("test_attach_marker_failure");
+  cleanup_test_dir(nb);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *id = make_notebook(ctx, nb);
+  ASSERT_NOT_NULL(id);
+  const auto bundle = stage_bundle(nb, "receipt", "Alpha", "marker-failure");
+  struct Lock {
+    std::string path;
+    HANDLE handle = INVALID_HANDLE_VALUE;
+  } lock{bundle.dir + "/journal.json"};
+  const auto callback = +[](const char *, const char *, void *data) {
+    auto &lock = *static_cast<Lock *>(data);
+    if (lock.handle == INVALID_HANDLE_VALUE)
+      lock.handle = CreateFileW(utf8_to_fs_path(lock.path).c_str(), GENERIC_READ,
+          FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  };
+  ASSERT_EQ(vxcore_on_event(ctx, "folder.config_changed", callback, &lock), VXCORE_OK);
+  char *folder = nullptr;
+  const auto attach = vxcore_folder_attach_imported(ctx, id, ".", "Alpha", bundle.dir.c_str(), &folder);
+  const bool locked = lock.handle != INVALID_HANDLE_VALUE;
+  if (locked) CloseHandle(lock.handle);
+  ASSERT_EQ(vxcore_off_event(ctx, "folder.config_changed", callback), VXCORE_OK);
+  ASSERT_TRUE(locked);
+  ASSERT_NE(attach, VXCORE_OK);
+  ASSERT_NULL(folder);
+  ASSERT_TRUE(path_exists(bundle.dir + "/journal.json"));
+  ASSERT_EQ(binary_bytes(nb + "/Alpha/note.md"), "# note\n");
+  ASSERT_EQ(read_json(folder_config_path(nb, "Alpha"))["id"], bundle.root_folder_id);
+  ASSERT_EQ(vxcore_node_rename(ctx, id, "Alpha", "Renamed"), VXCORE_OK);
+  ASSERT_EQ(vxcore_node_update_metadata(ctx, id, "Renamed", "{\"editedAfterFailure\":true}"), VXCORE_OK);
+  const auto parent = binary_bytes(folder_config_path(nb, ""));
+  int recovered = 0;
+  ASSERT_EQ(vxcore_notebook_recover_imports(ctx, id, &recovered), VXCORE_OK);
+  ASSERT_EQ(recovered, 1);
+  ASSERT_FALSE(path_exists(bundle.dir));
+  ASSERT_EQ(binary_bytes(folder_config_path(nb, "")), parent);
+  ASSERT_EQ(binary_bytes(nb + "/Renamed/note.md"), "# note\n");
+  ASSERT_EQ(read_json(folder_config_path(nb, "Renamed"))["id"], bundle.root_folder_id);
+  ASSERT_EQ(vxcore_notebook_close(ctx, id), VXCORE_OK);
+  vxcore_string_free(id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(nb);
+#endif
+  return 0;
+}
+
 int main() {
   vxcore_set_test_mode(1);
 
   std::cout << "Running folder bundle import tests..." << std::endl;
 
+  RUN_TEST(test_recovery_keeps_visible_cohort_despite_stale_phase);
+  RUN_TEST(test_attach_reports_failed_committed_marker_without_rollback);
+  RUN_TEST(test_recovery_preserves_unprovable_journals);
+  RUN_TEST(test_schema2_stale_phase_survives_rename_and_descendant_edits);
+  RUN_TEST(test_schema2_committed_receipt_survives_delete_and_cleanup_lock);
+  RUN_TEST(test_schema2_uncommitted_cleanup_failure_retains_journal);
+  RUN_TEST(test_attach_rejects_noncontained_staging);
   RUN_TEST(test_import_paths_root_and_nested);
   RUN_TEST(test_import_paths_rejects_readonly_and_raw);
   RUN_TEST(test_collect_node_ids_is_exhaustive);

@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <new>
@@ -31,6 +32,11 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
+
+#if defined(__linux__)
+#include <linux/fs.h>
+#include <sys/syscall.h>
 #endif
 
 #ifndef VXCORE_LOG_DEBUG
@@ -262,6 +268,127 @@ bool IsReparsePoint(const std::string &path, bool on_error) {
     default:
       return on_error;
   }
+}
+
+bool FileIdentity::SameObject(const FileIdentity &other) const noexcept {
+  return device != 0 && (low != 0 || high != 0) && device == other.device &&
+         low == other.low && high == other.high && directory == other.directory;
+}
+
+VxCoreError GetFileIdentity(const std::filesystem::path &path, FileIdentity &out) noexcept {
+  out = {};
+  if (path.empty() || path.native().find(std::filesystem::path::value_type{}) !=
+                          std::filesystem::path::string_type::npos) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  // lstat("link/") follows the link on POSIX. Probe the actual final entry,
+  // preserving filesystem roots while removing an optional trailing separator.
+  try {
+    if (!path.has_filename() && path.has_relative_path()) {
+      return GetFileIdentity(path.parent_path(), out);
+    }
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (...) {
+    return VXCORE_ERR_IO;
+  }
+  FileIdentity identity;
+#ifdef _WIN32
+  HANDLE handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                              OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                              nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return VXCORE_ERR_IO;
+  BY_HANDLE_FILE_INFORMATION info{};
+  FILE_ID_INFO id{};
+  const bool valid = GetFileType(handle) == FILE_TYPE_DISK &&
+                     GetFileInformationByHandle(handle, &info) &&
+                     (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE)) == 0 &&
+                     GetFileInformationByHandleEx(handle, FileIdInfo, &id, sizeof(id));
+  const bool closed = CloseHandle(handle) != 0;
+  if (!valid || !closed) return VXCORE_ERR_IO;
+  identity.device = id.VolumeSerialNumber;
+  std::memcpy(&identity.low, id.FileId.Identifier, sizeof(identity.low));
+  std::memcpy(&identity.high, id.FileId.Identifier + sizeof(identity.low), sizeof(identity.high));
+  identity.links = info.nNumberOfLinks;
+  identity.directory = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+#else
+  struct stat info{};
+  if (::lstat(path.c_str(), &info) != 0 || (!S_ISREG(info.st_mode) && !S_ISDIR(info.st_mode))) {
+    return VXCORE_ERR_IO;
+  }
+  identity.device = static_cast<uint64_t>(info.st_dev);
+  identity.low = static_cast<uint64_t>(info.st_ino);
+  identity.links = static_cast<uint64_t>(info.st_nlink);
+  identity.directory = S_ISDIR(info.st_mode);
+#endif
+  if (identity.device == 0 || (identity.low == 0 && identity.high == 0) || identity.links == 0) {
+    return VXCORE_ERR_IO;
+  }
+  out = identity;
+  return VXCORE_OK;
+}
+
+VxCoreError RenameNoReplace(const std::filesystem::path &from, const std::filesystem::path &to) {
+  if (from.empty() || to.empty() ||
+      from.native().find(std::filesystem::path::value_type{}) != std::filesystem::path::string_type::npos ||
+      to.native().find(std::filesystem::path::value_type{}) != std::filesystem::path::string_type::npos) {
+#ifdef _WIN32
+    SetLastError(ERROR_INVALID_PARAMETER);
+#endif
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+#ifdef _WIN32
+  if (MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH)) return VXCORE_OK;
+  const DWORD error = GetLastError();
+  return error == ERROR_NOT_ENOUGH_MEMORY || error == ERROR_OUTOFMEMORY
+             ? VXCORE_ERR_OUT_OF_MEMORY : VXCORE_ERR_IO;
+#elif defined(__linux__)
+  // Bionic's renameat2 wrapper requires API30; the raw syscall works at minAPI28.
+#ifdef SYS_renameat2
+  if (::syscall(SYS_renameat2, AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), RENAME_NOREPLACE) == 0) {
+    return VXCORE_OK;
+  }
+  return errno == ENOMEM ? VXCORE_ERR_OUT_OF_MEMORY : VXCORE_ERR_IO;
+#else
+  return VXCORE_ERR_UNSUPPORTED;
+#endif
+#elif defined(__APPLE__)
+  if (::renamex_np(from.c_str(), to.c_str(), RENAME_EXCL) == 0) return VXCORE_OK;
+  return errno == ENOMEM ? VXCORE_ERR_OUT_OF_MEMORY : VXCORE_ERR_IO;
+#else
+  return VXCORE_ERR_UNSUPPORTED;
+#endif
+}
+
+VxCoreError FlushDirectory(const std::filesystem::path &path) {
+#ifdef _WIN32
+  // Windows does not provide the POSIX directory-fsync contract. Check the
+  // directory, relying on the writer's file flush and WRITE_THROUGH publication.
+  FileIdentity identity;
+  const auto error = GetFileIdentity(path, identity);
+  return error != VXCORE_OK ? error : identity.directory ? VXCORE_OK : VXCORE_ERR_IO;
+#else
+  if (path.empty() || path.native().find('\0') != std::string::npos) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  if (!path.has_filename() && path.has_relative_path()) {
+    try {
+      return FlushDirectory(path.parent_path());
+    } catch (const std::bad_alloc &) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    } catch (...) {
+      return VXCORE_ERR_IO;
+    }
+  }
+  const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) return errno == ENOMEM ? VXCORE_ERR_OUT_OF_MEMORY : VXCORE_ERR_IO;
+  const int flushed = ::fsync(fd);
+  const int flush_error = errno;
+  const int closed = ::close(fd);
+  if (flushed != 0) return flush_error == ENOMEM ? VXCORE_ERR_OUT_OF_MEMORY : VXCORE_ERR_IO;
+  return closed == 0 ? VXCORE_OK : VXCORE_ERR_IO;
+#endif
 }
 
 bool IsPathWithinCanonical(const std::filesystem::path &canonical_root, const std::string &path,
@@ -708,6 +835,55 @@ VxCoreError AtomicFileWriter::Commit() {
       }
     }
     return error_ = VXCORE_ERR_IO;
+  } catch (const std::bad_alloc &) {
+    return error_ = VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (...) {
+    return error_ = VXCORE_ERR_IO;
+  }
+}
+
+VxCoreError AtomicFileWriter::CommitNoReplace() {
+  if (error_ != VXCORE_OK) return error_;
+  if (!file_) return VXCORE_ERR_INVALID_STATE;
+
+  errno = 0;
+  if (std::fflush(file_) != 0) error_ = AtomicWriteError();
+  if (error_ == VXCORE_OK) {
+    errno = 0;
+#ifdef _WIN32
+    if (_commit(_fileno(file_)) != 0) {
+#else
+    if (::fsync(fileno(file_)) != 0) {
+#endif
+      error_ = AtomicWriteError();
+    }
+  }
+  errno = 0;
+  const int closed = std::fclose(file_);
+  file_ = nullptr;
+  if (closed != 0 && error_ == VXCORE_OK) error_ = AtomicWriteError();
+  if (error_ != VXCORE_OK) return error_;
+
+  try {
+    const auto parent = path_.has_parent_path() ? path_.parent_path() : std::filesystem::path(".");
+#ifdef _WIN32
+    for (int attempt = 0; attempt < kAtomicRenameRetries; ++attempt) {
+      error_ = RenameNoReplace(temp_path_, path_);
+      if (error_ == VXCORE_OK) break;
+      const DWORD native_error = GetLastError();
+      if (native_error != ERROR_SHARING_VIOLATION || attempt + 1 == kAtomicRenameRetries) {
+        return error_;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(kAtomicRenameRetryDelayMs));
+    }
+#else
+    error_ = RenameNoReplace(temp_path_, path_);
+    if (error_ != VXCORE_OK) return error_;
+#endif
+    // Publication has happened. Even a failed parent flush cannot authorize
+    // destruction (or an error-handling caller) to remove the complete file.
+    owns_temp_ = false;
+    return error_ = FlushDirectory(parent);
   } catch (const std::bad_alloc &) {
     return error_ = VXCORE_ERR_OUT_OF_MEMORY;
   } catch (...) {

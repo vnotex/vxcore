@@ -540,8 +540,9 @@ VXCORE_API VxCoreError vxcore_notebook_collect_node_ids(VxCoreContextHandle cont
 
 // Attach a STAGED imported folder bundle to its destination parent.
 //
-// @staging_dir is a directory prepared by the caller (VNote's
-// FolderBundleImporter) containing exactly two children:
+// @staging_dir is an ordinary immediate child of this notebook's
+// vx_notebook/vx_import directory, on the same filesystem, prepared by the caller
+// (VNote's FolderBundleImporter) with exactly two initial children:
 //   content/   the physical folder tree to publish as <dest>/<name>
 //   metadata/  the parallel metadata tree (vx.json files) to publish as
 //              <root>/vx_notebook/contents/<dest_folder_path>/<name>
@@ -569,8 +570,10 @@ VXCORE_API VxCoreError vxcore_notebook_collect_node_ids(VxCoreContextHandle cont
 //      its "folders" array — THIS IS THE COMMIT POINT,
 //   6. invalidate caches, emit ONE `folder.created` for the attached folder,
 //      delete the journal.
-// A failure before step 5 rolls everything back and writes nothing. A crash at
-// any point is repaired by vxcore_notebook_recover_imports() on next open.
+// Failures are not proof of rollback: a parent replacement/flush error may follow
+// publication. Recovery proves the actual parent/cohort state before cleanup;
+// unresolved ownership/IO failures retain the journal instead of deleting data.
+// The caller must reconcile before retrying or acknowledging a partial outcome.
 //
 // Descendant creation events are NOT replayed; exactly one `folder.created`
 // fires, for the imported root.
@@ -595,17 +598,22 @@ VXCORE_API VxCoreError vxcore_folder_attach_imported(VxCoreContextHandle context
 
 // Replay or roll back any incomplete folder-import journals left by a crash.
 //
-// Called automatically when a bundled notebook is opened, BEFORE the metadata
-// store is rebuilt from configs, so a rolled-back import never leaves rows the
-// rebuild would resurrect. Safe to call again at any time; a notebook with no
-// journals is a no-op returning VXCORE_OK.
+// Called automatically on bundled notebook open; safe to call again. Recovery
+// repairs affected derived-store rows itself; it must not assume open rebuilds them.
+// A notebook without journals is a no-op returning VXCORE_OK.
 //
-// Per journal phase:
-//   init/content/metadata/db  roll BACK: delete the published directories,
-//                             delete the recorded ids from the store, restore
-//                             the parent vx.json bytes, delete the journal
-//   committed                 roll FORWARD: ensure the store rows exist,
-//                             invalidate caches, delete the journal
+// New bounded schema-2 journals retain binary parent images and directory identities.
+// Exact legacy journals are validated before acting. A phase string alone never
+// authorizes deleting a visible cohort or restoring old parent bytes.
+// Committed proof: a durable committed receipt, or matching owned published roots
+// and cohort identity with the after-image/current parent membership/authoritatively
+// reachable root ID after rename or edit. Preserve live data and clean only staging.
+// Rollback: parent binary bytes still equal the before-image and every target is
+// absent or positively owned. Remove only those targets and their inserted store
+// rows; never overwrite a newer parent. Unreadable/foreign/ambiguous state is retained
+// with an error. Incomplete uncommitted cleanup is an error with the journal retained.
+// Proven-committed cleanup failure is safe residue for a later open, not a reason to
+// make a healthy notebook unopenable. Later legitimate deletion is not replayed.
 //
 // out_recovered_count: optional; receives the number of journals processed.
 //
@@ -643,6 +651,21 @@ VXCORE_API VxCoreError vxcore_folder_import(VxCoreContextHandle context, const c
                                             const char *dest_folder_path,
                                             const char *external_folder_path,
                                             const char *suffix_allowlist, char **out_folder_id);
+
+// Index an explicit batch of existing immediate children of a bundled folder.
+// names_json: UTF-8 JSON array of basenames, <=8 MiB and <=10000 names.
+// No bodies are copied, decoded, renamed or rewritten. All names/types/collisions
+// are validated before one atomic parent-config publication. Empty input is a no-op.
+// Core generates IDs only for the requested unindexed children. Existing IDs and
+// unrelated metadata are preserved. No recursive/hidden/suffix filtering occurs.
+// This is a private-construction primitive, NOT a multi-folder import transaction:
+// errors may follow parent publication/store work. Query actual metadata before
+// retrying; final cohort publication uses vxcore_folder_attach_imported.
+// READ_ONLY precedes UNSUPPORTED for read-only raw notebooks.
+VXCORE_API VxCoreError vxcore_folder_index_children(VxCoreContextHandle context,
+                                                   const char *notebook_id,
+                                                   const char *parent_path,
+                                                   const char *names_json);
 
 // Replace a bundled file's tags with tags_json (an array of names). New names must have
 // notebook definitions; existing undefined assignments may be preserved or explicitly removed.

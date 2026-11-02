@@ -1,7 +1,13 @@
+#include <cerrno>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 #include "test_reparse_utils.h"
 #include "test_utils.h"
@@ -495,6 +501,197 @@ int test_atomic_file_publication() {
   return 0;
 }
 
+int test_no_replace_publication() {
+  namespace fs = std::filesystem;
+  const auto base = vxcore::PathFromUtf8(get_test_path("no_replace_publication"));
+  fs::remove_all(base);
+  ASSERT_TRUE(fs::create_directories(base));
+  const std::string source_bytes("source\0\xff\r\n", 10);
+  const std::string winner_bytes("winner\0\x80\n", 9);
+  auto read_binary = [](const fs::path &path) {
+    std::ifstream input(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  };
+  const auto source = base / "source.bin";
+  const auto winner = base / "winner.bin";
+  ASSERT_EQ(vxcore::WriteFileAtomic(source, source_bytes), VXCORE_OK);
+  ASSERT_EQ(vxcore::WriteFileAtomic(winner, winner_bytes), VXCORE_OK);
+  vxcore::FileIdentity before, after;
+  ASSERT_EQ(vxcore::GetFileIdentity(winner, before), VXCORE_OK);
+  ASSERT_NE(vxcore::RenameNoReplace(source, winner), VXCORE_OK);
+  ASSERT_EQ(read_binary(source), source_bytes);
+  ASSERT_EQ(read_binary(winner), winner_bytes);
+  ASSERT_EQ(vxcore::GetFileIdentity(winner, after), VXCORE_OK);
+  ASSERT_TRUE(before.SameObject(after));
+  ASSERT_EQ(vxcore::GetFileIdentity(source, before), VXCORE_OK);
+  const auto moved = base / "moved.bin";
+  ASSERT_EQ(vxcore::RenameNoReplace(source, moved), VXCORE_OK);
+  ASSERT_FALSE(fs::exists(source));
+  ASSERT_EQ(read_binary(moved), source_bytes);
+  ASSERT_EQ(vxcore::GetFileIdentity(moved, after), VXCORE_OK);
+  ASSERT_TRUE(before.SameObject(after));
+
+  // Even an empty existing directory is not a replaceable destination.
+  const auto from_dir = base / "from-dir";
+  const auto to_dir = base / "to-dir";
+  ASSERT_TRUE(fs::create_directory(from_dir));
+  ASSERT_TRUE(fs::create_directory(to_dir));
+  ASSERT_EQ(vxcore::WriteFileAtomic(from_dir / "keep", source_bytes), VXCORE_OK);
+  ASSERT_NE(vxcore::RenameNoReplace(from_dir, to_dir), VXCORE_OK);
+  ASSERT_EQ(read_binary(from_dir / "keep"), source_bytes);
+  ASSERT_TRUE(fs::is_empty(to_dir));
+  ASSERT_EQ(vxcore::RenameNoReplace(from_dir, base / "moved-dir"), VXCORE_OK);
+  ASSERT_EQ(read_binary(base / "moved-dir" / "keep"), source_bytes);
+
+  // Both writers selected the same absent name; only the first may publish.
+  const auto raced = base / "raced.bin";
+  {
+    vxcore::AtomicFileWriter first(raced), second(raced);
+    ASSERT_EQ(first.Open(), VXCORE_OK);
+    ASSERT_EQ(second.Open(), VXCORE_OK);
+    ASSERT_EQ(first.Write(winner_bytes.data(), winner_bytes.size()), VXCORE_OK);
+    ASSERT_EQ(second.Write(source_bytes.data(), source_bytes.size()), VXCORE_OK);
+    ASSERT_FALSE(fs::exists(raced));
+    ASSERT_EQ(first.CommitNoReplace(), VXCORE_OK);
+    ASSERT_EQ(vxcore::GetFileIdentity(raced, before), VXCORE_OK);
+    ASSERT_NE(second.CommitNoReplace(), VXCORE_OK);
+    ASSERT_EQ(vxcore::GetFileIdentity(raced, after), VXCORE_OK);
+    ASSERT_TRUE(before.SameObject(after));
+  }
+  ASSERT_EQ(read_binary(raced), winner_bytes);
+  {
+    vxcore::AtomicFileWriter failed(base / "failed.bin");
+    ASSERT_EQ(failed.Open(), VXCORE_OK);
+    ASSERT_EQ(failed.Write(source_bytes.data(), source_bytes.size()), VXCORE_OK);
+    ASSERT_EQ(failed.Write(nullptr, 1), VXCORE_ERR_NULL_POINTER);
+    ASSERT_EQ(failed.CommitNoReplace(), VXCORE_ERR_NULL_POINTER);
+  }
+  ASSERT_FALSE(fs::exists(base / "failed.bin"));
+  {
+    vxcore::AtomicFileWriter abandoned(base / "abandoned.bin");
+    ASSERT_EQ(abandoned.Open(), VXCORE_OK);
+    ASSERT_EQ(abandoned.Write(source_bytes.data(), source_bytes.size()), VXCORE_OK);
+  }
+  ASSERT_FALSE(fs::exists(base / "abandoned.bin"));
+  {
+    vxcore::AtomicFileWriter empty(base / "empty.bin");
+    ASSERT_EQ(empty.Open(), VXCORE_OK);
+    ASSERT_EQ(empty.Write(nullptr, 0), VXCORE_OK);
+    ASSERT_EQ(empty.CommitNoReplace(), VXCORE_OK);
+  }
+  ASSERT_EQ(fs::file_size(base / "empty.bin"), 0);
+  for (const auto &entry : fs::directory_iterator(base)) {
+    ASSERT_TRUE(vxcore::PathToUtf8(entry.path().filename()).find(".tmp-") == std::string::npos);
+  }
+  fs::remove_all(base);
+  return 0;
+}
+
+int test_file_identity_and_directory_flush() {
+  namespace fs = std::filesystem;
+  const auto base = vxcore::PathFromUtf8(get_test_path("file_identity"));
+  fs::remove_all(base);
+  ASSERT_TRUE(fs::create_directories(base));
+  const auto file = base / "ordinary.bin";
+  ASSERT_EQ(vxcore::WriteFileAtomic(file, "bytes"), VXCORE_OK);
+  vxcore::FileIdentity file_id, directory_id, changed;
+  ASSERT_EQ(vxcore::GetFileIdentity(file, file_id), VXCORE_OK);
+  ASSERT_FALSE(file_id.directory);
+  ASSERT_TRUE(file_id.device != 0 && (file_id.low != 0 || file_id.high != 0));
+  ASSERT_EQ(vxcore::GetFileIdentity(base, directory_id), VXCORE_OK);
+  ASSERT_TRUE(directory_id.directory);
+  ASSERT_FALSE(file_id.SameObject(directory_id));
+  ASSERT_TRUE(fs::create_directory(base / "child"));
+  ASSERT_EQ(vxcore::GetFileIdentity(base, changed), VXCORE_OK);
+  ASSERT_TRUE(directory_id.SameObject(changed));
+  changed.links += 1;
+  ASSERT_TRUE(directory_id.SameObject(changed));
+  changed.high ^= 1;
+  ASSERT_FALSE(directory_id.SameObject(changed));
+  changed = {};
+  ASSERT_FALSE(changed.SameObject(changed));
+
+  std::error_code ec;
+  fs::create_hard_link(file, base / "hard-link", ec);
+  if (ec) {
+#ifdef __ANDROID__
+    ASSERT_TRUE(ec == std::errc::permission_denied || ec == std::errc::operation_not_permitted);
+    std::cout << "Hardlink fixture unavailable under Android policy: " << ec.message() << '\n';
+#else
+    ASSERT_FALSE(ec);
+#endif
+  } else {
+    ASSERT_EQ(vxcore::GetFileIdentity(base / "hard-link", changed), VXCORE_OK);
+    ASSERT_TRUE(file_id.SameObject(changed));
+    ASSERT_EQ(changed.links, 2);
+  }
+  ASSERT_EQ(vxcore::FlushDirectory(base), VXCORE_OK);
+  ASSERT_NE(vxcore::FlushDirectory(file), VXCORE_OK);
+  ASSERT_NE(vxcore::FlushDirectory(base / "missing"), VXCORE_OK);
+  changed = file_id;
+  ASSERT_NE(vxcore::GetFileIdentity(base / "missing", changed), VXCORE_OK);
+  ASSERT_EQ(changed.device, 0);
+  ASSERT_EQ(changed.low, 0);
+  ASSERT_EQ(changed.high, 0);
+  ASSERT_EQ(changed.links, 0);
+  ASSERT_FALSE(changed.directory);
+
+  const auto link = base / "directory-link";
+  ASSERT_TRUE(vxcore_test::create_junction(vxcore::PathToUtf8(base / "child"),
+                                           vxcore::PathToUtf8(link)));
+  ASSERT_NE(vxcore::GetFileIdentity(link, changed), VXCORE_OK);
+  ASSERT_NE(vxcore::GetFileIdentity(link / "", changed), VXCORE_OK);
+  ASSERT_FALSE(changed.SameObject(changed));
+  ASSERT_NE(vxcore::FlushDirectory(link), VXCORE_OK);
+  ASSERT_NE(vxcore::FlushDirectory(link / ""), VXCORE_OK);
+  vxcore_test::remove_reparse_dir(vxcore::PathToUtf8(link));
+#ifndef _WIN32
+  const int fifo_result = ::mkfifo((base / "fifo").c_str(), 0600);
+#ifdef __ANDROID__
+  if (fifo_result != 0 && (errno == EACCES || errno == EPERM)) {
+    std::cout << "FIFO fixture unavailable under Android policy" << '\n';
+  } else
+#endif
+  {
+    ASSERT_EQ(fifo_result, 0);
+    changed = file_id;
+    ASSERT_NE(vxcore::GetFileIdentity(base / "fifo", changed), VXCORE_OK);
+    ASSERT_EQ(changed.device, 0);
+    ASSERT_EQ(changed.links, 0);
+  }
+#endif
+  fs::remove_all(base);
+  return 0;
+}
+
+int test_no_replace_postpublication_flush_error() {
+  namespace fs = std::filesystem;
+  const auto base = vxcore::PathFromUtf8(get_test_path("no_replace_flush_failure"));
+  fs::remove_all(base);
+  ASSERT_TRUE(fs::create_directories(base / "actual"));
+  const auto alias = base / "alias";
+  ASSERT_TRUE(vxcore_test::create_junction(vxcore::PathToUtf8(base / "actual"),
+                                           vxcore::PathToUtf8(alias)));
+  const std::string bytes("complete\0\xff\r\n", 12);
+  {
+    // The byte publication succeeds through this parent alias, but the
+    // directory flush rejects the final reparse/symlink. No fault hook is needed.
+    vxcore::AtomicFileWriter writer(alias / "published.bin");
+    ASSERT_EQ(writer.Open(), VXCORE_OK);
+    ASSERT_EQ(writer.Write(bytes.data(), bytes.size()), VXCORE_OK);
+    ASSERT_NE(writer.CommitNoReplace(), VXCORE_OK);
+    ASSERT_TRUE(fs::exists(base / "actual" / "published.bin"));
+  }
+  std::ifstream input(base / "actual" / "published.bin", std::ios::binary);
+  const std::string actual((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  input.close();
+  ASSERT_EQ(actual, bytes);
+  ASSERT_EQ(std::distance(fs::directory_iterator(base / "actual"), fs::directory_iterator()), 1);
+  vxcore_test::remove_reparse_dir(vxcore::PathToUtf8(alias));
+  fs::remove_all(base);
+  return 0;
+}
+
 int main() {
   std::cout << "Running file_utils tests..." << std::endl;
 
@@ -510,6 +707,9 @@ int main() {
   RUN_TEST(test_is_reparse_point);
   RUN_TEST(test_copy_tree_skip_reparse_points);
   RUN_TEST(test_atomic_file_publication);
+  RUN_TEST(test_no_replace_publication);
+  RUN_TEST(test_file_identity_and_directory_flush);
+  RUN_TEST(test_no_replace_postpublication_flush_error);
 
   std::cout << "✓ All file_utils tests passed" << std::endl;
   return 0;

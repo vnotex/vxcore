@@ -1,15 +1,19 @@
 // Tests for FolderManager attachment interfaces.
 // This test links directly against folder manager sources instead of vxcore library.
 
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <unordered_set>
 
 #include "core/bundled_folder_manager.h"
 #include "core/bundled_notebook.h"
 #include "core/folder_manager.h"
 #include "core/notebook.h"
+#include "core/metadata_store.h"
 #include "test_utils.h"
 
 using namespace vxcore;
@@ -352,6 +356,192 @@ int test_folder_manager_update_attachments_invalid_json() {
   return 0;
 }
 
+static std::string manager_binary(const std::filesystem::path &path) {
+  std::ifstream input(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+int test_attachment_errors_reload_actual_metadata() {
+  for (const std::string operation : {"replace", "add", "delete"}) {
+    const auto path = get_test_path("test_fm_atomic_attachment_" + operation);
+    cleanup_test_dir(path);
+    auto notebook = create_test_notebook(path);
+    ASSERT_NOT_NULL(notebook.get());
+    auto *fm = notebook->GetFolderManager();
+    std::string id;
+    ASSERT_EQ(fm->CreateFile(".", "note.md", id), VXCORE_OK);
+    ASSERT_EQ(fm->AddFileAttachment("note.md", "original.bin"), VXCORE_OK);
+    ASSERT_EQ(fm->CreateFile(".", "unrelated.md", id), VXCORE_OK);
+    const auto config_path = utf8_to_fs_path(path + "/vx_notebook/contents/vx.json");
+    const auto before = manager_binary(config_path);
+    std::string cached;
+    ASSERT_EQ(fm->GetFileAttachments("note.md", cached), VXCORE_OK);
+    auto saved = config_path;
+    saved += ".saved";
+    std::filesystem::rename(config_path, saved);
+    std::filesystem::create_directory(config_path);
+    VxCoreError error = VXCORE_OK;
+    if (operation == "replace") error = fm->UpdateFileAttachments("note.md", "[\"replacement.bin\"]");
+    else if (operation == "add") error = fm->AddFileAttachment("note.md", "new.bin");
+    else error = fm->DeleteFileAttachment("note.md", "original.bin");
+    std::filesystem::remove(config_path);
+    std::filesystem::rename(saved, config_path);
+    ASSERT_NE(error, VXCORE_OK);
+    ASSERT_EQ(manager_binary(config_path), before);
+    std::string actual;
+    ASSERT_EQ(fm->GetFileAttachments("note.md", actual), VXCORE_OK);
+    ASSERT_EQ(actual, cached);
+    fm->ClearCache();
+    ASSERT_EQ(fm->GetFileAttachments("note.md", actual), VXCORE_OK);
+    ASSERT_EQ(actual, cached);
+    notebook.reset();
+    cleanup_test_dir(path);
+  }
+  return 0;
+}
+
+int test_attachment_atomic_update_preserves_unrelated_json() {
+  const auto path = get_test_path("test_fm_attachment_unknown_fields");
+  cleanup_test_dir(path);
+  auto notebook = create_test_notebook(path);
+  ASSERT_NOT_NULL(notebook.get());
+  auto *fm = notebook->GetFolderManager();
+  std::string id;
+  ASSERT_EQ(fm->CreateFile(".", "note.md", id), VXCORE_OK);
+  ASSERT_EQ(fm->CreateFile(".", "other.md", id), VXCORE_OK);
+  const auto config_path = utf8_to_fs_path(path + "/vx_notebook/contents/vx.json");
+  auto config = nlohmann::json::parse(manager_binary(config_path));
+  config["opaqueRoot"] = {1, "keep"};
+  config["files"][0]["opaqueFile"] = {"keep", 2};
+  config["files"][1]["metadata"] = {{"owner", "untouched"}};
+  config["files"][1]["tags"] = {"tag-a", "tag-b"};
+  config["files"][1]["attachments"] = {"other.bin"};
+  const auto unrelated = config["files"][1];
+  write_file(path + "/vx_notebook/contents/vx.json", config.dump(2));
+  fm->ClearCache();
+  ASSERT_EQ(fm->UpdateFileAttachments("note.md", "[\"first.bin\",\"second.bin\"]"), VXCORE_OK);
+  const auto after = nlohmann::json::parse(manager_binary(config_path));
+  ASSERT_EQ(after["opaqueRoot"], config["opaqueRoot"]);
+  ASSERT_EQ(after["files"][0]["opaqueFile"], config["files"][0]["opaqueFile"]);
+  ASSERT_EQ(after["files"][1], unrelated);
+  ASSERT_EQ(after["files"][0]["attachments"], nlohmann::json({"first.bin", "second.bin"}));
+  notebook.reset();
+  cleanup_test_dir(path);
+  return 0;
+}
+
+int test_index_children_bulk_preserves_binary_sources_and_store() {
+  const auto path = get_test_path("test_fm_bulk_index_children");
+  cleanup_test_dir(path);
+  auto notebook = create_test_notebook(path);
+  ASSERT_NOT_NULL(notebook.get());
+  auto *fm = dynamic_cast<BundledFolderManager *>(notebook->GetFolderManager());
+  ASSERT_NOT_NULL(fm);
+  nlohmann::json names = nlohmann::json::array();
+  for (int i = 0; i < 10000; ++i) {
+    const auto name = std::string("entry-") + std::to_string(i) + ".bin";
+    names.push_back(name);
+    write_file(path + "/" + name, std::string("\0\xff", 2) + std::to_string(i) + "\r\n");
+  }
+  ASSERT_EQ(fm->IndexChildren(".", names.dump()), VXCORE_OK);
+  std::string json;
+  ASSERT_EQ(fm->GetFolderConfig(".", json), VXCORE_OK);
+  const auto config = nlohmann::json::parse(json);
+  ASSERT_EQ(config["files"].size(), size_t(10000));
+  std::unordered_set<std::string> ids;
+  std::unordered_set<std::string> indexed;
+  auto *store = notebook->GetMetadataStore();
+  ASSERT_NOT_NULL(store);
+  for (const auto &file : config["files"]) {
+    const auto id = file["id"].get<std::string>();
+    const auto name = file["name"].get<std::string>();
+    ASSERT_TRUE(!id.empty() && ids.insert(id).second);
+    ASSERT_TRUE(indexed.insert(name).second);
+    const auto stored = store->GetFile(id);
+    ASSERT_TRUE(stored.has_value());
+    ASSERT_EQ(stored->name, name);
+  }
+  for (int i = 0; i < 10000; ++i) {
+    const auto name = std::string("entry-") + std::to_string(i) + ".bin";
+    ASSERT_TRUE(indexed.count(name) != 0);
+    ASSERT_EQ(manager_binary(utf8_to_fs_path(path + "/" + name)),
+              std::string("\0\xff", 2) + std::to_string(i) + "\r\n");
+  }
+  ASSERT_EQ(nlohmann::json::parse(manager_binary(utf8_to_fs_path(path + "/vx_notebook/contents/vx.json"))), config);
+  notebook.reset();
+  cleanup_test_dir(path);
+  return 0;
+}
+
+int test_index_children_rejects_aliases_and_foreign_configs() {
+  const auto path = get_test_path("test_fm_index_children_ownership");
+  cleanup_test_dir(path);
+  auto notebook = create_test_notebook(path);
+  ASSERT_NOT_NULL(notebook.get());
+  auto *fm = dynamic_cast<BundledFolderManager *>(notebook->GetFolderManager());
+  ASSERT_NOT_NULL(fm);
+  create_directory(path + "/Folder");
+  write_file(path + "/Folder/opaque.bin", std::string("\0\xfe\r\n", 4));
+  const auto config_path = utf8_to_fs_path(path + "/vx_notebook/contents/vx.json");
+  const auto before = manager_binary(config_path);
+  ASSERT_NE(fm->IndexChildren(".", "[\"Folder\",\"missing.md\"]"), VXCORE_OK);
+  ASSERT_FALSE(path_exists(path + "/vx_notebook/contents/Folder"));
+  ASSERT_EQ(manager_binary(config_path), before);
+  create_directory(path + "/vx_notebook/contents/Folder");
+  write_file(path + "/vx_notebook/contents/Folder/vx.json", "foreign orphan");
+  ASSERT_NE(fm->IndexChildren(".", "[\"Folder\"]"), VXCORE_OK);
+  ASSERT_EQ(manager_binary(utf8_to_fs_path(path + "/vx_notebook/contents/Folder/vx.json")), "foreign orphan");
+  ASSERT_EQ(manager_binary(config_path), before);
+  std::filesystem::remove_all(utf8_to_fs_path(path + "/vx_notebook/contents/Folder"));
+  write_file(path + "/one.bin", "hardlinked bytes");
+  std::error_code ec;
+  std::filesystem::create_hard_link(utf8_to_fs_path(path + "/one.bin"), utf8_to_fs_path(path + "/two.bin"), ec);
+  ASSERT_FALSE(bool(ec));
+  ASSERT_NE(fm->IndexChildren(".", "[\"Folder\",\"one.bin\",\"two.bin\"]"), VXCORE_OK);
+  ASSERT_FALSE(path_exists(path + "/vx_notebook/contents/Folder"));
+  ASSERT_EQ(manager_binary(config_path), before);
+  ASSERT_EQ(fm->IndexChildren(".", "[\"Folder\"]"), VXCORE_OK);
+  ASSERT_EQ(manager_binary(utf8_to_fs_path(path + "/Folder/opaque.bin")), std::string("\0\xfe\r\n", 4));
+  const auto child = nlohmann::json::parse(manager_binary(utf8_to_fs_path(path + "/vx_notebook/contents/Folder/vx.json")));
+  ASSERT_TRUE(child["files"].empty());
+  ASSERT_TRUE(child["folders"].empty());
+  write_file(path + "/vx.json", "opaque source bytes, not metadata");
+  ASSERT_EQ(fm->IndexChildren(".", "[\"vx.json\"]"), VXCORE_OK);
+  ASSERT_EQ(manager_binary(utf8_to_fs_path(path + "/vx.json")), "opaque source bytes, not metadata");
+  notebook.reset();
+  cleanup_test_dir(path);
+  return 0;
+}
+
+int test_index_children_failed_parent_publication_cleans_owned_configs() {
+#ifdef _WIN32
+  const auto path = get_test_path("test_fm_index_children_retry");
+  cleanup_test_dir(path);
+  auto notebook = create_test_notebook(path);
+  ASSERT_NOT_NULL(notebook.get());
+  auto *fm = dynamic_cast<BundledFolderManager *>(notebook->GetFolderManager());
+  ASSERT_NOT_NULL(fm);
+  create_directory(path + "/Folder");
+  write_file(path + "/Folder/opaque.bin", "unchanged");
+  const auto config_path = utf8_to_fs_path(path + "/vx_notebook/contents/vx.json");
+  const auto before = manager_binary(config_path);
+  const DWORD attributes = GetFileAttributesW(config_path.c_str());
+  ASSERT_TRUE(attributes != INVALID_FILE_ATTRIBUTES);
+  ASSERT_TRUE(SetFileAttributesW(config_path.c_str(), attributes | FILE_ATTRIBUTE_READONLY) != 0);
+  const auto error = fm->IndexChildren(".", "[\"Folder\"]");
+  ASSERT_TRUE(SetFileAttributesW(config_path.c_str(), attributes) != 0);
+  ASSERT_NE(error, VXCORE_OK);
+  ASSERT_EQ(manager_binary(config_path), before);
+  ASSERT_FALSE(path_exists(path + "/vx_notebook/contents/Folder"));
+  ASSERT_EQ(manager_binary(utf8_to_fs_path(path + "/Folder/opaque.bin")), "unchanged");
+  ASSERT_EQ(fm->IndexChildren(".", "[\"Folder\"]"), VXCORE_OK);
+  ASSERT_TRUE(path_exists(path + "/vx_notebook/contents/Folder/vx.json"));
+  notebook.reset();
+  cleanup_test_dir(path);
+#endif
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder manager attachment tests..." << std::endl;
 
@@ -363,6 +553,11 @@ int main() {
   RUN_TEST(test_folder_manager_attachment_nested_file);
   RUN_TEST(test_folder_manager_update_attachments);
   RUN_TEST(test_folder_manager_update_attachments_invalid_json);
+  RUN_TEST(test_attachment_errors_reload_actual_metadata);
+  RUN_TEST(test_attachment_atomic_update_preserves_unrelated_json);
+  RUN_TEST(test_index_children_bulk_preserves_binary_sources_and_store);
+  RUN_TEST(test_index_children_rejects_aliases_and_foreign_configs);
+  RUN_TEST(test_index_children_failed_parent_publication_cleans_owned_configs);
 
   std::cout << "All folder manager attachment tests passed!" << std::endl;
   return 0;

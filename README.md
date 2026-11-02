@@ -78,7 +78,8 @@ CMake selects exactly one `SaveBufferFileContent` implementation by **target**:
   in-place writer from `c3319ca`, including stream-size checks and error mapping.
   Hardlink/symlink identity and writable handles that deny deletion keep their
   existing behavior. No Windows DACL modification or recovery-directory protocol
-  is added. Generic `AtomicFileWriter` retains its pre-mobile implementation.
+  is added. Generic `AtomicFileWriter::Commit()` retains its replacing behavior;
+  the explicit `CommitNoReplace()` path is separate.
 - Android/iOS: `src/mobile/buffer_file_save_mobile.cpp` uses the POSIX-only
   `MobileFileWriter`. It writes bytes directly to an exclusive sibling, flushes
   the file, checks destination identity/type/mode, preserves mode bits, renames,
@@ -93,6 +94,76 @@ behavior still require device verification. Encrypted providers keep their exist
 persistence path. No text decoding or EOL conversion occurs in either ordinary
 writer. Neither desktop host tests nor file flushing establishes power-loss safety,
 unsaved-draft journaling or startup recovery.
+
+### Prepared cohort import and metadata-only indexing
+
+`vxcore_folder_index_children(context, notebook_id, parent_path, names_json)`
+indexes an explicit batch of existing immediate children without copying,
+decoding, renaming or rewriting their bytes. The JSON input is bounded to 8 MiB
+and 10,000 names; core generates the new IDs and atomically publishes the parent
+once. It does not recursively filter hidden or unsupported files. All input names,
+types, aliases and metadata collisions are checked before publication. Failed
+prepublication work removes only newly created, still-owned child metadata;
+postpublication/store errors require inspecting actual state before retrying.
+Read-only refusal precedes unsupported raw-notebook refusal. This is a private
+construction primitive, not a replacement for the final cohort transaction.
+
+`vxcore_folder_attach_imported` publishes already-final content/metadata and IDs
+from an ordinary immediate child of this notebook's `vx_notebook/vx_import`
+directory on the same filesystem. New schema-2 journals retain bounded binary
+before/after parent images and directory identities. No-replace moves prevent
+colliding targets from being overwritten. Parent replacement remains the commit
+point, but an error does not prove rollback: recovery checks actual parent/root
+identity and authoritative reachability, including a later rename or edit.
+
+Recovery never restores old parent bytes over newer edits, removes foreign trees,
+or deletes an unreadable journal to force the notebook open. Proven uncommitted
+ownership permits rollback; ambiguity and incomplete rollback remain errors with
+the journal retained. Proven-committed cleanup may remain safe residue without
+making the notebook unopenable. Durable committed receipts do not replay content
+after later deletion. Recovery repairs affected derived-store state itself.
+Legacy journals are accepted only when ownership/commit is provable; uncommitted
+legacy targets without recorded identity can require explicit recovery rather
+than unsafe automatic deletion. Journal limits are depth 64, 100,000 IDs, 8 MiB
+per parent image and 64 MiB total serialized bytes.
+
+### Asset and attachment publication
+
+Asset insertion now writes a complete temporary sibling and explicitly publishes
+without replacement. File sources stream in bounded chunks; unique filename
+selection remains, but a lost publication race fails rather than overwriting.
+Write/file-flush/close failures do not publish; a parent-directory flush failure
+after publication retains the complete file for reconciliation.
+
+Attachment membership updates publish folder metadata atomically and keep caches
+consistent with disk after errors. Insert retains complete unindexed bytes if
+metadata publication fails. Delete stops before removing bytes when untracking
+fails. Rename keeps collision suffix behavior, uses a no-replace move, performs one
+membership replacement, and reports metadata errors instead of false success.
+Rename/remove do not rewrite note links. Physical removal still prefers recycling
+and may fall back to permanent deletion; callers must disclose that choice.
+
+These are safer primitives, not an atomic multi-step attachment transaction.
+Callers must retain intent/source and reconcile physical bytes plus membership
+before retrying an ambiguous mutation. Protected note bodies are not decrypted by
+these resource operations. The existing replacing writer and ordinary desktop
+note-body save policy are unchanged. Windows checks file flush and WRITE_THROUGH;
+POSIX directory fsync and platform-specific no-replace calls require their own
+runtime evidence. No file test establishes physical power-loss safety.
+
+An isolated ordinary Windows SDK smoke batch-indexed 10,000 Unicode Markdown
+files, attached the resulting cohort, reopened with all 10,002 cohort IDs intact,
+and preserved every source byte. It also reconciled an induced attachment
+metadata failure and a stale legacy post-commit journal. This is API/storage
+proof, not a mobile UI or performance guarantee.
+
+Affected Windows suites (import bundle, folder manager, utilities, buffer, folder,
+desktop/read-only saves and node transfer) passed. Linux exercised utilities,
+import recovery, batch/folder metadata and unchanged desktop saves. Android API-28
+x86_64 binaries ran on the emulator for mobile buffer/asset publication, import
+recovery and filesystem primitives. Android policy refused hardlink/FIFO fixture
+creation, so those Android fixture cases are not claimed; Linux exercised the
+special-file guards. iOS and physical power-loss remain unverified.
 
 ### Unified Node API
 

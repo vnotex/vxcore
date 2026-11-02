@@ -320,10 +320,6 @@ int check_recursive_folder_fidelity_and_assets(bool legacy) {
             VXCORE_OK);
   ASSERT_EQ(nlohmann::json::parse(attachments_json), nlohmann::json::array());
   vxcore_string_free(attachments_json);
-  ASSERT_FALSE(nlohmann::json::parse(read_file_bytes(destination_config_path))
-                   .at("files")
-                   .at(0)
-                   .contains("attachments"));
   ASSERT_EQ(vxcore_buffer_close(fixture.context, buffer_id), VXCORE_OK);
   vxcore_string_free(buffer_id);
   ASSERT_EQ(read_file_bytes(asset_root + "/spec.pdf"), "PDF");

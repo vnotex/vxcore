@@ -2,6 +2,7 @@
 #define VXCORE_FILE_UTILS_H
 
 #include <cstdio>
+#include <cstdint>
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -83,6 +84,26 @@ ReparseState CheckReparsePoint(const std::string &path);
 // Never follows the link. Returns |on_error| if the path cannot be stat'ed.
 bool IsReparsePoint(const std::string &path, bool on_error);
 
+// No-follow identity of an ordinary file or directory. Parent traversal remains
+// the caller's responsibility. Link counts may change without changing identity.
+struct FileIdentity {
+  uint64_t device = 0, low = 0, high = 0, links = 0;
+  bool directory = false;
+  bool SameObject(const FileIdentity &other) const noexcept;
+};
+
+// Resets the output on failure; rejects reparse points, symlinks and special files.
+VxCoreError GetFileIdentity(const std::filesystem::path &path, FileIdentity &out) noexcept;
+
+// One same-volume atomic attempt; never replaces a destination or copies bytes.
+// Callers own any bounded Windows sharing-violation retry policy.
+VxCoreError RenameNoReplace(const std::filesystem::path &from, const std::filesystem::path &to);
+
+// POSIX checks directory fsync and close. Windows only verifies an ordinary
+// directory: durability relies on checked file flushes and WRITE_THROUGH moves,
+// not an unsupported directory-fsync/power-loss guarantee.
+VxCoreError FlushDirectory(const std::filesystem::path &path);
+
 // True if |path| is |root| itself or lies under it.
 // BOTH sides are canonicalized before comparing. Canonicalizing only one side
 // makes the check silently pass whenever the two spellings of the same location
@@ -133,6 +154,9 @@ class AtomicFileWriter final {
   VxCoreError Open();
   VxCoreError Write(const void *data, size_t size);
   VxCoreError Commit();
+  // Publishes only to an absent destination. A post-publication directory-flush
+  // error retains the complete destination for reconciliation, including on destruction.
+  VxCoreError CommitNoReplace();
 
  private:
   std::filesystem::path path_;

@@ -1,3 +1,4 @@
+#include <cerrno>
 #include <chrono>
 #include <iterator>
 #include <nlohmann/json.hpp>
@@ -230,12 +231,80 @@ int test_links_and_nonregular_targets_are_rejected() {
   ASSERT_TRUE(ReadBytes(target) == old_bytes);
   ASSERT_FALSE(HasTemporarySibling(fixture.NotePath()));
   fs::remove(fixture.NotePath());
-  ASSERT_EQ(::mkfifo(fixture.NotePath().c_str(), 0600), 0);
-  ASSERT_EQ(vxcore_buffer_save(fixture.context, fixture.buffer.value), VXCORE_ERR_IO);
-  ASSERT_TRUE(fs::is_fifo(fixture.NotePath()));
-  fs::remove(fixture.NotePath());
+  const int fifo_result = ::mkfifo(fixture.NotePath().c_str(), 0600);
+#ifdef __ANDROID__
+  if (fifo_result != 0 && (errno == EACCES || errno == EPERM)) {
+    std::cout << "FIFO fixture unavailable under Android policy" << '\n';
+  } else
+#endif
+  {
+    ASSERT_EQ(fifo_result, 0);
+    ASSERT_EQ(vxcore_buffer_save(fixture.context, fixture.buffer.value), VXCORE_ERR_IO);
+    ASSERT_TRUE(fs::is_fifo(fixture.NotePath()));
+    fs::remove(fixture.NotePath());
+  }
   fs::rename(target, fixture.NotePath());
   ASSERT_EQ(vxcore_buffer_save(fixture.context, fixture.buffer.value), VXCORE_OK);
+  return 0;
+}
+
+int test_asset_publication_preserves_bytes_and_names() {
+  Fixture fixture("asset-publication");
+  ASSERT_EQ(fixture.Initialize(), 0);
+  const auto notebook_root = fixture.NotePath().parent_path();
+  const auto note_before = ReadBytes(fixture.NotePath());
+  const std::vector<uint8_t> first{0, 0xff, '\r', '\n', 0x80, 'a'};
+  const std::vector<uint8_t> second{0x80, 0, 'b'};
+  CoreString raw_first, raw_second, empty;
+  ASSERT_EQ(vxcore_buffer_insert_asset_raw(fixture.context, fixture.buffer.value,
+      "raw.bin", first.data(), first.size(), &raw_first.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_buffer_insert_asset_raw(fixture.context, fixture.buffer.value,
+      "raw.bin", second.data(), second.size(), &raw_second.value), VXCORE_OK);
+  ASSERT_EQ(utf8_to_fs_path(raw_first.value).filename(), fs::path("raw.bin"));
+  ASSERT_EQ(utf8_to_fs_path(raw_second.value).filename(), fs::path("raw_1.bin"));
+  ASSERT_TRUE(ReadBytes(notebook_root / utf8_to_fs_path(raw_first.value)) == first);
+  ASSERT_TRUE(ReadBytes(notebook_root / utf8_to_fs_path(raw_second.value)) == second);
+  ASSERT_EQ(vxcore_buffer_insert_asset_raw(fixture.context, fixture.buffer.value,
+      "empty.bin", first.data(), 0, &empty.value), VXCORE_OK);
+  ASSERT_TRUE(ReadBytes(notebook_root / utf8_to_fs_path(empty.value)).empty());
+
+  // File input crosses multiple bounded chunks without text decoding/newline conversion.
+  std::vector<uint8_t> source_bytes(2 * 64 * 1024 + 31);
+  for (size_t i = 0; i < source_bytes.size(); ++i) source_bytes[i] = static_cast<uint8_t>(i);
+  const auto source = fixture.leaf.path / "file.bin";
+  {
+    std::ofstream output(source, std::ios::binary);
+    output.write(reinterpret_cast<const char *>(source_bytes.data()), source_bytes.size());
+    output.close();
+    ASSERT_TRUE(output.good());
+  }
+  CoreString file_first, file_second;
+  ASSERT_EQ(vxcore_buffer_insert_asset(fixture.context, fixture.buffer.value,
+      fs_path_to_utf8(source).c_str(), &file_first.value), VXCORE_OK);
+  ASSERT_TRUE(ReadBytes(source) == source_bytes);
+  {
+    std::ofstream output(source, std::ios::binary);
+    output.write(reinterpret_cast<const char *>(second.data()), second.size());
+    output.close();
+    ASSERT_TRUE(output.good());
+  }
+  ASSERT_EQ(vxcore_buffer_insert_asset(fixture.context, fixture.buffer.value,
+      fs_path_to_utf8(source).c_str(), &file_second.value), VXCORE_OK);
+  ASSERT_EQ(utf8_to_fs_path(file_first.value).filename(), fs::path("file.bin"));
+  ASSERT_EQ(utf8_to_fs_path(file_second.value).filename(), fs::path("file_1.bin"));
+  ASSERT_TRUE(ReadBytes(notebook_root / utf8_to_fs_path(file_first.value)) == source_bytes);
+  ASSERT_TRUE(ReadBytes(notebook_root / utf8_to_fs_path(file_second.value)) == second);
+  ASSERT_TRUE(ReadBytes(source) == second);
+  ASSERT_FALSE(HasTemporarySibling(notebook_root / utf8_to_fs_path(raw_first.value)));
+  ASSERT_FALSE(HasTemporarySibling(notebook_root / utf8_to_fs_path(file_first.value)));
+  ASSERT_FALSE(HasTemporarySibling(notebook_root / utf8_to_fs_path(file_second.value)));
+  ASSERT_TRUE(ReadBytes(fixture.NotePath()) == note_before);
+  CoreString attachments;
+  ASSERT_EQ(vxcore_buffer_list_attachments(fixture.context, fixture.buffer.value, &attachments.value), VXCORE_OK);
+  ASSERT_EQ(nlohmann::json::parse(attachments.value), nlohmann::json::array());
+  ASSERT_EQ(vxcore_buffer_close(fixture.context, fixture.buffer.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_close(fixture.context, fixture.notebook.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_prepare_shutdown(fixture.context), VXCORE_OK);
   return 0;
 }
 
@@ -259,6 +328,7 @@ int main() {
   RUN_TEST(test_prepublication_error_keeps_old_bytes);
   RUN_TEST(test_readonly_failure_retains_dirty_buffer);
   RUN_TEST(test_links_and_nonregular_targets_are_rejected);
+  RUN_TEST(test_asset_publication_preserves_bytes_and_names);
   RUN_TEST(test_posix_permissions_survive);
   return 0;
 }
