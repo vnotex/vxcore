@@ -22,6 +22,11 @@
 #include <curl/curl.h>
 #include <sodium.h>
 
+#ifdef VXCORE_SYNC_TLS_OPENSSL
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+#endif
+
 #include "core/config_manager.h"
 #include "sync/sync_json_keys.h"
 #include "utils/file_utils.h"
@@ -282,11 +287,67 @@ long ParseStatus(std::string_view text) {
     return 0;
   return static_cast<long>(number);
 }
+#ifdef VXCORE_SYNC_TLS_OPENSSL
+int VerifyTlsPeer(X509_STORE_CTX *context, const char *host, const SyncTlsPolicy &policy) noexcept {
+  if (!context) return 0;
+  X509_STORE_CTX_set_error(context, X509_V_ERR_APPLICATION_VERIFICATION);
+  try {
+    if (!host || !*host || !policy.verifier) return 0;
+    constexpr size_t kCertificateLimit = 16;
+    constexpr size_t kDerLimit = 1024 * 1024;
+    std::array<X509 *, kCertificateLimit> certificates{};
+    certificates[0] = X509_STORE_CTX_get0_cert(context);
+    if (!certificates[0]) return 0;
+    size_t count = 1;
+    const auto *untrusted = X509_STORE_CTX_get0_untrusted(context);
+    const int supplied = untrusted ? sk_X509_num(untrusted) : 0;
+    for (int i = 0; i < supplied; ++i) {
+      auto *certificate = sk_X509_value(untrusted, i);
+      if (!certificate) return 0;
+      bool duplicate = false;
+      for (size_t j = 0; j < count; ++j) {
+        if (X509_cmp(certificate, certificates[j]) == 0) {
+          duplicate = true;
+          break;
+        }
+      }
+      if (duplicate) continue;
+      if (count == certificates.size()) return 0;
+      certificates[count++] = certificate;
+    }
+    std::array<uint64_t, kCertificateLimit> lengths{};
+    size_t total = 0;
+    for (size_t i = 0; i < count; ++i) {
+      const int length = i2d_X509(certificates[i], nullptr);
+      if (length <= 0 || static_cast<size_t>(length) > kDerLimit - total) return 0;
+      lengths[i] = static_cast<uint64_t>(length);
+      total += static_cast<size_t>(length);
+    }
+    // One bounded allocation; pointers stay valid only for the synchronous policy callback.
+    std::unique_ptr<uint8_t[]> encoded(new uint8_t[total]);
+    std::array<const uint8_t *, kCertificateLimit> der{};
+    auto *next = encoded.get();
+    for (size_t i = 0; i < count; ++i) {
+      der[i] = next;
+      if (i2d_X509(certificates[i], &next) != static_cast<int>(lengths[i])) return 0;
+    }
+    if (policy.verifier(host, der.data(), lengths.data(), static_cast<uint64_t>(count),
+                        policy.userdata) != VXCORE_OK)
+      return 0;
+    X509_STORE_CTX_set_error(context, X509_V_OK);
+    return 1;
+  } catch (...) {
+    // Neither foreign verifier exceptions nor allocation failures may cross an OpenSSL C frame.
+    return 0;
+  }
+}
+#endif
 }  // namespace sync_http
 
 struct SyncHttpClient::Impl {
-  explicit Impl(std::string url, const SyncCredentials &credentials, SyncCancellationPtr token)
-      : configured_url(std::move(url)), cancellation(std::move(token)) {
+  explicit Impl(std::string url, const SyncCredentials &credentials, SyncCancellationPtr token,
+                SyncTlsPolicy policy)
+      : configured_url(std::move(url)), cancellation(std::move(token)), tls_policy(policy) {
     if (!credentials.extra.is_null() && !credentials.extra.is_object()) credentials_valid = false;
     if (credentials.extra.is_object()) {
       for (const auto *key : {kJsonKeyUsername, kJsonKeyPassword}) {
@@ -313,6 +374,9 @@ struct SyncHttpClient::Impl {
   bool credentials_valid = true;
   sync_http::Url root;
   SyncCancellationPtr cancellation;
+  const SyncTlsPolicy tls_policy;
+  std::string tls_host;
+  bool tls_verified = false;
   std::function<void(uint64_t, uint64_t)> progress;
   CURL *easy = nullptr;
   CURLM *multi = nullptr;
@@ -329,6 +393,35 @@ struct SyncHttpClient::Impl {
   }
   bool Cancelled() const { return cancellation && cancellation->IsCancelled(); }
 
+#ifdef VXCORE_SYNC_TLS_OPENSSL
+  static int VerifyPeer(X509_STORE_CTX *context, void *userdata) noexcept {
+    auto &self = *static_cast<Impl *>(userdata);
+    self.tls_verified = false;
+    if (self.Cancelled()) {
+      X509_STORE_CTX_set_error(context, X509_V_ERR_APPLICATION_VERIFICATION);
+      return 0;
+    }
+    const int trusted = sync_http::VerifyTlsPeer(context, self.tls_host.c_str(), self.tls_policy);
+    if (!trusted || self.Cancelled()) {
+      X509_STORE_CTX_set_error(context, X509_V_ERR_APPLICATION_VERIFICATION);
+      return 0;
+    }
+    self.tls_verified = true;
+    return 1;
+  }
+
+  static CURLcode ConfigureTls(CURL *, void *context, void *userdata) noexcept {
+    if (!context || !userdata) return CURLE_SSL_CERTPROBLEM;
+    auto &self = *static_cast<Impl *>(userdata);
+    self.tls_verified = false;
+    if (!self.tls_policy.verifier || self.Cancelled()) return CURLE_SSL_CERTPROBLEM;
+    // Replace chain verification, rather than overriding the result of OpenSSL's CA verifier.
+    // curl retains mandatory peer verification and its independent hostname verification.
+    SSL_CTX_set_cert_verify_callback(static_cast<SSL_CTX *>(context), &VerifyPeer, &self);
+    return CURLE_OK;
+  }
+#endif
+
   struct Transfer {
     Impl *owner = nullptr;
     long status = 0;
@@ -342,6 +435,7 @@ struct SyncHttpClient::Impl {
     bool discard_limit = false;
     uint64_t content_length = 0, bytes = 0, upload_offset = 0, upload_size = 0;
     AtomicFileWriter *writer = nullptr;
+    std::optional<uint64_t> download_limit;
     std::ifstream *input = nullptr;
     crypto_hash_sha256_state hash{};
     Clock::time_point last_activity = Clock::now();
@@ -411,8 +505,10 @@ struct SyncHttpClient::Impl {
             return 0;
           }
           self.length_seen = true;
-          if (self.body_status && self.status == self.body_status &&
-              self.content_length > self.body_limit) {
+          if ((self.body_status && self.status == self.body_status &&
+               self.content_length > self.body_limit) ||
+              (self.writer && self.status == 200 && self.download_limit &&
+               self.content_length > *self.download_limit)) {
             self.error = VXCORE_ERR_INVALID_STATE;
             return 0;
           }
@@ -442,6 +538,11 @@ struct SyncHttpClient::Impl {
           self.body.append(data, length);
           self.bytes += length;
         } else if (self.writer && self.status == 200) {
+          if (length > std::numeric_limits<uint64_t>::max() - self.bytes ||
+              (self.download_limit && length > *self.download_limit - self.bytes)) {
+            self.error = VXCORE_ERR_INVALID_STATE;
+            return 0;
+          }
           for (size_t offset = 0; offset < length;) {
             if (self.owner->Cancelled()) {
               self.error = VXCORE_ERR_CANCELLED;
@@ -612,7 +713,21 @@ struct SyncHttpClient::Impl {
       HTTP_SET(CURLOPT_UNRESTRICTED_AUTH, 0L);
       HTTP_SET(CURLOPT_SSL_VERIFYPEER, 1L);
       HTTP_SET(CURLOPT_SSL_VERIFYHOST, 2L);
-      if (!ca_file.empty()) HTTP_SET(CURLOPT_CAINFO, ca_file.c_str());
+      if (tls_policy.verifier) {
+#ifdef VXCORE_SYNC_TLS_OPENSSL
+        HTTP_SET(CURLOPT_SSL_CTX_FUNCTION, &Impl::ConfigureTls);
+        HTTP_SET(CURLOPT_SSL_CTX_DATA, this);
+        // Resumed sessions must not bypass the operation-owned verifier on a new connection.
+        HTTP_SET(CURLOPT_SSL_SESSIONID_CACHE, 0L);
+        // Only a supported replacing policy may remove curl's conflicting CA locations.
+        HTTP_SET(CURLOPT_CAINFO, static_cast<const char *>(nullptr));
+        HTTP_SET(CURLOPT_CAPATH, static_cast<const char *>(nullptr));
+#else
+        return Finish(VXCORE_ERR_UNSUPPORTED);
+#endif
+      } else if (!ca_file.empty()) {
+        HTTP_SET(CURLOPT_CAINFO, ca_file.c_str());
+      }
       HTTP_SET(CURLOPT_CONNECTTIMEOUT_MS, 30000L);
       HTTP_SET(CURLOPT_TIMEOUT_MS, static_cast<long>(remaining.count()));
       HTTP_SET(CURLOPT_LOW_SPEED_LIMIT, 1L);
@@ -694,7 +809,8 @@ struct SyncHttpClient::Impl {
       if (transfer.error != VXCORE_OK)
         return Finish(transfer.error, transfer.discard_limit ? SyncHttpFailure::kDiscardLimit
                                                              : SyncHttpFailure::kNone);
-      if (!complete || result != CURLE_OK) return Finish(VXCORE_ERR_SYNC_NETWORK);
+      if (!complete || result != CURLE_OK || (tls_policy.verifier && !tls_verified))
+        return Finish(VXCORE_ERR_SYNC_NETWORK);
       if (transfer.status >= 300 && transfer.status < 400) {
         const char *reason = nullptr;
         sync_http::Url destination;
@@ -721,8 +837,9 @@ struct SyncHttpClient::Impl {
 };
 
 SyncHttpClient::SyncHttpClient(const std::string &collection_url,
-                               const SyncCredentials &credentials, SyncCancellationPtr cancellation)
-    : impl_(std::make_unique<Impl>(collection_url, credentials, std::move(cancellation))) {}
+                               const SyncCredentials &credentials, SyncCancellationPtr cancellation,
+                               SyncTlsPolicy tls_policy)
+    : impl_(std::make_unique<Impl>(collection_url, credentials, std::move(cancellation), tls_policy)) {}
 SyncHttpClient::~SyncHttpClient() = default;
 const std::string &SyncHttpClient::CanonicalRoot() const { return impl_->canonical_root; }
 const sync_http::Url &SyncHttpClient::Root() const { return impl_->root; }
@@ -745,7 +862,7 @@ VxCoreError SyncHttpClient::Initialize() {
     return impl_->Finish(VXCORE_ERR_INVALID_PARAM);
   if (impl_->root.path.back() != '/') impl_->root.path += '/';
   impl_->canonical_root = impl_->root.String();
-  if (ConfigManager::IsTestMode()) {
+  if (!impl_->tls_policy.verifier && ConfigManager::IsTestMode()) {
     const char *ca = std::getenv("VXCORE_WEBDAV_TEST_CA_FILE");
     if (ca) impl_->ca_file = ca;
   }
@@ -754,6 +871,21 @@ VxCoreError SyncHttpClient::Initialize() {
         VXCORE_ERR_UNSUPPORTED, SyncHttpFailure::kLibrariesUnavailable,
         "HTTP synchronization requires libcurl 7.64 or newer with asynchronous DNS and "
         "initialized cryptographic support. Check the application build.");
+  if (impl_->tls_policy.verifier) {
+    if (impl_->root.scheme != "https") return impl_->Finish(VXCORE_ERR_INVALID_PARAM);
+    bool supported = false;
+#ifdef VXCORE_SYNC_TLS_OPENSSL
+    const auto *version = curl_version_info(CURLVERSION_NOW);
+    supported = version && version->ssl_version &&
+                std::strncmp(version->ssl_version, "OpenSSL/", 8) == 0;
+#endif
+    if (!supported)
+      return impl_->Finish(VXCORE_ERR_UNSUPPORTED, SyncHttpFailure::kOptionUnavailable,
+                           "custom TLS verification requires the OpenSSL HTTP backend.");
+    impl_->tls_host = impl_->root.host;
+    if (impl_->tls_host.front() == '[' && impl_->tls_host.back() == ']')
+      impl_->tls_host = impl_->tls_host.substr(1, impl_->tls_host.size() - 2);
+  }
   if (!impl_->easy) impl_->easy = curl_easy_init();
   if (!impl_->multi) impl_->multi = curl_multi_init();
   return impl_->Finish(impl_->easy && impl_->multi ? VXCORE_OK : VXCORE_ERR_OUT_OF_MEMORY);
@@ -773,7 +905,8 @@ VxCoreError SyncHttpClient::Request(const char *method, const std::string &path,
   for (const auto &header : headers)
     if (header.find_first_of("\r\n") != std::string::npos || header.find('\0') != std::string::npos)
       return impl_->Finish(VXCORE_ERR_INVALID_PARAM);
-  if ((request.writer && (request.body_status || request.input || verb != "GET")) ||
+  if ((request.download_limit && !request.writer) ||
+      (request.writer && (request.body_status || request.input || verb != "GET")) ||
       (request.input && (read || request.body.data())) ||
       request.body.size() > static_cast<uint64_t>(std::numeric_limits<curl_off_t>::max()))
     return impl_->Finish(VXCORE_ERR_INVALID_PARAM);
@@ -791,6 +924,7 @@ VxCoreError SyncHttpClient::Request(const char *method, const std::string &path,
   transfer.body_status = request.body_status;
   transfer.body_limit = request.body_limit;
   transfer.writer = request.writer;
+  transfer.download_limit = request.download_limit;
   transfer.input = request.input;
   transfer.upload_offset = request.upload_offset;
   transfer.upload_size = request.upload_size;

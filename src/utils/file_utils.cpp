@@ -13,6 +13,7 @@
 #include <fstream>
 #include <new>
 #include <sstream>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -29,6 +30,7 @@
 #endif
 
 #if !defined(_WIN32)
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -139,8 +141,515 @@ int64_t FileTimeToUnixMillis(const FILETIME &ft) {
 #endif
 }  // namespace
 
+namespace {
+using FsPath = std::filesystem::path;
+using PathView = std::basic_string_view<FsPath::value_type>;
+
+[[noreturn]] void PrivateFailure(std::error_code error) {
+  // Never attach paths: these exceptions can cross credential/state boundaries.
+  throw std::filesystem::filesystem_error("Private filesystem operation failed", error);
+}
+[[noreturn]] void PrivateFailure(std::errc error) {
+  PrivateFailure(std::make_error_code(error));
+}
+
+bool PrivateSeparator(FsPath::value_type ch) {
+#ifdef _WIN32
+  return ch == L'/' || ch == L'\\';
+#else
+  return ch == '/';
+#endif
+}
+
+void ValidatePrivateComponent(PathView part) {
+  if (part.empty() || (part.size() == 1 && part[0] == '.') ||
+      (part.size() == 2 && part[0] == '.' && part[1] == '.')) {
+    PrivateFailure(std::errc::invalid_argument);
+  }
+  for (size_t i = 0; i < part.size(); ++i) {
+    const auto ch = part[i];
+    if (ch == 0 || ch == ':' || ch == '\\' || ch == '/') {
+      PrivateFailure(std::errc::invalid_argument);
+    }
+#ifdef _WIN32
+    if (ch < 32 || ch == L'<' || ch == L'>' || ch == L'"' || ch == L'|' ||
+        ch == L'?' || ch == L'*') {
+      PrivateFailure(std::errc::invalid_argument);
+    }
+    if (ch >= 0xd800 && ch <= 0xdbff) {
+      if (++i == part.size() || part[i] < 0xdc00 || part[i] > 0xdfff) {
+        PrivateFailure(std::errc::invalid_argument);
+      }
+    } else if (ch >= 0xdc00 && ch <= 0xdfff) {
+      PrivateFailure(std::errc::invalid_argument);
+    }
+#endif
+  }
+#ifdef _WIN32
+  if (part.size() > 255 || part.back() == L'.' || part.back() == L' ') {
+    PrivateFailure(std::errc::invalid_argument);
+  }
+  auto stem = part.substr(0, part.find(L'.'));
+  while (!stem.empty() && stem.back() == L' ') stem.remove_suffix(1);
+  const auto equals_ascii = [](PathView value, std::wstring_view name) {
+    if (value.size() != name.size()) return false;
+    for (size_t i = 0; i < value.size(); ++i) {
+      auto ch = value[i];
+      if (ch >= L'a' && ch <= L'z') ch -= L'a' - L'A';
+      if (ch != name[i]) return false;
+    }
+    return true;
+  };
+  if (equals_ascii(stem, L"CON") || equals_ascii(stem, L"PRN") ||
+      equals_ascii(stem, L"AUX") || equals_ascii(stem, L"NUL") ||
+      equals_ascii(stem, L"CONIN$") || equals_ascii(stem, L"CONOUT$") ||
+      equals_ascii(stem, L"CLOCK$") ||
+      (stem.size() == 4 &&
+       (equals_ascii(stem.substr(0, 3), L"COM") || equals_ascii(stem.substr(0, 3), L"LPT")) &&
+       ((stem[3] >= L'1' && stem[3] <= L'9') || stem[3] == 0xb9 ||
+        stem[3] == 0xb2 || stem[3] == 0xb3))) {
+    PrivateFailure(std::errc::invalid_argument);
+  }
+#endif
+}
+
+// Returns the end of the logical physical root (drive root or complete UNC share).
+// Work on the original native string: filesystem iterators can hide empty components.
+size_t ValidatePrivateSpelling(const FsPath &path) {
+  const PathView value(path.native());
+  size_t root_end = 0;
+#ifdef _WIN32
+  if (value.size() >= 3 &&
+      ((value[0] >= L'A' && value[0] <= L'Z') || (value[0] >= L'a' && value[0] <= L'z')) &&
+      value[1] == L':' && PrivateSeparator(value[2])) {
+    root_end = 3;
+  } else if (value.size() >= 5 && PrivateSeparator(value[0]) && PrivateSeparator(value[1])) {
+    size_t server_end = 2;
+    while (server_end < value.size() && !PrivateSeparator(value[server_end])) ++server_end;
+    ValidatePrivateComponent(value.substr(2, server_end - 2));
+    if (server_end == value.size()) PrivateFailure(std::errc::invalid_argument);
+    root_end = server_end + 1;
+    while (root_end < value.size() && !PrivateSeparator(value[root_end])) ++root_end;
+    ValidatePrivateComponent(value.substr(server_end + 1, root_end - server_end - 1));
+    if (root_end < value.size()) ++root_end;
+  } else {
+    PrivateFailure(std::errc::invalid_argument);
+  }
+#else
+  if (value.empty() || value.front() != '/') PrivateFailure(std::errc::invalid_argument);
+  root_end = 1;
+#endif
+  for (size_t start = root_end; start < value.size();) {
+    size_t end = start;
+    while (end < value.size() && !PrivateSeparator(value[end])) ++end;
+    ValidatePrivateComponent(value.substr(start, end - start));
+    if (end == value.size()) break;
+    start = end + 1;
+    if (start == value.size()) PrivateFailure(std::errc::invalid_argument);
+  }
+  return root_end;
+}
+
+VxCoreError PrivateMappedError(const std::error_code &error) {
+#ifdef _WIN32
+  SetLastError(error.category() == std::system_category() ? static_cast<DWORD>(error.value()) :
+               error == std::errc::invalid_argument ? ERROR_INVALID_PARAMETER :
+               error == std::errc::not_enough_memory ? ERROR_NOT_ENOUGH_MEMORY : ERROR_INVALID_DATA);
+#endif
+  if (error == std::errc::not_enough_memory) return VXCORE_ERR_OUT_OF_MEMORY;
+  return error == std::errc::invalid_argument ? VXCORE_ERR_INVALID_PARAM : VXCORE_ERR_IO;
+}
+
+struct PrivateNode {
+  private_io::PathStatus status;
+  bool reparse = false;
+#ifdef _WIN32
+  BY_HANDLE_FILE_INFORMATION info{};
+  FILE_ID_INFO id{};
+#else
+  struct stat info{};
+#endif
+};
+
+// The caller checked the ancestors. The final object itself is opened/stat'ed
+// without following it, using exactly the spelling used by every private open.
+PrivateNode ProbePrivateNode(const FsPath &path, bool identity = false) {
+  PrivateNode node;
+  const NativePathArgument argument(path, FileAccess::kPrivate);
+#ifdef _WIN32
+  HANDLE handle = CreateFileW(argument.c_str(), FILE_READ_ATTRIBUTES,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                              OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                              nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    const DWORD error = GetLastError();
+    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return node;
+    PrivateFailure(std::error_code(static_cast<int>(error), std::system_category()));
+  }
+  DWORD error = ERROR_SUCCESS;
+  if (!GetFileInformationByHandle(handle, &node.info)) error = GetLastError();
+  else if (GetFileType(handle) != FILE_TYPE_DISK ||
+           (node.info.dwFileAttributes & FILE_ATTRIBUTE_DEVICE) != 0) error = ERROR_INVALID_DATA;
+  else if (identity && !GetFileInformationByHandleEx(handle, FileIdInfo, &node.id, sizeof(node.id))) {
+    error = GetLastError();
+  }
+  if (!CloseHandle(handle) && error == ERROR_SUCCESS) error = GetLastError();
+  if (error != ERROR_SUCCESS) {
+    PrivateFailure(std::error_code(static_cast<int>(error), std::system_category()));
+  }
+  node.reparse = (node.info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+  node.status.directory = (node.info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+  node.status.regular = !node.status.directory;
+  node.status.size = (static_cast<uint64_t>(node.info.nFileSizeHigh) << 32) | node.info.nFileSizeLow;
+  node.status.modified = (static_cast<uint64_t>(node.info.ftLastWriteTime.dwHighDateTime) << 32) |
+                         node.info.ftLastWriteTime.dwLowDateTime;
+#else
+  (void)identity;
+  if (::lstat(argument.c_str(), &node.info) != 0) {
+    const int error = errno;
+    if (error == ENOENT) return node;
+    PrivateFailure(std::error_code(error, std::generic_category()));
+  }
+  node.reparse = S_ISLNK(node.info.st_mode);
+  node.status.directory = S_ISDIR(node.info.st_mode);
+  node.status.regular = S_ISREG(node.info.st_mode);
+  if (!node.reparse && !node.status.directory && !node.status.regular) {
+    PrivateFailure(std::errc::operation_not_supported);
+  }
+  node.status.size = static_cast<uint64_t>(node.info.st_size);
+#ifdef __APPLE__
+  node.status.modified = static_cast<uint64_t>(node.info.st_mtimespec.tv_sec) * 1000000000ULL +
+                         static_cast<uint64_t>(node.info.st_mtimespec.tv_nsec);
+#else
+  node.status.modified = static_cast<uint64_t>(node.info.st_mtim.tv_sec) * 1000000000ULL +
+                         static_cast<uint64_t>(node.info.st_mtim.tv_nsec);
+#endif
+#endif
+  node.status.exists = true;
+  return node;
+}
+
+void RequireOrdinary(const PrivateNode &node) {
+  if (node.reparse) PrivateFailure(std::errc::too_many_symbolic_link_levels);
+}
+
+FileIdentity PrivateIdentity(const PrivateNode &node) {
+  FileIdentity identity;
+  if (!node.status.exists) PrivateFailure(std::errc::no_such_file_or_directory);
+  RequireOrdinary(node);
+#ifdef _WIN32
+  identity.device = node.id.VolumeSerialNumber;
+  std::memcpy(&identity.low, node.id.FileId.Identifier, sizeof(identity.low));
+  std::memcpy(&identity.high, node.id.FileId.Identifier + sizeof(identity.low), sizeof(identity.high));
+  identity.links = node.info.nNumberOfLinks;
+#else
+  identity.device = static_cast<uint64_t>(node.info.st_dev);
+  identity.low = static_cast<uint64_t>(node.info.st_ino);
+  identity.links = static_cast<uint64_t>(node.info.st_nlink);
+#endif
+  identity.directory = node.status.directory;
+  if (identity.device == 0 || (identity.low == 0 && identity.high == 0) || identity.links == 0) {
+    PrivateFailure(std::errc::io_error);
+  }
+  return identity;
+}
+
+FileIdentity PrivateOpenFileIdentity(int fd) {
+  PrivateNode node;
+#ifdef _WIN32
+  const auto handle = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+  if (handle == INVALID_HANDLE_VALUE || GetFileType(handle) != FILE_TYPE_DISK) {
+    PrivateFailure(std::errc::io_error);
+  }
+  if (!GetFileInformationByHandle(handle, &node.info) ||
+      !GetFileInformationByHandleEx(handle, FileIdInfo, &node.id, sizeof(node.id))) {
+    PrivateFailure(std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+  }
+  if ((node.info.dwFileAttributes &
+       (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+    PrivateFailure(std::errc::io_error);
+  }
+#else
+  if (::fstat(fd, &node.info) != 0) PrivateFailure(std::error_code(errno, std::generic_category()));
+  if (!S_ISREG(node.info.st_mode)) PrivateFailure(std::errc::io_error);
+#endif
+  node.status.exists = node.status.regular = true;
+  return PrivateIdentity(node);
+}
+
+bool CreatePrivateLeaf(const FsPath &path) {
+  const NativePathArgument argument(path, FileAccess::kPrivate);
+#ifdef _WIN32
+  if (CreateDirectoryW(argument.c_str(), nullptr)) return true;
+  const DWORD error = GetLastError();
+  if (error != ERROR_ALREADY_EXISTS && error != ERROR_FILE_EXISTS) {
+    PrivateFailure(std::error_code(static_cast<int>(error), std::system_category()));
+  }
+#else
+  if (::mkdir(argument.c_str(), S_IRWXU) == 0) return true;
+  const int error = errno;
+  if (error != EEXIST) PrivateFailure(std::error_code(error, std::generic_category()));
+#endif
+  return false;
+}
+
+PrivateNode WalkPrivatePath(const FsPath &path, bool create = false,
+                            bool allow_final_reparse = false, bool identity = false) {
+  const size_t root_end = ValidatePrivateSpelling(path);
+  const auto &value = path.native();
+  size_t end = root_end;
+  FsPath component;
+  for (;;) {
+    component = FsPath(value.substr(0, end));
+    auto node = ProbePrivateNode(component, identity && end == value.size());
+    if (!node.status.exists && create && end != root_end) {
+      CreatePrivateLeaf(component);
+      node = ProbePrivateNode(component);
+      if (!node.status.exists) PrivateFailure(std::errc::no_such_file_or_directory);
+    }
+    if (!node.status.exists) return node;
+    if (!allow_final_reparse || end != value.size()) RequireOrdinary(node);
+    if (end == value.size()) {
+      if (create && !node.status.directory) PrivateFailure(std::errc::not_a_directory);
+      return node;
+    }
+    if (!node.status.directory) PrivateFailure(std::errc::not_a_directory);
+    if (end != root_end) ++end;
+    while (end < value.size() && !PrivateSeparator(value[end])) ++end;
+  }
+}
+}  // namespace
+
+NativePathArgument::NativePathArgument(const std::filesystem::path &path, FileAccess access)
+    : borrowed_(path.c_str()) {
+  if (access != FileAccess::kPrivate) return;
+  ValidatePrivateSpelling(path);
+#ifdef _WIN32
+  const auto &logical = path.native();
+  const bool unc = PrivateSeparator(logical[0]);
+  owned_.reserve(logical.size() + (unc ? 6 : 4));
+  owned_ = unc ? L"\\\\?\\UNC\\" : L"\\\\?\\";
+  owned_.append(logical, unc ? 2 : 0, std::wstring::npos);
+  std::replace(owned_.begin(), owned_.end(), L'/', L'\\');
+  borrowed_ = nullptr;
+#endif
+}
+
+const std::filesystem::path::value_type *NativePathArgument::c_str() const noexcept {
+#ifdef _WIN32
+  return borrowed_ ? borrowed_ : owned_.c_str();
+#else
+  return borrowed_;
+#endif
+}
+
+namespace private_io {
+PathStatus Status(const FsPath &path) { return WalkPrivatePath(path).status; }
+bool Exists(const FsPath &path) { return Status(path).exists; }
+bool IsDirectory(const FsPath &path) { return Status(path).directory; }
+bool IsRegularFile(const FsPath &path) { return Status(path).regular; }
+
+void Validate(const FsPath &path, bool allow_missing) {
+  if (!Status(path).exists && !allow_missing) PrivateFailure(std::errc::no_such_file_or_directory);
+}
+
+uint64_t FileSize(const FsPath &path) {
+  const auto status = Status(path);
+  if (!status.exists) PrivateFailure(std::errc::no_such_file_or_directory);
+  if (!status.regular) PrivateFailure(std::errc::is_a_directory);
+  return status.size;
+}
+
+uint64_t ModifiedTime(const FsPath &path) {
+  const auto status = Status(path);
+  if (!status.exists) PrivateFailure(std::errc::no_such_file_or_directory);
+  return status.modified;
+}
+
+bool MakeDirectory(const FsPath &path) {
+  const size_t root_end = ValidatePrivateSpelling(path);
+  if (root_end == path.native().size()) {
+    if (!IsDirectory(path)) PrivateFailure(std::errc::no_such_file_or_directory);
+    return false;
+  }
+  const auto parent = Status(path.parent_path());
+  if (!parent.exists) PrivateFailure(std::errc::no_such_file_or_directory);
+  if (!parent.directory) PrivateFailure(std::errc::not_a_directory);
+  const bool created = CreatePrivateLeaf(path);
+  const auto node = ProbePrivateNode(path);
+  RequireOrdinary(node);
+  if (!node.status.exists || !node.status.directory) PrivateFailure(std::errc::not_a_directory);
+  return created;
+}
+
+void CreateDirectories(const FsPath &path) {
+  // One root-to-leaf walk, not a fresh walk for every missing component.
+  if (!WalkPrivatePath(path, true).status.exists) PrivateFailure(std::errc::no_such_file_or_directory);
+}
+
+bool Remove(const FsPath &path) {
+  const auto status = Status(path);
+  if (!status.exists) return false;
+  if (ValidatePrivateSpelling(path) == path.native().size()) {
+    PrivateFailure(std::errc::operation_not_permitted);
+  }
+  const NativePathArgument argument(path, FileAccess::kPrivate);
+#ifdef _WIN32
+  if (status.directory ? RemoveDirectoryW(argument.c_str()) : DeleteFileW(argument.c_str())) return true;
+  const DWORD error = GetLastError();
+  if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) return false;
+  PrivateFailure(std::error_code(static_cast<int>(error), std::system_category()));
+#else
+  if ((status.directory ? ::rmdir(argument.c_str()) : ::unlink(argument.c_str())) == 0) return true;
+  const int error = errno;
+  if (error == ENOENT) return false;
+  PrivateFailure(std::error_code(error, std::generic_category()));
+#endif
+}
+
+void VisitDirectory(const FsPath &path, const std::function<void(const FsPath &)> &visitor) {
+  const auto status = Status(path);
+  if (!status.exists) PrivateFailure(std::errc::no_such_file_or_directory);
+  if (!status.directory) PrivateFailure(std::errc::not_a_directory);
+#ifdef _WIN32
+  WIN32_FIND_DATAW entry{};
+  HANDLE search;
+  {
+    const NativePathArgument argument(path, FileAccess::kPrivate);
+    std::wstring pattern(argument.c_str());
+    if (pattern.back() != L'\\') pattern += L'\\';
+    pattern += L'*';
+    search = FindFirstFileW(pattern.c_str(), &entry);
+  }
+  if (search == INVALID_HANDLE_VALUE) {
+    const DWORD error = GetLastError();
+    if (error == ERROR_FILE_NOT_FOUND) {
+      // An empty enumeration is not evidence that a disappeared parent exists.
+      if (!IsDirectory(path)) PrivateFailure(std::errc::no_such_file_or_directory);
+      return;
+    }
+    PrivateFailure(std::error_code(static_cast<int>(error), std::system_category()));
+  }
+  struct SearchGuard {
+    HANDLE handle;
+    ~SearchGuard() { if (handle != INVALID_HANDLE_VALUE) FindClose(handle); }
+  } guard{search};
+  for (;;) {
+    const PathView name(entry.cFileName);
+    if (name != L"." && name != L"..") {
+      ValidatePrivateComponent(name);
+      if ((entry.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE)) != 0) {
+        PrivateFailure(std::errc::operation_not_supported);
+      }
+      const auto child = path / entry.cFileName;
+      const auto node = ProbePrivateNode(child);
+      RequireOrdinary(node);
+      if (!node.status.exists) PrivateFailure(std::errc::no_such_file_or_directory);
+      visitor(child);
+    }
+    if (FindNextFileW(search, &entry)) continue;
+    const DWORD error = GetLastError();
+    if (error != ERROR_NO_MORE_FILES) {
+      PrivateFailure(std::error_code(static_cast<int>(error), std::system_category()));
+    }
+    break;
+  }
+  guard.handle = INVALID_HANDLE_VALUE;
+  if (!FindClose(search)) {
+    PrivateFailure(std::error_code(static_cast<int>(GetLastError()), std::system_category()));
+  }
+#else
+  const NativePathArgument argument(path, FileAccess::kPrivate);
+  const int fd = ::open(argument.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (fd < 0) PrivateFailure(std::error_code(errno, std::generic_category()));
+  DIR *directory = ::fdopendir(fd);
+  if (!directory) {
+    const int error = errno;
+    ::close(fd);
+    PrivateFailure(std::error_code(error, std::generic_category()));
+  }
+  struct DirectoryGuard {
+    DIR *directory;
+    ~DirectoryGuard() { if (directory) ::closedir(directory); }
+  } guard{directory};
+  for (;;) {
+    errno = 0;
+    const auto *entry = ::readdir(directory);
+    if (!entry) {
+      if (errno != 0) PrivateFailure(std::error_code(errno, std::generic_category()));
+      break;
+    }
+    const PathView name(entry->d_name);
+    if (name == "." || name == "..") continue;
+    ValidatePrivateComponent(name);
+    struct stat info{};
+    if (::fstatat(fd, entry->d_name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
+      PrivateFailure(std::error_code(errno, std::generic_category()));
+    }
+    if (!S_ISREG(info.st_mode) && !S_ISDIR(info.st_mode)) {
+      PrivateFailure(std::errc::operation_not_supported);
+    }
+    visitor(path / entry->d_name);
+  }
+  guard.directory = nullptr;
+  if (::closedir(directory) != 0) PrivateFailure(std::error_code(errno, std::generic_category()));
+#endif
+}
+
+bool IsEmpty(const FsPath &path) {
+  const auto status = Status(path);
+  if (!status.exists) PrivateFailure(std::errc::no_such_file_or_directory);
+  if (status.regular) return status.size == 0;
+  bool empty = true;
+  VisitDirectory(path, [&](const FsPath &) { empty = false; });
+  return empty;
+}
+}  // namespace private_io
+
 bool GetFilesystemTimes(const std::string &utf8_path, int64_t *out_created_ms,
-                        int64_t *out_modified_ms) {
+                        int64_t *out_modified_ms, FileAccess access) {
+  if (access == FileAccess::kPrivate) {
+    if (utf8_path.find('\0') != std::string::npos) return false;
+    try {
+      const auto path = PathFromUtf8(utf8_path);
+      const auto node = WalkPrivatePath(path);
+      if (!node.status.exists) return false;
+#ifdef _WIN32
+      const int64_t modified = FileTimeToUnixMillis(node.info.ftLastWriteTime);
+      int64_t created = FileTimeToUnixMillis(node.info.ftCreationTime);
+#elif defined(__APPLE__)
+      const int64_t modified = static_cast<int64_t>(node.info.st_mtimespec.tv_sec) * 1000 +
+                               node.info.st_mtimespec.tv_nsec / 1000000;
+      int64_t created = static_cast<int64_t>(node.info.st_birthtimespec.tv_sec) * 1000 +
+                        node.info.st_birthtimespec.tv_nsec / 1000000;
+#else
+      const int64_t modified = static_cast<int64_t>(node.info.st_mtim.tv_sec) * 1000 +
+                               node.info.st_mtim.tv_nsec / 1000000;
+      int64_t created = modified;
+#if defined(__linux__) && defined(STATX_BTIME) && \
+    (!defined(__ANDROID__) || __ANDROID_API__ >= 30)
+      struct statx info{};
+      const NativePathArgument argument(path, access);
+      if (::statx(AT_FDCWD, argument.c_str(), AT_SYMLINK_NOFOLLOW | AT_STATX_SYNC_AS_STAT,
+                  STATX_BTIME | STATX_TYPE, &info) == 0) {
+        if (!S_ISREG(info.stx_mode) && !S_ISDIR(info.stx_mode)) return false;
+        if (info.stx_mask & STATX_BTIME) {
+          created = static_cast<int64_t>(info.stx_btime.tv_sec) * 1000 +
+                    info.stx_btime.tv_nsec / 1000000;
+        }
+      } else if (errno != ENOSYS && errno != EINVAL && errno != EOPNOTSUPP) {
+        return false;
+      }
+#endif
+#endif
+      if (created <= 0) created = modified;
+      if (out_modified_ms) *out_modified_ms = modified;
+      if (out_created_ms) *out_created_ms = created;
+      return true;
+    } catch (...) {
+      return false;
+    }
+  }
 #ifdef _WIN32
   const std::wstring wpath = PathFromUtf8(utf8_path).wstring();
   WIN32_FILE_ATTRIBUTE_DATA data;
@@ -254,8 +763,16 @@ bool IsPrefixPath(const std::filesystem::path &canonical_root,
 
 }  // namespace
 
-ReparseState CheckReparsePoint(const std::string &path) {
-  return CheckReparsePointFs(PathFromUtf8(path));
+ReparseState CheckReparsePoint(const std::string &path, FileAccess access) {
+  if (access == FileAccess::kDefault) return CheckReparsePointFs(PathFromUtf8(path));
+  if (path.find('\0') != std::string::npos) return ReparseState::kError;
+  try {
+    const auto node = WalkPrivatePath(PathFromUtf8(path), false, true);
+    if (!node.status.exists) return ReparseState::kError;
+    return node.reparse ? ReparseState::kYes : ReparseState::kNo;
+  } catch (...) {
+    return ReparseState::kError;
+  }
 }
 
 bool IsReparsePoint(const std::string &path, bool on_error) {
@@ -275,8 +792,21 @@ bool FileIdentity::SameObject(const FileIdentity &other) const noexcept {
          low == other.low && high == other.high && directory == other.directory;
 }
 
-VxCoreError GetFileIdentity(const std::filesystem::path &path, FileIdentity &out) noexcept {
+VxCoreError GetFileIdentity(const std::filesystem::path &path, FileIdentity &out,
+                            FileAccess access) noexcept {
   out = {};
+  if (access == FileAccess::kPrivate) {
+    try {
+      out = PrivateIdentity(WalkPrivatePath(path, false, false, true));
+      return VXCORE_OK;
+    } catch (const std::bad_alloc &) {
+      return VXCORE_ERR_OUT_OF_MEMORY;
+    } catch (const std::filesystem::filesystem_error &error) {
+      return PrivateMappedError(error.code());
+    } catch (...) {
+      return VXCORE_ERR_IO;
+    }
+  }
   if (path.empty() || path.native().find(std::filesystem::path::value_type{}) !=
                           std::filesystem::path::string_type::npos) {
     return VXCORE_ERR_INVALID_PARAM;
@@ -285,7 +815,7 @@ VxCoreError GetFileIdentity(const std::filesystem::path &path, FileIdentity &out
   // preserving filesystem roots while removing an optional trailing separator.
   try {
     if (!path.has_filename() && path.has_relative_path()) {
-      return GetFileIdentity(path.parent_path(), out);
+      return GetFileIdentity(path.parent_path(), out, access);
     }
   } catch (const std::bad_alloc &) {
     return VXCORE_ERR_OUT_OF_MEMORY;
@@ -329,7 +859,8 @@ VxCoreError GetFileIdentity(const std::filesystem::path &path, FileIdentity &out
   return VXCORE_OK;
 }
 
-VxCoreError RenameNoReplace(const std::filesystem::path &from, const std::filesystem::path &to) {
+VxCoreError RenameNoReplace(const std::filesystem::path &from, const std::filesystem::path &to,
+                           FileAccess access) {
   if (from.empty() || to.empty() ||
       from.native().find(std::filesystem::path::value_type{}) != std::filesystem::path::string_type::npos ||
       to.native().find(std::filesystem::path::value_type{}) != std::filesystem::path::string_type::npos) {
@@ -338,15 +869,21 @@ VxCoreError RenameNoReplace(const std::filesystem::path &from, const std::filesy
 #endif
     return VXCORE_ERR_INVALID_PARAM;
   }
+  try {
+    if (access == FileAccess::kPrivate) {
+      private_io::Validate(from);
+      private_io::Validate(to, true);
+    }
+    const NativePathArgument source(from, access), destination(to, access);
 #ifdef _WIN32
-  if (MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH)) return VXCORE_OK;
+  if (MoveFileExW(source.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH)) return VXCORE_OK;
   const DWORD error = GetLastError();
   return error == ERROR_NOT_ENOUGH_MEMORY || error == ERROR_OUTOFMEMORY
              ? VXCORE_ERR_OUT_OF_MEMORY : VXCORE_ERR_IO;
 #elif defined(__linux__)
   // Bionic's renameat2 wrapper requires API30; the raw syscall works at minAPI28.
 #ifdef SYS_renameat2
-  if (::syscall(SYS_renameat2, AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), RENAME_NOREPLACE) == 0) {
+  if (::syscall(SYS_renameat2, AT_FDCWD, source.c_str(), AT_FDCWD, destination.c_str(), RENAME_NOREPLACE) == 0) {
     return VXCORE_OK;
   }
   return errno == ENOMEM ? VXCORE_ERR_OUT_OF_MEMORY : VXCORE_ERR_IO;
@@ -354,40 +891,63 @@ VxCoreError RenameNoReplace(const std::filesystem::path &from, const std::filesy
   return VXCORE_ERR_UNSUPPORTED;
 #endif
 #elif defined(__APPLE__)
-  if (::renamex_np(from.c_str(), to.c_str(), RENAME_EXCL) == 0) return VXCORE_OK;
+  if (::renamex_np(source.c_str(), destination.c_str(), RENAME_EXCL) == 0) return VXCORE_OK;
   return errno == ENOMEM ? VXCORE_ERR_OUT_OF_MEMORY : VXCORE_ERR_IO;
 #else
   return VXCORE_ERR_UNSUPPORTED;
 #endif
+  } catch (const std::bad_alloc &) {
+#ifdef _WIN32
+    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+#endif
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const std::filesystem::filesystem_error &error) {
+    return PrivateMappedError(error.code());
+  } catch (...) {
+#ifdef _WIN32
+    SetLastError(ERROR_INVALID_DATA);
+#endif
+    return VXCORE_ERR_IO;
+  }
 }
 
-VxCoreError FlushDirectory(const std::filesystem::path &path) {
+VxCoreError FlushDirectory(const std::filesystem::path &path, FileAccess access) {
 #ifdef _WIN32
   // Windows does not provide the POSIX directory-fsync contract. Check the
   // directory, relying on the writer's file flush and WRITE_THROUGH publication.
   FileIdentity identity;
-  const auto error = GetFileIdentity(path, identity);
+  const auto error = GetFileIdentity(path, identity, access);
   return error != VXCORE_OK ? error : identity.directory ? VXCORE_OK : VXCORE_ERR_IO;
 #else
+  try {
+  if (access == FileAccess::kPrivate && !private_io::IsDirectory(path)) return VXCORE_ERR_IO;
   if (path.empty() || path.native().find('\0') != std::string::npos) {
     return VXCORE_ERR_INVALID_PARAM;
   }
   if (!path.has_filename() && path.has_relative_path()) {
     try {
-      return FlushDirectory(path.parent_path());
+      return FlushDirectory(path.parent_path(), access);
     } catch (const std::bad_alloc &) {
       return VXCORE_ERR_OUT_OF_MEMORY;
     } catch (...) {
       return VXCORE_ERR_IO;
     }
   }
-  const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  const NativePathArgument argument(path, access);
+  const int fd = ::open(argument.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
   if (fd < 0) return errno == ENOMEM ? VXCORE_ERR_OUT_OF_MEMORY : VXCORE_ERR_IO;
   const int flushed = ::fsync(fd);
   const int flush_error = errno;
   const int closed = ::close(fd);
   if (flushed != 0) return flush_error == ENOMEM ? VXCORE_ERR_OUT_OF_MEMORY : VXCORE_ERR_IO;
   return closed == 0 ? VXCORE_OK : VXCORE_ERR_IO;
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const std::filesystem::filesystem_error &error) {
+    return PrivateMappedError(error.code());
+  } catch (...) {
+    return VXCORE_ERR_IO;
+  }
 #endif
 }
 
@@ -653,6 +1213,20 @@ VxCoreError AtomicWriteError() {
   return errno == ENOMEM ? VXCORE_ERR_OUT_OF_MEMORY : VXCORE_ERR_IO;
 }
 
+void ValidatePrivatePublication(const FsPath &temporary, const FileIdentity &owned,
+                                const FsPath &destination) {
+  FileIdentity current;
+  const auto error = GetFileIdentity(temporary, current, FileAccess::kPrivate);
+  if (error != VXCORE_OK) {
+    PrivateFailure(error == VXCORE_ERR_OUT_OF_MEMORY ? std::errc::not_enough_memory : std::errc::io_error);
+  }
+  if (!owned.SameObject(current) || current.directory || current.links != 1) {
+    PrivateFailure(std::errc::io_error);
+  }
+  const auto status = private_io::Status(destination);
+  if (status.exists && !status.regular) PrivateFailure(std::errc::is_a_directory);
+}
+
 // Match the bounded sharing-violation retry policy used by folder-config publication.
 constexpr int kAtomicRenameRetries = 5;
 constexpr int kAtomicRenameRetryDelayMs = 40;
@@ -660,7 +1234,8 @@ constexpr int kAtomicTempAttempts = 64;
 
 }  // namespace
 
-AtomicFileWriter::AtomicFileWriter(const std::filesystem::path &path) {
+AtomicFileWriter::AtomicFileWriter(const std::filesystem::path &path, FileAccess access)
+    : access_(access) {
   try {
     path_ = path;
   } catch (const std::bad_alloc &) {
@@ -674,7 +1249,17 @@ AtomicFileWriter::~AtomicFileWriter() {
   if (file_) {
     std::fclose(file_);
   }
-  if (owns_temp_) {
+  if (owns_temp_ && access_ == FileAccess::kPrivate) {
+    try {
+      FileIdentity current;
+      if (GetFileIdentity(temp_path_, current, access_) == VXCORE_OK &&
+          temp_identity_.SameObject(current) && current.links == 1) {
+        private_io::Remove(temp_path_);
+      }
+    } catch (...) {
+      // A replaced/unverifiable object is not owned cleanup authority.
+    }
+  } else if (owns_temp_) {
 #ifdef _WIN32
     _wremove(temp_path_.c_str());
 #else
@@ -699,6 +1284,12 @@ VxCoreError AtomicFileWriter::Open() {
       return error_ = VXCORE_ERR_INVALID_PARAM;
     }
 
+    if (access_ == FileAccess::kPrivate) {
+      const auto destination = private_io::Status(path_);
+      if ((destination.exists && !destination.regular) ||
+          !private_io::IsDirectory(path_.parent_path())) return error_ = VXCORE_ERR_IO;
+    }
+
     // Exclusivity, not name unpredictability, prevents reuse of another writer's
     // file or a pre-existing symlink. No UUID/crypto dependency is needed here.
     static std::atomic<uint64_t> sequence{0};
@@ -712,21 +1303,26 @@ VxCoreError AtomicFileWriter::Open() {
       temp_path_ += PathFromUtf8(".tmp-" + std::to_string(process_id) + "-" +
                                 std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
 #ifdef _WIN32
-      // The destination can fit MAX_PATH while our exclusive temporary sibling does not.
-      // Extend only the internal temporary path; preserve normal destination semantics.
-      const auto absolute_temp =
-          std::filesystem::absolute(temp_path_).lexically_normal().make_preferred();
-      const auto &native_temp = absolute_temp.native();
-      if (native_temp.size() >= MAX_PATH && native_temp.compare(0, 4, L"\\\\?\\") != 0) {
-        temp_path_ = native_temp.compare(0, 2, L"\\\\") == 0
-                         ? std::filesystem::path(L"\\\\?\\UNC\\" + native_temp.substr(2))
-                         : std::filesystem::path(L"\\\\?\\" + native_temp);
+      if (access_ == FileAccess::kDefault) {
+        // The destination can fit MAX_PATH while our exclusive temporary sibling does not.
+        // Extend only the internal temporary path; preserve normal destination semantics.
+        const auto absolute_temp =
+            std::filesystem::absolute(temp_path_).lexically_normal().make_preferred();
+        const auto &native_temp = absolute_temp.native();
+        if (native_temp.size() >= MAX_PATH && native_temp.compare(0, 4, L"\\\\?\\") != 0) {
+          temp_path_ = native_temp.compare(0, 2, L"\\\\") == 0
+                           ? std::filesystem::path(L"\\\\?\\UNC\\" + native_temp.substr(2))
+                           : std::filesystem::path(L"\\\\?\\" + native_temp);
+        }
       }
-      const int fd = _wopen(temp_path_.c_str(),
+      const NativePathArgument argument(temp_path_, access_);
+      const int fd = _wopen(argument.c_str(),
                            _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT,
                            _S_IREAD | _S_IWRITE);
 #else
-      const int fd = ::open(temp_path_.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+      const NativePathArgument argument(temp_path_, access_);
+      const int fd = ::open(argument.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC |
+                            (access_ == FileAccess::kPrivate ? O_NOFOLLOW : 0),
                             S_IRUSR | S_IWUSR);
 #endif
       if (fd < 0) {
@@ -737,6 +1333,18 @@ VxCoreError AtomicFileWriter::Open() {
       }
 
       owns_temp_ = true;
+      if (access_ == FileAccess::kPrivate) {
+        try {
+          temp_identity_ = PrivateOpenFileIdentity(fd);
+        } catch (...) {
+#ifdef _WIN32
+          _close(fd);
+#else
+          ::close(fd);
+#endif
+          throw;
+        }
+      }
 #ifdef _WIN32
       file_ = _wfdopen(fd, L"wb");
 #else
@@ -756,6 +1364,8 @@ VxCoreError AtomicFileWriter::Open() {
     return error_ = VXCORE_ERR_IO;
   } catch (const std::bad_alloc &) {
     return error_ = VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const std::filesystem::filesystem_error &error) {
+    return error_ = access_ == FileAccess::kPrivate ? PrivateMappedError(error.code()) : VXCORE_ERR_IO;
   } catch (...) {
     return error_ = VXCORE_ERR_IO;
   }
@@ -812,20 +1422,32 @@ VxCoreError AtomicFileWriter::Commit() {
 
   try {
     for (int attempt = 0; attempt < kAtomicRenameRetries; ++attempt) {
+      if (access_ == FileAccess::kPrivate) {
+        ValidatePrivatePublication(temp_path_, temp_identity_, path_);
+      }
       std::error_code ec;
       // Same-directory rename replaces the destination atomically, without an
       // intermediate removal that could lose the previous live file on failure.
 #ifdef _WIN32
-      if (!MoveFileExW(temp_path_.c_str(), path_.c_str(),
+      const NativePathArgument source(temp_path_, access_), destination(path_, access_);
+      if (!MoveFileExW(source.c_str(), destination.c_str(),
                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
       }
 #else
-      std::filesystem::rename(temp_path_, path_, ec);
+      if (access_ == FileAccess::kPrivate) {
+        const NativePathArgument source(temp_path_, access_), destination(path_, access_);
+        if (::rename(source.c_str(), destination.c_str()) != 0) {
+          ec = std::error_code(errno, std::generic_category());
+        }
+      } else {
+        std::filesystem::rename(temp_path_, path_, ec);
+      }
 #endif
       if (!ec) {
         owns_temp_ = false;
-        return VXCORE_OK;
+        return error_ = access_ == FileAccess::kPrivate ? FlushDirectory(path_.parent_path(), access_)
+                                                       : VXCORE_OK;
       }
       if (ec == std::errc::not_enough_memory) {
         return error_ = VXCORE_ERR_OUT_OF_MEMORY;
@@ -837,6 +1459,8 @@ VxCoreError AtomicFileWriter::Commit() {
     return error_ = VXCORE_ERR_IO;
   } catch (const std::bad_alloc &) {
     return error_ = VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const std::filesystem::filesystem_error &error) {
+    return error_ = access_ == FileAccess::kPrivate ? PrivateMappedError(error.code()) : VXCORE_ERR_IO;
   } catch (...) {
     return error_ = VXCORE_ERR_IO;
   }
@@ -868,7 +1492,10 @@ VxCoreError AtomicFileWriter::CommitNoReplace() {
     const auto parent = path_.has_parent_path() ? path_.parent_path() : std::filesystem::path(".");
 #ifdef _WIN32
     for (int attempt = 0; attempt < kAtomicRenameRetries; ++attempt) {
-      error_ = RenameNoReplace(temp_path_, path_);
+      if (access_ == FileAccess::kPrivate) {
+        ValidatePrivatePublication(temp_path_, temp_identity_, path_);
+      }
+      error_ = RenameNoReplace(temp_path_, path_, access_);
       if (error_ == VXCORE_OK) break;
       const DWORD native_error = GetLastError();
       if (native_error != ERROR_SHARING_VIOLATION || attempt + 1 == kAtomicRenameRetries) {
@@ -877,22 +1504,28 @@ VxCoreError AtomicFileWriter::CommitNoReplace() {
       std::this_thread::sleep_for(std::chrono::milliseconds(kAtomicRenameRetryDelayMs));
     }
 #else
-    error_ = RenameNoReplace(temp_path_, path_);
+    if (access_ == FileAccess::kPrivate) {
+      ValidatePrivatePublication(temp_path_, temp_identity_, path_);
+    }
+    error_ = RenameNoReplace(temp_path_, path_, access_);
     if (error_ != VXCORE_OK) return error_;
 #endif
     // Publication has happened. Even a failed parent flush cannot authorize
     // destruction (or an error-handling caller) to remove the complete file.
     owns_temp_ = false;
-    return error_ = FlushDirectory(parent);
+    return error_ = FlushDirectory(parent, access_);
   } catch (const std::bad_alloc &) {
     return error_ = VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const std::filesystem::filesystem_error &error) {
+    return error_ = access_ == FileAccess::kPrivate ? PrivateMappedError(error.code()) : VXCORE_ERR_IO;
   } catch (...) {
     return error_ = VXCORE_ERR_IO;
   }
 }
 
-VxCoreError WriteFileAtomic(const std::filesystem::path &path, const std::string &content) {
-  AtomicFileWriter writer(path);
+VxCoreError WriteFileAtomic(const std::filesystem::path &path, const std::string &content,
+                            FileAccess access) {
+  AtomicFileWriter writer(path, access);
   VxCoreError error = writer.Open();
   if (error == VXCORE_OK) {
     error = writer.Write(content.data(), content.size());

@@ -222,6 +222,13 @@ function(vxcore_add_webdav_dependencies)
     set_target_properties(libcurl_static PROPERTIES
       MSVC_RUNTIME_LIBRARY "${CMAKE_MSVC_RUNTIME_LIBRARY}")
     target_link_libraries(vxcore_webdav_curl INTERFACE CURL::libcurl_static)
+    if(CURL_USE_OPENSSL)
+      # Only the bundled OpenSSL backend exposes the replacing certificate verifier.
+      # System Apple curl and Windows Schannel keep their existing platform defaults.
+      find_package(OpenSSL REQUIRED COMPONENTS SSL Crypto)
+      target_compile_definitions(vxcore_webdav_curl INTERFACE VXCORE_SYNC_TLS_OPENSSL=1)
+      target_link_libraries(vxcore_webdav_curl INTERFACE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
     set_property(TARGET vxcore_webdav_curl PROPERTY VXCORE_LICENSE_FILE "${vxcore_curl_SOURCE_DIR}/COPYING")
   endif()
 

@@ -179,8 +179,8 @@ const char *ErrorText(VxCoreError error) {
 
 struct WebDavTransport::Impl {
   explicit Impl(const std::string &url, const SyncCredentials &credentials,
-                SyncCancellationPtr token)
-      : http(url, credentials, token), cancellation(std::move(token)) {}
+                SyncCancellationPtr token, SyncTlsPolicy tls_policy)
+      : http(url, credentials, token, tls_policy), cancellation(std::move(token)) {}
 
   SyncHttpClient http;
   bool initialized = false;
@@ -414,8 +414,8 @@ struct WebDavTransport::Impl {
 
 WebDavTransport::WebDavTransport(const std::string &collection_url,
                                  const SyncCredentials &credentials,
-                                 SyncCancellationPtr cancellation)
-    : impl_(std::make_unique<Impl>(collection_url, credentials, std::move(cancellation))) {}
+                                 SyncCancellationPtr cancellation, SyncTlsPolicy tls_policy)
+    : impl_(std::make_unique<Impl>(collection_url, credentials, std::move(cancellation), tls_policy)) {}
 WebDavTransport::~WebDavTransport() = default;
 const std::string &WebDavTransport::CanonicalRoot() const { return impl_->http.CanonicalRoot(); }
 const WebDavResponse &WebDavTransport::LastResponse() const { return impl_->response; }
@@ -459,10 +459,38 @@ VxCoreError WebDavTransport::ValidateRelativePath(const std::string &path, bool 
 
 VxCoreError WebDavTransport::ResolveLocalPath(const std::filesystem::path &root,
                                               const std::string &relative_path,
-                                              std::filesystem::path &out_path) {
+                                              std::filesystem::path &out_path,
+                                              FileAccess access) {
   out_path.clear();
   if (ValidateRelativePath(relative_path) != VXCORE_OK) return VXCORE_ERR_INVALID_PARAM;
   try {
+    if (access == FileAccess::kPrivate) {
+      private_io::Validate(root);
+      if (!private_io::IsDirectory(root)) return VXCORE_ERR_IO;
+      const auto relative = PathFromUtf8(relative_path);
+      const auto target = root / relative;
+      auto current = root;
+      bool missing = false;
+      for (const auto &part : relative) {
+        const auto parent = current;
+        current /= part;
+        if (missing) continue;
+        const auto status = private_io::Status(current);
+        if (!status.exists) { missing = true; continue; }
+        bool exact = false;
+        private_io::VisitDirectory(parent, [&](const std::filesystem::path &child) {
+          if (child.filename().native() == part.native()) exact = true;
+        });
+        if (!exact) return VXCORE_ERR_UNSUPPORTED;
+        if (current != target && !status.directory)
+          return VXCORE_ERR_UNSUPPORTED;
+      }
+      // Concatenation of independently validated relative components is the
+      // containment proof; native argument spelling never becomes authority.
+      private_io::Validate(current, true);
+      out_path = std::move(current);
+      return VXCORE_OK;
+    }
     std::error_code ec;
     const auto absolute = std::filesystem::absolute(root, ec);
     if (ec || !std::filesystem::is_directory(absolute, ec) || ec) return VXCORE_ERR_IO;
@@ -580,19 +608,25 @@ VxCoreError WebDavTransport::List(std::vector<WebDavResource> &out_resources) {
 
 VxCoreError WebDavTransport::Download(const std::string &path, const std::string &expected_etag,
                                       const std::filesystem::path &local_root,
-                                      const std::string &local_relative_path) {
+                                      const std::string &local_relative_path,
+                                      std::optional<uint64_t> max_bytes,
+                                      std::optional<uint64_t> expected_bytes,
+                                      FileAccess access) {
   auto error = Initialize();
   if (error != VXCORE_OK) return error;
   if (ValidateRelativePath(path) != VXCORE_OK || !IsStrongEtag(expected_etag))
     return impl_->Finish(VXCORE_ERR_INVALID_PARAM);
   std::filesystem::path destination;
-  error = ResolveLocalPath(local_root, local_relative_path, destination);
+  error = ResolveLocalPath(local_root, local_relative_path, destination, access);
   if (error != VXCORE_OK) return impl_->Finish(error);
-  AtomicFileWriter writer(destination);
+  AtomicFileWriter writer(destination, access);
   error = writer.Open();
   if (error != VXCORE_OK) return impl_->Finish(error);
   SyncHttpRequest request;
   request.writer = &writer;
+  request.download_limit = max_bytes;
+  if (expected_bytes && (!request.download_limit || *expected_bytes < *request.download_limit))
+    request.download_limit = expected_bytes;
   error = impl_->Request("GET", path, {"If-Match: " + expected_etag}, request);
   if (error != VXCORE_OK) return error;
   if (LastResponse().http_status != 200)
@@ -600,11 +634,12 @@ VxCoreError WebDavTransport::Download(const std::string &path, const std::string
   const auto &transfer = impl_->http.LastResponse();
   if (!IsStrongEtag(transfer.etag)) return impl_->FinishEtag("GET response", transfer.etag);
   if (transfer.etag != expected_etag) return impl_->Finish(VXCORE_ERR_SYNC_CONFLICT);
-  if (transfer.length_seen && transfer.content_length != transfer.bytes)
+  if ((transfer.length_seen && transfer.content_length != transfer.bytes) ||
+      (expected_bytes && transfer.bytes != *expected_bytes))
     return impl_->Finish(VXCORE_ERR_INVALID_STATE);
   impl_->response.sha256 = transfer.sha256;
   std::filesystem::path rechecked;
-  error = ResolveLocalPath(local_root, local_relative_path, rechecked);
+  error = ResolveLocalPath(local_root, local_relative_path, rechecked, access);
   if (error != VXCORE_OK) return impl_->Finish(error);
   if (impl_->Cancelled()) return impl_->Finish(VXCORE_ERR_CANCELLED);
   return impl_->Finish(writer.Commit());
@@ -613,14 +648,15 @@ VxCoreError WebDavTransport::Download(const std::string &path, const std::string
 VxCoreError WebDavTransport::Upload(const std::string &path,
                                     const std::filesystem::path &local_root,
                                     const std::string &local_relative_path,
-                                    const std::string &expected_etag) {
+                                    const std::string &expected_etag,
+                                    FileAccess access) {
   auto error = Initialize();
   if (error != VXCORE_OK) return error;
   if (ValidateRelativePath(path) != VXCORE_OK ||
       (!expected_etag.empty() && !IsStrongEtag(expected_etag)))
     return impl_->Finish(VXCORE_ERR_INVALID_PARAM);
   std::filesystem::path source;
-  error = ResolveLocalPath(local_root, local_relative_path, source);
+  error = ResolveLocalPath(local_root, local_relative_path, source, access);
   if (error != VXCORE_OK) return impl_->Finish(error);
   if (!expected_etag.empty()) {
     WebDavResource existing;
@@ -629,13 +665,26 @@ VxCoreError WebDavTransport::Upload(const std::string &path,
     if (existing.kind != WebDavResourceKind::kFile) return impl_->Finish(VXCORE_ERR_UNSUPPORTED);
   }
   std::error_code ec;
-  if (!std::filesystem::is_regular_file(source, ec) || ec) return impl_->Finish(VXCORE_ERR_IO);
-  const auto size = std::filesystem::file_size(source, ec);
-  if (ec || size > static_cast<uint64_t>(std::numeric_limits<curl_off_t>::max()))
+  uint64_t size = 0, private_time = 0;
+  std::filesystem::file_time_type time{};
+  try {
+    if (access == FileAccess::kPrivate) {
+      const auto status = private_io::Status(source);
+      if (!status.regular) return impl_->Finish(VXCORE_ERR_IO);
+      size = status.size;
+      private_time = status.modified;
+    } else {
+      if (!std::filesystem::is_regular_file(source, ec) || ec) return impl_->Finish(VXCORE_ERR_IO);
+      size = std::filesystem::file_size(source, ec);
+      if (ec) return impl_->Finish(VXCORE_ERR_IO);
+      time = std::filesystem::last_write_time(source, ec);
+      if (ec) return impl_->Finish(VXCORE_ERR_IO);
+    }
+  } catch (...) { return impl_->Finish(VXCORE_ERR_IO); }
+  if (size > static_cast<uint64_t>(std::numeric_limits<curl_off_t>::max()))
     return impl_->Finish(VXCORE_ERR_IO);
-  const auto time = std::filesystem::last_write_time(source, ec);
-  if (ec) return impl_->Finish(VXCORE_ERR_IO);
-  std::ifstream input(source, std::ios::binary);
+  const NativePathArgument native_source(source, access);
+  std::ifstream input(native_source.c_str(), std::ios::binary);
   if (!input) return impl_->Finish(VXCORE_ERR_IO);
   SyncHttpRequest request;
   request.input = &input;
@@ -649,9 +698,17 @@ VxCoreError WebDavTransport::Upload(const std::string &path,
       LastResponse().http_status != 204)
     return impl_->FinishHttp("PUT", LastResponse().http_status);
   const auto &transfer = impl_->http.LastResponse();
-  if (transfer.bytes != size || std::filesystem::file_size(source, ec) != size || ec ||
-      std::filesystem::last_write_time(source, ec) != time || ec)
-    return impl_->Finish(VXCORE_ERR_SYNC_IN_PROGRESS);
+  if (transfer.bytes != size) return impl_->Finish(VXCORE_ERR_SYNC_IN_PROGRESS);
+  try {
+    if (access == FileAccess::kPrivate) {
+      const auto status = private_io::Status(source);
+      if (!status.regular || status.size != size || status.modified != private_time)
+        return impl_->Finish(VXCORE_ERR_SYNC_IN_PROGRESS);
+    } else if (std::filesystem::file_size(source, ec) != size || ec ||
+               std::filesystem::last_write_time(source, ec) != time || ec) {
+      return impl_->Finish(VXCORE_ERR_SYNC_IN_PROGRESS);
+    }
+  } catch (...) { return impl_->Finish(VXCORE_ERR_IO); }
   if (!IsStrongEtag(transfer.etag)) return impl_->FinishEtag("PUT response", transfer.etag);
   impl_->response.sha256 = transfer.sha256;
   return impl_->Finish(VXCORE_OK);

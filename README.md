@@ -79,6 +79,135 @@ For desktop-hosted mobile bridge tests only,
 including host path validation. This explicit option never selects mobile save
 semantics and cannot install a desktop SDK containing the test-only extension.
 
+### Prepared WebDAV lifecycle and platform trust
+
+Mobile consumers use `vxcore_sync_prepare_lifecycle` on their metadata owner,
+`vxcore_sync_execute_lifecycle` on a joined network worker, and
+`vxcore_sync_complete_lifecycle` back on the owner. Prepare/complete do not issue
+network requests; execute owns copied roots/configuration, transient credentials
+and a private backend, never a worker-accessed notebook manager or SQLite store.
+A handle excludes competing sync registration/phase operations for that notebook
+until `vxcore_sync_free_lifecycle`. The embedding host must also retain its
+notebook/configuration/structural lease and context through free, and join workers
+and trust callbacks before destroying either. Execute and complete are each
+single-use; cancellation observed before publication prevents publication.
+
+Commands are closed objects with `version: 1`, a canonical UUID `operationId`,
+and `kind`:
+
+- `enable`: `config` containing `backend: "webdav"`, HTTPS `remoteUrl`, and optional
+  boolean `autoSyncEnabled`.
+- `credentials`: no configuration override; the registered endpoint is captured.
+- `credentialRecovery`: the same `config` plus `recoveryOperationId` naming a
+  retained candidate validation operation. This proves scratch cleanup only:
+  **`committed` is always false**, including successful cleanup.
+- `clone`: `config`, an empty transaction-private `target`, and positive integer
+  `limits`: `maxFileBytes`, `maxTotalBytes`, `maxEntries`, `maxDepth`, `maxPathBytes`.
+  The total bounds clone staging, including private snapshots; callers separately
+  reserve the later prepared copy and filesystem/metadata headroom. Inventory
+  limits are checked before body downloads, and byte/declared-size limits while
+  streaming, before atomic publication. Failed/cancelled incomplete data remains
+  owned by the import transaction, never a successful clone receipt.
+
+Credentials are a separate bounded `{ "extra": { "username": "...", "password":
+"..." } }` input, never a result or portable configuration. Complete returns
+`version`, `operationId`, `kind`, nullable `notebookId`, `executed`, `committed`,
+`cleanupRequired`, and the actual `code`; free strings with `vxcore_string_free`.
+Prepared enable publishes the runtime backend, not portable routing. The consumer
+must persist enabled/backend/URL and auto-sync preference through the complete
+notebook-config API before refresh/reopen; runtime disable likewise does not clear
+those fields. Never substitute a Dart notebook-schema writer for that owner call.
+Candidate validation uses its own
+`vx_notebook/vx_sync/webdav/credential-validation/<operation-id>` namespace,
+bound to notebook UUID, canonical endpoint and candidate username hash. It cannot
+replace the published account, baseline or provider until validation and
+hash/ETag-proved scratch cleanup succeed and owner completion commits. Retained
+candidate recovery blocks reconfiguration without masquerading as an incoming
+encryption-key conflict. Cleanup credentials must match the candidate account.
+
+Prepared clone requires an empty private owner with app/local roots at
+`imports/<id>/runtime/{app,local}` and target `imports/<id>/unpacked`. Only the
+private context is registered on completion. The core-generated clean WebDAV
+baseline stays inside `unpacked`; core does not mint an import permit. The host
+must close/join the private owner and bind its own sibling clone-complete receipt
+to the operation, notebook, endpoint/account, baseline hash and completed source
+tree before allowing that baseline through managed publication. Ordinary imports
+must reject every nonempty `vx_sync`, even a schema-valid clean cursor.
+
+On Windows only, prepared clone also admits the unchanged desktop registration
+host before work starts: the target and its `vx_notebook/config.json`, plus the
+private local root's `notebooks/<36-character UUID>/metadata.db-journal` and
+`vxsession.json`, must each have a logical native path length below 260 WCHARs
+(excluding the terminator). The config bound also covers the `vx_transfer` and
+`vx_import` absence probes. The complete remote inventory must satisfy the same
+bound for every non-excluded `vx_notebook/vx_import` path and descendant before
+any clone file is written. Violations return `VXCORE_ERR_UNSUPPORTED`, not a clone
+receipt. This is a Windows registration-host limit, not a mobile path limit or
+a ceiling on private asset/body or `vx_sync` descendants; Android/iOS and legacy
+clone retain their existing behavior. Completion still opens and registers the
+actual notebook, and the private close/receipt requirements above remain mandatory.
+
+`vxcore_sync_set_tls_verifier` installs an immutable, runtime-only policy before
+any backend or prepared work. Its callback receives the actual ASCII host (bare
+IP literal, not a URL) and leaf-first DER plus intermediates, bounded to 16
+certificates and 1 MiB total; only `VXCORE_OK` trusts. Userdata must survive context,
+worker and callback drain. The bundled OpenSSL curl target publishes
+`VXCORE_SYNC_TLS_OPENSSL` and replaces certificate verification through
+`SSL_CTX_set_cert_verify_callback`, retaining curl peer and hostname verification.
+Unsupported custom-verifier/backend combinations fail explicitly before network;
+there is no trust-off or default-store fallback. Default desktop trust and legacy
+sync/clone/credential APIs remain unchanged. URL bindings use the transport's
+canonical HTTPS spelling; dot segments are rejected, not normalized away.
+
+`vxcore_sync_refresh_notebook_result` separates the original apply/operation
+result from the actual metadata refresh result, initializing both on every path.
+A successful refresh does not erase an apply failure. With no in-memory phase it
+performs a full owner-thread reload. Neither API publishes a success timestamp.
+
+### Provider storage and retained archive recovery
+
+`vxcore_sync_inspect_storage(root, expected_id, &facts)` is context-free,
+network-free and read-only. It validates bundled identity, confined no-follow
+provider storage, supported state/bindings/entries, candidate/probe recovery and
+retirement namespaces. `probe` reports unresolved probe recovery; a validated
+legacy dormant empty probe remains archiveable but is not a clean clone baseline.
+Facts include `hasState`, `pending`, `conflicts`, `probe`,
+`credentialValidation`, `retirement`, `retired`, `cleanCloneBaseline` and the raw
+`baselineSha256`, alongside notebook/provider/endpoint/account-hash binding.
+State/hash/account/endpoint facts describe the live top-level baseline, never a
+candidate or archived binding; their absence does not erase retained recovery.
+`cleanCloneBaseline` is diagnostic only, never permission to import a sync cursor.
+
+`vxcore_sync_provider_transaction` derives paths from the selected notebook and
+accepts only version-1 `inspect`, `begin`, `commit`, `restore`, `recover` commands;
+mutations additionally require a canonical UUID `operationId`. Begin requires a
+writable bundled notebook, no runtime/apply lease and clean reconfiguration
+preflight. It seals a bounded inventory and journals ownership before no-replace
+moves to `retired/<operation-id>`. Restore validates the entire exclusive
+source/archive layout and original identities before moving anything back. Commit
+requires runtime absent and persisted enabled/backend/URL routing fully cleared;
+it retires only its proved journal and **retains the archive**. Ambiguous,
+replaced, linked or unknown data is never deleted. Legacy version-1 retirement
+journals remain readable as recovery, but missing ownership seals do not become
+permission to mutate or delete their data. Such legacy records remain explicit
+retained recovery for the original desktop/manual resolution path, never a
+successful recovery or an absent journal. No Git/Jianguoyun migration is added.
+
+On Windows, validated WebDAV private storage uses an explicit native-I/O mode
+for long candidate, snapshot and archive paths. Every private query, enumeration,
+read, write, move and cleanup uses the same no-follow component walk and transient
+extended DOS/UNC OS argument. Logical roots, relative journals and containment
+inputs remain unprefixed; caller-supplied device/prefixed paths are not authority.
+Ordinary/body/default desktop path behavior is unchanged. This does not rely on
+a host executable manifest or a global long-path policy. UNC spelling is covered
+without implying live-share I/O verification.
+
+Context diagnostics now use synchronized assign/clear/copy storage. The C getter
+returns a thread-local snapshot valid until the next getter on that same thread;
+other threads cannot invalidate it. It remains the latest context diagnostic,
+not operation-specific attribution, and does not make arbitrary context APIs
+thread-safe. UUID generation serializes the existing generator and format.
+
 ### Ordinary buffer writes
 
 CMake selects exactly one `SaveBufferFileContent` implementation by **target**:

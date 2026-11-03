@@ -49,6 +49,10 @@ VXCORE_API VxCoreError vxcore_prepare_shutdown(VxCoreContextHandle context);
 // Use when the application's close operation is cancelled by the user.
 VXCORE_API VxCoreError vxcore_cancel_shutdown(VxCoreContextHandle context);
 
+// Latest context diagnostic, not operation-specific attribution. The pointer is a
+// thread-local snapshot valid until the next getter on THIS thread (any context);
+// writes/getters on other threads cannot invalidate it. Other APIs retain their
+// existing threading contracts.
 VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context,
                                                      const char **out_message);
 
@@ -1626,6 +1630,47 @@ VXCORE_API VxCoreError vxcore_sync_trigger(VxCoreContextHandle context, const ch
 // Null-safety: every function in this group is null-safe (no-ops on a
 // NULL token).
 typedef struct VxCoreSyncCancellation_ VxCoreSyncCancellation;
+typedef struct VxCoreSyncLifecycle_ VxCoreSyncLifecycle;
+
+// Immutable runtime trust policy. Install on the context owner before any sync
+// backend/clone/lifecycle. Userdata must outlive all backends and joined workers.
+// A custom policy on an unsupported TLS/backend combination fails explicitly.
+VXCORE_API VxCoreError vxcore_sync_set_tls_verifier(VxCoreContextHandle context,
+                                                    VxCoreSyncTlsVerifier verifier,
+                                                    void *userdata);
+
+// Prepared WebDAV lifecycle: prepare O (no network), execute W (no metadata
+// manager/SQLite), complete O (no network), then free after worker/callback join.
+// Context and selected notebook remain caller-pinned through free. Closed v1
+// commands: enable/config, credentials, credentialRecovery/config/recoveryOperationId,
+// clone/config/target/limits; all include canonical operationId. Credentials are
+// separate {extra:{username,password}}. Clone requires transaction-private runtime
+// roots beside an empty unpacked target, never a shared library context.
+VXCORE_API VxCoreError vxcore_sync_prepare_lifecycle(
+    VxCoreContextHandle context, const char *notebook_id, const char *command_json,
+    const char *credentials_json, VxCoreSyncLifecycle **out_lifecycle);
+VXCORE_API VxCoreError vxcore_sync_execute_lifecycle(VxCoreSyncLifecycle *lifecycle,
+                                                     VxCoreSyncCancellation *cancellation);
+// Exactly once, after execute returns. Output is bounded JSON (vxcore_string_free):
+// version,operationId,kind,notebookId,executed,committed,cleanupRequired,code.
+// credentialRecovery reports cleanup only: committed is ALWAYS false.
+VXCORE_API VxCoreError vxcore_sync_complete_lifecycle(VxCoreContextHandle context,
+                                                      VxCoreSyncLifecycle *lifecycle,
+                                                      char **out_result_json);
+VXCORE_API void vxcore_sync_free_lifecycle(VxCoreSyncLifecycle *lifecycle);
+
+// Closed network-free v1 inspect/begin/commit/restore/recover provider commands.
+// Paths derive only from the selected bundled notebook. Historical archives are
+// retained; unknown/linked/replaced/recovery material never grants deletion authority.
+VXCORE_API VxCoreError vxcore_sync_provider_transaction(VxCoreContextHandle context,
+                                                        const char *notebook_id,
+                                                        const char *command_json,
+                                                        char **out_json);
+// Context-free read-only storage validation; never registers, repairs or authorizes
+// import. cleanCloneBaseline is diagnostic, NOT authority to import a sync cursor.
+VXCORE_API VxCoreError vxcore_sync_inspect_storage(const char *notebook_root,
+                                                   const char *expected_notebook_id,
+                                                   char **out_facts_json);
 
 // Allocate a fresh cancellation token. Returns NULL only on allocation
 // failure. The returned token is uncancelled.
@@ -1736,6 +1781,13 @@ VXCORE_API VxCoreError vxcore_sync_set_apply_in_progress(VxCoreContextHandle con
 // Does not emit lifecycle events or update the last-sync timestamp.
 VXCORE_API VxCoreError vxcore_sync_refresh_notebook(VxCoreContextHandle context,
                                                     const char *notebook_id);
+
+// As above, separately returns the actual metadata refresh result, initialized on
+// every path. Original apply failure retains precedence in the function result.
+// With no in-memory phase, performs a full owner-thread metadata reload.
+VXCORE_API VxCoreError vxcore_sync_refresh_notebook_result(VxCoreContextHandle context,
+                                                           const char *notebook_id,
+                                                           int32_t *out_refresh_code);
 
 // Local read-only retirement preflight; works with runtime sync disabled.
 // Refuses unresolved Git index/rebase state and WebDAV conflicts/pending recovery.

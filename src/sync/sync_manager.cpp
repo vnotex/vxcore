@@ -57,6 +57,33 @@ std::string SyncManager::TakeLastError(const std::string &operation_key) {
   return message;
 }
 
+VxCoreError SyncManager::SetTlsVerifier(VxCoreSyncTlsVerifier verifier, void *userdata) {
+  if (!verifier && userdata) return VXCORE_ERR_INVALID_PARAM;
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  if (tls_policy_locked_ || tls_policy_installed_ || !backends_.empty() ||
+      !lifecycle_leases_.empty() || !registrations_.empty()) return VXCORE_ERR_INVALID_STATE;
+  tls_policy_ = {verifier, userdata};
+  tls_policy_installed_ = true;
+  return VXCORE_OK;
+}
+
+bool SyncManager::HasLifecycleLease(const std::string &notebook_id) const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  return lifecycle_leases_.count(notebook_id) != 0 || lifecycle_leases_.count("") != 0;
+}
+
+bool SyncManager::RegistrationBlockedLocked(const std::string &notebook_id) const {
+  if (notebook_id.empty()) return !lifecycle_leases_.empty() || !registrations_.empty();
+  return lifecycle_leases_.count(notebook_id) || lifecycle_leases_.count("") ||
+         registrations_.count(notebook_id) || registrations_.count("");
+}
+
+SyncManager::RegistrationLease::~RegistrationLease() {
+  if (!active) return;
+  std::lock_guard<std::mutex> lock(manager.state_mutex_);
+  manager.registrations_.erase(key);
+}
+
 void SyncManager::SetEventManager(EventManager *event_manager) {
   event_manager_ = event_manager;
   if (!event_manager_) return;
@@ -229,6 +256,7 @@ bool SyncManager::IsRegistered(const std::string &notebook_id) const {
 }
 
 VxCoreError SyncManager::ValidateNotebook(const std::string &notebook_id) {
+  if (HasLifecycleLease(notebook_id)) return VXCORE_ERR_SYNC_IN_PROGRESS;
   auto *notebook = notebook_manager_->GetNotebook(notebook_id);
   if (notebook == nullptr) {
     return VXCORE_ERR_NOT_FOUND;
@@ -263,9 +291,20 @@ VxCoreError SyncManager::EnableSync(const std::string &notebook_id, const SyncCo
   return EnableSyncImpl(notebook_id, config, std::move(creds_provider), nullptr);
 }
 
-VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
+VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const SyncConfig &input_config,
                                         std::shared_ptr<ICredentialProvider> provider,
                                         SyncBackendFactory factory_override) {
+  SyncConfig config = input_config;
+  RegistrationLease registration{*this, notebook_id};
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (RegistrationBlockedLocked(notebook_id)) return VXCORE_ERR_SYNC_IN_PROGRESS;
+    registrations_.emplace(notebook_id);
+    registration.active = true;
+    config.tls_policy = tls_policy_;
+    tls_policy_locked_ = true;
+  }
+  if (config.tls_policy.verifier && config.backend != "webdav") return VXCORE_ERR_UNSUPPORTED;
   VxCoreError err = ValidateNotebook(notebook_id);
   if (err != VXCORE_OK) {
     return err;
@@ -283,38 +322,46 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
     }
   }
 
-  // Wave 10.1 (F2.4 part 2): seed configs_cache_/states_ under lock. Snapshot
-  // prior values so the rollback lambda can restore them on failure. The
-  // backend->Initialize() call below is EXTERNAL and MUST run outside the
-  // lock (it can call back into SyncManager — see test_sync_manager_reentrancy).
-  bool had_config;
-  bool had_state;
-  SyncConfig prev_config;
-  SyncState prev_state = SyncState::kIdle;
+  // Preserve the config visible to reentrant Initialize callbacks. Keep the
+  // original nodes for nonallocating rollback; admission excludes competing
+  // enable/disable/unregister and prepared handles until this scope exits.
+  decltype(configs_cache_) configs;
+  decltype(states_) states;
+  decltype(backends_) backends;
+  configs.emplace(notebook_id, config);
+  states.emplace(notebook_id, SyncState::kIdle);
+  backends.emplace(notebook_id, nullptr);
+  auto config_node = configs.extract(notebook_id);
+  auto state_node = states.extract(notebook_id);
+  auto backend_node = backends.extract(notebook_id);
+  decltype(config_node) previous_config;
+  decltype(state_node) previous_state;
+  bool seeded = false;
+  bool published = false;
+  auto rollback = [&]() {
+    if (!seeded || published) return;
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    configs_cache_.erase(notebook_id);
+    states_.erase(notebook_id);
+    if (previous_config) configs_cache_.insert(std::move(previous_config));
+    if (previous_state) states_.insert(std::move(previous_state));
+  };
+  struct Rollback {
+    decltype(rollback) &run;
+    ~Rollback() { run(); }
+  } restore{rollback};
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    had_config = configs_cache_.count(notebook_id) > 0;
-    had_state = states_.count(notebook_id) > 0;
-    if (had_config) prev_config = configs_cache_[notebook_id];
-    if (had_state) prev_state = states_[notebook_id];
-
-    configs_cache_[notebook_id] = config;
-    states_[notebook_id] = SyncState::kIdle;
+    // Preserve a slot for every prepared lifecycle's final node insertion.
+    const auto reserved = lifecycle_leases_.size() + 1;
+    configs_cache_.reserve(configs_cache_.size() + reserved);
+    states_.reserve(states_.size() + reserved);
+    previous_config = configs_cache_.extract(notebook_id);
+    previous_state = states_.extract(notebook_id);
+    configs_cache_.insert(std::move(config_node));
+    states_.insert(std::move(state_node));
+    seeded = true;
   }
-
-  auto rollback = [&]() {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    if (had_config) {
-      configs_cache_[notebook_id] = prev_config;
-    } else {
-      configs_cache_.erase(notebook_id);
-    }
-    if (had_state) {
-      states_[notebook_id] = prev_state;
-    } else {
-      states_.erase(notebook_id);
-    }
-  };
 
   // Factory dispatch (Task 6.2 F4.4). Provider is forwarded to both paths.
   // External: registry / supplied factory may construct a backend whose ctor
@@ -331,7 +378,6 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
         "SyncManager::EnableSyncImpl: factory returned null for backend '%s' "
         "(notebook: %s)",
         config.backend.c_str(), notebook_id.c_str());
-    rollback();
     return VXCORE_ERR_UNKNOWN_BACKEND;
   }
 
@@ -347,7 +393,6 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
         "but no ICredentialProvider was supplied (notebook: %s)",
         config.backend.c_str(), notebook_id.c_str());
     backend.reset();
-    rollback();
     return VXCORE_ERR_MISSING_CREDENTIALS;
   }
 
@@ -368,16 +413,24 @@ VxCoreError SyncManager::EnableSyncImpl(const std::string &notebook_id, const Sy
   err = CaptureBackendError(notebook_id, *backend,
                             backend->Initialize(notebook->GetRootFolder(), config));
   if (err != VXCORE_OK) {
-    rollback();
     return err;
   }
 
-  // Wave 10.1: publish the constructed backend under lock so concurrent
-  // TriggerSync/GetSyncStatus/etc. see it atomically.
+  // Recheck admission with the publication. Move the old backend out before
+  // erasing its node so its destructor can reenter the manager after unlock.
+  backend_node.mapped() = std::move(backend);
+  std::unique_ptr<ISyncBackend> previous;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    backends_[notebook_id] = std::move(backend);
+    if (!registrations_.count(notebook_id) || lifecycle_leases_.count(notebook_id) ||
+        lifecycle_leases_.count("")) return VXCORE_ERR_SYNC_IN_PROGRESS;
+    backends_.reserve(backends_.size() + lifecycle_leases_.size() + 1);
+    const auto old = backends_.find(notebook_id);
+    if (old != backends_.end()) previous = std::move(old->second);
+    backends_.erase(notebook_id);
+    backends_.insert(std::move(backend_node));
     deferred_phases_.erase(notebook_id);
+    published = true;
   }
   VXCORE_LOG_INFO("Sync enabled for notebook: %s, backend: %s", notebook_id.c_str(),
                   config.backend.c_str());
@@ -394,6 +447,7 @@ VxCoreError SyncManager::DisableSync(const std::string &notebook_id) {
   std::unique_ptr<ISyncBackend> doomed_backend;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    if (RegistrationBlockedLocked(notebook_id)) return VXCORE_ERR_SYNC_IN_PROGRESS;
     auto it = backends_.find(notebook_id);
     if (it != backends_.end()) {
       doomed_backend = std::move(it->second);
@@ -422,6 +476,7 @@ VxCoreError SyncManager::UnregisterBackend(const std::string &notebook_id) {
   std::unique_ptr<ISyncBackend> doomed_backend;
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    if (RegistrationBlockedLocked(notebook_id)) return VXCORE_ERR_SYNC_IN_PROGRESS;
     last_errors_.erase(notebook_id);
     auto it = backends_.find(notebook_id);
     if (it == backends_.end()) {
@@ -450,10 +505,22 @@ VxCoreError SyncManager::CloneNotebook(const std::string &target_dir, const Sync
                        out_notebook_id);
 }
 
-VxCoreError SyncManager::CloneNotebook(const std::string &target_dir, const SyncConfig &config,
+VxCoreError SyncManager::CloneNotebook(const std::string &target_dir, const SyncConfig &input_config,
                                        std::shared_ptr<ICredentialProvider> provider,
                                        SyncCancellationPtr cancellation,
                                        std::string &out_notebook_id) {
+  SyncConfig config = input_config;
+  const std::string lease_key;
+  RegistrationLease registration{*this, lease_key};
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (RegistrationBlockedLocked(lease_key)) return VXCORE_ERR_SYNC_IN_PROGRESS;
+    registrations_.emplace(lease_key);
+    registration.active = true;
+    config.tls_policy = tls_policy_;
+    tls_policy_locked_ = true;
+  }
+  if (config.tls_policy.verifier && config.backend != "webdav") return VXCORE_ERR_UNSUPPORTED;
   VXCORE_LOG_INFO("SyncManager::CloneNotebook: target_dir=%s backend=%s cancellable=%d",
                   target_dir.c_str(), config.backend.c_str(), cancellation ? 1 : 0);
   out_notebook_id.clear();
@@ -605,6 +672,8 @@ VxCoreError SyncManager::GetSyncConfig(const std::string &notebook_id, SyncConfi
   // Wave 10.1 (F2.4 part 2): fast-path cache hit served entirely under lock.
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    if (lifecycle_leases_.count(notebook_id) || lifecycle_leases_.count(""))
+      return VXCORE_ERR_SYNC_IN_PROGRESS;
     auto it = configs_cache_.find(notebook_id);
     if (it != configs_cache_.end()) {
       out_config = it->second;
@@ -621,10 +690,19 @@ VxCoreError SyncManager::GetSyncConfig(const std::string &notebook_id, SyncConfi
   out_config.remote_url = nc.sync_remote_url;
   out_config.auto_sync_enabled = nc.auto_sync_enabled;
 
-  // Re-acquire lock to populate cache.
+  // Do not overwrite a config published while the owner read was in flight,
+  // or consume the capacity reserved for a prepared account publication.
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    configs_cache_[notebook_id] = out_config;
+    if (lifecycle_leases_.count(notebook_id) || lifecycle_leases_.count(""))
+      return VXCORE_ERR_SYNC_IN_PROGRESS;
+    const auto current = configs_cache_.find(notebook_id);
+    if (current != configs_cache_.end()) {
+      out_config = current->second;
+    } else {
+      configs_cache_.reserve(configs_cache_.size() + lifecycle_leases_.size() + 1);
+      configs_cache_.emplace(notebook_id, out_config);
+    }
   }
   return VXCORE_OK;
 }
@@ -632,6 +710,7 @@ VxCoreError SyncManager::GetSyncConfig(const std::string &notebook_id, SyncConfi
 void SyncManager::InvalidateConfigCache(const std::string &notebook_id) {
   VXCORE_LOG_DEBUG("SyncManager::InvalidateConfigCache: notebook_id=%s", notebook_id.c_str());
   std::lock_guard<std::mutex> lock(state_mutex_);
+  if (lifecycle_leases_.count(notebook_id) || lifecycle_leases_.count("")) return;
   configs_cache_.erase(notebook_id);
 }
 
@@ -976,8 +1055,15 @@ VxCoreError SyncManager::ApplyPhaseOnly(const std::string &notebook_id,
 }
 
 VxCoreError SyncManager::RefreshNotebookAfterSync(const std::string &notebook_id) {
+  VxCoreError refresh = VXCORE_ERR_INVALID_STATE;
+  return RefreshNotebookAfterSync(notebook_id, refresh);
+}
+
+VxCoreError SyncManager::RefreshNotebookAfterSync(const std::string &notebook_id,
+                                                 VxCoreError &out_refresh_code) {
+  out_refresh_code = VXCORE_ERR_INVALID_STATE;
   auto error = ValidateNotebook(notebook_id);
-  if (error != VXCORE_OK) return error;
+  if (error != VXCORE_OK) return out_refresh_code = error;
   DeferredApplyState phase;
   bool has_phase = false;
   {
@@ -991,11 +1077,18 @@ VxCoreError SyncManager::RefreshNotebookAfterSync(const std::string &notebook_id
   if (has_phase && !phase.applied) {
     std::lock_guard<std::mutex> lock(state_mutex_);
     states_[notebook_id] = SyncState::kError;
-    return VXCORE_ERR_SYNC_IN_PROGRESS;
+    return out_refresh_code = VXCORE_ERR_SYNC_IN_PROGRESS;
   }
   auto *notebook = dynamic_cast<BundledNotebook *>(notebook_manager_->GetNotebook(notebook_id));
-  if (!notebook) return VXCORE_ERR_UNSUPPORTED;
-  if (!has_phase || phase.metadata_changed) error = notebook->ReloadAfterSync();
+  if (!notebook) return out_refresh_code = VXCORE_ERR_UNSUPPORTED;
+  try {
+    if (!has_phase || phase.metadata_changed) error = notebook->ReloadAfterSync();
+  } catch (const std::bad_alloc &) {
+    error = VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (...) {
+    error = VXCORE_ERR_UNKNOWN;
+  }
+  out_refresh_code = error;
   InvalidateConfigCache(notebook_id);
   if (!has_phase) return error;
   // A refresh of a partial publication cannot turn the original apply failure into success.

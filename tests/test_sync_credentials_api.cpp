@@ -210,7 +210,7 @@ static int test_malformed_credentials_redacted() {
     for (const std::string prefix :
          {"{\"pat\":\"", "{\"extra\":{\"username\":\"user\",\"password\":\""}) {
       const auto malformed = prefix + secret;
-      for (int operation = 0; operation != 3; ++operation) {
+      for (int operation = 0; operation != 4; ++operation) {
         VxCoreError result;
         if (operation == 0) {
           result =
@@ -218,13 +218,19 @@ static int test_malformed_credentials_redacted() {
         } else if (operation == 1) {
           result = vxcore_sync_set_credentials(scope.context, "credential-parse-test",
                                                malformed.c_str());
-        } else {
+        } else if (operation == 2) {
           char *id = reinterpret_cast<char *>(1);
           result = vxcore_sync_clone(scope.context, "unused-clone-target", config,
                                      malformed.c_str(), &id);
           ASSERT_NULL(id);
+        } else {
+          VxCoreSyncLifecycle *task = reinterpret_cast<VxCoreSyncLifecycle *>(1);
+          result = vxcore_sync_prepare_lifecycle(scope.context, "credential-parse-test",
+              "{\"version\":1,\"operationId\":\"12345678-1234-4234-8234-123456789abc\","
+              "\"kind\":\"credentials\"}", malformed.c_str(), &task);
+          ASSERT_NULL(task);
         }
-        ASSERT_EQ(result, VXCORE_ERR_JSON_PARSE);
+        ASSERT_EQ(result, operation == 3 ? VXCORE_ERR_INVALID_PARAM : VXCORE_ERR_JSON_PARSE);
         const char *detail = nullptr;
         ASSERT_EQ(vxcore_context_get_last_error(scope.context, &detail), VXCORE_OK);
         const std::string message = detail ? detail : "";

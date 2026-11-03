@@ -536,6 +536,7 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/search/search_query.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/path_provider.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_encryption_guard.cpp
+    ${CMAKE_SOURCE_DIR}/src/sync/sync_provider_retirement.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/jianguoyun/jianguoyun_state.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/jianguoyun/jianguoyun_transport.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/webdav/webdav_state.cpp
@@ -1014,8 +1015,21 @@ if(VXCORE_BUILD_SHARED)
     if(WIN32)
         target_compile_definitions(vxcore_webdav_test_core PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
+    if(VXCORE_MOBILE_API_ENABLED)
+        target_compile_definitions(vxcore_webdav_test_core PUBLIC VXCORE_MOBILE_API=1)
+    endif()
     set(_webdav_test_core vxcore_webdav_test_core)
 endif()
+
+# These regressions exercise real private storage and the actual UUID generator;
+# keep one core instance instead of exporting internals for tests.
+foreach(_test test_context_concurrency test_sync_lifecycle test_sync_provider_retirement)
+    add_executable(${_test} ${_test}.cpp)
+    target_include_directories(${_test} PRIVATE
+        ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
+    target_link_libraries(${_test} PRIVATE ${_webdav_test_core} nlohmann_json Threads::Threads sodium)
+    add_test(NAME ${_test} COMMAND ${_test})
+endforeach()
 # Buffer regressions also exercise the private codec/key-source APIs. Use one static
 # core instance, rather than exporting internals or mixing DLL and direct-compiled state.
 add_executable(test_buffer test_buffer.cpp)

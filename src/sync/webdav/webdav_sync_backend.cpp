@@ -6,9 +6,12 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <limits>
+#include <optional>
 #include <set>
 #include <utility>
 
+#include "core/encryptednote.h"
 #include "core/notebook.h"
 #include "sync/credential_provider.h"
 #include "sync/sync_json_keys.h"
@@ -132,6 +135,15 @@ struct WebDavSyncBackend::Impl {
   std::vector<SyncConflictInfo> public_conflicts;
   std::string last_error;
   State state;
+  State candidate_baseline;
+  SyncConfig candidate_config;
+  std::shared_ptr<ICredentialProvider> candidate_provider;
+  std::string candidate_baseline_hash;
+  std::string candidate_operation_id;
+  bool candidate_validated = false;
+  bool candidate_bootstrap = false;
+  std::atomic<bool> candidate_cleanup_required{false};
+  std::atomic<bool> candidate_committed{false};
   Tree local;
   Tree remote;
   Tree common;
@@ -144,38 +156,46 @@ struct WebDavSyncBackend::Impl {
   SyncCancellationPtr token;
 
   template <typename Function>
-  VxCoreError Run(Function function) {
+  VxCoreError Run(Function function, bool check_cancelled = true) {
     if (busy.exchange(true)) return VXCORE_ERR_SYNC_IN_PROGRESS;
     struct Release {
       std::atomic<bool> &flag;
       ~Release() { flag.store(false); }
     } release{busy};
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      last_error.clear();
-      token = cancellation;
-    }
-    state.cancellation = token;
     VxCoreError result = VXCORE_OK;
-    try {
-      CheckCancelled(token);
+    const auto capture = [&](const auto &action) {
+      VxCoreError error = VXCORE_OK;
+      try {
+        action();
+      } catch (const Failure &failure) {
+        error = failure.error;
+      } catch (const fs::filesystem_error &) {
+        error = VXCORE_ERR_IO;
+      } catch (const std::bad_alloc &) {
+        error = VXCORE_ERR_OUT_OF_MEMORY;
+      } catch (const std::exception &) {
+        error = VXCORE_ERR_INVALID_STATE;
+      } catch (...) {
+        error = VXCORE_ERR_UNKNOWN;
+      }
+      // Reporting must not replace an earlier operation error.
+      if (result == VXCORE_OK) result = error;
+    };
+    capture([&] {
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        last_error.clear();
+        token = cancellation;
+      }
+      state.cancellation = token;
+      if (check_cancelled) CheckCancelled(token);
       function();
-    } catch (const Failure &failure) {
-      result = failure.error;
-    } catch (const fs::filesystem_error &) {
-      result = VXCORE_ERR_IO;
-    } catch (const nlohmann::json::exception &) {
-      result = VXCORE_ERR_INVALID_STATE;
-    } catch (const std::exception &) {
-      result = VXCORE_ERR_INVALID_STATE;
-    } catch (...) {
-      result = VXCORE_ERR_UNKNOWN;
-    }
-    PublishConflicts();
-    {
+    });
+    capture([&] { PublishConflicts(); });
+    capture([&] {
       std::lock_guard<std::mutex> lock(mutex);
       if (last_error.empty()) last_error = Diagnostic(result);
-    }
+    });
     token.reset();
     state.cancellation.reset();
     active_provider.reset();
@@ -209,13 +229,20 @@ struct WebDavSyncBackend::Impl {
       std::lock_guard<std::mutex> lock(mutex);
       snapshot = provider;
     }
+    return Session(config, snapshot, username, writable);
+  }
+
+  std::unique_ptr<WebDavTransport> Session(const SyncConfig &cfg,
+                                         const std::shared_ptr<ICredentialProvider> &snapshot,
+                                         std::string &username, bool writable) {
     Require(snapshot != nullptr, VXCORE_ERR_INVALID_PARAM);
     active_provider = snapshot;
     SyncCredentials credentials;
-    snapshot->GetCredentials(config.remote_url, "", &credentials);
+    snapshot->GetCredentials(cfg.remote_url, "", &credentials);
     Require(!writable || HasCredentials(credentials), VXCORE_ERR_SYNC_AUTH_FAILED);
     username = UsernameHash(credentials);
-    auto transport = std::make_unique<WebDavTransport>(config.remote_url, credentials, token);
+    auto transport = std::make_unique<WebDavTransport>(cfg.remote_url, credentials, token,
+                                                       cfg.tls_policy);
     const auto error = transport->Initialize();
     if (error != VXCORE_OK) {
       std::lock_guard<std::mutex> lock(mutex);
@@ -229,29 +256,36 @@ struct WebDavSyncBackend::Impl {
     return transport;
   }
 
-  Version Download(WebDavTransport &transport, const WebDavResource &resource, State &storage) {
+  Version Download(WebDavTransport &transport, const WebDavResource &resource, State &storage,
+                   std::optional<uint64_t> max_bytes = std::nullopt) {
     Require(resource.kind == WebDavResourceKind::kFile);
     Version version;
     version.kind = "file";
     version.etag = resource.etag;
     version.modified_utc = resource.modified_utc;
     version.snapshot = storage.AllocateSnapshot();
-    Check(transport.Download(resource.path, resource.etag, storage.directory, version.snapshot));
+    Check(transport.Download(resource.path, resource.etag, storage.directory, version.snapshot,
+                             max_bytes, std::nullopt, FileAccess::kPrivate));
     version.sha256 = transport.LastResponse().sha256;
     version.raw_sha256 = version.sha256;
     storage.VerifySnapshot(version.snapshot, version.sha256);
     if (!IsScratch(resource.path)) {
-      ValidateMetadata(resource.path, storage.Resolve(version.snapshot), storage.notebook_id);
+      ValidateMetadata(resource.path, storage.Resolve(version.snapshot), storage.notebook_id,
+                       nullptr, FileAccess::kPrivate);
       if (resource.path == kConfigPath) {
         const auto projected =
-            ProjectConfig(NotebookJson(storage.Resolve(version.snapshot), storage.notebook_id));
+            ProjectConfig(NotebookJson(storage.Resolve(version.snapshot), storage.notebook_id,
+                                       FileAccess::kPrivate));
+        Require(!max_bytes || projected.size() <= *max_bytes);
         const auto original = version.snapshot;
         version.sha256 = HashBytes(projected);
         version.snapshot = storage.SnapshotBytes(projected);
         storage.RemoveSnapshot(original);
       }
     }
-    std::ifstream input(storage.Resolve(version.snapshot), std::ios::binary);
+    const auto snapshot = storage.Resolve(version.snapshot);
+    const NativePathArgument native(snapshot, FileAccess::kPrivate);
+    std::ifstream input(native.c_str(), std::ios::binary);
     Require(input.good(), VXCORE_ERR_IO);
     char sample[8192];
     input.read(sample, sizeof(sample));
@@ -261,7 +295,7 @@ struct WebDavSyncBackend::Impl {
   }
 
   Version Inspect(WebDavTransport &transport, const std::string &path, bool body = true,
-                  State *storage = nullptr) {
+                  State *storage = nullptr, std::optional<uint64_t> max_bytes = std::nullopt) {
     WebDavResource resource;
     const auto result = transport.Stat(path, resource);
     if (result == VXCORE_ERR_NOT_FOUND) return {};
@@ -271,7 +305,7 @@ struct WebDavSyncBackend::Impl {
       v.kind = "collection";
       return v;
     }
-    if (body) return Download(transport, resource, storage ? *storage : state);
+    if (body) return Download(transport, resource, storage ? *storage : state, max_bytes);
     Version v;
     v.kind = "file";
     v.etag = resource.etag;
@@ -316,7 +350,8 @@ struct WebDavSyncBackend::Impl {
     it->second = std::move(actual);
   }
 
-  void VerifyIdentity(WebDavTransport &transport, bool allow_empty) {
+  bool VerifyIdentity(WebDavTransport &transport, bool allow_empty, const State &baseline,
+                      State &storage, std::optional<uint64_t> max_bytes = std::nullopt) {
     std::vector<WebDavResource> resources;
     Check(transport.List(resources));
     const WebDavResource *identity = nullptr;
@@ -329,12 +364,12 @@ struct WebDavSyncBackend::Impl {
     if (!identity) {
       // A previous config-first bootstrap may have created only its required parent.
       bool own_parent_only =
-          std::any_of(state.operations.begin(), state.operations.end(),
+          std::any_of(baseline.operations.begin(), baseline.operations.end(),
                       [](const Operation &op) {
                         return op.path == "vx_notebook" && op.action == "mkdirRemote" &&
                                op.expected_remote_kind == "absent";
                       }) &&
-          std::any_of(state.operations.begin(), state.operations.end(), [](const Operation &op) {
+          std::any_of(baseline.operations.begin(), baseline.operations.end(), [](const Operation &op) {
             return op.path == kConfigPath && op.action == "upsertRemote" &&
                    op.expected_remote_kind == "absent";
           });
@@ -342,19 +377,27 @@ struct WebDavSyncBackend::Impl {
         if (!r.path.empty() && !IsScratch(r.path) &&
             !(r.path == "vx_notebook" && r.kind == WebDavResourceKind::kCollection))
           own_parent_only = false;
-      Require(allow_empty && state.entries.empty() && (!ordinary || own_parent_only));
-      bootstrap = true;
-      return;
+      Require(allow_empty && baseline.entries.empty() && (!ordinary || own_parent_only));
+      return true;
     }
-    auto downloaded = Download(transport, *identity, state);
-    state.RemoveSnapshot(downloaded.snapshot);
-    bootstrap = false;
+    auto downloaded = Download(transport, *identity, storage, max_bytes);
+    storage.RemoveSnapshot(downloaded.snapshot);
+    return false;
+  }
+
+  void VerifyIdentity(WebDavTransport &transport, bool allow_empty) {
+    bootstrap = VerifyIdentity(transport, allow_empty, state, state);
   }
 
   void ProbeCleanup(WebDavTransport &transport, State &probe) {
     for (const auto &op : probe.operations) {
       Require(IsScratch(op.path) && op.path.find('/') == std::string::npos);
-      auto actual = Inspect(transport, op.path, true, &probe);
+      uint64_t max_bytes = 0;
+      for (const auto &known : probe.operations)
+        for (const auto &snapshot : {known.source_snapshot, known.previous_snapshot})
+          if (!snapshot.empty())
+            max_bytes = std::max(max_bytes, private_io::FileSize(probe.Resolve(snapshot)));
+      auto actual = Inspect(transport, op.path, true, &probe, max_bytes);
       if (actual.kind == "absent") continue;
       Require(actual.kind == "file", VXCORE_ERR_UNSUPPORTED);
       bool owned = false;
@@ -382,6 +425,10 @@ struct WebDavSyncBackend::Impl {
     if (!probe.operations.empty()) ProbeCleanup(transport, probe);
     probe.RotateUsername(state.username_hash);
     probe.Save();
+    Probe(transport, probe, step);
+  }
+
+  void Probe(WebDavTransport &transport, State &probe, const char *&step) {
     const auto a = std::string(kScratchPrefix) + NewId();
     const auto b = std::string(kScratchPrefix) + NewId();
     const auto c = std::string(kScratchPrefix) + NewId();
@@ -403,8 +450,8 @@ struct WebDavSyncBackend::Impl {
     probe.SavePending();
     try {
       step = "creating capability probe files (PUT with If-None-Match: *)";
-      Check(transport.Upload(a, probe.directory, first.source_snapshot, ""));
-      Check(transport.Upload(b, probe.directory, second.source_snapshot, ""));
+      Check(transport.Upload(a, probe.directory, first.source_snapshot, "", FileAccess::kPrivate));
+      Check(transport.Upload(b, probe.directory, second.source_snapshot, "", FileAccess::kPrivate));
       step = "reading back capability probe files (PROPFIND/GET)";
       auto av = Inspect(transport, a, true, &probe);
       auto bv = Inspect(transport, b, true, &probe);
@@ -429,7 +476,7 @@ struct WebDavSyncBackend::Impl {
         throw Failure{VXCORE_ERR_UNSUPPORTED};
       };
       step = "checking create-if-absent protection (PUT with If-None-Match: *)";
-      reject(transport.Upload(a, probe.directory, second.source_snapshot, ""));
+      reject(transport.Upload(a, probe.directory, second.source_snapshot, "", FileAccess::kPrivate));
       step = "checking destination ETag protection (MOVE with tagged If)";
       reject(transport.Move(a, av.etag, b, "\"vnote-invalid-" + NewId() + "\""));
       Require(Inspect(transport, a, true, &probe).sha256 == av.sha256 &&
@@ -519,6 +566,161 @@ struct WebDavSyncBackend::Impl {
     }
   }
 
+  fs::path CandidateRoot(const std::string &root, const SyncConfig &cfg,
+                         const std::string &operation_id, std::string &notebook_id) {
+    Require(cfg.backend == "webdav" && EncryptedNote::IsCanonicalUuid(operation_id),
+            VXCORE_ERR_INVALID_PARAM);
+    const auto path = PathFromUtf8(root);
+    private_io::Validate(path);
+    Require(private_io::IsDirectory(path), VXCORE_ERR_UNSUPPORTED);
+    fs::path notebook;
+    Check(WebDavTransport::ResolveLocalPath(path, kConfigPath, notebook, FileAccess::kPrivate));
+    notebook_id = NotebookJson(notebook, {}, FileAccess::kPrivate).at(kJsonKeyId).get<std::string>();
+    return path;
+  }
+
+  void ValidateCandidate(const std::string &root, const SyncConfig &cfg,
+                         const std::shared_ptr<ICredentialProvider> &credentials,
+                         const std::string &operation_id) {
+    candidate_validated = false;
+    candidate_committed.store(false);
+    candidate_provider.reset();
+    CheckCancelled(token);
+    Require(!prepared && !exchanged, VXCORE_ERR_SYNC_IN_PROGRESS);
+    std::string notebook_id;
+    const auto path = CandidateRoot(root, cfg, operation_id, notebook_id);
+    fs::path parent;
+    Check(WebDavTransport::ResolveLocalPath(
+        path, std::string(kPrivatePath) + "/credential-validation", parent, FileAccess::kPrivate));
+    if (private_io::Exists(parent)) {
+      candidate_cleanup_required.store(!private_io::IsEmpty(parent));
+      Require(!candidate_cleanup_required.load(), VXCORE_ERR_SYNC_IN_PROGRESS);
+    }
+    fs::path pending;
+    Check(WebDavTransport::ResolveLocalPath(path, std::string(kPrivatePath) + "/probe/pending.json",
+                                            pending, FileAccess::kPrivate));
+    Require(!private_io::Exists(pending), VXCORE_ERR_SYNC_IN_PROGRESS);
+    std::string username;
+    auto transport = Session(cfg, credentials, username, true);
+    State baseline;
+    baseline.cancellation = token;
+    baseline.Open(path, notebook_id, transport->CanonicalRoot(), username);
+    Require(baseline.operations.empty(), VXCORE_ERR_SYNC_IN_PROGRESS);
+    const auto baseline_hash = baseline.existed
+        ? HashFile(baseline.Resolve("state.json"), token, FileAccess::kPrivate) : std::string();
+    if (initialized.load())
+      Require(state.root == path && state.notebook_id == notebook_id &&
+              state.remote_url == transport->CanonicalRoot());
+    State probe;
+    probe.cancellation = token;
+    // Once creation starts even an IO/cancellation failure may retain a recovery directory.
+    candidate_cleanup_required.store(true);
+    probe.OpenCandidate(path, notebook_id, transport->CanonicalRoot(), username, operation_id, true);
+    const bool empty = VerifyIdentity(*transport, true, baseline, probe, 16 * 1024 * 1024);
+    const char *step = "validating candidate capability";
+    Probe(*transport, probe, step);
+    probe.RemoveCandidate();
+    candidate_cleanup_required.store(false);
+    CheckCancelled(token);
+    baseline.username_hash = username;
+    baseline.cancellation.reset();
+    candidate_baseline = std::move(baseline);
+    candidate_config = cfg;
+    candidate_config.remote_url = transport->CanonicalRoot();
+    candidate_baseline_hash = baseline_hash;
+    candidate_operation_id = operation_id;
+    candidate_provider = credentials;
+    candidate_bootstrap = empty;
+    candidate_validated = true;
+  }
+
+  void RecoverCandidate(const std::string &root, const SyncConfig &cfg,
+                        const std::shared_ptr<ICredentialProvider> &credentials,
+                        const std::string &operation_id) {
+    candidate_validated = false;
+    candidate_committed.store(false);
+    candidate_provider.reset();
+    candidate_cleanup_required.store(true);
+    CheckCancelled(token);
+    std::string notebook_id;
+    const auto path = CandidateRoot(root, cfg, operation_id, notebook_id);
+    fs::path directory;
+    Check(WebDavTransport::ResolveLocalPath(
+        path, std::string(kPrivatePath) + "/credential-validation/" + operation_id, directory,
+        FileAccess::kPrivate));
+    if (!private_io::Exists(directory)) {
+      candidate_cleanup_required.store(false);
+      return;
+    }
+    candidate_cleanup_required.store(true);
+    Require(private_io::IsDirectory(directory));
+    if (private_io::IsEmpty(directory)) {
+      // A crash between removing the last binding and rmdir has no remote cleanup authority.
+      Require(private_io::Remove(directory), VXCORE_ERR_IO);
+      if (private_io::IsEmpty(directory.parent_path()))
+        Require(private_io::Remove(directory.parent_path()), VXCORE_ERR_IO);
+      candidate_cleanup_required.store(false);
+      return;
+    }
+    std::string username;
+    auto transport = Session(cfg, credentials, username, true);
+    State probe;
+    probe.cancellation = token;
+    probe.OpenCandidate(path, notebook_id, transport->CanonicalRoot(), username, operation_id, false);
+    // OpenCandidate proves the exact retained account before the first network request.
+    if (!probe.operations.empty()) ProbeCleanup(*transport, probe);
+    else if (private_io::Exists(probe.Resolve("pending.json"))) probe.ClearPending();
+    probe.RemoveCandidate();
+    candidate_cleanup_required.store(false);
+  }
+
+  void CommitCandidate(const std::shared_ptr<ICredentialProvider> &credentials) {
+    Require(candidate_validated && !candidate_cleanup_required.load() &&
+            credentials && credentials == candidate_provider);
+    fs::path notebook;
+    Check(WebDavTransport::ResolveLocalPath(candidate_baseline.root, kConfigPath, notebook,
+                                            FileAccess::kPrivate));
+    NotebookJson(notebook, candidate_baseline.notebook_id, FileAccess::kPrivate);
+    const auto baseline = candidate_baseline.Resolve("state.json");
+    Require(candidate_baseline.existed ? private_io::Exists(baseline) &&
+                HashFile(baseline, token, FileAccess::kPrivate) == candidate_baseline_hash
+                : !private_io::Exists(baseline), VXCORE_ERR_SYNC_IN_PROGRESS);
+    Require(!private_io::Exists(candidate_baseline.Resolve("pending.json")),
+            VXCORE_ERR_SYNC_IN_PROGRESS);
+    fs::path recovery;
+    Check(WebDavTransport::ResolveLocalPath(candidate_baseline.root,
+        std::string(kPrivatePath) + "/credential-validation", recovery, FileAccess::kPrivate));
+    Require(!private_io::Exists(recovery) || private_io::IsEmpty(recovery),
+            VXCORE_ERR_SYNC_IN_PROGRESS);
+    CheckCancelled(token);
+    // Reuse the operation's account-bound, state-only recovery shape before attempting
+    // publication. Even an ambiguous rename/write-through error retains durable evidence;
+    // recovery may remove this marker but can never publish or roll back an account.
+    State publication;
+    candidate_cleanup_required.store(true);
+    publication.OpenCandidate(candidate_baseline.root, candidate_baseline.notebook_id,
+                              candidate_baseline.remote_url, candidate_baseline.username_hash,
+                              candidate_operation_id, true);
+    CheckCancelled(token);
+    {
+      // Acquire the provider lock before the publication boundary: nothing after Save
+      // needs allocation or a lock acquisition before the in-memory identity is installed.
+      std::lock_guard<std::mutex> lock(mutex);
+      candidate_baseline.Save();
+      std::swap(state, candidate_baseline);
+      std::swap(config, candidate_config);
+      provider = std::move(candidate_provider);
+      bootstrap = candidate_bootstrap;
+      candidate_validated = false;
+      initialized.store(true);
+      candidate_committed.store(true);
+    }
+    // Publication is already a fact. Cleanup errors remain actual errors, with the
+    // committed flag and operation-owned marker available to owner reconciliation.
+    publication.RemoveCandidate();
+    candidate_cleanup_required.store(false);
+  }
+
   void ScanLocal() {
     Tree next;
     std::vector<std::string> ids;
@@ -529,7 +731,7 @@ struct WebDavSyncBackend::Impl {
       const auto relative = PathToGenericUtf8(it->path().lexically_relative(state.root));
       Check(WebDavTransport::ValidateRelativePath(relative));
       if (IsExcluded(relative, config)) {
-        if (it->is_directory()) it.disable_recursion_pending();
+        it.disable_recursion_pending();
         continue;
       }
       if (IsScratch(relative)) {
@@ -552,7 +754,7 @@ struct WebDavSyncBackend::Impl {
                 state.SnapshotBytes(ProjectConfig(NotebookJson(it->path(), state.notebook_id)));
           else
             version.snapshot = state.SnapshotFile(it->path(), token);
-          Require(HashFile(state.Resolve(version.snapshot), token) == version.sha256,
+          Require(HashFile(state.Resolve(version.snapshot), token, FileAccess::kPrivate) == version.sha256,
                   VXCORE_ERR_SYNC_IN_PROGRESS);
         }
         ValidateMetadata(relative, it->path(), state.notebook_id, &ids);
@@ -873,7 +1075,8 @@ struct WebDavSyncBackend::Impl {
     auto scratch = Inspect(transport, op.scratch_url);
     if (scratch.kind == "absent") {
       // The complete intent, owned name and payload are durable before PUT.
-      Check(transport.Upload(op.scratch_url, state.directory, op.source_snapshot, ""));
+      Check(transport.Upload(op.scratch_url, state.directory, op.source_snapshot, "",
+                             FileAccess::kPrivate));
       scratch = Inspect(transport, op.scratch_url);
     }
     Require(scratch.kind == "file" && scratch.sha256 == op.new_sha256, VXCORE_ERR_INVALID_STATE);
@@ -885,26 +1088,26 @@ struct WebDavSyncBackend::Impl {
     VerifyRemoteResult(transport, op);
   }
 
-  void ValidateCohort() {
+  void ValidateCohort(FileAccess local_access = FileAccess::kDefault) {
     // Validate the final metadata cohort, not merely each JSON document in isolation.
-    std::map<std::string, fs::path> metadata;
+    std::map<std::string, std::pair<fs::path, FileAccess>> metadata;
     for (const auto &entry : local)
       if (entry.second.kind == "file" && IsMetadata(entry.first)) {
         fs::path path;
-        Check(WebDavTransport::ResolveLocalPath(state.root, entry.first, path));
-        metadata[entry.first] = path;
+        Check(WebDavTransport::ResolveLocalPath(state.root, entry.first, path, local_access));
+        metadata[entry.first] = {std::move(path), local_access};
       }
     for (const auto &op : state.operations) {
       if (!IsMetadata(op.path) && op.path != "vx_notebook/encryption.vne") continue;
       if (op.action == "upsertLocal" || op.action == "upsertRemote")
-        metadata[op.path] = state.Resolve(op.source_snapshot);
+        metadata[op.path] = {state.Resolve(op.source_snapshot), FileAccess::kPrivate};
       else if (op.action == "deleteLocal" || op.action == "deleteRemote")
         metadata.erase(op.path);
     }
     Require(metadata.count(kConfigPath));
     std::vector<std::string> ids;
     for (const auto &entry : metadata)
-      ValidateMetadata(entry.first, entry.second, state.notebook_id, &ids);
+      ValidateMetadata(entry.first, entry.second.first, state.notebook_id, &ids, entry.second.second);
     std::set<std::string> unique;
     for (const auto &id : ids) Require(unique.insert(id).second);
   }
@@ -1138,10 +1341,13 @@ struct WebDavSyncBackend::Impl {
         }
         if (op.path == kConfigPath) {
           const auto current = NotebookJson(destination, state.notebook_id);
-          const auto bytes = RestoreRouting(ReadBytes(state.Resolve(op.source_snapshot)), current);
+          const auto bytes = RestoreRouting(
+              ReadBytes(state.Resolve(op.source_snapshot), 16 * 1024 * 1024, FileAccess::kPrivate),
+              current);
           Check(WriteFileAtomic(destination, bytes));
         } else
-          CopyAtomic(state.Resolve(op.source_snapshot), destination, token);
+          CopyAtomic(state.Resolve(op.source_snapshot), destination, token, FileAccess::kPrivate,
+                     FileAccess::kDefault);
         installed = true;
       } else if (op.action == "deleteLocal" && actual.kind != "absent") {
         Require(actual.kind == "file");
@@ -1218,15 +1424,80 @@ struct WebDavSyncBackend::Impl {
     Progress(SyncState::kIdle, "WebDAV synchronization complete", 100);
   }
 
+  bool BoundedClone() const {
+    const auto &limits = config.clone_limits;
+    return limits.max_file_bytes || limits.max_total_bytes || limits.max_entries ||
+           limits.max_depth || limits.max_path_bytes;
+  }
+
+  void ValidateCloneInventory(const fs::path &root,
+                              const std::vector<WebDavResource> &resources, FileAccess access) const {
+    const auto &limits = config.clone_limits;
+    uint64_t entries = 0, bytes = 0;
+    for (const auto &resource : resources) {
+      CheckCancelled(token);
+      if (resource.path.empty()) continue;
+      ++entries;
+      const uint64_t depth = 1 + std::count(resource.path.begin(), resource.path.end(), '/');
+      Require((!limits.max_entries || entries <= limits.max_entries) &&
+              (!limits.max_depth || depth <= limits.max_depth) &&
+              (!limits.max_path_bytes || resource.path.size() <= limits.max_path_bytes),
+              VXCORE_ERR_INVALID_STATE);
+      fs::path checked;
+      Check(WebDavTransport::ResolveLocalPath(root, resource.path, checked, access));
+#if defined(_WIN32)
+      // Complete opens vx_import through the unchanged desktop notebook loader.
+      // Admit its unknown recovery descendants before creating any clone bytes.
+      if (config.private_clone && !IsExcluded(resource.path, config) &&
+          (resource.path == "vx_notebook/vx_import" ||
+           resource.path.compare(0, 22, "vx_notebook/vx_import/") == 0))
+        Require(checked.native().size() < 260, VXCORE_ERR_UNSUPPORTED);
+#endif
+      if (IsScratch(resource.path) || IsExcluded(resource.path, config) ||
+          resource.kind != WebDavResourceKind::kFile) continue;
+      Require(!limits.max_file_bytes || resource.size <= limits.max_file_bytes);
+      Require(resource.size <= std::numeric_limits<uint64_t>::max() - bytes);
+      bytes += resource.size;
+      Require(!limits.max_total_bytes || bytes <= limits.max_total_bytes);
+    }
+  }
+
+  void DownloadClone(WebDavTransport &transport, const WebDavResource &resource,
+                     const fs::path &root, uint64_t &downloaded_bytes, FileAccess access) {
+    if (!BoundedClone()) {
+      Check(transport.Download(resource.path, resource.etag, root, resource.path,
+                               std::nullopt, std::nullopt, access));
+      return;
+    }
+    const auto &limits = config.clone_limits;
+    uint64_t maximum = resource.size;
+    if (limits.max_file_bytes) maximum = std::min(maximum, limits.max_file_bytes);
+    if (limits.max_total_bytes) {
+      Require(downloaded_bytes <= limits.max_total_bytes);
+      maximum = std::min(maximum, limits.max_total_bytes - downloaded_bytes);
+    }
+    Require(resource.size <= maximum &&
+            resource.size <= std::numeric_limits<uint64_t>::max() - downloaded_bytes);
+    Check(transport.Download(resource.path, resource.etag, root, resource.path,
+                             maximum, resource.size, access));
+    downloaded_bytes += transport.LastResponse().bytes;
+  }
+
   void Clone(const std::string &target, const SyncConfig &cfg) {
     initialized.store(false);
     prepared = false;
     exchanged = false;
     config = cfg;
     Require(config.backend == "webdav", VXCORE_ERR_INVALID_PARAM);
-    const auto root = fs::absolute(PathFromUtf8(target));
-    Require(fs::is_directory(root) && fs::is_empty(root), VXCORE_ERR_INVALID_PARAM);
-    Require(CheckReparsePoint(PathToUtf8(root)) == ReparseState::kNo, VXCORE_ERR_UNSUPPORTED);
+    const auto access = config.private_clone ? FileAccess::kPrivate : FileAccess::kDefault;
+    const auto root = config.private_clone ? PathFromUtf8(target) : fs::absolute(PathFromUtf8(target));
+    if (config.private_clone) {
+      private_io::Validate(root);
+      Require(private_io::IsDirectory(root) && private_io::IsEmpty(root), VXCORE_ERR_INVALID_PARAM);
+    } else {
+      Require(fs::is_directory(root) && fs::is_empty(root), VXCORE_ERR_INVALID_PARAM);
+      Require(CheckReparsePoint(PathToUtf8(root)) == ReparseState::kNo, VXCORE_ERR_UNSUPPORTED);
+    }
     std::string username;
     auto transport = Session(username, false);
     std::vector<WebDavResource> resources;
@@ -1235,11 +1506,13 @@ struct WebDavSyncBackend::Impl {
       return r.path == kConfigPath && r.kind == WebDavResourceKind::kFile;
     });
     Require(identity != resources.end(), VXCORE_ERR_INVALID_STATE);
+    ValidateCloneInventory(root, resources, access);
+    uint64_t downloaded_bytes = 0;
     // The staging root is caller-owned and initially empty; downloading config here cannot
     // replace user content. No writable runtime or capability probe is created by Clone.
-    EnsureDirectory(root, "vx_notebook");
-    Check(transport->Download(kConfigPath, identity->etag, root, kConfigPath));
-    const auto notebook = NotebookJson(root / PathFromUtf8(kConfigPath));
+    EnsureDirectory(root, "vx_notebook", access);
+    DownloadClone(*transport, *identity, root, downloaded_bytes, access);
+    const auto notebook = NotebookJson(root / PathFromUtf8(kConfigPath), {}, access);
     state.Open(root, notebook.at(kJsonKeyId).get<std::string>(), transport->CanonicalRoot(),
                username);
     Tree downloaded;
@@ -1252,25 +1525,34 @@ struct WebDavSyncBackend::Impl {
       CheckCancelled(token);
       if (r.path.empty() || IsScratch(r.path) || IsExcluded(r.path, config)) continue;
       fs::path file;
-      Check(WebDavTransport::ResolveLocalPath(root, r.path, file));
+      Check(WebDavTransport::ResolveLocalPath(root, r.path, file, access));
       Version v;
       if (r.kind == WebDavResourceKind::kCollection) {
-        EnsureDirectory(root, r.path);
+        EnsureDirectory(root, r.path, access);
         v.kind = "collection";
       } else {
-        if (r.path != kConfigPath) Check(transport->Download(r.path, r.etag, root, r.path));
-        ValidateMetadata(r.path, file, state.notebook_id);
-        v = ReadLocal(root, r.path, state.notebook_id, token);
+        if (r.path != kConfigPath) DownloadClone(*transport, r, root, downloaded_bytes, access);
+        ValidateMetadata(r.path, file, state.notebook_id, nullptr, access);
+        v = ReadLocal(root, r.path, state.notebook_id, token, nullptr, access);
         v.etag = r.etag;
         if (r.path == kConfigPath) {
           // A clone starts with no device routing, even if an external client supplied it.
-          Check(WriteFileAtomic(file, ProjectConfig(NotebookJson(file, state.notebook_id))));
+          const auto projected = ProjectConfig(NotebookJson(file, state.notebook_id, access));
+          const auto &limits = config.clone_limits;
+          Require(!limits.max_file_bytes || projected.size() <= limits.max_file_bytes);
+          // Atomic projection briefly owns both raw and projected config bytes.
+          Require(!limits.max_total_bytes ||
+                  (downloaded_bytes <= limits.max_total_bytes &&
+                   projected.size() <= limits.max_total_bytes - downloaded_bytes));
+          Check(WriteFileAtomic(file, projected, access));
+          if (BoundedClone()) downloaded_bytes = downloaded_bytes - r.size + projected.size();
         }
       }
       downloaded.emplace(r.path, std::move(v));
     }
     std::vector<WebDavResource> verified;
     Check(transport->List(verified));
+    ValidateCloneInventory(root, verified, access);
     Tree final;
     for (const auto &r : verified) {
       if (r.path.empty() || IsScratch(r.path) || IsExcluded(r.path, config)) continue;
@@ -1285,11 +1567,18 @@ struct WebDavSyncBackend::Impl {
     Require(final.size() == downloaded.size(), VXCORE_ERR_SYNC_CONFLICT);
     local = downloaded;
     remote = downloaded;
-    ValidateCohort();
+    ValidateCohort(access);
     state.entries.clear();
     for (const auto &entry : downloaded)
       state.entries.emplace(entry.first, BaselineVersion(entry.second));
-    state.Save();
+    std::optional<uint64_t> remaining;
+    if (config.clone_limits.max_total_bytes) {
+      Require(downloaded_bytes <= config.clone_limits.max_total_bytes);
+      remaining = config.clone_limits.max_total_bytes - downloaded_bytes;
+    }
+    // The first baseline has no predecessor: its atomic sibling consumes the
+    // remaining reservation once and becomes state.json by rename, not by copy.
+    state.Save(remaining);
   }
 };
 
@@ -1315,6 +1604,27 @@ VxCoreError WebDavSyncBackend::Initialize(const std::string &root, const SyncCon
 }
 VxCoreError WebDavSyncBackend::Clone(const std::string &target, const SyncConfig &config) {
   return impl_->Run([&] { impl_->Clone(target, config); });
+}
+VxCoreError WebDavSyncBackend::ValidateCandidate(
+    const std::string &root, const SyncConfig &config,
+    std::shared_ptr<ICredentialProvider> provider, const std::string &operation_id) {
+  // Invalidate any earlier unpublished proof even when this invocation is already cancelled.
+  return impl_->Run([&] { impl_->ValidateCandidate(root, config, provider, operation_id); }, false);
+}
+VxCoreError WebDavSyncBackend::RecoverCandidate(
+    const std::string &root, const SyncConfig &config,
+    std::shared_ptr<ICredentialProvider> provider, const std::string &recovery_operation_id) {
+  return impl_->Run([&] { impl_->RecoverCandidate(root, config, provider, recovery_operation_id); },
+                    false);
+}
+VxCoreError WebDavSyncBackend::CommitCandidate(std::shared_ptr<ICredentialProvider> provider) {
+  return impl_->Run([&] { impl_->CommitCandidate(provider); });
+}
+bool WebDavSyncBackend::CandidateCleanupRequired() const {
+  return impl_->candidate_cleanup_required.load();
+}
+bool WebDavSyncBackend::CandidateCommitted() const noexcept {
+  return impl_->candidate_committed.load();
 }
 void WebDavSyncBackend::ReplaceCredsProvider(std::shared_ptr<ICredentialProvider> provider) {
   std::lock_guard<std::mutex> lock(impl_->mutex);

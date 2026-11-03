@@ -5,11 +5,13 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "sync/sync_cancellation.h"
 #include "sync/sync_types.h"
+#include "utils/file_utils.h"
 #include "vxcore/vxcore_types.h"
 
 namespace vxcore {
@@ -42,7 +44,7 @@ struct WebDavResponse {
 class WebDavTransport final {
  public:
   WebDavTransport(const std::string &collection_url, const SyncCredentials &credentials,
-                  SyncCancellationPtr cancellation);
+                  SyncCancellationPtr cancellation, SyncTlsPolicy tls_policy = {});
   ~WebDavTransport();
   WebDavTransport(const WebDavTransport &) = delete;
   WebDavTransport &operator=(const WebDavTransport &) = delete;
@@ -63,13 +65,19 @@ class WebDavTransport final {
 
   // Download publishes atomically only after successful If-Match GET, exact ETag and size
   // validation. Root must exist; the caller creates parents and serializes local mutations.
+  // Optional bounds apply while streaming (including zero); expected_bytes also requires exact
+  // final size before publication. Omitted bounds retain the legacy unlimited download behavior.
   VxCoreError Download(const std::string &path, const std::string &expected_etag,
                        const std::filesystem::path &local_root,
-                       const std::string &local_relative_path);
+                       const std::string &local_relative_path,
+                       std::optional<uint64_t> max_bytes = std::nullopt,
+                       std::optional<uint64_t> expected_bytes = std::nullopt,
+                       FileAccess access = FileAccess::kDefault);
   // Empty expected_etag means create-if-absent; otherwise exact strong If-Match.
   // Source must be an immutable, seekable snapshot (Digest authentication can rewind it).
   VxCoreError Upload(const std::string &path, const std::filesystem::path &local_root,
-                     const std::string &local_relative_path, const std::string &expected_etag);
+                     const std::string &local_relative_path, const std::string &expected_etag,
+                     FileAccess access = FileAccess::kDefault);
   // Empty destination_etag means Overwrite:F; otherwise tagged destination If + Overwrite:T.
   VxCoreError Move(const std::string &source, const std::string &source_etag,
                    const std::string &destination, const std::string &destination_etag);
@@ -83,7 +91,8 @@ class WebDavTransport final {
   // This is a path-based guard, not protection against hostile concurrent filesystem mutation.
   static VxCoreError ResolveLocalPath(const std::filesystem::path &root,
                                       const std::string &relative_path,
-                                      std::filesystem::path &out_path);
+                                      std::filesystem::path &out_path,
+                                      FileAccess access = FileAccess::kDefault);
 
  private:
   struct Impl;

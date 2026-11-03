@@ -110,17 +110,19 @@ struct Identity {
   uint64_t file = 0;
   uint64_t size = 0;
   fs::file_time_type modified;
+  uint64_t private_modified = 0;
   bool operator==(const Identity &other) const {
     return device == other.device && file == other.file && size == other.size &&
-           modified == other.modified;
+           modified == other.modified && private_modified == other.private_modified;
   }
 };
 
-Identity Identify(const fs::path &path) {
+Identity Identify(const fs::path &path, FileAccess access = FileAccess::kDefault) {
   Identity result;
-  Require(CheckReparsePoint(PathToUtf8(path)) == ReparseState::kNo, VXCORE_ERR_UNSUPPORTED);
+  Require(CheckReparsePoint(PathToUtf8(path), access) == ReparseState::kNo, VXCORE_ERR_UNSUPPORTED);
 #ifdef _WIN32
-  HANDLE handle = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+  const NativePathArgument native(path, access);
+  HANDLE handle = CreateFileW(native.c_str(), FILE_READ_ATTRIBUTES,
                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                               OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
   Require(handle != INVALID_HANDLE_VALUE, VXCORE_ERR_IO);
@@ -130,11 +132,25 @@ Identity Identify(const fs::path &path) {
   Require(ok && !(info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT), VXCORE_ERR_IO);
   result.device = info.dwVolumeSerialNumber;
   result.file = (uint64_t(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+  if (access == FileAccess::kPrivate) {
+    Require(!(info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY), VXCORE_ERR_IO);
+    result.size = (uint64_t(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+    result.private_modified = (uint64_t(info.ftLastWriteTime.dwHighDateTime) << 32) |
+                              info.ftLastWriteTime.dwLowDateTime;
+    return result;
+  }
 #else
   struct stat info{};
   Require(lstat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode), VXCORE_ERR_IO);
   result.device = static_cast<uint64_t>(info.st_dev);
   result.file = static_cast<uint64_t>(info.st_ino);
+  if (access == FileAccess::kPrivate) {
+    const auto status = private_io::Status(path);
+    Require(status.regular, VXCORE_ERR_IO);
+    result.size = status.size;
+    result.private_modified = status.modified;
+    return result;
+  }
 #endif
   result.size = fs::file_size(path);
   result.modified = fs::last_write_time(path);
@@ -142,9 +158,11 @@ Identity Identify(const fs::path &path) {
 }
 
 void Reserve(const fs::path &path) {
+  private_io::Validate(path, true);
 #ifdef _WIN32
+  const NativePathArgument native(path, FileAccess::kPrivate);
   int fd = -1;
-  const auto error = _wsopen_s(&fd, path.c_str(), _O_CREAT | _O_EXCL | _O_WRONLY | _O_BINARY,
+  const auto error = _wsopen_s(&fd, native.c_str(), _O_CREAT | _O_EXCL | _O_WRONLY | _O_BINARY,
                                _SH_DENYRW, _S_IREAD | _S_IWRITE);
   Require(error == 0 && fd >= 0, VXCORE_ERR_IO);
   Require(_close(fd) == 0, VXCORE_ERR_IO);
@@ -153,6 +171,30 @@ void Reserve(const fs::path &path) {
   Require(fd >= 0, VXCORE_ERR_IO);
   Require(close(fd) == 0, VXCORE_ERR_IO);
 #endif
+}
+
+// Candidate journals never authorize recursive deletion or arbitrary snapshot paths.
+void CandidateLayout(const fs::path &directory, const std::string &candidate_id) {
+  size_t snapshots = 0;
+  private_io::VisitDirectory(directory, [&](const fs::path &child) {
+    const auto name = PathToUtf8(child.filename());
+    const auto status = private_io::Status(child);
+    if (name == "state.json" || name == "pending.json") {
+      Require(status.regular && status.size <= 64 * 1024);
+      return;
+    }
+    Require(name == "snapshots" && status.directory);
+    private_io::VisitDirectory(child, [&](const fs::path &group) {
+      Require(PathToUtf8(group.filename()) == candidate_id && private_io::IsDirectory(group));
+      private_io::VisitDirectory(group, [&](const fs::path &snapshot) {
+        Require(++snapshots <= 4096);
+        const auto snapshot_status = private_io::Status(snapshot);
+        Require(snapshot_status.regular &&
+                EncryptedNote::IsCanonicalUuid(PathToUtf8(snapshot.filename())) &&
+                snapshot_status.size <= 16 * 1024 * 1024);
+      });
+    });
+  });
 }
 
 bool SafeName(const std::string &name) {
@@ -200,9 +242,11 @@ std::string HashBytes(const std::string &bytes) {
   Check(EncryptedNote::FingerprintBytes(bytes.data(), bytes.size(), hash));
   return Hex(hash);
 }
-std::string HashFile(const fs::path &path, const SyncCancellationPtr &token) {
+std::string HashFile(const fs::path &path, const SyncCancellationPtr &token, FileAccess access) {
   Require(sodium_init() >= 0, VXCORE_ERR_INVALID_STATE);
-  std::ifstream input(path, std::ios::binary);
+  if (access == FileAccess::kPrivate) Require(private_io::IsRegularFile(path), VXCORE_ERR_IO);
+  const NativePathArgument native(path, access);
+  std::ifstream input(native.c_str(), std::ios::binary);
   Require(input.good(), VXCORE_ERR_IO);
   crypto_hash_sha256_state context;
   Require(crypto_hash_sha256_init(&context) == 0);
@@ -220,10 +264,11 @@ std::string HashFile(const fs::path &path, const SyncCancellationPtr &token) {
   Require(crypto_hash_sha256_final(&context, hash.data()) == 0);
   return Hex(hash);
 }
-std::string ReadBytes(const fs::path &path, size_t limit) {
-  const auto size = fs::file_size(path);
+std::string ReadBytes(const fs::path &path, size_t limit, FileAccess access) {
+  const auto size = access == FileAccess::kPrivate ? private_io::FileSize(path) : fs::file_size(path);
   Require(size <= limit, VXCORE_ERR_INVALID_STATE);
-  std::ifstream input(path, std::ios::binary);
+  const NativePathArgument native(path, access);
+  std::ifstream input(native.c_str(), std::ios::binary);
   Require(input.good(), VXCORE_ERR_IO);
   std::string result(static_cast<size_t>(size), '\0');
   input.read(result.data(), static_cast<std::streamsize>(result.size()));
@@ -268,8 +313,8 @@ bool IsExcluded(const std::string &path, const SyncConfig &config) {
   }
   return false;
 }
-Json NotebookJson(const fs::path &file, const std::string &notebook_id) {
-  auto json = Json::parse(ReadBytes(file));
+Json NotebookJson(const fs::path &file, const std::string &notebook_id, FileAccess access) {
+  auto json = Json::parse(ReadBytes(file, 16 * 1024 * 1024, access));
   ValidateNotebook(json, notebook_id);
   return json;
 }
@@ -290,19 +335,25 @@ std::string RestoreRouting(const std::string &projected, const Json &current) {
   return json.dump();
 }
 void ValidateMetadata(const std::string &path, const fs::path &file, const std::string &notebook_id,
-                      std::vector<std::string> *ids) {
+                      std::vector<std::string> *ids, FileAccess access) {
   if (path == kConfigPath) {
-    NotebookJson(file, notebook_id);
+    NotebookJson(file, notebook_id, access);
     return;
   }
   if (path == "vx_notebook/encryption.vne") {
     EncryptedNote::KeyEnvelope envelope;
-    Check(EncryptedNote::ReadKeyEnvelope(file, envelope));
+    if (access == FileAccess::kPrivate) {
+      Require(private_io::FileSize(file) <= EncryptedNote::kMaxHeaderBytes,
+              VXCORE_ERR_ENCRYPTION_FORMAT);
+      const auto bytes = ReadBytes(file, EncryptedNote::kMaxHeaderBytes, access);
+      Check(EncryptedNote::DecodeKeyEnvelope(bytes.data(), bytes.size(), envelope));
+    } else
+      Check(EncryptedNote::ReadKeyEnvelope(file, envelope));
     Require(envelope.notebook_id == notebook_id, VXCORE_ERR_ENCRYPTION_FORMAT);
     return;
   }
   if (!IsMetadata(path)) return;
-  const auto json = Json::parse(ReadBytes(file));
+  const auto json = Json::parse(ReadBytes(file, 16 * 1024 * 1024, access));
   Require(json.is_object() && json.contains(kJsonKeyFiles) && json.at(kJsonKeyFiles).is_array() &&
           json.contains(kJsonKeyFolders) && json.at(kJsonKeyFolders).is_array());
   const auto folder = FolderConfig::FromJson(json);
@@ -329,21 +380,28 @@ Version Lookup(const Tree &tree, const std::string &path) {
   return it == tree.end() ? Version{} : it->second;
 }
 
-void EnsureDirectory(const fs::path &root, const std::string &relative) {
+void EnsureDirectory(const fs::path &root, const std::string &relative, FileAccess access) {
   fs::path resolved;
-  Check(WebDavTransport::ResolveLocalPath(root, relative, resolved));
-  std::error_code error;
-  fs::create_directories(resolved, error);
-  Require(!error && fs::is_directory(resolved), VXCORE_ERR_IO);
-  Check(WebDavTransport::ResolveLocalPath(root, relative, resolved));
+  Check(WebDavTransport::ResolveLocalPath(root, relative, resolved, access));
+  if (access == FileAccess::kPrivate) {
+    private_io::CreateDirectories(resolved);
+    Require(private_io::IsDirectory(resolved), VXCORE_ERR_IO);
+  } else {
+    std::error_code error;
+    fs::create_directories(resolved, error);
+    Require(!error && fs::is_directory(resolved), VXCORE_ERR_IO);
+  }
+  Check(WebDavTransport::ResolveLocalPath(root, relative, resolved, access));
 }
 
 void CopyAtomic(const fs::path &source, const fs::path &destination,
-                const SyncCancellationPtr &token) {
-  const auto before = Identify(source);
-  std::ifstream input(source, std::ios::binary);
+                const SyncCancellationPtr &token, FileAccess source_access,
+                FileAccess destination_access) {
+  const auto before = Identify(source, source_access);
+  const NativePathArgument native(source, source_access);
+  std::ifstream input(native.c_str(), std::ios::binary);
   Require(input.good(), VXCORE_ERR_IO);
-  AtomicFileWriter writer(destination);
+  AtomicFileWriter writer(destination, destination_access);
   Check(writer.Open());
   std::array<char, 64 * 1024> buffer{};
   while (input) {
@@ -353,14 +411,14 @@ void CopyAtomic(const fs::path &source, const fs::path &destination,
     if (count) Check(writer.Write(buffer.data(), static_cast<size_t>(count)));
   }
   Require(input.eof() && !input.bad(), VXCORE_ERR_IO);
-  Require(before == Identify(source), VXCORE_ERR_SYNC_IN_PROGRESS);
+  Require(before == Identify(source, source_access), VXCORE_ERR_SYNC_IN_PROGRESS);
   CheckCancelled(token);
   Check(writer.Commit());
 }
 
 fs::path State::Resolve(const std::string &relative) const {
   fs::path result;
-  Check(WebDavTransport::ResolveLocalPath(directory, relative, result));
+  Check(WebDavTransport::ResolveLocalPath(directory, relative, result, FileAccess::kPrivate));
   return result;
 }
 void State::Open(const fs::path &notebook_root, const std::string &id, const std::string &url,
@@ -369,16 +427,16 @@ void State::Open(const fs::path &notebook_root, const std::string &id, const std
   notebook_id = id;
   remote_url = url;
   username_hash = username;
-  EnsureDirectory(root, storage_relative);
-  Check(WebDavTransport::ResolveLocalPath(root, storage_relative, directory));
+  EnsureDirectory(root, storage_relative, FileAccess::kPrivate);
+  Check(WebDavTransport::ResolveLocalPath(root, storage_relative, directory, FileAccess::kPrivate));
   entries.clear();
   conflicts.clear();
   operations.clear();
   operation_id.clear();
   const auto state_path = Resolve("state.json");
-  existed = fs::exists(state_path);
+  existed = private_io::Exists(state_path);
   if (existed) {
-    auto j = Json::parse(ReadBytes(state_path, 128 * 1024 * 1024));
+    auto j = Json::parse(ReadBytes(state_path, 128 * 1024 * 1024, FileAccess::kPrivate));
     ExactKeys(j, {"version", kJsonKeyNotebookId, kJsonKeyRemoteUrl, "usernameHash", "entries",
                   "conflicts"});
     ValidateBinding(j, *this, false);
@@ -444,9 +502,9 @@ void State::Open(const fs::path &notebook_root, const std::string &id, const std
     }
   }
   const auto pending_path = Resolve("pending.json");
-  if (!fs::exists(pending_path)) return;
+  if (!private_io::Exists(pending_path)) return;
   Require(existed);
-  const auto j = Json::parse(ReadBytes(pending_path, 128 * 1024 * 1024));
+  const auto j = Json::parse(ReadBytes(pending_path, 128 * 1024 * 1024, FileAccess::kPrivate));
   ExactKeys(j, {"version", kJsonKeyNotebookId, kJsonKeyRemoteUrl, "usernameHash", "operationId",
                 "operations"});
   ValidateBinding(j, *this, true);
@@ -523,7 +581,68 @@ void State::Open(const fs::path &notebook_root, const std::string &id, const std
   }
 }
 
-void State::Save() const {
+void State::OpenCandidate(const fs::path &notebook_root, const std::string &id,
+                          const std::string &url, const std::string &username,
+                          const std::string &candidate_id, bool create) {
+  Require(EncryptedNote::IsCanonicalUuid(candidate_id), VXCORE_ERR_INVALID_PARAM);
+  const auto relative = std::string(kPrivatePath) + "/credential-validation/" + candidate_id;
+  fs::path candidate;
+  Check(WebDavTransport::ResolveLocalPath(notebook_root, relative, candidate, FileAccess::kPrivate));
+  if (create) {
+    Require(!private_io::Exists(candidate), VXCORE_ERR_SYNC_IN_PROGRESS);
+  } else {
+    Require(private_io::IsDirectory(candidate), VXCORE_ERR_NOT_FOUND);
+    CandidateLayout(candidate, candidate_id);
+    Require(private_io::IsRegularFile(candidate / "state.json"));
+  }
+  Open(notebook_root, id, url, username, relative);
+  Require(username_hash == username && entries.empty() && conflicts.empty());
+  Require(operation_id.empty() || operation_id == candidate_id);
+  Require(operations.size() <= 3);
+  for (const auto &op : operations) {
+    Require(op.kind == "file" && op.action == "upsertRemote" &&
+            op.expected_local_kind == "absent" && op.expected_remote_kind == "absent" &&
+            op.expected_local_sha256.empty() && op.expected_remote_etag.empty() &&
+            op.scratch_url.empty() &&
+            (op.stage == "prepared" || op.stage == "remoteConfirmed") &&
+            op.path.compare(0, std::char_traits<char>::length(kScratchPrefix), kScratchPrefix) == 0 &&
+            EncryptedNote::IsCanonicalUuid(
+                op.path.substr(std::char_traits<char>::length(kScratchPrefix))));
+    for (const auto &name : {op.source_snapshot, op.previous_snapshot})
+      Require(name.empty() || name.compare(0, 47, "snapshots/" + candidate_id + "/") == 0);
+  }
+  operation_id = candidate_id;
+  if (create) Save();
+}
+
+void State::RemoveCandidate() {
+  const auto candidate_id = PathToUtf8(directory.filename());
+  Require(EncryptedNote::IsCanonicalUuid(candidate_id) && operations.empty());
+  Require(directory.parent_path().filename() == "credential-validation");
+  CandidateLayout(directory, candidate_id);
+  const auto pending = Resolve("pending.json");
+  Require(!private_io::Exists(pending));
+  const auto snapshots = Resolve("snapshots");
+  if (private_io::Exists(snapshots)) {
+    const auto group = Resolve("snapshots/" + candidate_id);
+    if (private_io::Exists(group)) {
+      private_io::VisitDirectory(group, [&](const fs::path &entry) {
+        CheckCancelled(cancellation);
+        Require(private_io::Remove(entry), VXCORE_ERR_IO);
+      });
+      Require(private_io::Remove(group), VXCORE_ERR_IO);
+    }
+    Require(private_io::Remove(snapshots), VXCORE_ERR_IO);
+  }
+  // Removing the binding last makes interrupted cleanup a bound, state-only recovery.
+  CheckCancelled(cancellation);
+  Require(private_io::Remove(Resolve("state.json")), VXCORE_ERR_IO);
+  Require(private_io::Remove(directory), VXCORE_ERR_IO);
+  const auto parent = directory.parent_path();
+  if (private_io::IsEmpty(parent)) Require(private_io::Remove(parent), VXCORE_ERR_IO);
+}
+
+void State::Save(std::optional<uint64_t> max_write_bytes) const {
   auto j = Binding(*this);
   j["entries"] = Json::object();
   j["conflicts"] = Json::object();
@@ -549,7 +668,9 @@ void State::Save() const {
     if (!c.resolution.empty()) value["resolution"] = c.resolution;
     j["conflicts"][entry.first] = std::move(value);
   }
-  Check(WriteFileAtomic(Resolve("state.json"), j.dump()));
+  const auto bytes = j.dump();
+  Require(!max_write_bytes || bytes.size() <= *max_write_bytes);
+  Check(WriteFileAtomic(Resolve("state.json"), bytes, FileAccess::kPrivate));
 }
 void State::SavePending() const {
   Require(EncryptedNote::IsCanonicalUuid(operation_id));
@@ -570,12 +691,10 @@ void State::SavePending() const {
                                {"previousSnapshot", Nullable(o.previous_snapshot)},
                                {"scratchUrl", Nullable(o.scratch_url)},
                                {"stage", o.stage}});
-  Check(WriteFileAtomic(Resolve("pending.json"), j.dump()));
+  Check(WriteFileAtomic(Resolve("pending.json"), j.dump(), FileAccess::kPrivate));
 }
 void State::ClearPending() {
-  std::error_code error;
-  fs::remove(Resolve("pending.json"), error);
-  Require(!error, VXCORE_ERR_IO);
+  private_io::Remove(Resolve("pending.json"));
   operations.clear();
   operation_id.clear();
 }
@@ -599,7 +718,7 @@ void State::Begin() {
 std::string State::AllocateSnapshot() {
   Begin();
   const auto folder = "snapshots/" + operation_id;
-  EnsureDirectory(directory, folder);
+  EnsureDirectory(directory, folder, FileAccess::kPrivate);
   const auto name = folder + "/" + NewId();
   Reserve(Resolve(name));
   transient_snapshots.push_back(name);
@@ -607,12 +726,13 @@ std::string State::AllocateSnapshot() {
 }
 std::string State::SnapshotBytes(const std::string &bytes) {
   const auto name = AllocateSnapshot();
-  Check(WriteFileAtomic(Resolve(name), bytes));
+  Check(WriteFileAtomic(Resolve(name), bytes, FileAccess::kPrivate));
   return name;
 }
-std::string State::SnapshotFile(const fs::path &source, const SyncCancellationPtr &token) {
+std::string State::SnapshotFile(const fs::path &source, const SyncCancellationPtr &token,
+                                FileAccess source_access) {
   const auto name = AllocateSnapshot();
-  CopyAtomic(source, Resolve(name), token);
+  CopyAtomic(source, Resolve(name), token, source_access, FileAccess::kPrivate);
   return name;
 }
 void State::VerifySnapshot(const std::string &name, const std::string &hash) const {
@@ -622,14 +742,12 @@ void State::VerifySnapshot(const std::string &name, const std::string &hash) con
   }
   SnapshotField(name);
   HashField(hash, false);
-  Require(HashFile(Resolve(name), cancellation) == hash);
+  Require(HashFile(Resolve(name), cancellation, FileAccess::kPrivate) == hash);
 }
 void State::RemoveSnapshot(const std::string &name) const {
   if (name.empty()) return;
   SnapshotField(name);
-  std::error_code error;
-  fs::remove(Resolve(name), error);
-  Require(!error, VXCORE_ERR_IO);
+  private_io::Remove(Resolve(name));
 }
 void State::RemoveUnreferencedSnapshots(const std::vector<Operation> &completed) const {
   std::set<std::string> keep;
@@ -663,37 +781,48 @@ void State::CleanupTransient() {
 }
 
 Version ReadLocal(const fs::path &root, const std::string &path, const std::string &notebook_id,
-                  const SyncCancellationPtr &token, State *snapshots) {
+                  const SyncCancellationPtr &token, State *snapshots, FileAccess access) {
   CheckCancelled(token);
   fs::path file;
-  Check(WebDavTransport::ResolveLocalPath(root, path, file));
+  Check(WebDavTransport::ResolveLocalPath(root, path, file, access));
   Version version;
-  std::error_code error;
-  const auto status = fs::symlink_status(file, error);
-  if (error == std::errc::no_such_file_or_directory || status.type() == fs::file_type::not_found)
-    return version;
-  Require(!error, VXCORE_ERR_IO);
-  Require(CheckReparsePoint(PathToUtf8(file)) == ReparseState::kNo, VXCORE_ERR_UNSUPPORTED);
-  if (fs::is_directory(status)) {
-    version.kind = "collection";
-    return version;
+  if (access == FileAccess::kPrivate) {
+    const auto status = private_io::Status(file);
+    if (!status.exists) return version;
+    if (status.directory) {
+      version.kind = "collection";
+      return version;
+    }
+    Require(status.regular, VXCORE_ERR_UNSUPPORTED);
+  } else {
+    std::error_code error;
+    const auto status = fs::symlink_status(file, error);
+    if (error == std::errc::no_such_file_or_directory || status.type() == fs::file_type::not_found)
+      return version;
+    Require(!error, VXCORE_ERR_IO);
+    Require(CheckReparsePoint(PathToUtf8(file)) == ReparseState::kNo, VXCORE_ERR_UNSUPPORTED);
+    if (fs::is_directory(status)) {
+      version.kind = "collection";
+      return version;
+    }
+    Require(fs::is_regular_file(status), VXCORE_ERR_UNSUPPORTED);
   }
-  Require(fs::is_regular_file(status), VXCORE_ERR_UNSUPPORTED);
   version.kind = "file";
-  const auto before = Identify(file);
-  version.raw_sha256 = HashFile(file, token);
+  const auto before = Identify(file, access);
+  version.raw_sha256 = HashFile(file, token, access);
   version.sha256 = version.raw_sha256;
-  ValidateMetadata(path, file, notebook_id);
+  ValidateMetadata(path, file, notebook_id, nullptr, access);
   if (path == kConfigPath) {
-    const auto projected = ProjectConfig(NotebookJson(file, notebook_id));
+    const auto projected = ProjectConfig(NotebookJson(file, notebook_id, access));
     version.sha256 = HashBytes(projected);
     if (snapshots) version.snapshot = snapshots->SnapshotBytes(projected);
   } else if (snapshots)
-    version.snapshot = snapshots->SnapshotFile(file, token);
+    version.snapshot = snapshots->SnapshotFile(file, token, access);
   if (!version.snapshot.empty()) snapshots->VerifySnapshot(version.snapshot, version.sha256);
-  Require(before == Identify(file), VXCORE_ERR_SYNC_IN_PROGRESS);
-  Require(GetFilesystemTimes(PathToUtf8(file), nullptr, &version.modified_utc), VXCORE_ERR_IO);
-  std::ifstream input(file, std::ios::binary);
+  Require(before == Identify(file, access), VXCORE_ERR_SYNC_IN_PROGRESS);
+  Require(GetFilesystemTimes(PathToUtf8(file), nullptr, &version.modified_utc, access), VXCORE_ERR_IO);
+  const NativePathArgument native(file, access);
+  std::ifstream input(native.c_str(), std::ios::binary);
   Require(input.good(), VXCORE_ERR_IO);
   std::array<char, 8192> sample{};
   input.read(sample.data(), static_cast<std::streamsize>(sample.size()));

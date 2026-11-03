@@ -72,6 +72,8 @@ set(VXCORE_SOURCES
     sync/sync_types.cpp
     sync/sync_json_keys.cpp
     sync/sync_manager.cpp
+    sync/sync_lifecycle.cpp
+    sync/sync_provider_retirement.cpp
     sync/sync_encryption_guard.cpp
     sync/sync_backend_registry.cpp
     sync/sync_builtin_backends.cpp

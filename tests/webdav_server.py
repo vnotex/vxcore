@@ -284,21 +284,59 @@ class Store:
         return dict(metadata)
 
     def parent(self, path, create=False):
+        relative_path(path)
         if not path:
             raise DavError(405)
         parts = path.split("/")[:-1]
         current = ""
-        if "" not in self.entries:
+        root_entry = self.entries.get("")
+        if root_entry is None or root_entry["kind"] != "collection":
             raise DavError(409)
+
+        def require_directory(directory):
+            try:
+                info = directory.lstat()
+            except FileNotFoundError:
+                raise DavError(409) from None
+            if (stat.S_ISLNK(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0) & 0x400):
+                raise DavError(403)
+            if not stat.S_ISDIR(info.st_mode):
+                raise DavError(409)
+
+        # All components are validated names and the root is already canonical.
+        # One no-follow walk proves containment without re-resolving every prefix.
+        destination = self.root.joinpath(*parts)
+        if os.path.commonpath((str(self.root), str(destination))) != str(self.root):
+            raise DavError(403)
+        parent = self.root
+        require_directory(parent)
         for part in parts:
             current = current + "/" + part if current else part
+            child = parent / part
             entry = self.entries.get(current)
-            if entry is None and create:
+            if entry is None:
+                if not create:
+                    raise DavError(409)
                 self.check_capacity(current)
-                self.path(current).mkdir()
+                require_directory(parent)
+                try:
+                    info = child.lstat()
+                except FileNotFoundError:
+                    child.mkdir()
+                else:
+                    if (stat.S_ISLNK(info.st_mode)
+                            or getattr(info, "st_file_attributes", 0) & 0x400):
+                        raise DavError(403)
+                    # Do not adopt untracked filesystem entries as owned collections.
+                    raise DavError(409)
+                require_directory(child)
                 self.update(current, "collection")
-            elif entry is None or entry["kind"] != "collection":
-                raise DavError(409)
+            else:
+                if entry["kind"] != "collection":
+                    raise DavError(409)
+                require_directory(child)
+            parent = child
 
     def check_capacity(self, path):
         if path not in self.entries and len(self.entries) >= MAX_RESOURCES:

@@ -10,6 +10,8 @@
 #include "sync/sync_encryption_guard.h"
 #include "sync/sync_json_keys.h"
 #include "sync/sync_manager.h"
+#include "sync/sync_lifecycle.h"
+#include "sync/sync_provider_retirement.h"
 #include "sync/sync_types.h"
 #include "utils/logger.h"
 #include "vxcore/vxcore.h"
@@ -19,6 +21,10 @@
 // detail. The C API exposes only a forward-declared typedef.
 struct VxCoreSyncCancellation_ {
   vxcore::SyncCancellationPtr ptr;
+};
+
+struct VxCoreSyncLifecycle_ {
+  std::unique_ptr<vxcore::SyncLifecycle> task;
 };
 
 // Backend diagnostics contain no credentials or remote bodies. Keep the existing C error API.
@@ -486,12 +492,28 @@ VXCORE_API VxCoreError vxcore_sync_set_apply_in_progress(VxCoreContextHandle con
 
 VXCORE_API VxCoreError vxcore_sync_refresh_notebook(VxCoreContextHandle context,
                                                     const char *notebook_id) {
-  if (!context || !notebook_id) return VXCORE_ERR_NULL_POINTER;
+  int32_t refresh = VXCORE_ERR_INVALID_STATE;
+  return vxcore_sync_refresh_notebook_result(context, notebook_id, &refresh);
+}
+
+VXCORE_API VxCoreError vxcore_sync_refresh_notebook_result(VxCoreContextHandle context,
+                                                           const char *notebook_id,
+                                                           int32_t *out_refresh_code) {
+  if (out_refresh_code) *out_refresh_code = VXCORE_ERR_NULL_POINTER;
+  if (!context || !notebook_id || !out_refresh_code) return VXCORE_ERR_NULL_POINTER;
+  *out_refresh_code = VXCORE_ERR_INVALID_STATE;
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
   try {
     if (!ctx->sync_manager) return VXCORE_ERR_INVALID_STATE;
-    return SyncResult(ctx, notebook_id, ctx->sync_manager->RefreshNotebookAfterSync(notebook_id));
+    VxCoreError refresh = VXCORE_ERR_INVALID_STATE;
+    const auto code = ctx->sync_manager->RefreshNotebookAfterSync(notebook_id, refresh);
+    *out_refresh_code = static_cast<int32_t>(refresh);
+    return SyncResult(ctx, notebook_id, code);
+  } catch (const std::bad_alloc &) {
+    *out_refresh_code = VXCORE_ERR_OUT_OF_MEMORY;
+    return VXCORE_ERR_OUT_OF_MEMORY;
   } catch (...) {
+    *out_refresh_code = VXCORE_ERR_UNKNOWN;
     ctx->last_error = "Unable to refresh notebook after sync apply";
     return VXCORE_ERR_UNKNOWN;
   }
@@ -961,4 +983,158 @@ VXCORE_API VxCoreError vxcore_sync_clone_cancellable(VxCoreContextHandle context
     ctx->last_error = "Unknown error cloning notebook";
     return VXCORE_ERR_UNKNOWN;
   }
+}
+
+
+namespace {
+bool BoundedJson(const char *text, size_t limit, nlohmann::json &out) {
+  if (!text) return false;
+  size_t size = 0;
+  while (size <= limit && text[size]) ++size;
+  if (size > limit) return false;
+  out = nlohmann::json::parse(text, text + size, nullptr, false);
+  return !out.is_discarded() && out.is_object();
+}
+VxCoreError JsonOutput(const nlohmann::json &json, VxCoreError code, char **out) {
+  if (json.is_null()) return code;
+  const auto text = json.dump();
+  if (text.size() > 64 * 1024) return VXCORE_ERR_INVALID_STATE;
+  *out = vxcore_strdup(text.c_str());
+  return *out ? code : VXCORE_ERR_OUT_OF_MEMORY;
+}
+}
+
+VXCORE_API VxCoreError vxcore_sync_set_tls_verifier(VxCoreContextHandle context,
+                                                    VxCoreSyncTlsVerifier verifier,
+                                                    void *userdata) {
+  if (!context) return VXCORE_ERR_NULL_POINTER;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    if (!ctx->sync_manager) return VXCORE_ERR_INVALID_STATE;
+    return ctx->sync_manager->SetTlsVerifier(verifier, userdata);
+  } catch (...) { return VXCORE_ERR_UNKNOWN; }
+}
+
+VXCORE_API VxCoreError vxcore_sync_prepare_lifecycle(
+    VxCoreContextHandle context, const char *notebook_id, const char *command_json,
+    const char *credentials_json, VxCoreSyncLifecycle **out_lifecycle) {
+  if (out_lifecycle) *out_lifecycle = nullptr;
+  if (!context || !command_json || !credentials_json || !out_lifecycle)
+    return VXCORE_ERR_NULL_POINTER;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    nlohmann::json command, secret;
+    if (!BoundedJson(command_json, 16 * 1024, command) ||
+        !BoundedJson(credentials_json, 64 * 1024, secret)) return VXCORE_ERR_INVALID_PARAM;
+    if (secret.size() != 1 || !secret.contains("extra") || !secret["extra"].is_object())
+      return VXCORE_ERR_INVALID_PARAM;
+    auto &extra = secret["extra"];
+    if (extra.size() != 2 || !extra.contains("username") || !extra.contains("password") ||
+        !extra["username"].is_string() || !extra["password"].is_string())
+      return VXCORE_ERR_INVALID_PARAM;
+    const auto &username = extra["username"].get_ref<const std::string &>();
+    const auto &password = extra["password"].get_ref<const std::string &>();
+    if (username.empty() || username.find('\0') != std::string::npos ||
+        password.find('\0') != std::string::npos) return VXCORE_ERR_INVALID_PARAM;
+    vxcore::SyncCredentials credentials;
+    credentials.extra = std::move(extra);
+    auto handle = std::make_unique<VxCoreSyncLifecycle>();
+    const auto result = vxcore::SyncLifecycle::Prepare(*ctx, notebook_id, command,
+                                                       std::move(credentials), handle->task);
+    if (result != VXCORE_OK) {
+      ctx->last_error = "Unable to prepare synchronization lifecycle";
+      return result;
+    }
+    *out_lifecycle = handle.release();
+    return VXCORE_OK;
+  } catch (const std::bad_alloc &) { return VXCORE_ERR_OUT_OF_MEMORY; }
+    catch (...) {
+      ctx->last_error = "Unable to prepare synchronization lifecycle";
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+}
+
+VXCORE_API VxCoreError vxcore_sync_execute_lifecycle(VxCoreSyncLifecycle *lifecycle,
+                                                     VxCoreSyncCancellation *cancellation) {
+  if (!lifecycle) return VXCORE_ERR_NULL_POINTER;
+  if (!lifecycle->task) return VXCORE_ERR_INVALID_STATE;
+  return lifecycle->task->Execute(cancellation ? cancellation->ptr : nullptr);
+}
+
+VXCORE_API VxCoreError vxcore_sync_complete_lifecycle(VxCoreContextHandle context,
+                                                      VxCoreSyncLifecycle *lifecycle,
+                                                      char **out_result_json) {
+  if (out_result_json) *out_result_json = nullptr;
+  if (!context || !lifecycle || !out_result_json) return VXCORE_ERR_NULL_POINTER;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    if (!lifecycle->task) return VXCORE_ERR_INVALID_STATE;
+    nlohmann::json result;
+    const auto code = lifecycle->task->Complete(*ctx, result);
+    if (code != VXCORE_OK) ctx->last_error = "Synchronization lifecycle did not complete";
+    return JsonOutput(result, code, out_result_json);
+  } catch (const std::bad_alloc &) { return VXCORE_ERR_OUT_OF_MEMORY; }
+    catch (...) { return VXCORE_ERR_UNKNOWN; }
+}
+
+VXCORE_API void vxcore_sync_free_lifecycle(VxCoreSyncLifecycle *lifecycle) {
+  delete lifecycle;
+}
+
+VXCORE_API VxCoreError vxcore_sync_inspect_storage(const char *notebook_root,
+                                                   const char *expected_notebook_id,
+                                                   char **out_facts_json) {
+  if (out_facts_json) *out_facts_json = nullptr;
+  if (!notebook_root || !expected_notebook_id || !out_facts_json) return VXCORE_ERR_NULL_POINTER;
+  try {
+    nlohmann::json facts;
+    const auto code = vxcore::InspectSyncStorage(notebook_root, expected_notebook_id, facts);
+    return JsonOutput(facts, code, out_facts_json);
+  } catch (const std::bad_alloc &) { return VXCORE_ERR_OUT_OF_MEMORY; }
+    catch (...) { return VXCORE_ERR_INVALID_STATE; }
+}
+
+VXCORE_API VxCoreError vxcore_sync_provider_transaction(VxCoreContextHandle context,
+                                                        const char *notebook_id,
+                                                        const char *command_json,
+                                                        char **out_json) {
+  if (out_json) *out_json = nullptr;
+  if (!context || !notebook_id || !command_json || !out_json) return VXCORE_ERR_NULL_POINTER;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    if (!ctx->sync_manager || !ctx->notebook_manager) return VXCORE_ERR_INVALID_STATE;
+    nlohmann::json command;
+    if (!BoundedJson(command_json, 16 * 1024, command)) return VXCORE_ERR_INVALID_PARAM;
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) return VXCORE_ERR_NOT_FOUND;
+    if (notebook->GetType() != vxcore::NotebookType::Bundled) return VXCORE_ERR_UNSUPPORTED;
+    if (ctx->sync_manager->HasLifecycleLease(notebook_id)) return VXCORE_ERR_SYNC_IN_PROGRESS;
+    const auto kind = command.value("kind", std::string());
+    const auto &config = notebook->GetConfig();
+    if (kind != "inspect") {
+      if (!config.sync_backend.empty() && config.sync_backend != "webdav")
+        return VXCORE_ERR_UNSUPPORTED;
+      const auto writable = notebook->CheckWritable();
+      if (writable != VXCORE_OK) return writable;
+    }
+    if (kind == "begin") {
+      const auto preflight = vxcore::CheckNotebookSyncReconfiguration(notebook->GetMetadataFolder());
+      if (preflight != VXCORE_OK) return preflight;
+    }
+    vxcore::SyncProviderRuntimeFacts runtime;
+    runtime.runtime_registered = ctx->sync_manager->IsRegistered(notebook_id);
+    runtime.apply_in_progress = notebook->IsSyncApplyInProgress();
+    runtime.persisted_enabled = config.sync_enabled;
+    runtime.persisted_routing_cleared = !config.sync_enabled && config.sync_backend.empty() &&
+                                        config.sync_remote_url.empty();
+    nlohmann::json result;
+    const auto code = vxcore::SyncProviderTransaction(notebook->GetRootFolder(), notebook_id,
+                                                      command, runtime, result);
+    if (code != VXCORE_OK) ctx->last_error = "Synchronization provider transaction refused";
+    return JsonOutput(result, code, out_json);
+  } catch (const std::bad_alloc &) { return VXCORE_ERR_OUT_OF_MEMORY; }
+    catch (...) {
+      ctx->last_error = "Unable to inspect synchronization provider storage";
+      return VXCORE_ERR_INVALID_STATE;
+    }
 }

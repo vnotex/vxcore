@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "credential_provider.h"
 #include "dirty_tracker.h"
@@ -22,6 +23,7 @@ namespace vxcore {
 class EventManager;
 class NotebookManager;
 class WorkQueueManager;
+class SyncLifecycle;
 
 class SyncManager {
  public:
@@ -29,6 +31,8 @@ class SyncManager {
   ~SyncManager();
 
   VXCORE_API void SetEventManager(EventManager *event_manager);
+  VXCORE_API VxCoreError SetTlsVerifier(VxCoreSyncTlsVerifier verifier, void *userdata);
+  VXCORE_API bool HasLifecycleLease(const std::string &notebook_id) const;
 
   VXCORE_API void SetWorkQueueManager(WorkQueueManager *work_queue_manager);
 
@@ -110,9 +114,9 @@ class SyncManager {
   // degrades to the legacy non-cancellable path bit-for-bit. The 4-arg
   // overload above forwards here with nullptr.
   //
-  // Note: no state_mutex_ involvement. The backend is constructed locally
-  // and never registered in backends_; only the cancellation token is
-  // installed on it for the lifetime of the Clone call.
+  // Legacy clone retains context-wide registration admission through the
+  // owner-side open. The backend stays local; state_mutex_ is never held
+  // across backend work or NotebookManager calls.
   VXCORE_API VxCoreError CloneNotebook(const std::string &target_dir,
                                        const SyncConfig &config,
                                        std::shared_ptr<ICredentialProvider> provider,
@@ -176,6 +180,8 @@ class SyncManager {
   // Caller owns the metadata DB thread. Refresh partial installs before retiring the phase;
   // only successful apply + refresh can clear the captured dirty generation.
   VXCORE_API VxCoreError RefreshNotebookAfterSync(const std::string &notebook_id);
+  VXCORE_API VxCoreError RefreshNotebookAfterSync(const std::string &notebook_id,
+                                                VxCoreError &out_refresh_code);
 
   VXCORE_API VxCoreError GetSyncStatus(const std::string &notebook_id, SyncState &out_state,
                             std::vector<SyncFileInfo> &out_files);
@@ -292,9 +298,18 @@ class SyncManager {
   }
 
  private:
+  friend class SyncLifecycle;
   VxCoreError CaptureBackendError(const std::string &operation_key, const ISyncBackend &backend,
                                   VxCoreError result);
   VxCoreError ValidateNotebook(const std::string &notebook_id);
+  // Requires state_mutex_; empty keys reserve the whole private clone owner.
+  bool RegistrationBlockedLocked(const std::string &notebook_id) const;
+  struct RegistrationLease {
+    SyncManager &manager;
+    const std::string &key;
+    bool active = false;
+    ~RegistrationLease();
+  };
 
   // Shared implementation for EnableSync overloads. Wave 6.3 F4.4 collapsed
   // the legacy SyncCredentials* parameter — callers that have a
@@ -310,6 +325,8 @@ class SyncManager {
   //
   // On any failure rolls back configs_cache_/states_/backends_ to their prior
   // state. NEVER exposed on the C ABI.
+  // Registration admission excludes competing prepared/legacy registration
+  // until initialization and publication (or rollback/destruction) finish.
   VxCoreError EnableSyncImpl(const std::string &notebook_id, const SyncConfig &config,
                              std::shared_ptr<ICredentialProvider> provider,
                              SyncBackendFactory factory_override);
@@ -331,6 +348,15 @@ class SyncManager {
   NotebookManager *notebook_manager_;
   EventManager *event_manager_ = nullptr;
   WorkQueueManager *work_queue_manager_ = nullptr;
+  SyncTlsPolicy tls_policy_;
+  bool tls_policy_locked_ = false;
+  bool tls_policy_installed_ = false;
+  // Keys are notebook IDs, or empty for a transaction-private clone context.
+  // Caller pins the manager through handle free, after worker/callback join.
+  std::unordered_map<std::string, const SyncLifecycle *> lifecycle_leases_;
+  // Legacy Initialize/Clone runs outside state_mutex_, but retains admission
+  // until publication or rollback so a prepared handle cannot overlap it.
+  std::unordered_set<std::string> registrations_;
   std::unordered_map<std::string, std::unique_ptr<ISyncBackend>> backends_;
   std::unordered_map<std::string, std::string> last_errors_;
   std::unordered_map<std::string, SyncState> states_;
@@ -360,8 +386,8 @@ class SyncManager {
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_enqueue_time_;
   std::vector<uint64_t> event_listener_ids_;
 
-  // Coarse mutex guarding configs_cache_, states_, backends_, and
-  // deferred_phases_. Single mutex (no per-member locks,
+  // Coarse mutex guarding configs_cache_, states_, backends_, registration
+  // admission, TLS policy, and deferred_phases_. Single mutex (no per-member locks,
   // no recursive_mutex). Wave 0.5 contract: NEVER hold this lock across any
   // external invocation (hook, signal, libgit2 progress callback, credential
   // provider call, work-queue dispatch, backend method call). Standard

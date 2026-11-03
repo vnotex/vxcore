@@ -54,6 +54,21 @@ struct SyncConflictInfo {
   bool can_keep_both = true;
 };
 
+struct SyncTlsPolicy {
+  VxCoreSyncTlsVerifier verifier = nullptr;
+  void *userdata = nullptr;
+};
+
+// Zero fields preserve the desktop backend defaults. Prepared clone supplies
+// every bound; neither this nor the trust policy is serialized by ToJson().
+struct SyncCloneLimits {
+  uint64_t max_file_bytes = 0;
+  uint64_t max_total_bytes = 0;
+  uint64_t max_entries = 0;
+  uint64_t max_depth = 0;
+  uint64_t max_path_bytes = 0;
+};
+
 struct SyncConfig {
   // NOTE (F3.3): the legacy `enabled` flag was removed. Registration in
   // SyncManager already encodes "enabled" — query
@@ -66,6 +81,10 @@ struct SyncConfig {
                                             "vx_notebook/vx_transfer/"};
   nlohmann::json backend_options;
   bool auto_commit_merges = true;
+  SyncTlsPolicy tls_policy;
+  SyncCloneLimits clone_limits;
+  // Runtime-only admission from prepared lifecycle; legacy clone keeps default body IO.
+  bool private_clone = false;
 
   static VXCORE_API SyncConfig FromJson(const nlohmann::json &json);
   VXCORE_API nlohmann::json ToJson() const;

@@ -4,9 +4,12 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <stdexcept>
+#include <vector>
 
 #ifndef _WIN32
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #include "test_reparse_utils.h"
@@ -692,6 +695,355 @@ int test_no_replace_postpublication_flush_error() {
   return 0;
 }
 
+namespace {
+// An exception must identify the operation, never disclose a private path.
+template <typename Operation>
+bool PrivateOperationRefused(Operation operation) {
+  try {
+    operation();
+  } catch (const std::filesystem::filesystem_error &error) {
+    return error.path1().empty() && error.path2().empty() &&
+           std::string(error.what()).find("Private filesystem operation failed") != std::string::npos;
+  }
+  return false;
+}
+
+std::string ReadPrivateUtilityFile(const std::filesystem::path &path) {
+  vxcore::private_io::Validate(path);
+  std::ifstream input;
+  {
+    const vxcore::NativePathArgument argument(path, vxcore::FileAccess::kPrivate);
+    input.open(argument.c_str(), std::ios::binary);
+  }
+  if (!input) throw std::runtime_error("Private test read failed");
+  std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+  if (input.bad()) throw std::runtime_error("Private test read failed");
+  return bytes;
+}
+}  // namespace
+
+int test_private_native_path_arguments() {
+  namespace fs = std::filesystem;
+  using vxcore::FileAccess;
+  using vxcore::NativePathArgument;
+  const fs::path ordinary = vxcore::PathFromUtf8("relative/../ordinary.txt");
+  const NativePathArgument default_argument(ordinary);
+  ASSERT_TRUE(default_argument.c_str() == ordinary.c_str());
+
+#ifdef _WIN32
+  const fs::path dos = L"c:/private/\u6d4b\u8bd5/file.bin";
+  const auto original = dos.native();
+  const NativePathArgument dos_argument(dos, FileAccess::kPrivate);
+  ASSERT_TRUE(std::wstring(dos_argument.c_str()) == L"\\\\?\\c:\\private\\\u6d4b\u8bd5\\file.bin");
+  ASSERT_TRUE(dos.native() == original);
+  const fs::path backslashes = L"C:\\private\\file.bin";
+  const NativePathArgument backslash_argument(backslashes, FileAccess::kPrivate);
+  ASSERT_TRUE(std::wstring(backslash_argument.c_str()) == L"\\\\?\\C:\\private\\file.bin");
+  const fs::path drive_root = L"C:/";
+  ASSERT_TRUE(std::wstring(NativePathArgument(drive_root, FileAccess::kPrivate).c_str()) == L"\\\\?\\C:\\");
+
+  // Spelling-only UNC coverage: these do not claim access to a live share.
+  const fs::path unc = L"//server/share/private/\u6d4b\u8bd5.bin";
+  const NativePathArgument unc_argument(unc, FileAccess::kPrivate);
+  ASSERT_TRUE(std::wstring(unc_argument.c_str()) == L"\\\\?\\UNC\\server\\share\\private\\\u6d4b\u8bd5.bin");
+  const fs::path unc_backslashes = L"\\\\server\\share\\private\\file.bin";
+  ASSERT_TRUE(std::wstring(NativePathArgument(unc_backslashes, FileAccess::kPrivate).c_str()) ==
+              L"\\\\?\\UNC\\server\\share\\private\\file.bin");
+  const fs::path unc_root = L"//server/share";
+  ASSERT_TRUE(std::wstring(NativePathArgument(unc_root, FileAccess::kPrivate).c_str()) ==
+              L"\\\\?\\UNC\\server\\share");
+  const std::vector<std::wstring> invalid = {
+      L"", L"relative", L"C:relative", L"/private/file", L"\\private\\file",
+      L"C://private", L"C:/private//file", L"C:/private/./file", L"C:/private/../file",
+      L"C:/private/file.", L"C:/private/file ", L"C:/private/file:stream", L"C:/private/fi*le",
+      L"C:/private/fi?le", L"C:/private/fi<le", L"C:/private/fi>le", L"C:/private/fi|le",
+      L"C:/private/fi\"le", L"C:/private/fi\x1fle", L"C:/private/NUL.txt", L"C:/private/CON .txt",
+      L"C:/private/conin$", L"C:/private/CONOUT$", L"C:/private/COM1", L"C:/private/LPT9.txt",
+      L"C:/private/COM\u00b9", L"C:/private/LPT\u00b2.txt", L"C:/private/LPT\u00b3",
+      L"//", L"//server", L"//server/", L"///share/file", L"//server//file",
+      L"//./share/file", L"//server/../file", L"//server/share//file", L"//server/share/./file",
+      L"//server/share/../file", L"//server/share./file", L"//server/share /file",
+      L"//server/share:stream/file", L"\\\\?\\C:\\private", L"\\\\?\\UNC\\server\\share\\file",
+      L"\\\\.\\C:\\private", L"\\??\\C:\\private", L"//?/C:/private", L"//./pipe/name"};
+  for (const auto &value : invalid) {
+    const fs::path path(value);
+    ASSERT_TRUE(PrivateOperationRefused([&] { NativePathArgument argument(path, FileAccess::kPrivate); }));
+    ASSERT_TRUE(PrivateOperationRefused([&] { vxcore::private_io::Validate(path, true); }));
+  }
+  std::wstring nul = L"C:/private/secret";
+  nul.push_back(L'\0');
+  nul += L"hidden";
+  const fs::path nul_path(nul);
+  ASSERT_TRUE(PrivateOperationRefused([&] { NativePathArgument argument(nul_path, FileAccess::kPrivate); }));
+  std::wstring surrogate = L"C:/private/";
+  surrogate.push_back(static_cast<wchar_t>(0xd800));
+  const fs::path surrogate_path(surrogate);
+  ASSERT_TRUE(PrivateOperationRefused([&] { NativePathArgument argument(surrogate_path, FileAccess::kPrivate); }));
+#else
+  const fs::path absolute = "/private/ordinary.bin";
+  const NativePathArgument private_argument(absolute, FileAccess::kPrivate);
+  ASSERT_TRUE(private_argument.c_str() == absolute.c_str());
+  const std::vector<std::string> invalid = {"", "relative", "//private", "/private//file",
+                                          "/private/./file", "/private/../file", "/private/file:stream"};
+  for (const auto &value : invalid) {
+    const fs::path path(value);
+    ASSERT_TRUE(PrivateOperationRefused([&] { NativePathArgument argument(path, FileAccess::kPrivate); }));
+    ASSERT_TRUE(PrivateOperationRefused([&] { vxcore::private_io::Validate(path, true); }));
+  }
+  const fs::path nul_path(std::string("/private/file\0hidden", 20));
+  ASSERT_TRUE(PrivateOperationRefused([&] { NativePathArgument argument(nul_path, FileAccess::kPrivate); }));
+#endif
+  ASSERT_TRUE(PrivateOperationRefused([&] { NativePathArgument argument(ordinary, FileAccess::kPrivate); }));
+  vxcore::FileIdentity identity;
+  ASSERT_EQ(vxcore::GetFileIdentity(ordinary, identity, FileAccess::kPrivate), VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(vxcore::WriteFileAtomic(ordinary, "not written", FileAccess::kPrivate), VXCORE_ERR_INVALID_PARAM);
+  const std::string embedded_nul("private\0hidden", 14);
+  ASSERT_TRUE(vxcore::CheckReparsePoint(embedded_nul, FileAccess::kPrivate) == vxcore::ReparseState::kError);
+  int64_t created = 17, modified = 19;
+  ASSERT_FALSE(vxcore::GetFilesystemTimes(embedded_nul, &created, &modified, FileAccess::kPrivate));
+  ASSERT_EQ(created, 17);
+  ASSERT_EQ(modified, 19);
+  return 0;
+}
+
+int test_private_long_path_utilities() {
+  namespace fs = std::filesystem;
+  namespace io = vxcore::private_io;
+  constexpr auto access = vxcore::FileAccess::kPrivate;
+  // Resolve only the test's ambient temp root, before selecting private access.
+  // Every private field below stays logical and every private I/O opts in.
+  const auto base = fs::canonical(fs::temp_directory_path()) /
+                    ("vxcore_private_" + std::to_string(
+                        std::chrono::steady_clock::now().time_since_epoch().count()));
+  ASSERT_TRUE(io::MakeDirectory(base));
+  std::vector<fs::path> directories{base};
+  auto directory = base;
+  while (directory.native().size() < 290) {
+    directory /= "private_component_0123456789";
+    directories.push_back(directory);
+  }
+  io::CreateDirectories(directory);
+  io::CreateDirectories(directory);
+  ASSERT_TRUE(directory.native().size() >= 260);
+  ASSERT_FALSE(io::MakeDirectory(directory));
+  ASSERT_TRUE(io::Status(directory).directory);
+  ASSERT_TRUE(io::IsDirectory(directory));
+  ASSERT_FALSE(io::IsRegularFile(directory));
+  ASSERT_TRUE(io::IsEmpty(directory));
+  io::Validate(directory);
+  const auto missing = directory / "missing" / "nested";
+  ASSERT_FALSE(io::Exists(missing));
+  ASSERT_FALSE(io::IsDirectory(missing));
+  ASSERT_FALSE(io::IsRegularFile(missing));
+  ASSERT_FALSE(io::Remove(missing));
+  io::Validate(missing, true);
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::Validate(missing); }));
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::FileSize(missing); }));
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::ModifiedTime(missing); }));
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::IsEmpty(missing); }));
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::MakeDirectory(missing); }));
+
+  const auto destination = directory / vxcore::PathFromUtf8(u8"快照.bin");
+  const std::string original("original\0\xff\r\n", 12);
+  const std::string replacement("replacement\0\x80\n", 14);
+  ASSERT_EQ(vxcore::WriteFileAtomic(destination, original, access), VXCORE_OK);
+  ASSERT_EQ(ReadPrivateUtilityFile(destination), original);
+  auto status = io::Status(destination);
+  ASSERT_TRUE(status.exists && status.regular && !status.directory);
+  ASSERT_EQ(status.size, original.size());
+  ASSERT_EQ(io::FileSize(destination), original.size());
+  ASSERT_EQ(io::ModifiedTime(destination), status.modified);
+  ASSERT_FALSE(io::IsEmpty(destination));
+  ASSERT_FALSE(io::IsEmpty(directory));
+  ASSERT_TRUE(vxcore::CheckReparsePoint(vxcore::PathToUtf8(destination), access) == vxcore::ReparseState::kNo);
+  ASSERT_TRUE(vxcore::CheckReparsePoint(vxcore::PathToUtf8(missing), access) == vxcore::ReparseState::kError);
+  int64_t created = 0, modified = 0;
+  ASSERT_TRUE(vxcore::GetFilesystemTimes(vxcore::PathToUtf8(destination), &created, &modified, access));
+  ASSERT_TRUE(created > 0 && modified > 0);
+  vxcore::FileIdentity before, after;
+  ASSERT_EQ(vxcore::GetFileIdentity(destination, before, access), VXCORE_OK);
+  ASSERT_FALSE(before.directory);
+  ASSERT_EQ(vxcore::FlushDirectory(directory, access), VXCORE_OK);
+  ASSERT_NE(vxcore::FlushDirectory(destination, access), VXCORE_OK);
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::Status(destination / "child"); }));
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::CreateDirectories(destination / "child"); }));
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::FileSize(directory); }));
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::Remove(directory); }));
+
+  {
+    vxcore::AtomicFileWriter writer(destination, access);
+    ASSERT_EQ(writer.Open(), VXCORE_OK);
+    ASSERT_EQ(writer.Write(replacement.data(), replacement.size()), VXCORE_OK);
+    ASSERT_EQ(ReadPrivateUtilityFile(destination), original);
+    uint64_t staged_bytes = 0;
+    size_t staged_files = 0;
+    io::VisitDirectory(directory, [&](const fs::path &entry) {
+      ++staged_files;
+      staged_bytes += io::FileSize(entry);
+    });
+    ASSERT_EQ(staged_files, size_t{2});
+    // Buffered bytes may not yet reach disk; reserve the full atomic sibling.
+    ASSERT_TRUE(staged_bytes >= original.size());
+    ASSERT_TRUE(staged_bytes <= original.size() + replacement.size());
+    ASSERT_EQ(vxcore::GetFileIdentity(destination, after, access), VXCORE_OK);
+    ASSERT_TRUE(before.SameObject(after));
+    ASSERT_EQ(writer.Commit(), VXCORE_OK);
+  }
+  ASSERT_EQ(ReadPrivateUtilityFile(destination), replacement);
+  ASSERT_EQ(vxcore::GetFileIdentity(destination, after, access), VXCORE_OK);
+  ASSERT_FALSE(before.SameObject(after));
+  {
+    vxcore::AtomicFileWriter abandoned(destination, access);
+    ASSERT_EQ(abandoned.Open(), VXCORE_OK);
+    ASSERT_EQ(abandoned.Write(original.data(), original.size()), VXCORE_OK);
+  }
+  {
+    vxcore::AtomicFileWriter failed(destination, access);
+    ASSERT_EQ(failed.Open(), VXCORE_OK);
+    ASSERT_EQ(failed.Write(nullptr, 1), VXCORE_ERR_NULL_POINTER);
+    ASSERT_EQ(failed.Commit(), VXCORE_ERR_NULL_POINTER);
+  }
+  ASSERT_EQ(ReadPrivateUtilityFile(destination), replacement);
+  size_t count = 0;
+  bool logical_names = true;
+  io::VisitDirectory(directory, [&](const fs::path &child) {
+    ++count;
+    logical_names = logical_names && child == destination && child.parent_path() == directory;
+  });
+  ASSERT_EQ(count, 1);
+  ASSERT_TRUE(logical_names);
+  const auto winner = directory / "winner.bin";
+  {
+    vxcore::AtomicFileWriter first(winner, access), second(winner, access);
+    ASSERT_EQ(first.Open(), VXCORE_OK);
+    ASSERT_EQ(second.Open(), VXCORE_OK);
+    ASSERT_EQ(first.Write(original.data(), original.size()), VXCORE_OK);
+    ASSERT_EQ(second.Write(replacement.data(), replacement.size()), VXCORE_OK);
+    ASSERT_EQ(first.CommitNoReplace(), VXCORE_OK);
+    ASSERT_NE(second.CommitNoReplace(), VXCORE_OK);
+  }
+  ASSERT_EQ(ReadPrivateUtilityFile(winner), original);
+  ASSERT_NE(vxcore::RenameNoReplace(destination, winner, access), VXCORE_OK);
+  ASSERT_EQ(ReadPrivateUtilityFile(destination), replacement);
+  const auto moved = directory / "moved.bin";
+  ASSERT_EQ(vxcore::GetFileIdentity(destination, before, access), VXCORE_OK);
+  ASSERT_EQ(vxcore::RenameNoReplace(destination, moved, access), VXCORE_OK);
+  ASSERT_FALSE(io::Exists(destination));
+  ASSERT_EQ(vxcore::GetFileIdentity(moved, after, access), VXCORE_OK);
+  ASSERT_TRUE(before.SameObject(after));
+  ASSERT_EQ(ReadPrivateUtilityFile(moved), replacement);
+  ASSERT_EQ(vxcore::WriteFileAtomic(moved, "", access), VXCORE_OK);
+  ASSERT_TRUE(io::IsEmpty(moved));
+
+  const auto child_directory = directory / "child";
+  ASSERT_TRUE(io::MakeDirectory(child_directory));
+  ASSERT_FALSE(io::MakeDirectory(child_directory));
+  ASSERT_EQ(vxcore::GetFileIdentity(child_directory, after, access), VXCORE_OK);
+  ASSERT_TRUE(after.directory);
+  ASSERT_EQ(vxcore::FlushDirectory(child_directory, access), VXCORE_OK);
+  const auto renamed_directory = directory / "renamed-child";
+  ASSERT_EQ(vxcore::RenameNoReplace(child_directory, renamed_directory, access), VXCORE_OK);
+  ASSERT_EQ(vxcore::GetFileIdentity(renamed_directory, before, access), VXCORE_OK);
+  ASSERT_TRUE(before.SameObject(after));
+
+#ifdef _WIN32
+  // Denying sharing prevents deletion/replacement, not FILE_READ_ATTRIBUTES
+  // metadata probes. Exercise the actual denied mutation without broadening the
+  // production probe's access mask just to manufacture a status failure.
+  ASSERT_EQ(vxcore::GetFileIdentity(winner, before, access), VXCORE_OK);
+  HANDLE exclusive;
+  {
+    const vxcore::NativePathArgument argument(winner, access);
+    exclusive = CreateFileW(argument.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                             FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  }
+  ASSERT_TRUE(exclusive != INVALID_HANDLE_VALUE);
+  const bool refused = PrivateOperationRefused([&] { io::Remove(winner); });
+  const auto replacement_error = vxcore::WriteFileAtomic(winner, replacement, access);
+  ASSERT_TRUE(CloseHandle(exclusive) != 0);
+  ASSERT_TRUE(refused);
+  ASSERT_EQ(replacement_error, VXCORE_ERR_IO);
+  ASSERT_EQ(vxcore::GetFileIdentity(winner, after, access), VXCORE_OK);
+  ASSERT_TRUE(before.SameObject(after));
+  ASSERT_EQ(ReadPrivateUtilityFile(winner), original);
+#endif
+
+  // Install a real junction/symlink at the long leaf without asking the private
+  // mutation API to authorize it. The short fixture helper needs no Windows privilege.
+  const auto target = base / "target";
+  ASSERT_TRUE(io::MakeDirectory(target));
+  ASSERT_EQ(vxcore::WriteFileAtomic(target / "keep", "untouched", access), VXCORE_OK);
+  const auto short_link = base / "fixture-link";
+  const auto long_link = directory / "linked";
+  ASSERT_TRUE(vxcore_test::create_junction(vxcore::PathToUtf8(target), vxcore::PathToUtf8(short_link)));
+  {
+    const vxcore::NativePathArgument source(short_link, access), destination_argument(long_link, access);
+#ifdef _WIN32
+    ASSERT_TRUE(MoveFileExW(source.c_str(), destination_argument.c_str(), MOVEFILE_WRITE_THROUGH) != 0);
+#else
+    ASSERT_EQ(::rename(source.c_str(), destination_argument.c_str()), 0);
+#endif
+  }
+  ASSERT_TRUE(vxcore::CheckReparsePoint(vxcore::PathToUtf8(long_link), access) == vxcore::ReparseState::kYes);
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::Status(long_link); }));
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::Exists(long_link / "keep"); }));
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::Status(long_link / "missing"); }));
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::Validate(long_link / "missing", true); }));
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::CreateDirectories(long_link / "new"); }));
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::MakeDirectory(long_link); }));
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::Remove(long_link); }));
+  bool visited_link = false;
+  ASSERT_TRUE(PrivateOperationRefused([&] {
+    io::VisitDirectory(directory, [&](const fs::path &child) { visited_link |= child == long_link; });
+  }));
+  ASSERT_FALSE(visited_link);
+  ASSERT_TRUE(PrivateOperationRefused([&] { io::IsEmpty(directory); }));
+  ASSERT_NE(vxcore::GetFileIdentity(long_link, after, access), VXCORE_OK);
+  ASSERT_NE(vxcore::GetFileIdentity(long_link / "keep", after, access), VXCORE_OK);
+  ASSERT_NE(vxcore::FlushDirectory(long_link, access), VXCORE_OK);
+  ASSERT_FALSE(vxcore::GetFilesystemTimes(vxcore::PathToUtf8(long_link / "keep"), &created, &modified, access));
+  ASSERT_NE(vxcore::WriteFileAtomic(long_link / "keep", "wrong", access), VXCORE_OK);
+  ASSERT_NE(vxcore::RenameNoReplace(winner, long_link / "new", access), VXCORE_OK);
+  ASSERT_EQ(ReadPrivateUtilityFile(target / "keep"), "untouched");
+  {
+    // Remove only the adversarial link installed by this fixture, never its target.
+    const vxcore::NativePathArgument argument(long_link, access);
+#ifdef _WIN32
+    ASSERT_TRUE(RemoveDirectoryW(argument.c_str()) != 0);
+#else
+    ASSERT_EQ(::unlink(argument.c_str()), 0);
+#endif
+  }
+#ifndef _WIN32
+  const auto fifo = directory / "fifo";
+  const vxcore::NativePathArgument fifo_argument(fifo, access);
+  const int fifo_result = ::mkfifo(fifo_argument.c_str(), 0600);
+#ifdef __ANDROID__
+  if (fifo_result != 0 && (errno == EACCES || errno == EPERM)) {
+    std::cout << "FIFO fixture unavailable under Android policy" << '\n';
+  } else
+#endif
+  {
+    ASSERT_EQ(fifo_result, 0);
+    ASSERT_TRUE(PrivateOperationRefused([&] { io::Status(fifo); }));
+    ASSERT_TRUE(PrivateOperationRefused([&] { io::Remove(fifo); }));
+    ASSERT_TRUE(PrivateOperationRefused([&] { io::VisitDirectory(directory, [](const fs::path &) {}); }));
+    ASSERT_EQ(::unlink(fifo_argument.c_str()), 0);
+  }
+#endif
+  ASSERT_TRUE(io::Remove(target / "keep"));
+  ASSERT_TRUE(io::Remove(target));
+  ASSERT_TRUE(io::Remove(renamed_directory));
+  ASSERT_TRUE(io::Remove(winner));
+  ASSERT_TRUE(io::Remove(moved));
+  ASSERT_TRUE(io::IsEmpty(directory));
+  for (auto it = directories.rbegin(); it != directories.rend(); ++it) {
+    ASSERT_TRUE(io::Remove(*it));
+  }
+  ASSERT_FALSE(io::Exists(base));
+  return 0;
+}
+
 int main() {
   std::cout << "Running file_utils tests..." << std::endl;
 
@@ -710,6 +1062,8 @@ int main() {
   RUN_TEST(test_no_replace_publication);
   RUN_TEST(test_file_identity_and_directory_flush);
   RUN_TEST(test_no_replace_postpublication_flush_error);
+  RUN_TEST(test_private_native_path_arguments);
+  RUN_TEST(test_private_long_path_utilities);
 
   std::cout << "✓ All file_utils tests passed" << std::endl;
   return 0;

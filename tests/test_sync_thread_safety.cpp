@@ -27,6 +27,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -115,6 +116,176 @@ SyncConfig MakeMockConfig() {
   cfg.remote_url = "test://stress";
   cfg.auto_sync_enabled = true;
   return cfg;
+}
+
+struct InitializeGate {
+  std::mutex mutex;
+  std::condition_variable changed;
+  bool entered = false;
+  bool released = false;
+  VxCoreError result = VXCORE_OK;
+  VxCoreError reentry_result = VXCORE_ERR_UNKNOWN;
+  SyncConfig observed_config;
+
+  bool WaitUntilEntered() {
+    std::unique_lock<std::mutex> lock(mutex);
+    return changed.wait_for(lock, std::chrono::seconds(5), [&] { return entered; });
+  }
+  void Release() {
+    std::lock_guard<std::mutex> lock(mutex);
+    released = true;
+    changed.notify_all();
+  }
+};
+
+struct BackendObservation {
+  std::atomic<int> destructions{0};
+  std::atomic<bool> registered_at_destruction{false};
+};
+
+class RegistrationBackend final : public vxcore::MockSyncBackend {
+ public:
+  RegistrationBackend(SyncManager &manager, std::string id,
+                      std::shared_ptr<BackendObservation> observation,
+                      std::shared_ptr<InitializeGate> gate)
+      : manager_(manager), id_(std::move(id)), observation_(std::move(observation)),
+        gate_(std::move(gate)) {}
+  ~RegistrationBackend() override {
+    // A backend replacement/erase must release state_mutex_ before destruction.
+    observation_->registered_at_destruction = manager_.IsRegistered(id_);
+    ++observation_->destructions;
+  }
+  VxCoreError Initialize(const std::string &root, const SyncConfig &config) override {
+    if (gate_) {
+      gate_->reentry_result = manager_.GetSyncConfig(id_, gate_->observed_config);
+      std::unique_lock<std::mutex> lock(gate_->mutex);
+      gate_->entered = true;
+      gate_->changed.notify_all();
+      gate_->changed.wait(lock, [&] { return gate_->released; });
+      if (gate_->result != VXCORE_OK) return gate_->result;
+    }
+    return MockSyncBackend::Initialize(root, config);
+  }
+
+ private:
+  SyncManager &manager_;
+  std::string id_;
+  std::shared_ptr<BackendObservation> observation_;
+  std::shared_ptr<InitializeGate> gate_;
+};
+
+vxcore::SyncBackendFactory RegistrationFactory(
+    SyncManager &manager, const std::string &id,
+    std::shared_ptr<BackendObservation> observation,
+    std::shared_ptr<InitializeGate> gate = nullptr) {
+  return [&manager, id, observation, gate](const SyncConfig &,
+      std::shared_ptr<vxcore::ICredentialProvider>) {
+    return std::make_unique<RegistrationBackend>(manager, id, observation, gate);
+  };
+}
+
+struct EnableWorker {
+  std::shared_ptr<InitializeGate> gate;
+  VxCoreError result = VXCORE_ERR_UNKNOWN;
+  std::thread thread;
+  EnableWorker(SyncManager &manager, const std::string &id, const SyncConfig &config,
+               std::shared_ptr<InitializeGate> pause, vxcore::SyncBackendFactory factory)
+      : gate(std::move(pause)), thread([this, &manager, id, config, factory] {
+          result = manager.EnableSyncWithFactoryForTesting(id, config, nullptr, factory);
+        }) {}
+  void Join() {
+    gate->Release();
+    if (thread.joinable()) thread.join();
+  }
+  ~EnableWorker() { Join(); }
+};
+
+int RegistrationAdmissionCase(bool replace_existing, VxCoreError initialize_result) {
+  StressFixture fixture(1);
+  auto &manager = fixture.sync_manager();
+  const auto &id = fixture.notebook_ids.front();
+  struct Drain {
+    SyncManager &manager;
+    const std::string &id;
+    ~Drain() { manager.DisableSync(id); }
+  } drain{manager, id};
+  const auto old = std::make_shared<BackendObservation>();
+  auto old_config = MakeMockConfig();
+  old_config.remote_url = "test://previous";
+  if (replace_existing)
+    ASSERT_EQ(manager.EnableSyncWithFactoryForTesting(id, old_config, nullptr,
+                RegistrationFactory(manager, id, old)), VXCORE_OK);
+
+  const auto pending = std::make_shared<BackendObservation>();
+  const auto gate = std::make_shared<InitializeGate>();
+  gate->result = initialize_result;
+  auto candidate = MakeMockConfig();
+  candidate.remote_url = "test://pending";
+  EnableWorker worker(manager, id, candidate, gate,
+                      RegistrationFactory(manager, id, pending, gate));
+  ASSERT_TRUE(gate->WaitUntilEntered());
+  ASSERT_EQ(gate->reentry_result, VXCORE_OK);
+  ASSERT_EQ(gate->observed_config.remote_url, candidate.remote_url);
+
+  VxCoreSyncLifecycle *lifecycle = nullptr;
+  const char *command = R"({"version":1,"operationId":"12345678-1234-4234-8234-123456789abc","kind":"enable","config":{"backend":"webdav","remoteUrl":"https://127.0.0.1:1/notebook/"}})";
+  const auto prepared = vxcore_sync_prepare_lifecycle(fixture.ctx, id.c_str(), command,
+      R"({"extra":{"username":"candidate","password":"secret"}})", &lifecycle);
+  vxcore_sync_free_lifecycle(lifecycle);
+  ASSERT_EQ(prepared, VXCORE_ERR_SYNC_IN_PROGRESS);
+  ASSERT_NULL(lifecycle);
+  ASSERT_EQ(manager.DisableSync(id), VXCORE_ERR_SYNC_IN_PROGRESS);
+  ASSERT_EQ(manager.UnregisterBackend(id), VXCORE_ERR_SYNC_IN_PROGRESS);
+  int competing_factories = 0;
+  ASSERT_EQ(manager.EnableSyncWithFactoryForTesting(id, old_config, nullptr,
+      [&](const SyncConfig &, std::shared_ptr<vxcore::ICredentialProvider>) {
+        ++competing_factories;
+        return std::make_unique<vxcore::MockSyncBackend>();
+      }), VXCORE_ERR_SYNC_IN_PROGRESS);
+  ASSERT_EQ(competing_factories, 0);
+  ASSERT_EQ(old->destructions.load(), 0);
+
+  worker.Join();
+  ASSERT_EQ(worker.result, initialize_result);
+  SyncConfig observed;
+  ASSERT_EQ(manager.GetSyncConfig(id, observed), VXCORE_OK);
+  if (initialize_result == VXCORE_OK) {
+    ASSERT_EQ(observed.remote_url, candidate.remote_url);
+    ASSERT_TRUE(manager.IsRegistered(id));
+    ASSERT_EQ(old->destructions.load(), replace_existing ? 1 : 0);
+    if (replace_existing) ASSERT_TRUE(old->registered_at_destruction.load());
+    ASSERT_EQ(pending->destructions.load(), 0);
+  } else {
+    ASSERT_EQ(observed.remote_url, replace_existing ? old_config.remote_url : std::string());
+    ASSERT_EQ(manager.IsRegistered(id), replace_existing);
+    ASSERT_EQ(old->destructions.load(), 0);
+    ASSERT_EQ(pending->destructions.load(), 1);
+  }
+
+  const auto successor = std::make_shared<BackendObservation>();
+  auto successor_config = MakeMockConfig();
+  successor_config.remote_url = "test://successor";
+  ASSERT_EQ(manager.EnableSyncWithFactoryForTesting(id, successor_config, nullptr,
+              RegistrationFactory(manager, id, successor)), VXCORE_OK);
+  ASSERT_EQ(manager.GetSyncConfig(id, observed), VXCORE_OK);
+  ASSERT_EQ(observed.remote_url, successor_config.remote_url);
+  ASSERT_EQ(manager.UnregisterBackend(id), VXCORE_OK);
+  ASSERT_FALSE(manager.IsRegistered(id));
+  ASSERT_EQ(successor->destructions.load(), 1);
+  ASSERT_FALSE(successor->registered_at_destruction.load());
+  return 0;
+}
+
+int test_legacy_enable_admission_and_publication_are_atomic() {
+  ASSERT_EQ(RegistrationAdmissionCase(false, VXCORE_OK), 0);
+  ASSERT_EQ(RegistrationAdmissionCase(true, VXCORE_OK), 0);
+  return 0;
+}
+
+int test_failed_legacy_enable_preserves_registration_and_releases_admission() {
+  ASSERT_EQ(RegistrationAdmissionCase(false, VXCORE_ERR_SYNC_NETWORK), 0);
+  ASSERT_EQ(RegistrationAdmissionCase(true, VXCORE_ERR_SYNC_NETWORK), 0);
+  return 0;
 }
 
 // Stress subtest: 8 threads x 5 notebooks x 200 iterations.
@@ -303,6 +474,8 @@ int test_concurrent_enable_trigger_disable_mark_getconfig_8threads_5notebooks_20
 int main() {
   vxcore_set_test_mode(1);
   std::cout << "Running SyncManager thread-safety stress tests..." << std::endl;
+  RUN_TEST(test_legacy_enable_admission_and_publication_are_atomic);
+  RUN_TEST(test_failed_legacy_enable_preserves_registration_and_releases_admission);
   RUN_TEST(test_concurrent_enable_trigger_disable_mark_getconfig_8threads_5notebooks_200iter);
   std::cout << "All SyncManager thread-safety stress tests passed." << std::endl;
   return 0;

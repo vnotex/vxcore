@@ -292,12 +292,17 @@ VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context
     return VXCORE_ERR_NULL_POINTER;
   }
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
-  if (ctx->last_error.empty()) {
-    *out_message = "No error";
-  } else {
-    *out_message = ctx->last_error.c_str();
+  *out_message = nullptr;
+  try {
+    thread_local std::string snapshot;
+    ctx->last_error.CopyTo(snapshot);
+    *out_message = snapshot.c_str();
+    return VXCORE_OK;
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
   }
-  return VXCORE_OK;
 }
 
 VXCORE_API VxCoreError vxcore_context_set_locale(VxCoreContextHandle context,

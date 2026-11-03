@@ -4,24 +4,19 @@
 
 #include <algorithm>
 #include <filesystem>
-#include <fstream>
 #include <memory>
-#include <nlohmann/json.hpp>
 #include <string_view>
 
 #include "core/notebook.h"
 #include "sync/git/git_conflict_resolver.h"
 #include "sync/git/libgit2_init.h"
 #include "sync/jianguoyun/jianguoyun_state.h"
-#include "sync/sync_json_keys.h"
-#include "sync/webdav/webdav_state.h"
+#include "sync/sync_provider_retirement.h"
 #include "utils/file_utils.h"
-#include "vxcore/notebook_json_keys.h"
 
 namespace vxcore {
 namespace {
 namespace fs = std::filesystem;
-using Json = nlohmann::json;
 constexpr const char *kKeyPath = "vx_notebook/encryption.vne";
 
 struct InvalidState {};
@@ -29,7 +24,8 @@ void Require(bool condition) {
   if (!condition) throw InvalidState{};
 }
 
-bool Exists(const fs::path &path) {
+bool Exists(const fs::path &path, FileAccess access = FileAccess::kDefault) {
+  if (access == FileAccess::kPrivate) return private_io::Exists(path);
   std::error_code error;
   const auto status = fs::symlink_status(path, error);
   if (error == std::errc::no_such_file_or_directory) return false;
@@ -39,24 +35,10 @@ bool Exists(const fs::path &path) {
   return true;
 }
 
-bool Directory(const fs::path &path) {
-  if (!Exists(path)) return false;
-  Require(fs::is_directory(path));
+bool Directory(const fs::path &path, FileAccess access = FileAccess::kDefault) {
+  if (!Exists(path, access)) return false;
+  Require(access == FileAccess::kPrivate ? private_io::IsDirectory(path) : fs::is_directory(path));
   return true;
-}
-
-bool SafePath(std::string_view path) {
-  if (path.empty() || path.front() == '/' || path.find_first_of("\\:\0", 0, 3) != std::string::npos)
-    return false;
-  size_t start = 0;
-  while (start < path.size()) {
-    const auto end = path.find('/', start);
-    const auto part = path.substr(start, end == std::string::npos ? end : end - start);
-    if (part.empty() || part == "." || part == "..") return false;
-    if (end == std::string::npos) return true;
-    start = end + 1;
-  }
-  return false;
 }
 
 bool KeyPath(std::string_view path) {
@@ -68,119 +50,13 @@ bool KeyPath(std::string_view path) {
          });
 }
 
-bool Hash(const Json &value) {
-  if (!value.is_string()) return false;
-  const auto &text = value.get_ref<const std::string &>();
-  return text.size() == 64 && std::all_of(text.begin(), text.end(), [](char c) {
-           return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-         });
-}
-
-Json ReadState(const fs::path &path) {
-  Require(fs::is_regular_file(path) && fs::file_size(path) <= 128 * 1024 * 1024);
-  std::ifstream input(path, std::ios::binary);
-  Require(input.is_open());
-  auto json = Json::parse(input);
-  Require(!input.bad() && json.is_object() && json.at("version").is_number_integer() &&
-          json.at("version") == 1 && json.at(kJsonKeyNotebookId).is_string() &&
-          EncryptedNote::IsCanonicalUuid(json.at(kJsonKeyNotebookId).get<std::string>()) &&
-          json.at(kJsonKeyRemoteUrl).is_string() &&
-          !json.at(kJsonKeyRemoteUrl).get_ref<const std::string &>().empty() &&
-          Hash(json.at("usernameHash")));
-  return json;
-}
-
-struct KeyState {
-  bool conflict = false;
-  bool pending = false;
-  bool replace_local = false;
-  bool any_conflict = false;
-  bool any_pending = false;
-};
-
-KeyState InspectWebDav(const fs::path &directory) {
-  KeyState result;
-  if (!Directory(directory)) return result;
-  for (const auto &entry : fs::directory_iterator(directory)) {
-    const auto name = PathToUtf8(entry.path().filename());
-    Require(name == "state.json" || name == "pending.json" || name == "snapshots" ||
-            name == "probe" || name == "retired");
-    Require(Exists(entry.path()));
-  }
-  Json state;
-  if (Exists(directory / "state.json")) {
-    state = ReadState(directory / "state.json");
-    Require(state.at("entries").is_object() && state.at("conflicts").is_object());
-    for (auto it = state.at("conflicts").begin(); it != state.at("conflicts").end(); ++it) {
-      Require(SafePath(it.key()) && it.value().is_object());
-      result.any_conflict = true;
-      if (KeyPath(it.key())) {
-        const auto &conflict = it.value();
-        for (const char *field : {"localSha256", "remoteSha256"})
-          Require(conflict.at(field).is_null() || Hash(conflict.at(field)));
-        Require(conflict.at(kJsonKeyIsBinary).is_boolean() &&
-                conflict.at(kJsonKeyCanKeepBoth) == false);
-        if (conflict.contains("resolution")) {
-          Require(conflict.at("resolution") == "keep_local" ||
-                  conflict.at("resolution") == "keep_remote");
-        }
-        // A recorded choice is still unresolved until the applying round trip confirms it.
-        result.conflict = true;
-      }
-    }
-  }
-  if (Exists(directory / "pending.json")) {
-    const auto pending = ReadState(directory / "pending.json");
-    Require(!state.is_null() && pending.at(kJsonKeyNotebookId) == state.at(kJsonKeyNotebookId) &&
-            pending.at(kJsonKeyRemoteUrl) == state.at(kJsonKeyRemoteUrl) &&
-            pending.at("usernameHash") == state.at("usernameHash") &&
-            pending.at("operationId").is_string() &&
-            EncryptedNote::IsCanonicalUuid(pending.at("operationId").get<std::string>()) &&
-            pending.at("operations").is_array() && pending.at("operations").size() <= 500000);
-    for (const auto &op : pending.at("operations")) {
-      Require(op.is_object() && op.at("path").is_string());
-      const auto &path = op.at("path").get_ref<const std::string &>();
-      Require(SafePath(path));
-      const auto &action = op.at("action").get_ref<const std::string &>();
-      const auto &stage = op.at("stage").get_ref<const std::string &>();
-      Require(action == "upsertLocal" || action == "upsertRemote" || action == "deleteLocal" ||
-              action == "deleteRemote" || action == "mkdirLocal" || action == "mkdirRemote" ||
-              action == "removeLocalCollection");
-      Require(stage == "prepared" || stage == "remoteConfirmed" || stage == "localConfirmed" ||
-              stage == "baselineConfirmed");
-      result.any_pending = true;
-      if (webdav::IsEncrypted(path) &&
-          (action == "upsertLocal" || action == "deleteLocal")) {
-        result.replace_local = true;
-      }
-      if (!KeyPath(path)) continue;
-      Require(op.at("kind") == "file" && action != "mkdirLocal" && action != "mkdirRemote" &&
-              action != "removeLocalCollection");
-      for (const char *field : {"expectedLocalSha256", "oldSha256", "newSha256"})
-        Require(op.at(field).is_null() || Hash(op.at(field)));
-      Require((action != "upsertLocal" && action != "upsertRemote") || Hash(op.at("newSha256")));
-      result.pending = true;
-    }
-  }
-  return result;
-}
-
 VxCoreError CheckWebDav(const fs::path &directory, bool all_paths) {
-  const auto unresolved = [all_paths](const KeyState &state) {
-    return all_paths ? state.any_conflict || state.any_pending : state.conflict || state.pending;
-  };
-  if (unresolved(InspectWebDav(directory))) return VXCORE_ERR_SYNC_CONFLICT;
-  if (all_paths && unresolved(InspectWebDav(directory / "probe"))) return VXCORE_ERR_SYNC_CONFLICT;
-  // Completed archives are historical data, not an active binding to retire.
-  if (all_paths) return VXCORE_OK;
-  const auto retired = directory / "retired";
-  if (Directory(retired)) {
-    for (const auto &entry : fs::directory_iterator(retired)) {
-      Require(EncryptedNote::IsCanonicalUuid(PathToUtf8(entry.path().filename())));
-      if (unresolved(InspectWebDav(entry.path()))) return VXCORE_ERR_SYNC_CONFLICT;
-    }
-  }
-  return VXCORE_OK;
+  WebDavStorageStatus state;
+  const auto error = InspectWebDavStorage(directory, state);
+  if (error != VXCORE_OK) return all_paths ? error : VXCORE_ERR_ENCRYPTION_SYNC_STATE;
+  const bool unresolved = all_paths ? state.any_conflict || state.any_pending
+                                    : state.encryption_conflict || state.encryption_pending;
+  return unresolved ? VXCORE_ERR_SYNC_CONFLICT : VXCORE_OK;
 }
 VxCoreError CheckJianguoyun(const fs::path &directory, bool all_paths) {
   if (!Directory(directory)) return VXCORE_OK;
@@ -210,15 +86,15 @@ VxCoreError CheckJianguoyun(const fs::path &directory, bool all_paths) {
 VxCoreError CheckNotebookEncryptionSyncState(const std::string &metadata_folder) {
   try {
     const auto metadata = PathFromUtf8(metadata_folder);
-    Require(Directory(metadata));
+    Require(Directory(metadata, FileAccess::kPrivate));
     const auto sync = metadata / "vx_sync";
-    if (!Directory(sync)) return VXCORE_OK;
+    if (!Directory(sync, FileAccess::kPrivate)) return VXCORE_OK;
     bool git_owned = false;
-    for (const auto &entry : fs::directory_iterator(sync)) {
-      Require(Exists(entry.path()));
-      if (entry.path().filename() != "webdav" && entry.path().filename() != "jianguoyun")
+    private_io::VisitDirectory(sync, [&](const fs::path &entry) {
+      Require(Exists(entry, FileAccess::kPrivate));
+      if (entry.filename() != "webdav" && entry.filename() != "jianguoyun")
         git_owned = true;
-    }
+    });
     // Git uses vx_sync itself as its repository. DAV provider directories are not Git evidence;
     // any other unexplained/non-readable content still fails closed in the Git inspector.
     if (git_owned) {
@@ -235,15 +111,15 @@ VxCoreError CheckNotebookEncryptionSyncState(const std::string &metadata_folder)
 VxCoreError CheckNotebookSyncReconfiguration(const std::string &metadata_folder) {
   try {
     const auto metadata = PathFromUtf8(metadata_folder);
-    Require(Directory(metadata));
+    Require(Directory(metadata, FileAccess::kPrivate));
     const auto sync = metadata / "vx_sync";
-    if (!Directory(sync)) return VXCORE_OK;
+    if (!Directory(sync, FileAccess::kPrivate)) return VXCORE_OK;
     bool git_owned = false;
-    for (const auto &entry : fs::directory_iterator(sync)) {
-      Require(Exists(entry.path()));
-      if (entry.path().filename() != "webdav" && entry.path().filename() != "jianguoyun")
+    private_io::VisitDirectory(sync, [&](const fs::path &entry) {
+      Require(Exists(entry, FileAccess::kPrivate));
+      if (entry.filename() != "webdav" && entry.filename() != "jianguoyun")
         git_owned = true;
-    }
+    });
     if (git_owned) {
       LibGit2Init init;
       if (!LibGit2Init::ok()) return VXCORE_ERR_GIT_INIT_FAILED;
@@ -272,13 +148,14 @@ VxCoreError PrepareNotebookEncryptionSyncApply(Notebook &notebook,
                                                const std::vector<std::string> &protected_paths) {
   try {
     const auto metadata = PathFromUtf8(notebook.GetMetadataFolder());
-    Require(Directory(metadata));
+    Require(Directory(metadata, FileAccess::kPrivate));
     const auto sync = metadata / "vx_sync";
-    if (!Directory(sync)) return VXCORE_OK;
-    const auto state = InspectWebDav(sync / "webdav");
+    if (!Directory(sync, FileAccess::kPrivate)) return VXCORE_OK;
+    WebDavStorageStatus state;
+    Require(InspectWebDavStorage(sync / "webdav", state) == VXCORE_OK);
     jianguoyun::RecoveryStatus managed;
     Require(jianguoyun::InspectRecovery(sync / "jianguoyun", managed) == VXCORE_OK);
-    if (!state.replace_local && !managed.replaces_encryption) return VXCORE_OK;
+    if (!state.replaces_encryption && !managed.replaces_encryption) return VXCORE_OK;
     for (const auto &path : protected_paths) {
       const bool encrypted = path.size() >= 4 && std::equal(path.end() - 4, path.end(), ".vne",
                                                             [](char actual, char expected) {

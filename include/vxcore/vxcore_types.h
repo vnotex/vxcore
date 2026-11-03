@@ -68,6 +68,13 @@ typedef enum {
   VXCORE_ERR_UNKNOWN = 999
 } VxCoreError;
 
+// Runtime-only, leaf-first bounded DER chain (16 certificates / 1 MiB total).
+// Only VXCORE_OK accepts trust. Hostname checks remain independently enabled.
+// Pointers are borrowed only during this callback, which must not reenter core.
+typedef VxCoreError (*VxCoreSyncTlsVerifier)(const char *host, const uint8_t *const *der,
+                                           const uint64_t *lengths, uint64_t count,
+                                           void *userdata);
+
 typedef enum { VXCORE_NOTEBOOK_BUNDLED = 0, VXCORE_NOTEBOOK_RAW = 1 } VxCoreNotebookType;
 
 typedef enum {
