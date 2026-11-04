@@ -90,10 +90,10 @@ StoreFileRecord ToStoreFileRecord(const FileRecord &file, const std::string &fol
 // - Deletes files in store that no longer exist in config
 // - Creates new files that exist in config but not in store
 // - Updates existing files if they differ
-void SyncFilesToStore(MetadataStore *store, const std::string &folder_id,
+bool SyncFilesToStore(MetadataStore *store, const std::string &folder_id,
                       const std::vector<FileRecord> &config_files) {
   if (!store) {
-    return;
+    return false;
   }
 
   // Get existing files from store
@@ -113,6 +113,7 @@ void SyncFilesToStore(MetadataStore *store, const std::string &folder_id,
       if (!store->DeleteFile(store_file.id)) {
         VXCORE_LOG_WARN("SyncFilesToStore: Failed to delete orphaned file: id=%s",
                         store_file.id.c_str());
+        return false;
       }
     }
   }
@@ -130,19 +131,23 @@ void SyncFilesToStore(MetadataStore *store, const std::string &folder_id,
       // File exists in store - update it
       if (!store->UpdateFile(file.id, file.name, file.modified_utc, file.metadata.dump())) {
         VXCORE_LOG_WARN("SyncFilesToStore: Failed to update file: id=%s", file.id.c_str());
+        return false;
       }
       // Also update tags
       if (!store->SetFileTags(file.id, file.tags)) {
         VXCORE_LOG_WARN("SyncFilesToStore: Failed to update file tags: id=%s", file.id.c_str());
+        return false;
       }
     } else {
       // File doesn't exist in store - create it
       StoreFileRecord file_record = ToStoreFileRecord(file, folder_id);
       if (!store->CreateFile(file_record)) {
         VXCORE_LOG_WARN("SyncFilesToStore: Failed to create file: id=%s", file.id.c_str());
+        return false;
       }
     }
   }
+  return true;
 }
 
 }  // namespace
@@ -2950,6 +2955,20 @@ void BundledFolderManager::SyncFolderToStore(const std::string &folder_path,
   VXCORE_LOG_INFO("SyncFolderToStore: Syncing folder: id=%s, path=%s", config.id.c_str(),
                   folder_path.c_str());
 
+  // Publish the direct file set and its completion watermark together. Commit
+  // before descending so recursive lazy synchronization never nests BEGIN.
+  if (!store->BeginTransaction()) {
+    VXCORE_LOG_WARN("SyncFolderToStore: Failed to begin cache transaction");
+    return;
+  }
+  struct CacheTransaction {
+    MetadataStore *store;
+    bool committed = false;
+    ~CacheTransaction() {
+      if (!committed) store->RollbackTransaction();
+    }
+  } transaction{store};
+
   // Reuse db_folder from staleness check (folder exists if db_folder has value)
   if (db_folder.has_value()) {
     // Update existing folder
@@ -2967,12 +2986,18 @@ void BundledFolderManager::SyncFolderToStore(const std::string &folder_path,
     }
   }
 
-  // Sync files (add/update/delete orphans)
-  SyncFilesToStore(store, config.id, config.files);
+  // Stop on the first failed statement: SQLite may already have rolled back
+  // after an IO error, so subsequent writes must not escape into autocommit.
+  if (!SyncFilesToStore(store, config.id, config.files)) return;
+  if (!store->CommitTransaction()) {
+    VXCORE_LOG_WARN("SyncFolderToStore: Failed to commit cache transaction");
+    return;
+  }
+  transaction.committed = true;
 
   // Recursively sync subfolders
-  // NOTE: Use LoadFolderConfig (not GetFolderConfig) to avoid infinite recursion.
-  // GetFolderConfig triggers lazy sync which calls SyncFolderToStore again.
+  // GetFolderConfig performs each child's lazy publication after this folder's
+  // transaction has committed; its explicit parent ID avoids parent lookup recursion.
   for (const auto &subfolder_name : config.folders) {
     std::string subfolder_path = ConcatenatePaths(folder_path, subfolder_name);
     FolderConfig *subfolder_config;

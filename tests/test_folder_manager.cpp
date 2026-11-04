@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_set>
+#include <sqlite3.h>
 
 #include "core/bundled_folder_manager.h"
 #include "core/bundled_notebook.h"
@@ -542,9 +543,79 @@ int test_index_children_failed_parent_publication_cleans_owned_configs() {
   return 0;
 }
 
+int test_lazy_cache_folder_publication_is_atomic() {
+  const auto path = get_test_path("test_fm_lazy_cache_atomic");
+  cleanup_test_dir(path);
+  const auto book = path + "/book";
+  NotebookConfig options;
+  options.name = "Cache transaction";
+  std::unique_ptr<Notebook> notebook;
+  ASSERT_EQ(BundledNotebook::Create(path + "/local", book, &options, notebook), VXCORE_OK);
+  auto *fm = notebook->GetFolderManager();
+  auto *store = notebook->GetMetadataStore();
+  ASSERT_NOT_NULL(fm);
+  ASSERT_NOT_NULL(store);
+  std::string first, late, tail, child, nested;
+  ASSERT_EQ(fm->CreateFile(".", "first.md", first), VXCORE_OK);
+  ASSERT_EQ(fm->CreateFile(".", "late.md", late), VXCORE_OK);
+  ASSERT_EQ(fm->CreateFile(".", "tail.md", tail), VXCORE_OK);
+  ASSERT_EQ(fm->CreateFolder(".", "Child", child), VXCORE_OK);
+  ASSERT_EQ(fm->CreateFile("Child", "nested.md", nested), VXCORE_OK);
+  write_file(book + "/first.md", "first source\r\n");
+  write_file(book + "/late.md", "late source\n");
+  write_file(book + "/tail.md", "tail source\n");
+  write_file(book + "/Child/nested.md", "nested source\n");
+  const auto root_path = utf8_to_fs_path(book + "/vx_notebook/contents/vx.json");
+  const auto child_path = utf8_to_fs_path(book + "/vx_notebook/contents/Child/vx.json");
+  const auto root_bytes = manager_binary(root_path);
+  const auto child_bytes = manager_binary(child_path);
+  const auto root_id = nlohmann::json::parse(root_bytes)["id"].get<std::string>();
+  ASSERT_TRUE(store->RebuildAll());
+  ASSERT_TRUE(store->SetNotebookMetadata("last_sync_utc", "123456789"));
+  sqlite3 *raw = nullptr;
+  const auto db_path = path + "/local/notebooks/" + notebook->GetConfig().id + "/metadata.db";
+  ASSERT_EQ(sqlite3_open_v2(db_path.c_str(), &raw, SQLITE_OPEN_READWRITE, nullptr), SQLITE_OK);
+  std::unique_ptr<sqlite3, decltype(&sqlite3_close)> database(raw, sqlite3_close);
+  ASSERT_EQ(sqlite3_exec(database.get(),
+      "CREATE TRIGGER reject_late_cache_file BEFORE INSERT ON files "
+      "WHEN NEW.name='late.md' BEGIN SELECT RAISE(ABORT, 'controlled cache failure'); END;",
+      nullptr, nullptr, nullptr), SQLITE_OK);
+  fm->ClearCache();
+  std::string config;
+  ASSERT_EQ(fm->GetFolderConfig(".", config), VXCORE_OK);
+  ASSERT_FALSE(store->GetFolder(root_id).has_value());
+  ASSERT_FALSE(store->GetFile(first).has_value());
+  ASSERT_FALSE(store->GetFile(late).has_value());
+  ASSERT_FALSE(store->GetFile(tail).has_value());
+  ASSERT_FALSE(store->GetFolder(child).has_value());
+  ASSERT_FALSE(store->GetFile(nested).has_value());
+  ASSERT_EQ(store->GetNotebookMetadata("last_sync_utc").value_or("missing"), "123456789");
+  ASSERT_EQ(sqlite3_exec(database.get(), "DROP TRIGGER reject_late_cache_file;", nullptr, nullptr, nullptr), SQLITE_OK);
+  database.reset();
+  fm->ClearCache();
+  ASSERT_EQ(fm->GetFolderConfig(".", config), VXCORE_OK);
+  ASSERT_TRUE(store->GetFolder(root_id).has_value());
+  ASSERT_TRUE(store->GetFile(first).has_value());
+  ASSERT_TRUE(store->GetFile(late).has_value());
+  ASSERT_TRUE(store->GetFile(tail).has_value());
+  ASSERT_TRUE(store->GetFolder(child).has_value());
+  ASSERT_TRUE(store->GetFile(nested).has_value());
+  ASSERT_EQ(store->GetNotebookMetadata("last_sync_utc").value_or("missing"), "123456789");
+  ASSERT_EQ(manager_binary(root_path), root_bytes);
+  ASSERT_EQ(manager_binary(child_path), child_bytes);
+  ASSERT_EQ(manager_binary(utf8_to_fs_path(book + "/first.md")), "first source\r\n");
+  ASSERT_EQ(manager_binary(utf8_to_fs_path(book + "/late.md")), "late source\n");
+  ASSERT_EQ(manager_binary(utf8_to_fs_path(book + "/tail.md")), "tail source\n");
+  ASSERT_EQ(manager_binary(utf8_to_fs_path(book + "/Child/nested.md")), "nested source\n");
+  notebook.reset();
+  cleanup_test_dir(path);
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder manager attachment tests..." << std::endl;
 
+  RUN_TEST(test_lazy_cache_folder_publication_is_atomic);
   RUN_TEST(test_folder_manager_add_attachment);
   RUN_TEST(test_folder_manager_add_attachment_duplicate);
   RUN_TEST(test_folder_manager_delete_attachment);
