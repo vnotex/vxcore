@@ -94,6 +94,27 @@ class ISyncBackend {
     return VXCORE_ERR_NOT_IMPLEMENTED;
   }
 
+  // Prepared mobile credential changes never use the legacy provider swap.
+  // Validation/recovery run on W using copied roots/config; commit runs on O
+  // without network. Unsupported providers fail explicitly.
+  virtual VxCoreError ValidateCandidate(const std::string &, const SyncConfig &,
+                                         std::shared_ptr<ICredentialProvider>,
+                                         const std::string &) {
+    return VXCORE_ERR_NOT_IMPLEMENTED;
+  }
+  virtual VxCoreError RecoverCandidate(const std::string &, const SyncConfig &,
+                                        std::shared_ptr<ICredentialProvider>,
+                                        const std::string &) {
+    return VXCORE_ERR_NOT_IMPLEMENTED;
+  }
+  virtual VxCoreError CommitCandidate(std::shared_ptr<ICredentialProvider>) {
+    return VXCORE_ERR_NOT_IMPLEMENTED;
+  }
+  virtual bool CandidateCleanupRequired() const { return false; }
+  // True only after candidate disk publication and runtime installation both succeeded.
+  // Remains true if subsequent cleanup or reporting returns an error.
+  virtual bool CandidateCommitted() const noexcept { return false; }
+
   // Task 6.3 (F4.4) of sync-backend-phase4: credential rotation contract.
   //
   // Atomically swap the backend's ICredentialProvider. Implementations MUST

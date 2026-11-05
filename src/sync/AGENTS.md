@@ -720,6 +720,11 @@ same guarded phases so key-envelope replacement cannot bypass the key-lock prefl
 composite trigger on the Qt worker. `CheckNotebookEncryptionSyncState` inspects persisted Git and
 WebDAV recovery even when unregistered; a WebDAV child alone is not corrupt Git state.
 
+Sync/encryption preflight permits aliases only above the notebook root. Validate the original
+logical metadata spelling before resolving that ancestor; the notebook root, `vx_notebook`,
+`vx_sync` and provider descendants remain no-follow boundaries. Keep extended Windows paths
+as final OS arguments, never decompose them or persist them as logical paths.
+
 ## SyncManager Locking Discipline
 
 Wave 10.1 (F2.4 part 2) made `state_mutex_` real. It is the single coarse mutex that guards the three runtime maps shared between the orchestrator thread, the event-driven dirty-mark thread, and any caller of the public API.

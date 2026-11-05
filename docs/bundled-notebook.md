@@ -4,7 +4,7 @@ This document describes how a **bundled notebook** in vxcore manages its metadat
 
 ## Overview
 
-A bundled notebook is **self-contained**: its configuration and folder-structure metadata live inside the notebook root directory under `vx_notebook/`. This makes the notebook portable (can be copied/moved as a single directory tree). An SQLite database for fast querying lives in a platform-local data folder and is treated as a **disposable cache** -- closing the notebook deletes it, and reopening rebuilds it from the on-disk JSON configs.
+A bundled notebook is **self-contained**: its configuration and folder-structure metadata live inside the notebook root directory under `vx_notebook/`. This makes the notebook portable (can be copied/moved as a single directory tree). An SQLite database for fast querying lives in a platform-local data folder. Folder/file indexes are derived from the on-disk JSON configs, but the database also contains device-local metadata such as the last successful synchronization time. Explicit notebook removal/close and transient context retirement have different retention policies; do not delete this database merely to speed up discovery.
 
 ## Directory Layout
 
@@ -26,7 +26,7 @@ A bundled notebook is **self-contained**: its configuration and folder-structure
 
 <local_data>/
   notebooks/<notebook_id>/
-    metadata.db                  # SQLite cache (disposable)
+    metadata.db                  # query cache and device-local completion state
 ```
 
 **`local_data`** resolves to `%LOCALAPPDATA%/VNote` (Windows), `~/Library/Application Support/VNote` (macOS), or `~/.local/share/VNote` (Linux). In test mode it uses a temp directory.
@@ -116,7 +116,9 @@ The JSON files are ground truth. The DB is derived.
 
 ### Lazy Sync on Access
 
-When a `FolderConfig` is loaded from disk for the first time (cache miss), `SyncFolderToStore()` is called. It compares `config.modified_utc` against the DB record's `modified_utc` and syncs if stale. This means the DB is populated incrementally as folders are accessed, not eagerly on open.
+When a `FolderConfig` is loaded from disk for the first time (cache miss), `SyncFolderToStore()` compares `config.modified_utc` with the stored folder watermark. A stale folder publishes its folder record and complete direct-file update in one SQLite transaction. Failure stops further writes and rolls back that transaction, so a new completion watermark cannot describe a partially synchronized file set. The in-memory source config remains valid; explicit cache clear or reopen can retry from unchanged JSON.
+
+The folder transaction commits before descending into child folders. Descendants use their own transactions, never nested `BEGIN` calls; this is per-folder cache atomicity, not whole-subtree publication. The existing recursive discovery behavior remains, but large first access no longer performs an independent durable commit for each file. Notebook JSON, note bytes, identities and `last_sync_utc` are not modified by this cache synchronization.
 
 ### Full Rebuild
 

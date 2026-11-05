@@ -2,11 +2,14 @@
 
 #include <chrono>
 #include <random>
+#include <mutex>
 #include <sstream>
 
 namespace vxcore {
 
 std::string GenerateUUID() {
+  static std::mutex mutex;
+  std::lock_guard<std::mutex> lock(mutex);
   static std::random_device rd;
   static std::mt19937 gen(rd());
   static std::uniform_int_distribution<> dis(0, 15);

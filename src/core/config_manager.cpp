@@ -74,7 +74,7 @@ VxCoreError ConfigManager::LoadConfigs() {
 
   nlohmann::json session_json = nlohmann::json::object();
   auto session_config_path = local_data_path_ / kSessionConfigFileName;
-  if (std::filesystem::exists(session_config_path)) {
+  if (load_session_config_ && std::filesystem::exists(session_config_path)) {
     VXCORE_LOG_DEBUG("Loading session config: %s", PathToUtf8(session_config_path).c_str());
     err = LoadJsonFile(session_config_path, session_json);
     if (err != VXCORE_OK) {

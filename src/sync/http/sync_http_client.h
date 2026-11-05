@@ -6,6 +6,7 @@
 #include <functional>
 #include <iosfwd>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -14,6 +15,10 @@
 #include "sync/sync_cancellation.h"
 #include "sync/sync_types.h"
 #include "vxcore/vxcore_types.h"
+
+#ifdef VXCORE_SYNC_TLS_OPENSSL
+#include <openssl/x509_vfy.h>
+#endif
 
 namespace vxcore {
 class AtomicFileWriter;
@@ -33,6 +38,11 @@ long ParseStatus(std::string_view text);
 bool ParseUrl(const std::string &text, Url &url);
 bool ResolveUrl(const Url &root, const std::string &base, const std::string &href, Url &out);
 std::string Relative(const Url &root, const Url &url);
+#ifdef VXCORE_SYNC_TLS_OPENSSL
+// Replacing OpenSSL verifier: explicit leaf first, unique untrusted intermediates, bounded DER.
+// This never consults OpenSSL's CA store or performs issuer/revocation network requests.
+int VerifyTlsPeer(X509_STORE_CTX *context, const char *host, const SyncTlsPolicy &policy) noexcept;
+#endif
 }  // namespace sync_http
 
 struct SyncHttpResponse {
@@ -61,6 +71,8 @@ struct SyncHttpRequest {
   // GET streams status 200 into this already-open writer. The caller MUST validate status,
   // length, hash/validator and its local path, then Commit(); errors never publish the file.
   AtomicFileWriter *writer = nullptr;
+  // Optional maximum streamed GET bytes, enforced before writing; zero permits only empty files.
+  std::optional<uint64_t> download_limit;
   // Immutable seekable snapshot, owned and lifetime-checked by the caller. Only this range
   // is sent/hashed; challenge authentication rewinds to upload_offset, never file offset zero.
   // A 16 MiB object therefore needs no 16 MiB transfer allocation.
@@ -83,11 +95,13 @@ enum class SyncHttpFailure {
 
 // Synchronous, operation-owned, non-concurrent session. Credentials/cancellation are snapshots;
 // there are no provider callbacks, scheduler, retry policy or logging. Certificate and hostname
-// verification are mandatory; the existing custom CA seam requires actual vxcore test mode.
+// verification are mandatory. A copied immutable TLS policy may replace certificate-chain trust
+// only on a supported OpenSSL build; caller pins its userdata through session destruction.
+// Without a policy, desktop trust and the test-mode-only custom CA seam are unchanged.
 class SyncHttpClient final {
  public:
   SyncHttpClient(const std::string &collection_url, const SyncCredentials &credentials,
-                 SyncCancellationPtr cancellation);
+                 SyncCancellationPtr cancellation, SyncTlsPolicy tls_policy = {});
   ~SyncHttpClient();
   SyncHttpClient(const SyncHttpClient &) = delete;
   SyncHttpClient &operator=(const SyncHttpClient &) = delete;

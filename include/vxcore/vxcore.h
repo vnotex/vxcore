@@ -49,6 +49,10 @@ VXCORE_API VxCoreError vxcore_prepare_shutdown(VxCoreContextHandle context);
 // Use when the application's close operation is cancelled by the user.
 VXCORE_API VxCoreError vxcore_cancel_shutdown(VxCoreContextHandle context);
 
+// Latest context diagnostic, not operation-specific attribution. The pointer is a
+// thread-local snapshot valid until the next getter on THIS thread (any context);
+// writes/getters on other threads cannot invalidate it. Other APIs retain their
+// existing threading contracts.
 VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context,
                                                      const char **out_message);
 
@@ -540,8 +544,9 @@ VXCORE_API VxCoreError vxcore_notebook_collect_node_ids(VxCoreContextHandle cont
 
 // Attach a STAGED imported folder bundle to its destination parent.
 //
-// @staging_dir is a directory prepared by the caller (VNote's
-// FolderBundleImporter) containing exactly two children:
+// @staging_dir is an ordinary immediate child of this notebook's
+// vx_notebook/vx_import directory, on the same filesystem, prepared by the caller
+// (VNote's FolderBundleImporter) with exactly two initial children:
 //   content/   the physical folder tree to publish as <dest>/<name>
 //   metadata/  the parallel metadata tree (vx.json files) to publish as
 //              <root>/vx_notebook/contents/<dest_folder_path>/<name>
@@ -569,8 +574,10 @@ VXCORE_API VxCoreError vxcore_notebook_collect_node_ids(VxCoreContextHandle cont
 //      its "folders" array — THIS IS THE COMMIT POINT,
 //   6. invalidate caches, emit ONE `folder.created` for the attached folder,
 //      delete the journal.
-// A failure before step 5 rolls everything back and writes nothing. A crash at
-// any point is repaired by vxcore_notebook_recover_imports() on next open.
+// Failures are not proof of rollback: a parent replacement/flush error may follow
+// publication. Recovery proves the actual parent/cohort state before cleanup;
+// unresolved ownership/IO failures retain the journal instead of deleting data.
+// The caller must reconcile before retrying or acknowledging a partial outcome.
 //
 // Descendant creation events are NOT replayed; exactly one `folder.created`
 // fires, for the imported root.
@@ -595,17 +602,22 @@ VXCORE_API VxCoreError vxcore_folder_attach_imported(VxCoreContextHandle context
 
 // Replay or roll back any incomplete folder-import journals left by a crash.
 //
-// Called automatically when a bundled notebook is opened, BEFORE the metadata
-// store is rebuilt from configs, so a rolled-back import never leaves rows the
-// rebuild would resurrect. Safe to call again at any time; a notebook with no
-// journals is a no-op returning VXCORE_OK.
+// Called automatically on bundled notebook open; safe to call again. Recovery
+// repairs affected derived-store rows itself; it must not assume open rebuilds them.
+// A notebook without journals is a no-op returning VXCORE_OK.
 //
-// Per journal phase:
-//   init/content/metadata/db  roll BACK: delete the published directories,
-//                             delete the recorded ids from the store, restore
-//                             the parent vx.json bytes, delete the journal
-//   committed                 roll FORWARD: ensure the store rows exist,
-//                             invalidate caches, delete the journal
+// New bounded schema-2 journals retain binary parent images and directory identities.
+// Exact legacy journals are validated before acting. A phase string alone never
+// authorizes deleting a visible cohort or restoring old parent bytes.
+// Committed proof: a durable committed receipt, or matching owned published roots
+// and cohort identity with the after-image/current parent membership/authoritatively
+// reachable root ID after rename or edit. Preserve live data and clean only staging.
+// Rollback: parent binary bytes still equal the before-image and every target is
+// absent or positively owned. Remove only those targets and their inserted store
+// rows; never overwrite a newer parent. Unreadable/foreign/ambiguous state is retained
+// with an error. Incomplete uncommitted cleanup is an error with the journal retained.
+// Proven-committed cleanup failure is safe residue for a later open, not a reason to
+// make a healthy notebook unopenable. Later legitimate deletion is not replayed.
 //
 // out_recovered_count: optional; receives the number of journals processed.
 //
@@ -644,6 +656,24 @@ VXCORE_API VxCoreError vxcore_folder_import(VxCoreContextHandle context, const c
                                             const char *external_folder_path,
                                             const char *suffix_allowlist, char **out_folder_id);
 
+// Index an explicit batch of existing immediate children of a bundled folder.
+// names_json: UTF-8 JSON array of basenames, <=8 MiB and <=10000 names.
+// No bodies are copied, decoded, renamed or rewritten. All names/types/collisions
+// are validated before one atomic parent-config publication. Empty input is a no-op.
+// Core generates IDs only for the requested unindexed children. Existing IDs and
+// unrelated metadata are preserved. No recursive/hidden/suffix filtering occurs.
+// This is a private-construction primitive, NOT a multi-folder import transaction:
+// errors may follow parent publication/store work. Query actual metadata before
+// retrying; final cohort publication uses vxcore_folder_attach_imported.
+// READ_ONLY precedes UNSUPPORTED for read-only raw notebooks.
+VXCORE_API VxCoreError vxcore_folder_index_children(VxCoreContextHandle context,
+                                                   const char *notebook_id,
+                                                   const char *parent_path,
+                                                   const char *names_json);
+
+// Replace a bundled file's tags with tags_json (an array of names). New names must have
+// notebook definitions; existing undefined assignments may be preserved or explicitly removed.
+// Once removed, an undefined name cannot be assigned again until its definition exists.
 VXCORE_API VxCoreError vxcore_file_update_tags(VxCoreContextHandle context, const char *notebook_id,
                                                const char *file_path, const char *tags_json);
 
@@ -947,6 +977,13 @@ VXCORE_API VxCoreError vxcore_search_files(VxCoreContextHandle context, const ch
                                            const char *query_json, const char *input_files_json,
                                            char **out_results_json);
 
+// Content query_json optionally accepts "firstMatchPerFile": true (default false).
+// The simple backend then returns only the first qualifying occurrence in each file, after
+// applying ordinary options and line exclusions, with unchanged line/UTF-16 column offsets.
+// It stops matching before allocating another occurrence's lineText, avoiding repeated-match
+// quadratic allocation. This is not a file-size cap or filesystem snapshot. Other active
+// backends return VXCORE_ERR_UNSUPPORTED for this mode. Applies to all content search APIs;
+// omitted/false preserves ordinary multiple-match results and maxResults behavior.
 VXCORE_API VxCoreError vxcore_search_content(VxCoreContextHandle context, const char *notebook_id,
                                              const char *query_json, const char *input_files_json,
                                              char **out_results_json);
@@ -980,8 +1017,9 @@ VXCORE_API VxCoreError vxcore_search_content_ex(VxCoreContextHandle context,
 //   batch_json:    a JSON object in the existing content-search shape, scoped to that chunk's
 //                  files: {"matchCount":N,"truncated":false,"matches":[{path,id,matchCount,
 //                  matches:[{lineNumber,columnStart,columnEnd,lineText}]}]}. "truncated" is
-//                  ALWAYS false — the streaming primitive owns no truncation; it emits every
-//                  match. The pointer is valid ONLY for the callback's duration; copy/parse
+//                  ALWAYS false — the streaming primitive owns no result cap; it emits every
+//                  match selected by the query (at most one per file with firstMatchPerFile).
+//                  The pointer is valid ONLY for the callback's duration; copy/parse
 //                  before returning.
 //   userdata:      opaque pointer supplied by the caller; valid for the call's duration.
 //
@@ -1608,6 +1646,47 @@ VXCORE_API VxCoreError vxcore_sync_trigger(VxCoreContextHandle context, const ch
 // Null-safety: every function in this group is null-safe (no-ops on a
 // NULL token).
 typedef struct VxCoreSyncCancellation_ VxCoreSyncCancellation;
+typedef struct VxCoreSyncLifecycle_ VxCoreSyncLifecycle;
+
+// Immutable runtime trust policy. Install on the context owner before any sync
+// backend/clone/lifecycle. Userdata must outlive all backends and joined workers.
+// A custom policy on an unsupported TLS/backend combination fails explicitly.
+VXCORE_API VxCoreError vxcore_sync_set_tls_verifier(VxCoreContextHandle context,
+                                                    VxCoreSyncTlsVerifier verifier,
+                                                    void *userdata);
+
+// Prepared WebDAV lifecycle: prepare O (no network), execute W (no metadata
+// manager/SQLite), complete O (no network), then free after worker/callback join.
+// Context and selected notebook remain caller-pinned through free. Closed v1
+// commands: enable/config, credentials, credentialRecovery/config/recoveryOperationId,
+// clone/config/target/limits; all include canonical operationId. Credentials are
+// separate {extra:{username,password}}. Clone requires transaction-private runtime
+// roots beside an empty unpacked target, never a shared library context.
+VXCORE_API VxCoreError vxcore_sync_prepare_lifecycle(
+    VxCoreContextHandle context, const char *notebook_id, const char *command_json,
+    const char *credentials_json, VxCoreSyncLifecycle **out_lifecycle);
+VXCORE_API VxCoreError vxcore_sync_execute_lifecycle(VxCoreSyncLifecycle *lifecycle,
+                                                     VxCoreSyncCancellation *cancellation);
+// Exactly once, after execute returns. Output is bounded JSON (vxcore_string_free):
+// version,operationId,kind,notebookId,executed,committed,cleanupRequired,code.
+// credentialRecovery reports cleanup only: committed is ALWAYS false.
+VXCORE_API VxCoreError vxcore_sync_complete_lifecycle(VxCoreContextHandle context,
+                                                      VxCoreSyncLifecycle *lifecycle,
+                                                      char **out_result_json);
+VXCORE_API void vxcore_sync_free_lifecycle(VxCoreSyncLifecycle *lifecycle);
+
+// Closed network-free v1 inspect/begin/commit/restore/recover provider commands.
+// Paths derive only from the selected bundled notebook. Historical archives are
+// retained; unknown/linked/replaced/recovery material never grants deletion authority.
+VXCORE_API VxCoreError vxcore_sync_provider_transaction(VxCoreContextHandle context,
+                                                        const char *notebook_id,
+                                                        const char *command_json,
+                                                        char **out_json);
+// Context-free read-only storage validation; never registers, repairs or authorizes
+// import. cleanCloneBaseline is diagnostic, NOT authority to import a sync cursor.
+VXCORE_API VxCoreError vxcore_sync_inspect_storage(const char *notebook_root,
+                                                   const char *expected_notebook_id,
+                                                   char **out_facts_json);
 
 // Allocate a fresh cancellation token. Returns NULL only on allocation
 // failure. The returned token is uncancelled.
@@ -1718,6 +1797,13 @@ VXCORE_API VxCoreError vxcore_sync_set_apply_in_progress(VxCoreContextHandle con
 // Does not emit lifecycle events or update the last-sync timestamp.
 VXCORE_API VxCoreError vxcore_sync_refresh_notebook(VxCoreContextHandle context,
                                                     const char *notebook_id);
+
+// As above, separately returns the actual metadata refresh result, initialized on
+// every path. Original apply failure retains precedence in the function result.
+// With no in-memory phase, performs a full owner-thread metadata reload.
+VXCORE_API VxCoreError vxcore_sync_refresh_notebook_result(VxCoreContextHandle context,
+                                                           const char *notebook_id,
+                                                           int32_t *out_refresh_code);
 
 // Local read-only retirement preflight; works with runtime sync disabled.
 // Refuses unresolved Git index/rebase state and WebDAV conflicts/pending recovery.

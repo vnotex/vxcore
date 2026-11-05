@@ -38,18 +38,24 @@
 
 #define ASSERT_EQ(a, b)                                                                      \
   do {                                                                                       \
-    if ((a) != (b)) {                                                                        \
+    const auto vxcore_test_actual = (a);                                                      \
+    const auto vxcore_test_expected = (b);                                                    \
+    if (vxcore_test_actual != vxcore_test_expected) {                                          \
       std::cerr << "✗ Assertion failed: " << #a << " == " << #b << " at " << __FILE__ << ":" \
-                << __LINE__ << " (" << (a) << " != " << (b) << ")" << std::endl;             \
+                << __LINE__ << " (" << vxcore_test_actual << " != "                           \
+                << vxcore_test_expected << ")" << std::endl;                                 \
       return 1;                                                                              \
     }                                                                                        \
   } while (0)
 
 #define ASSERT_NE(a, b)                                                                      \
   do {                                                                                       \
-    if ((a) == (b)) {                                                                        \
+    const auto vxcore_test_actual = (a);                                                      \
+    const auto vxcore_test_expected = (b);                                                    \
+    if (vxcore_test_actual == vxcore_test_expected) {                                          \
       std::cerr << "✗ Assertion failed: " << #a << " != " << #b << " at " << __FILE__ << ":" \
-                << __LINE__ << " (" << (a) << " == " << (b) << ")" << std::endl;             \
+                << __LINE__ << " (" << vxcore_test_actual << " == "                           \
+                << vxcore_test_expected << ")" << std::endl;                                 \
       return 1;                                                                              \
     }                                                                                        \
   } while (0)

@@ -4,11 +4,13 @@
 #include <filesystem>
 #include <map>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "sync/sync_cancellation.h"
 #include "sync/sync_types.h"
+#include "utils/file_utils.h"
 
 namespace vxcore {
 namespace webdav {
@@ -25,15 +27,20 @@ void Check(VxCoreError error);
 void CheckCancelled(const SyncCancellationPtr &token);
 std::string NewId();
 std::string HashBytes(const std::string &bytes);
-std::string HashFile(const std::filesystem::path &path, const SyncCancellationPtr &token = nullptr);
-std::string ReadBytes(const std::filesystem::path &path, size_t limit = 16 * 1024 * 1024);
+// Private access requires clean absolute logical paths; no native prefix enters state or journals.
+std::string HashFile(const std::filesystem::path &path, const SyncCancellationPtr &token = nullptr,
+                     FileAccess access = FileAccess::kDefault);
+std::string ReadBytes(const std::filesystem::path &path, size_t limit = 16 * 1024 * 1024,
+                      FileAccess access = FileAccess::kDefault);
 bool IsScratch(const std::string &path);
 bool IsMetadata(const std::string &path);
 bool IsEncrypted(const std::string &path);
 bool IsExcluded(const std::string &path, const SyncConfig &config);
 void ValidateMetadata(const std::string &path, const std::filesystem::path &file,
-                      const std::string &notebook_id, std::vector<std::string> *ids = nullptr);
-nlohmann::json NotebookJson(const std::filesystem::path &file, const std::string &notebook_id = {});
+                      const std::string &notebook_id, std::vector<std::string> *ids = nullptr,
+                      FileAccess access = FileAccess::kDefault);
+nlohmann::json NotebookJson(const std::filesystem::path &file, const std::string &notebook_id = {},
+                            FileAccess access = FileAccess::kDefault);
 std::string ProjectConfig(const nlohmann::json &json);
 std::string RestoreRouting(const std::string &projected, const nlohmann::json &current);
 
@@ -95,7 +102,13 @@ class State {
   void Open(const std::filesystem::path &notebook_root, const std::string &id,
             const std::string &url, const std::string &username,
             const std::string &storage_relative = kPrivatePath);
-  void Save() const;
+  // Candidate state is isolated from the published baseline and strictly account-bound.
+  void OpenCandidate(const std::filesystem::path &notebook_root, const std::string &id,
+                     const std::string &url, const std::string &username,
+                     const std::string &candidate_id, bool create);
+  void RemoveCandidate();
+  // Bounds the serialized atomic sibling before opening it; nullopt preserves desktop defaults.
+  void Save(std::optional<uint64_t> max_write_bytes = std::nullopt) const;
   void SavePending() const;
   void ClearPending();
   void RotateUsername(const std::string &hash);
@@ -103,7 +116,8 @@ class State {
   std::filesystem::path Resolve(const std::string &relative) const;
   std::string AllocateSnapshot();
   std::string SnapshotBytes(const std::string &bytes);
-  std::string SnapshotFile(const std::filesystem::path &source, const SyncCancellationPtr &token);
+  std::string SnapshotFile(const std::filesystem::path &source, const SyncCancellationPtr &token,
+                           FileAccess source_access = FileAccess::kDefault);
   void VerifySnapshot(const std::string &name, const std::string &hash) const;
   void RemoveSnapshot(const std::string &name) const;
   void RemoveUnreferencedSnapshots(const std::vector<Operation> &completed) const;
@@ -112,10 +126,14 @@ class State {
 
 Version ReadLocal(const std::filesystem::path &root, const std::string &path,
                   const std::string &notebook_id, const SyncCancellationPtr &token,
-                  State *snapshots = nullptr);
+                  State *snapshots = nullptr, FileAccess access = FileAccess::kDefault);
+// Body-to-snapshot and snapshot-to-body copies select each endpoint independently.
 void CopyAtomic(const std::filesystem::path &source, const std::filesystem::path &destination,
-                const SyncCancellationPtr &token);
-void EnsureDirectory(const std::filesystem::path &root, const std::string &relative);
+                const SyncCancellationPtr &token,
+                FileAccess source_access = FileAccess::kDefault,
+                FileAccess destination_access = FileAccess::kDefault);
+void EnsureDirectory(const std::filesystem::path &root, const std::string &relative,
+                     FileAccess access = FileAccess::kDefault);
 
 }  // namespace webdav
 }  // namespace vxcore

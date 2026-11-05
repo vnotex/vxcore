@@ -24,8 +24,8 @@ else()
   target_compile_options(sqlite3 PRIVATE -w)
   # Enable thread-safe mode
   target_compile_definitions(sqlite3 PRIVATE SQLITE_THREADSAFE=1)
-  # Link pthread for Unix platforms
-  target_link_libraries(sqlite3 PUBLIC pthread ${CMAKE_DL_LIBS})
+  # Use CMake's platform thread target; Android provides pthread in libc.
+  target_link_libraries(sqlite3 PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 endif()
 
 # Export include directory

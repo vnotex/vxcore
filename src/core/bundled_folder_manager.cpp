@@ -12,6 +12,7 @@
 #include <set>
 #include <sstream>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -89,10 +90,10 @@ StoreFileRecord ToStoreFileRecord(const FileRecord &file, const std::string &fol
 // - Deletes files in store that no longer exist in config
 // - Creates new files that exist in config but not in store
 // - Updates existing files if they differ
-void SyncFilesToStore(MetadataStore *store, const std::string &folder_id,
+bool SyncFilesToStore(MetadataStore *store, const std::string &folder_id,
                       const std::vector<FileRecord> &config_files) {
   if (!store) {
-    return;
+    return false;
   }
 
   // Get existing files from store
@@ -111,6 +112,7 @@ void SyncFilesToStore(MetadataStore *store, const std::string &folder_id,
       if (!store->DeleteFile(store_file.id)) {
         VXCORE_LOG_WARN("SyncFilesToStore: Failed to delete orphaned file: id=%s",
                         store_file.id.c_str());
+        return false;
       }
     }
   }
@@ -128,19 +130,23 @@ void SyncFilesToStore(MetadataStore *store, const std::string &folder_id,
       // File exists in store - update it
       if (!store->UpdateFile(file.id, file.name, file.modified_utc, file.metadata.dump())) {
         VXCORE_LOG_WARN("SyncFilesToStore: Failed to update file: id=%s", file.id.c_str());
+        return false;
       }
       // Also update tags
       if (!store->SetFileTags(file.id, file.tags)) {
         VXCORE_LOG_WARN("SyncFilesToStore: Failed to update file tags: id=%s", file.id.c_str());
+        return false;
       }
     } else {
       // File doesn't exist in store - create it
       StoreFileRecord file_record = ToStoreFileRecord(file, folder_id);
       if (!store->CreateFile(file_record)) {
         VXCORE_LOG_WARN("SyncFilesToStore: Failed to create file: id=%s", file.id.c_str());
+        return false;
       }
     }
   }
+  return true;
 }
 
 }  // namespace
@@ -1346,8 +1352,11 @@ VxCoreError BundledFolderManager::UpdateFileTags(const std::string &file_path,
 
     std::vector<std::string> new_tags = tags.get<std::vector<std::string>>();
 
+    // Preserve existing orphan assignments, but never introduce a new undefined name.
+    // Validate against the old assignment list before mutating it.
     for (const auto &tag_name : new_tags) {
-      if (!notebook_->FindTag(tag_name)) {
+      if (!notebook_->FindTag(tag_name) &&
+          std::find(file->tags.begin(), file->tags.end(), tag_name) == file->tags.end()) {
         return VXCORE_ERR_INVALID_PARAM;
       }
     }
@@ -2110,92 +2119,365 @@ VxCoreError BundledFolderManager::SyncMetadataStoreFromConfigs() {
 
 namespace {
 
-// Name of the reserved staging/journal directory under vx_notebook/.
 constexpr const char *kImportStagingDirName = "vx_import";
 constexpr const char *kImportJournalFileName = "journal.json";
-constexpr const char *kImportStagedContentDirName = "content";
-constexpr const char *kImportStagedMetadataDirName = "metadata";
+constexpr size_t kImportImageLimit = 8 * 1024 * 1024;
+constexpr size_t kImportJournalLimit = 64 * 1024 * 1024;
+constexpr size_t kImportIdLimit = 100000;
+constexpr unsigned kImportDepthLimit = 64;
 
-// Journal phases, in the order the commit protocol reaches them. Everything
-// before kPhaseCommitted rolls BACK on recovery; kPhaseCommitted rolls FORWARD.
-constexpr const char *kPhaseInit = "init";
-constexpr const char *kPhaseContent = "content";
-constexpr const char *kPhaseMetadata = "metadata";
-constexpr const char *kPhaseDb = "db";
-constexpr const char *kPhaseCommitted = "committed";
-
-// Journal JSON keys. These never cross the vxcore/consumer boundary — the
-// journal is an internal crash-recovery artifact — so they are deliberately
-// NOT in notebook_json_keys.h.
-constexpr const char *kJournalKeyPhase = "phase";
-constexpr const char *kJournalKeyDestPath = "destPath";
-constexpr const char *kJournalKeyFinalName = "finalName";
-constexpr const char *kJournalKeyContentTarget = "contentTarget";
-constexpr const char *kJournalKeyMetadataTarget = "metadataTarget";
-constexpr const char *kJournalKeyRootFolderId = "rootFolderId";
-constexpr const char *kJournalKeyIds = "ids";
-constexpr const char *kJournalKeyParentBytes = "parentConfigBytes";
-
-// Number of rename attempts before giving up, and the delay between them.
-// Windows hands out transient sharing violations when an indexer, antivirus
-// scanner or cloud-sync agent happens to hold a handle on a just-written tree.
-constexpr int kRenameRetries = 5;
-constexpr int kRenameRetryDelayMs = 40;
-
-// Writes @data to @path and flushes it all the way to stable storage, so a
-// power loss cannot leave the journal (or a config) half-written.
-bool WriteFileDurable(const fs::path &path, const std::string &data) {
-#ifdef _WIN32
-  FILE *fp = _wfopen(path.c_str(), L"wb");
-#else
-  FILE *fp = std::fopen(path.c_str(), "wb");
-#endif
-  if (!fp) {
-    return false;
-  }
-
-  bool ok = data.empty() || std::fwrite(data.data(), 1, data.size(), fp) == data.size();
-  if (ok) {
-    ok = std::fflush(fp) == 0;
-  }
-  if (ok) {
-#ifdef _WIN32
-    ok = _commit(_fileno(fp)) == 0;
-#else
-    ok = ::fsync(fileno(fp)) == 0;
-#endif
-  }
-  std::fclose(fp);
-  return ok;
+bool ImportName(const std::string &name) {
+  return !name.empty() && name != "." && name != ".." && IsSingleName(name) &&
+      name.find_first_of("/\\:") == std::string::npos &&
+      name.find('\0') == std::string::npos && name.back() != '.' && name.back() != ' ';
 }
 
-// fs::rename with a short retry loop (see kRenameRetries).
-bool RenameWithRetries(const fs::path &from, const fs::path &to) {
-  for (int attempt = 0; attempt < kRenameRetries; ++attempt) {
-    std::error_code ec;
-    fs::rename(from, to, ec);
-    if (!ec) {
-      return true;
-    }
-    if (attempt + 1 < kRenameRetries) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(kRenameRetryDelayMs));
-    }
+bool ImportRelative(const std::string &value) {
+  if (value == ".") return true;
+  const auto path = PathFromUtf8(value);
+  if (value.empty() || path.is_absolute() || path.has_root_name()) return false;
+  unsigned depth = 0;
+  for (const auto &part : path) {
+    if (!ImportName(PathToUtf8(part)) || ++depth > kImportDepthLimit) return false;
   }
-  return false;
+  return PathToGenericUtf8(path) == value;
 }
 
-// Best-effort recursive delete; failures are logged, never propagated, because
-// every caller is already on an error/cleanup path.
-void RemoveTreeQuietly(const fs::path &path) {
-  if (path.empty()) {
-    return;
+VxCoreError ImportExists(const fs::path &path, bool &exists) {
+  std::error_code ec;
+  const auto status = fs::symlink_status(path, ec);
+  if (ec == std::errc::no_such_file_or_directory ||
+      (!ec && status.type() == fs::file_type::not_found)) {
+    exists = false;
+    return VXCORE_OK;
   }
+  exists = fs::exists(status);
+  return ec ? VXCORE_ERR_IO : VXCORE_OK;
+}
+
+// Inspect every component beneath the notebook, not just the final entry.
+VxCoreError ImportSafePath(const fs::path &root, const fs::path &path,
+                           bool allow_missing = false) {
+  const auto base = root.lexically_normal();
+  const auto candidate = path.lexically_normal();
+  if (!base.is_absolute() || !candidate.is_absolute()) return VXCORE_ERR_INVALID_PARAM;
+  for (const auto &part : path) if (part == "..") return VXCORE_ERR_INVALID_PARAM;
+  const auto mismatch = std::mismatch(base.begin(), base.end(), candidate.begin(), candidate.end());
+  if (mismatch.first != base.end()) return VXCORE_ERR_INVALID_PARAM;
+  FileIdentity identity;
+  auto error = GetFileIdentity(base, identity);
+  if (error != VXCORE_OK || !identity.directory) return VXCORE_ERR_IO;
+  auto current = base;
+  const auto relative = candidate.lexically_relative(base);
+  for (auto it = relative.begin(); it != relative.end(); ++it) {
+    if (*it == ".") continue;
+    current /= *it;
+    bool exists = false;
+    error = ImportExists(current, exists);
+    if (error != VXCORE_OK) return error;
+    if (!exists) return allow_missing ? VXCORE_OK : VXCORE_ERR_NOT_FOUND;
+    error = GetFileIdentity(current, identity);
+    if (error != VXCORE_OK) return error;
+    auto next = it;
+    if (++next != relative.end() && !identity.directory) return VXCORE_ERR_INVALID_STATE;
+  }
+  return VXCORE_OK;
+}
+
+VxCoreError ImportReadBytes(const fs::path &path, std::string &bytes,
+                            size_t limit = kImportImageLimit) {
+  bytes.clear();
+  FileIdentity identity;
+  if (GetFileIdentity(path, identity) != VXCORE_OK || identity.directory || identity.links != 1)
+    return VXCORE_ERR_IO;
+  std::ifstream input(path, std::ios::binary | std::ios::ate);
+  if (!input) return VXCORE_ERR_IO;
+  const auto size = input.tellg();
+  if (size < 0 || static_cast<uint64_t>(size) > limit) return VXCORE_ERR_INVALID_STATE;
+  bytes.resize(static_cast<size_t>(size));
+  input.seekg(0);
+  if (!bytes.empty()) input.read(&bytes[0], static_cast<std::streamsize>(bytes.size()));
+  if (!input || input.peek() != std::char_traits<char>::eof() || input.bad()) return VXCORE_ERR_IO;
+  return VXCORE_OK;
+}
+
+bool ImportId(const std::string &id) {
+  return !id.empty() && id.size() <= 127 && id.find('\0') == std::string::npos;
+}
+
+VxCoreError ImportParseConfig(const std::string &bytes, FolderConfig &config,
+                              nlohmann::json *out_json = nullptr) {
+  try {
+    auto json = nlohmann::json::parse(bytes);
+    if (!json.is_object() || !json.contains("id") || !json["id"].is_string() ||
+        !ImportId(json["id"].get<std::string>()) || !json.contains("name") ||
+        !json["name"].is_string() || !json.contains("files") || !json["files"].is_array() ||
+        !json.contains("folders") || !json["folders"].is_array()) return VXCORE_ERR_INVALID_STATE;
+    std::unordered_set<std::string> names;
+    for (const auto &entry : json["folders"]) {
+      if (!entry.is_string()) return VXCORE_ERR_INVALID_STATE;
+      const auto name = entry.get<std::string>();
+      if (!ImportName(name) || !names.insert(name).second) return VXCORE_ERR_INVALID_STATE;
+    }
+    for (const auto &entry : json["files"]) {
+      if (!entry.is_object() || !entry.contains("id") || !entry["id"].is_string() ||
+          !ImportId(entry["id"].get<std::string>()) || !entry.contains("name") ||
+          !entry["name"].is_string()) return VXCORE_ERR_INVALID_STATE;
+      const auto name = entry["name"].get<std::string>();
+      if (!ImportName(name) || !names.insert(name).second) return VXCORE_ERR_INVALID_STATE;
+    }
+    config = FolderConfig::FromJson(json);
+    if (out_json) *out_json = std::move(json);
+    return VXCORE_OK;
+  } catch (const std::exception &) {
+    return VXCORE_ERR_JSON_PARSE;
+  }
+}
+
+struct ImportFolderRecord {
+  std::string path;
+  std::string parent_id;
+  FolderConfig config;
+};
+
+// The disk tree, never SQLite, supplies ownership and reachability evidence.
+VxCoreError ImportScan(const fs::path &root, const fs::path &metadata,
+                       const std::string &relative, const std::string &parent_id,
+                       std::vector<ImportFolderRecord> &folders, std::vector<std::string> &ids,
+                       unsigned depth = 0, size_t id_limit = kImportIdLimit,
+                       bool retain_configs = true) {
+  if (depth > kImportDepthLimit || !ImportRelative(relative) || ids.size() >= id_limit)
+    return VXCORE_ERR_INVALID_STATE;
+  auto error = ImportSafePath(root, metadata / "vx.json");
+  if (error != VXCORE_OK) return error;
+  std::string bytes;
+  error = ImportReadBytes(metadata / "vx.json", bytes);
+  if (error != VXCORE_OK) return error;
+  FolderConfig config;
+  error = ImportParseConfig(bytes, config);
+  if (error != VXCORE_OK) return error;
+  if (config.files.size() > id_limit - ids.size() - 1) return VXCORE_ERR_INVALID_STATE;
+  ids.push_back(config.id);
+  for (const auto &file : config.files) ids.push_back(file.id);
+  if (!retain_configs) {
+    for (const auto &child : config.folders) {
+      error = ImportScan(root, metadata / PathFromUtf8(child), ConcatenatePaths(relative, child),
+                         config.id, folders, ids, depth + 1, id_limit, false);
+      if (error != VXCORE_OK) return error;
+    }
+    return VXCORE_OK;
+  }
+  const auto index = folders.size();
+  folders.push_back({relative, parent_id, std::move(config)});
+  // Reacquire by index after recursion; vector growth invalidates references.
+  for (size_t child_index = 0; child_index < folders[index].config.folders.size(); ++child_index) {
+    const auto &child = folders[index].config.folders[child_index];
+    error = ImportScan(root, metadata / PathFromUtf8(child), ConcatenatePaths(relative, child),
+                       folders[index].config.id, folders, ids, depth + 1, id_limit);
+    if (error != VXCORE_OK) return error;
+  }
+  return VXCORE_OK;
+}
+
+bool ImportUniqueIds(const std::vector<std::string> &ids) {
+  return std::unordered_set<std::string>(ids.begin(), ids.end()).size() == ids.size();
+}
+
+VxCoreError ImportValidateTree(const fs::path &path, unsigned depth = 0, uint64_t device = 0) {
+  FileIdentity identity;
+  auto error = GetFileIdentity(path, identity);
+  if (error != VXCORE_OK) return error;
+  if (device != 0 && identity.device != device) return VXCORE_ERR_INVALID_STATE;
+  if (!identity.directory) return identity.links == 1 ? VXCORE_OK : VXCORE_ERR_INVALID_STATE;
+  if (depth > kImportDepthLimit) return VXCORE_ERR_INVALID_STATE;
+  std::error_code ec;
+  for (fs::directory_iterator it(path, ec), end; !ec && it != end; it.increment(ec)) {
+    error = ImportValidateTree(it->path(), depth + 1, identity.device);
+    if (error != VXCORE_OK) return error;
+  }
+  return ec ? VXCORE_ERR_IO : VXCORE_OK;
+}
+
+nlohmann::json ImportIdentityJson(const FileIdentity &identity) {
+  return {{"device", identity.device}, {"low", identity.low}, {"high", identity.high},
+          {"links", identity.links}, {"directory", identity.directory}};
+}
+
+bool ImportParseIdentity(const nlohmann::json &json, FileIdentity &identity) {
+  if (!json.is_object()) return false;
+  for (const auto *key : {"device", "low", "high", "links"}) {
+    if (!json.contains(key) || !json[key].is_number_unsigned()) return false;
+  }
+  if (!json.contains("directory") || json["directory"] != true) return false;
+  identity.device = json["device"].get<uint64_t>();
+  identity.low = json["low"].get<uint64_t>();
+  identity.high = json["high"].get<uint64_t>();
+  identity.links = json["links"].get<uint64_t>();
+  identity.directory = true;
+  return identity.links != 0 && identity.SameObject(identity);
+}
+
+VxCoreError ImportWriteAtomic(const fs::path &path, const std::string &bytes,
+                              bool no_replace = false) {
+  AtomicFileWriter writer(path);
+  auto error = writer.Open();
+  if (error == VXCORE_OK) error = writer.Write(bytes.data(), bytes.size());
+  if (error == VXCORE_OK) error = no_replace ? writer.CommitNoReplace() : writer.Commit();
+  if (error == VXCORE_OK && !no_replace) error = FlushDirectory(path.parent_path());
+  return error;
+}
+
+VxCoreError ImportMove(const fs::path &from, const fs::path &to) {
+  VxCoreError error = VXCORE_ERR_IO;
+  for (int attempt = 0; attempt < 5; ++attempt) {
+    error = RenameNoReplace(from, to);
+    if (error == VXCORE_OK) break;
+#ifdef _WIN32
+    const auto native_error = GetLastError();
+    if ((native_error != ERROR_SHARING_VIOLATION && native_error != ERROR_LOCK_VIOLATION) ||
+        attempt == 4) return error;
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+#else
+    return error;
+#endif
+  }
+  if (error == VXCORE_OK) error = FlushDirectory(to.parent_path());
+  if (error == VXCORE_OK) error = FlushDirectory(from.parent_path());
+  return error;
+}
+
+VxCoreError ImportRemoveOwned(const fs::path &path, const FileIdentity &owned) {
+  bool exists = false;
+  auto error = ImportExists(path, exists);
+  if (error != VXCORE_OK || !exists) return error;
+  FileIdentity actual;
+  if (GetFileIdentity(path, actual) != VXCORE_OK || !owned.SameObject(actual))
+    return VXCORE_ERR_INVALID_STATE;
+  error = ImportValidateTree(path);
+  if (error != VXCORE_OK) return error;
   std::error_code ec;
   fs::remove_all(path, ec);
-  if (ec) {
-    VXCORE_LOG_WARN("Import: failed to remove %s: %s", PathToUtf8(path).c_str(),
-                    ec.message().c_str());
+  if (ec) return VXCORE_ERR_IO;
+  return FlushDirectory(path.parent_path());
+}
+
+VxCoreError ImportLoadAncestors(const fs::path &root, const fs::path &metadata,
+                                 const std::string &path, std::vector<ImportFolderRecord> &ancestors,
+                                 std::string &bytes, nlohmann::json &json) {
+  if (!ImportRelative(path)) return VXCORE_ERR_INVALID_PARAM;
+  auto relative = std::string(".");
+  auto directory = metadata;
+  std::string parent_id;
+  auto load = [&]() {
+    auto error = ImportSafePath(root, directory / "vx.json");
+    if (error == VXCORE_OK) error = ImportSafePath(root, root / PathFromUtf8(relative));
+    if (error != VXCORE_OK) return error;
+    FileIdentity identity;
+    if (GetFileIdentity(root / PathFromUtf8(relative), identity) != VXCORE_OK || !identity.directory)
+      return VXCORE_ERR_INVALID_STATE;
+    error = ImportReadBytes(directory / "vx.json", bytes);
+    if (error != VXCORE_OK) return error;
+    FolderConfig config;
+    error = ImportParseConfig(bytes, config, &json);
+    if (error != VXCORE_OK) return error;
+    ancestors.push_back({relative, parent_id, std::move(config)});
+    return VXCORE_OK;
+  };
+  auto error = load();
+  if (error != VXCORE_OK || path == ".") return error;
+  for (const auto &component : PathFromUtf8(path)) {
+    const auto name = PathToUtf8(component);
+    const auto &parent = ancestors.back().config;
+    if (std::find(parent.folders.begin(), parent.folders.end(), name) == parent.folders.end())
+      return VXCORE_ERR_NOT_FOUND;
+    parent_id = parent.id;
+    relative = ConcatenatePaths(relative, name);
+    directory /= component;
+    error = load();
+    if (error != VXCORE_OK) return error;
   }
+  return VXCORE_OK;
+}
+
+VxCoreError ImportStoreFolders(MetadataStore *store, const std::vector<ImportFolderRecord> &folders,
+                               bool insert_only,
+                               const std::vector<ImportFolderRecord> *ancestors = nullptr) {
+  if (!store) return VXCORE_ERR_INVALID_STATE;
+  if (!store->BeginTransaction()) return VXCORE_ERR_DATABASE;
+  VxCoreError error = VXCORE_OK;
+  if (ancestors) {
+    for (const auto &entry : *ancestors) {
+      if (!insert_only && !folders.empty() && entry.config.id == folders.front().config.id) continue;
+      if (!store->CreateFolder(ToStoreFolderRecord(entry.config, entry.parent_id))) {
+        return store->RollbackTransaction() ? VXCORE_ERR_DATABASE : VXCORE_ERR_INVALID_STATE;
+      }
+    }
+  }
+  for (const auto &entry : folders) {
+    const auto &config = entry.config;
+    const auto record = ToStoreFolderRecord(config, entry.parent_id);
+    error = insert_only ? store->InsertFolder(record) :
+        (store->CreateFolder(record) ? VXCORE_OK : VXCORE_ERR_DATABASE);
+    if (error != VXCORE_OK) break;
+    for (const auto &file : config.files) {
+      const auto file_record = ToStoreFileRecord(file, config.id);
+      error = insert_only ? store->InsertFile(file_record) :
+          (store->CreateFile(file_record) ? VXCORE_OK : VXCORE_ERR_DATABASE);
+      if (error != VXCORE_OK) break;
+      if (!store->SetFileTags(file.id, file.tags) ||
+          !store->SetFileAttachments(file.id, file.attachments)) {
+        error = VXCORE_ERR_DATABASE;
+        break;
+      }
+    }
+    if (error != VXCORE_OK) break;
+  }
+  if (error == VXCORE_OK && store->CommitTransaction()) return VXCORE_OK;
+  if (!store->RollbackTransaction()) return VXCORE_ERR_INVALID_STATE;
+  return error == VXCORE_OK ? VXCORE_ERR_DATABASE : error;
+}
+
+VxCoreError ImportRepairStore(MetadataStore *store, const std::vector<ImportFolderRecord> &folders) {
+  if (!store) return VXCORE_ERR_INVALID_STATE;
+  const auto last_sync = store->GetNotebookMetadata("last_sync_utc");
+  if (!store->BeginTransaction()) return VXCORE_ERR_DATABASE;
+  bool ok = store->RebuildAll();
+  for (const auto &entry : folders) {
+    if (!ok) break;
+    ok = store->CreateFolder(ToStoreFolderRecord(entry.config, entry.parent_id));
+    for (const auto &file : entry.config.files) {
+      if (!ok) break;
+      ok = store->CreateFile(ToStoreFileRecord(file, entry.config.id)) &&
+          store->SetFileAttachments(file.id, file.attachments);
+    }
+  }
+  if (ok && last_sync) ok = store->SetNotebookMetadata("last_sync_utc", *last_sync);
+  if (ok && store->CommitTransaction()) return VXCORE_OK;
+  return store->RollbackTransaction() ? VXCORE_ERR_DATABASE : VXCORE_ERR_INVALID_STATE;
+}
+
+// Keep the journal until every owned payload and store operation has settled.
+VxCoreError ImportCleanup(const fs::path &directory, const FileIdentity &identity,
+                           const std::string &journal_bytes) {
+  FileIdentity actual;
+  if (GetFileIdentity(directory, actual) != VXCORE_OK || !identity.SameObject(actual))
+    return VXCORE_ERR_INVALID_STATE;
+  std::error_code ec;
+  for (fs::directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec)) {
+    if (it->path().filename() != kImportJournalFileName) return VXCORE_ERR_INVALID_STATE;
+  }
+  if (ec) return VXCORE_ERR_IO;
+  std::string current;
+  auto error = ImportReadBytes(directory / kImportJournalFileName, current, kImportJournalLimit);
+  if (error != VXCORE_OK || current != journal_bytes) return VXCORE_ERR_INVALID_STATE;
+  if (!fs::remove(directory / kImportJournalFileName, ec) || ec) return VXCORE_ERR_IO;
+  if (!fs::remove(directory, ec) || ec) {
+    // A concurrent entry/sharing failure must not turn a failed cleanup into a
+    // journal-less private tree. Never replace a concurrently installed journal.
+    const auto restored = ImportWriteAtomic(directory / kImportJournalFileName, journal_bytes, true);
+    return restored == VXCORE_OK ? VXCORE_ERR_IO : restored;
+  }
+  return FlushDirectory(directory.parent_path());
 }
 
 }  // namespace
@@ -2219,55 +2501,12 @@ VxCoreError BundledFolderManager::SaveFolderConfigAtomic(const std::string &fold
 
 VxCoreError BundledFolderManager::CollectAllNodeIds(std::vector<std::string> &out_ids) {
   out_ids.clear();
-
-  // Ground truth is the on-disk metadata tree, NOT the store: bundled
-  // notebooks index lazily, so a store miss proves nothing.
-  const fs::path contents_root = PathFromUtf8(notebook_->GetMetadataFolder()) / "contents";
-
-  std::function<VxCoreError(const fs::path &)> walk = [&](const fs::path &dir) -> VxCoreError {
-    const fs::path config_file = dir / "vx.json";
-    std::error_code ec;
-    if (!fs::is_regular_file(config_file, ec) || ec) {
-      return VXCORE_ERR_NOT_FOUND;
-    }
-
-    nlohmann::json json;
-    if (LoadJsonFile(config_file, json) != VXCORE_OK || !json.is_object()) {
-      return VXCORE_ERR_JSON_PARSE;
-    }
-
-    const FolderConfig config = FolderConfig::FromJson(json);
-    if (!config.id.empty()) {
-      out_ids.push_back(config.id);
-    }
-    // Folder ids and file ids share ONE namespace: a cross-kind collision is
-    // just as destructive as a same-kind one.
-    for (const auto &file : config.files) {
-      if (!file.id.empty()) {
-        out_ids.push_back(file.id);
-      }
-    }
-
-    for (const auto &child : config.folders) {
-      if (!IsSingleName(child) || child == "." || child == "..") {
-        VXCORE_LOG_WARN("CollectAllNodeIds: skipping unsafe child name: %s", child.c_str());
-        continue;
-      }
-      const VxCoreError err = walk(dir / PathFromUtf8(child));
-      if (err == VXCORE_ERR_NOT_FOUND) {
-        // A dangling index entry is a pre-existing inconsistency, not an id
-        // source. Log and continue so import is not blocked by it.
-        VXCORE_LOG_WARN("CollectAllNodeIds: child metadata missing: %s", child.c_str());
-        continue;
-      }
-      if (err != VXCORE_OK) {
-        return err;
-      }
-    }
-    return VXCORE_OK;
-  };
-
-  return walk(contents_root);
+  std::vector<ImportFolderRecord> folders;
+  const auto error = ImportScan(PathFromUtf8(notebook_->GetRootFolder()),
+      PathFromUtf8(GetConfigPath(".")).parent_path(), ".", "", folders, out_ids, 0,
+      static_cast<size_t>(-1), false);
+  if (error != VXCORE_OK) return error;
+  return ImportUniqueIds(out_ids) ? VXCORE_OK : VXCORE_ERR_INVALID_STATE;
 }
 
 VxCoreError BundledFolderManager::AttachImportedFolder(const std::string &dest_folder_path,
@@ -2275,380 +2514,395 @@ VxCoreError BundledFolderManager::AttachImportedFolder(const std::string &dest_f
                                                        const std::string &staging_dir,
                                                        std::string &out_folder_id) {
   out_folder_id.clear();
-
-  if (notebook_ && notebook_->CheckWritable() != VXCORE_OK) { return notebook_->CheckWritable(); }
-  if (name.empty() || name == "." || name == ".." || !IsSingleName(name)) {
-    VXCORE_LOG_ERROR("AttachImportedFolder: unsafe name: %s", name.c_str());
-    return VXCORE_ERR_INVALID_PARAM;
-  }
-
-  const std::string clean_dest = GetCleanRelativePath(dest_folder_path);
-
-  const fs::path staging = PathFromUtf8(staging_dir);
-  const fs::path staged_content = staging / kImportStagedContentDirName;
-  const fs::path staged_metadata = staging / kImportStagedMetadataDirName;
-
-  std::error_code ec;
-  if (!fs::is_directory(staged_content, ec) || ec || !fs::is_directory(staged_metadata, ec) || ec) {
-    VXCORE_LOG_ERROR("AttachImportedFolder: staging dir is incomplete: %s", staging_dir.c_str());
-    return VXCORE_ERR_NOT_FOUND;
-  }
-
-  // --- Read the staged root config; it carries the final id and name. -------
-  nlohmann::json root_json;
-  {
-    const fs::path root_config = staged_metadata / "vx.json";
-    if (!fs::is_regular_file(root_config, ec) || ec) {
-      return VXCORE_ERR_NOT_FOUND;
-    }
-    if (LoadJsonFile(root_config, root_json) != VXCORE_OK || !root_json.is_object()) {
-      return VXCORE_ERR_JSON_PARSE;
-    }
-  }
-  const FolderConfig staged_root = FolderConfig::FromJson(root_json);
-  if (staged_root.id.empty() || staged_root.name != name) {
-    VXCORE_LOG_ERROR("AttachImportedFolder: staged root vx.json does not match name '%s'",
-                     name.c_str());
+  if (notebook_->CheckWritable() != VXCORE_OK) return notebook_->CheckWritable();
+  const auto dest = dest_folder_path.empty() ? std::string(".") : dest_folder_path;
+  if (!ImportName(name) || !ImportRelative(dest)) return VXCORE_ERR_INVALID_PARAM;
+  const auto root = PathFromUtf8(notebook_->GetRootFolder()).lexically_normal();
+  const auto staging_root = PathFromUtf8(notebook_->GetMetadataFolder()) / kImportStagingDirName;
+  const auto staging = PathFromUtf8(staging_dir).lexically_normal();
+  if (staging.parent_path() != staging_root.lexically_normal() ||
+      !ImportName(PathToUtf8(staging.filename()))) return VXCORE_ERR_INVALID_PARAM;
+  auto error = ImportSafePath(root, staging);
+  if (error != VXCORE_OK) return error;
+  FileIdentity stage_identity, content_identity, metadata_identity, parent_identity;
+  if (GetFileIdentity(staging, stage_identity) != VXCORE_OK || !stage_identity.directory)
     return VXCORE_ERR_INVALID_STATE;
+  for (const auto *part : {"content", "metadata"}) {
+    error = ImportSafePath(root, staging / part);
+    if (error != VXCORE_OK) return error;
   }
-
-  // --- Destination parent must exist and must not already list @name. ------
-  FolderConfig *parent_config = nullptr;
-  VxCoreError error = GetFolderConfig(clean_dest, &parent_config);
-  if (error != VXCORE_OK) {
-    VXCORE_LOG_ERROR("AttachImportedFolder: destination not found: %s", clean_dest.c_str());
-    return error;
+  if (GetFileIdentity(staging / "content", content_identity) != VXCORE_OK ||
+      GetFileIdentity(staging / "metadata", metadata_identity) != VXCORE_OK ||
+      !content_identity.directory || !metadata_identity.directory)
+    return VXCORE_ERR_INVALID_STATE;
+  std::error_code ec;
+  for (fs::directory_iterator it(staging, ec), end; !ec && it != end; it.increment(ec)) {
+    if (it->path().filename() != "content" && it->path().filename() != "metadata")
+      return VXCORE_ERR_ALREADY_EXISTS;
   }
-  if (std::find(parent_config->folders.begin(), parent_config->folders.end(), name) !=
-      parent_config->folders.end()) {
+  if (ec) return VXCORE_ERR_IO;
+  for (const auto *part : {"content", "metadata"}) {
+    error = ImportValidateTree(staging / part, 0, stage_identity.device);
+    if (error != VXCORE_OK) return error;
+  }
+  std::vector<std::string> existing_ids;
+  error = CollectAllNodeIds(existing_ids);
+  if (error != VXCORE_OK) return error;
+  std::string before;
+  nlohmann::json after_json;
+  std::vector<ImportFolderRecord> ancestors;
+  error = ImportLoadAncestors(root, PathFromUtf8(GetConfigPath(".")).parent_path(),
+                              dest, ancestors, before, after_json);
+  if (error != VXCORE_OK) return error;
+  auto &before_config = ancestors.back().config;
+  if (std::find(before_config.folders.begin(), before_config.folders.end(), name) !=
+          before_config.folders.end() || FindFileRecord(before_config, name))
     return VXCORE_ERR_ALREADY_EXISTS;
-  }
-
-  const std::string child_relative_path = ConcatenatePaths(clean_dest, name);
-  const fs::path content_target = PathFromUtf8(GetContentPath(clean_dest)) / PathFromUtf8(name);
-  const fs::path metadata_target = PathFromUtf8(GetConfigPath(child_relative_path)).parent_path();
-
-  if (fs::exists(content_target, ec) || fs::exists(metadata_target, ec)) {
-    VXCORE_LOG_ERROR("AttachImportedFolder: destination already occupied: %s", name.c_str());
-    return VXCORE_ERR_ALREADY_EXISTS;
-  }
-
-  // --- Flatten the staged metadata tree into store records. ----------------
-  std::vector<StoreFolderRecord> folder_records;
-  std::vector<std::pair<StoreFileRecord, std::vector<std::string>>> file_records;
-  std::vector<std::string> all_ids;
-
-  std::function<VxCoreError(const fs::path &, const std::string &)> collect =
-      [&](const fs::path &dir, const std::string &parent_id) -> VxCoreError {
-    nlohmann::json json;
-    const fs::path config_file = dir / "vx.json";
-    std::error_code walk_ec;
-    if (!fs::is_regular_file(config_file, walk_ec) || walk_ec) {
-      return VXCORE_ERR_NOT_FOUND;
-    }
-    if (LoadJsonFile(config_file, json) != VXCORE_OK || !json.is_object()) {
-      return VXCORE_ERR_JSON_PARSE;
-    }
-
-    const FolderConfig config = FolderConfig::FromJson(json);
-    if (config.id.empty()) {
+  const auto child = ConcatenatePaths(dest, name);
+  const auto content_target = PathFromUtf8(GetContentPath(child));
+  const auto metadata_target = PathFromUtf8(GetConfigPath(child)).parent_path();
+  for (const auto &path : {content_target, metadata_target}) {
+    error = ImportSafePath(root, path.parent_path());
+    if (error != VXCORE_OK) return error;
+    if (GetFileIdentity(path.parent_path(), parent_identity) != VXCORE_OK ||
+        !parent_identity.directory || parent_identity.device != stage_identity.device ||
+        content_identity.device != stage_identity.device || metadata_identity.device != stage_identity.device)
       return VXCORE_ERR_INVALID_STATE;
-    }
-
-    folder_records.push_back(ToStoreFolderRecord(config, parent_id));
-    all_ids.push_back(config.id);
-
-    for (const auto &file : config.files) {
-      if (file.id.empty()) {
-        return VXCORE_ERR_INVALID_STATE;
-      }
-      // ToStoreFileRecord deliberately drops attachments (the store column is
-      // written separately), so carry them alongside.
-      file_records.emplace_back(ToStoreFileRecord(file, config.id), file.attachments);
-      all_ids.push_back(file.id);
-    }
-
-    for (const auto &child : config.folders) {
-      if (!IsSingleName(child) || child == "." || child == "..") {
-        return VXCORE_ERR_INVALID_STATE;
-      }
-      const VxCoreError err = collect(dir / PathFromUtf8(child), config.id);
-      if (err != VXCORE_OK) {
-        return err;
-      }
-    }
-    return VXCORE_OK;
-  };
-
-  error = collect(staged_metadata, parent_config->id);
-  if (error != VXCORE_OK) {
-    VXCORE_LOG_ERROR("AttachImportedFolder: staged metadata tree is invalid (error=%d)", error);
-    return error;
+    bool exists = false;
+    error = ImportExists(path, exists);
+    if (error != VXCORE_OK) return error;
+    if (exists) return VXCORE_ERR_ALREADY_EXISTS;
   }
-
-  // --- Fail closed on ANY id collision, before touching the notebook. ------
-  // The store cannot be the oracle here: `uuid UNIQUE` is per-table, so a
-  // staged FOLDER id equal to an existing FILE id would slip through the
-  // insert and silently create two nodes sharing an id. Intersect against the
-  // authoritative on-disk walk instead, which puts folder and file ids in one
-  // namespace. The caller checks this too, but it releases the notebook lock
-  // between its check and this call, so the check is repeated here.
-  {
-    std::vector<std::string> existing_ids;
-    const VxCoreError collect_err = CollectAllNodeIds(existing_ids);
-    if (collect_err != VXCORE_OK) {
-      VXCORE_LOG_ERROR("AttachImportedFolder: cannot verify id uniqueness (error=%d)", collect_err);
-      return collect_err;
-    }
-
-    const std::unordered_set<std::string> existing(existing_ids.begin(), existing_ids.end());
-    for (const auto &id : all_ids) {
-      if (existing.count(id) > 0) {
-        VXCORE_LOG_ERROR("AttachImportedFolder: id already exists in this notebook: %s",
-                         id.c_str());
-        return VXCORE_ERR_ALREADY_EXISTS;
-      }
-    }
-
-    // A bundle that repeats an id internally would also corrupt the notebook.
-    const std::unordered_set<std::string> staged(all_ids.begin(), all_ids.end());
-    if (staged.size() != all_ids.size()) {
-      VXCORE_LOG_ERROR("AttachImportedFolder: staged subtree contains duplicate ids");
+  std::vector<ImportFolderRecord> imported;
+  std::vector<std::string> ids;
+  error = ImportScan(root, staging / "metadata", child, before_config.id, imported, ids);
+  if (error != VXCORE_OK) return error;
+  if (!ImportUniqueIds(ids) || imported.front().config.name != name)
+    return VXCORE_ERR_INVALID_STATE;
+  const std::unordered_set<std::string> existing(existing_ids.begin(), existing_ids.end());
+  for (const auto &id : ids) if (existing.count(id)) return VXCORE_ERR_ALREADY_EXISTS;
+  // Every indexed content node must be ordinary and present. Opaque, unindexed
+  // files remain untouched; the caller owns the stricter bundle policy.
+  for (const auto &entry : imported) {
+    const auto relative = PathFromUtf8(entry.path).lexically_relative(PathFromUtf8(child));
+    const auto directory = staging / "content" / relative;
+    FileIdentity identity;
+    if (GetFileIdentity(directory, identity) != VXCORE_OK || !identity.directory)
       return VXCORE_ERR_INVALID_STATE;
+    for (const auto &file : entry.config.files) {
+      if (GetFileIdentity(directory / PathFromUtf8(file.name), identity) != VXCORE_OK ||
+          identity.directory || identity.links != 1) return VXCORE_ERR_INVALID_STATE;
     }
   }
-
-  // --- 1. Journal. ---------------------------------------------------------
-  const fs::path journal_path = staging / kImportJournalFileName;
-  const std::string parent_config_path = GetConfigPath(clean_dest);
-  std::string parent_config_bytes;
-  ReadFile(PathFromUtf8(parent_config_path), parent_config_bytes);
-
-  nlohmann::json journal;
-  journal[kJournalKeyPhase] = kPhaseInit;
-  journal[kJournalKeyDestPath] = clean_dest;
-  journal[kJournalKeyFinalName] = name;
-  journal[kJournalKeyContentTarget] = PathToUtf8(content_target);
-  journal[kJournalKeyMetadataTarget] = PathToUtf8(metadata_target);
-  journal[kJournalKeyRootFolderId] = staged_root.id;
-  journal[kJournalKeyIds] = all_ids;
-  journal[kJournalKeyParentBytes] = parent_config_bytes;
-
-  auto write_journal = [&](const char *phase) -> bool {
-    journal[kJournalKeyPhase] = phase;
-    return WriteFileDurable(journal_path, journal.dump(2));
+  const auto parent_path = PathFromUtf8(GetConfigPath(dest));
+  after_json["folders"].push_back(name);
+  after_json["modifiedUtc"] = GetCurrentTimestampMillis();
+  // The checked store transaction stages this same final timestamp; recovery
+  // restores the authoritative before-state if parent publication never happens.
+  before_config.modified_utc = after_json["modifiedUtc"].get<int64_t>();
+  const auto after = after_json.dump(2);
+  if (after.size() > kImportImageLimit) return VXCORE_ERR_INVALID_STATE;
+  nlohmann::json journal = {
+      {"schema", 2}, {"notebookId", notebook_->GetId()}, {"phase", "init"},
+      {"destPath", dest}, {"finalName", name}, {"parentId", before_config.id},
+      {"rootFolderId", imported.front().config.id}, {"ids", ids},
+      {"parentConfigBytes", before}, {"parentAfterBytes", after},
+      {"stagingIdentity", ImportIdentityJson(stage_identity)},
+      {"contentIdentity", ImportIdentityJson(content_identity)},
+      {"metadataIdentity", ImportIdentityJson(metadata_identity)}};
+  auto journal_bytes = journal.dump();
+  if (journal_bytes.size() > kImportJournalLimit - 5) return VXCORE_ERR_INVALID_STATE;
+  error = ImportWriteAtomic(staging / kImportJournalFileName, journal_bytes, true);
+  if (error != VXCORE_OK) return error;
+  const auto failed = [&](VxCoreError original) {
+    ClearCache();
+    bool committed = false;
+    const auto recovered = CompleteImport(staging, committed);
+    return recovered == VXCORE_OK ? original : recovered;
   };
-
-  if (!write_journal(kPhaseInit)) {
-    VXCORE_LOG_ERROR("AttachImportedFolder: cannot write import journal");
-    return VXCORE_ERR_IO;
-  }
-
-  // Undo everything published so far. Only ever called before the commit
-  // point, so the notebook is left byte-identical to its pre-import state.
-  auto rollback = [&](bool content_published, bool metadata_published, bool db_written) {
-    if (db_written) {
-      if (auto *store = notebook_->GetMetadataStore()) {
-        store->RollbackTransaction();
-      }
-    }
-    if (metadata_published) {
-      RemoveTreeQuietly(metadata_target);
-    }
-    if (content_published) {
-      RemoveTreeQuietly(content_target);
-    }
-    RemoveTreeQuietly(staging);
-  };
-
-  // --- 2. Publish content. -------------------------------------------------
-  if (!RenameWithRetries(staged_content, content_target)) {
-    VXCORE_LOG_ERROR("AttachImportedFolder: failed to publish content for %s", name.c_str());
-    rollback(false, false, false);
-    return VXCORE_ERR_IO;
-  }
-  if (!write_journal(kPhaseContent)) {
-    rollback(true, false, false);
-    return VXCORE_ERR_IO;
-  }
-
-  // --- 3. Publish metadata. ------------------------------------------------
-  if (!RenameWithRetries(staged_metadata, metadata_target)) {
-    VXCORE_LOG_ERROR("AttachImportedFolder: failed to publish metadata for %s", name.c_str());
-    rollback(true, false, false);
-    return VXCORE_ERR_IO;
-  }
-  if (!write_journal(kPhaseMetadata)) {
-    rollback(true, true, false);
-    return VXCORE_ERR_IO;
-  }
-
-  // --- 4. Insert-only store transaction. -----------------------------------
-  auto *store = notebook_->GetMetadataStore();
-  if (store) {
-    if (!store->BeginTransaction()) {
-      VXCORE_LOG_ERROR("AttachImportedFolder: cannot begin store transaction");
-      rollback(true, true, false);
-      return VXCORE_ERR_DATABASE;
-    }
-
-    for (const auto &record : folder_records) {
-      const VxCoreError err = store->InsertFolder(record);
-      if (err != VXCORE_OK) {
-        VXCORE_LOG_ERROR("AttachImportedFolder: folder id %s rejected (error=%d)",
-                         record.id.c_str(), err);
-        rollback(true, true, true);
-        return err;
-      }
-    }
-    for (const auto &entry : file_records) {
-      const VxCoreError err = store->InsertFile(entry.first);
-      if (err != VXCORE_OK) {
-        VXCORE_LOG_ERROR("AttachImportedFolder: file id %s rejected (error=%d)",
-                         entry.first.id.c_str(), err);
-        rollback(true, true, true);
-        return err;
-      }
-      if (!entry.second.empty() && !store->SetFileAttachments(entry.first.id, entry.second)) {
-        VXCORE_LOG_ERROR("AttachImportedFolder: failed to write attachments for %s",
-                         entry.first.id.c_str());
-        rollback(true, true, true);
-        return VXCORE_ERR_DATABASE;
-      }
-    }
-
-    if (!store->CommitTransaction()) {
-      VXCORE_LOG_ERROR("AttachImportedFolder: cannot commit store transaction");
-      rollback(true, true, true);
-      return VXCORE_ERR_DATABASE;
-    }
-  }
-  if (!write_journal(kPhaseDb)) {
-    rollback(true, true, false);
-    return VXCORE_ERR_IO;
-  }
-
-  // --- 5. COMMIT POINT: atomically replace the parent's vx.json. -----------
-  parent_config->folders.push_back(name);
-  const int64_t previous_modified = parent_config->modified_utc;
-  parent_config->modified_utc = GetCurrentTimestampMillis();
-
-  error = SaveFolderConfigAtomic(clean_dest, *parent_config);
-  if (error != VXCORE_OK) {
-    parent_config->folders.pop_back();
-    parent_config->modified_utc = previous_modified;
-    rollback(true, true, false);
-    return error;
-  }
-  write_journal(kPhaseCommitted);
-
-  // --- 6. Publish to callers. ----------------------------------------------
-  InvalidateCache(child_relative_path);
-  out_folder_id = staged_root.id;
-
-  // ONE structural event for the imported root. Descendant creations are NOT
-  // replayed: consumers reload the subtree from the parent.
+  error = ImportMove(staging / "content", content_target);
+  if (error != VXCORE_OK) return failed(error);
+  error = ImportMove(staging / "metadata", metadata_target);
+  if (error != VXCORE_OK) return failed(error);
+  error = ImportStoreFolders(notebook_->GetMetadataStore(), imported, true, &ancestors);
+  if (error != VXCORE_OK) return failed(error);
+  // Intent is immutable: no intermediate phase is needed to decide ownership.
+  // Recheck the exact precondition immediately before the single commit point.
+  std::string actual;
+  error = ImportReadBytes(parent_path, actual);
+  if (error != VXCORE_OK || actual != before) return failed(VXCORE_ERR_INVALID_STATE);
+  FileIdentity published_content, published_metadata;
+  if (GetFileIdentity(content_target, published_content) != VXCORE_OK ||
+      GetFileIdentity(metadata_target, published_metadata) != VXCORE_OK ||
+      !content_identity.SameObject(published_content) || !metadata_identity.SameObject(published_metadata))
+    return failed(VXCORE_ERR_INVALID_STATE);
+  error = ImportWriteAtomic(parent_path, after);
+  ClearCache();
+  if (error != VXCORE_OK) return failed(error);  // rename may already have published
+  error = ImportReadBytes(parent_path, actual);
+  if (error != VXCORE_OK || actual != after) return failed(VXCORE_ERR_INVALID_STATE);
+  before_config.folders.push_back(name);
+  CacheConfig(dest, std::make_unique<FolderConfig>(std::move(before_config)));
+  for (auto &entry : imported)
+    CacheConfig(entry.path, std::make_unique<FolderConfig>(std::move(entry.config)));
+  EmitEvent(events::kFolderConfigChanged,
+            {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", dest}});
+  journal["phase"] = "committed";
+  journal_bytes = journal.dump();
+  error = ImportWriteAtomic(staging / kImportJournalFileName, journal_bytes);
+  // A failed receipt is an error, even when the actual commit is provable.
+  // Leave the immutable intent for recovery; never roll back a visible cohort.
+  if (error != VXCORE_OK) return error;
+  out_folder_id = journal["rootFolderId"].get<std::string>();
   EmitEvent(events::kFolderCreated,
-            {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", child_relative_path}});
-
-  RemoveTreeQuietly(staging);
-  VXCORE_LOG_INFO("AttachImportedFolder: attached %s as %s", name.c_str(),
-                  child_relative_path.c_str());
+            {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", child}});
+  const auto cleanup = ImportCleanup(staging, stage_identity, journal_bytes);
+  if (cleanup != VXCORE_OK) VXCORE_LOG_WARN("Import: committed staging cleanup deferred (%d)", cleanup);
   return VXCORE_OK;
 }
 
-VxCoreError BundledFolderManager::RecoverImports(int *out_recovered_count) {
-  if (out_recovered_count) {
-    *out_recovered_count = 0;
-  }
-  if (notebook_->CheckWritable() != VXCORE_OK) return notebook_->CheckWritable();
-
-  const fs::path staging_root =
-      PathFromUtf8(notebook_->GetMetadataFolder()) / kImportStagingDirName;
-  std::error_code ec;
-  if (!fs::is_directory(staging_root, ec) || ec) {
-    return VXCORE_OK;  // Nothing to recover.
-  }
-
-  std::vector<fs::path> journal_dirs;
-  for (fs::directory_iterator it(staging_root, ec), end; !ec && it != end; it.increment(ec)) {
-    if (fs::is_directory(it->path(), ec) &&
-        fs::is_regular_file(it->path() / kImportJournalFileName, ec)) {
-      journal_dirs.push_back(it->path());
+VxCoreError BundledFolderManager::CompleteImport(const fs::path &directory, bool &committed) {
+  committed = false;
+  const auto root = PathFromUtf8(notebook_->GetRootFolder()).lexically_normal();
+  const auto staging_root = PathFromUtf8(notebook_->GetMetadataFolder()) / kImportStagingDirName;
+  if (directory.parent_path().lexically_normal() != staging_root.lexically_normal())
+    return VXCORE_ERR_INVALID_STATE;
+  auto error = ImportSafePath(root, directory / kImportJournalFileName);
+  if (error != VXCORE_OK) return error;
+  FileIdentity stage_identity;
+  if (GetFileIdentity(directory, stage_identity) != VXCORE_OK || !stage_identity.directory)
+    return VXCORE_ERR_INVALID_STATE;
+  std::string journal_bytes;
+  error = ImportReadBytes(directory / kImportJournalFileName, journal_bytes, kImportJournalLimit);
+  if (error != VXCORE_OK) return error;
+  try {
+    auto journal = nlohmann::json::parse(journal_bytes);
+    if (!journal.is_object()) return VXCORE_ERR_JSON_PARSE;
+    for (const auto *key : {"phase", "destPath", "finalName", "rootFolderId", "parentConfigBytes"})
+      if (!journal.contains(key) || !journal[key].is_string()) return VXCORE_ERR_INVALID_STATE;
+    const bool schema2 = journal.contains("schema");
+    if (schema2 && journal["schema"] != 2) return VXCORE_ERR_INVALID_STATE;
+    const auto phase = journal["phase"].get<std::string>();
+    if (phase != "init" && phase != "content" && phase != "metadata" && phase != "db" &&
+        phase != "committed") return VXCORE_ERR_INVALID_STATE;
+    const auto dest = journal["destPath"].get<std::string>();
+    const auto name = journal["finalName"].get<std::string>();
+    const auto root_id = journal["rootFolderId"].get<std::string>();
+    const auto before = journal["parentConfigBytes"].get<std::string>();
+    if (!ImportRelative(dest) || !ImportName(name) || !ImportId(root_id) ||
+        before.size() > kImportImageLimit || !journal.contains("ids") ||
+        !journal["ids"].is_array() || journal["ids"].empty() ||
+        journal["ids"].size() > kImportIdLimit) return VXCORE_ERR_INVALID_STATE;
+    std::unordered_set<std::string> ids;
+    for (const auto &entry : journal["ids"]) {
+      if (!entry.is_string()) return VXCORE_ERR_INVALID_STATE;
+      const auto id = entry.get<std::string>();
+      if (!ImportId(id) || !ids.insert(id).second) return VXCORE_ERR_INVALID_STATE;
     }
-  }
-
-  int recovered = 0;
-  for (const auto &dir : journal_dirs) {
-    nlohmann::json journal;
-    if (LoadJsonFile(dir / kImportJournalFileName, journal) != VXCORE_OK || !journal.is_object()) {
-      VXCORE_LOG_WARN("RecoverImports: unreadable journal in %s; discarding staging dir",
-                      PathToUtf8(dir).c_str());
-      RemoveTreeQuietly(dir);
-      continue;
-    }
-
-    const std::string phase = journal.value(kJournalKeyPhase, std::string(kPhaseInit));
-    const std::string content_target = journal.value(kJournalKeyContentTarget, std::string());
-    const std::string metadata_target = journal.value(kJournalKeyMetadataTarget, std::string());
-    const std::string dest_path = journal.value(kJournalKeyDestPath, std::string("."));
-
-    if (phase == kPhaseCommitted) {
-      // The parent vx.json already names the import, so the on-disk tree is
-      // authoritative and complete: roll FORWARD. The store rows are restored
-      // by the SyncMetadataStoreFromConfigs() rebuild that follows this call.
-      VXCORE_LOG_INFO("RecoverImports: rolling forward committed import in %s",
-                      PathToUtf8(dir).c_str());
+    if (!ids.count(root_id)) return VXCORE_ERR_INVALID_STATE;
+    FolderConfig before_config;
+    nlohmann::json before_json;
+    error = ImportParseConfig(before, before_config, &before_json);
+    if (error != VXCORE_OK || ids.count(before_config.id) ||
+        std::find(before_config.folders.begin(), before_config.folders.end(), name) !=
+            before_config.folders.end() || FindFileRecord(before_config, name))
+      return VXCORE_ERR_INVALID_STATE;
+    const auto child = ConcatenatePaths(dest, name);
+    const auto content_target = PathFromUtf8(GetContentPath(child)).lexically_normal();
+    const auto metadata_target = PathFromUtf8(GetConfigPath(child)).parent_path().lexically_normal();
+    FileIdentity content_identity, metadata_identity;
+    if (schema2) {
+      if (journal.size() != 13) return VXCORE_ERR_INVALID_STATE;
+      for (const auto *key : {"notebookId", "parentId", "parentAfterBytes"})
+        if (!journal.contains(key) || !journal[key].is_string()) return VXCORE_ERR_INVALID_STATE;
+      if (journal["notebookId"] != notebook_->GetId() || journal["parentId"] != before_config.id ||
+          !journal.contains("stagingIdentity") || !journal.contains("contentIdentity") ||
+          !journal.contains("metadataIdentity")) return VXCORE_ERR_INVALID_STATE;
+      FileIdentity recorded_stage;
+      if (!ImportParseIdentity(journal["stagingIdentity"], recorded_stage) ||
+          !recorded_stage.SameObject(stage_identity) ||
+          !ImportParseIdentity(journal["contentIdentity"], content_identity) ||
+          !ImportParseIdentity(journal["metadataIdentity"], metadata_identity) ||
+          content_identity.device != stage_identity.device || metadata_identity.device != stage_identity.device)
+        return VXCORE_ERR_INVALID_STATE;
+      const auto after = journal["parentAfterBytes"].get<std::string>();
+      if (after.size() > kImportImageLimit) return VXCORE_ERR_INVALID_STATE;
+      FolderConfig after_config;
+      nlohmann::json after_json;
+      if (ImportParseConfig(after, after_config, &after_json) != VXCORE_OK) return VXCORE_ERR_INVALID_STATE;
+      before_json["folders"].push_back(name);
+      if (!after_json.contains("modifiedUtc") || !after_json["modifiedUtc"].is_number_integer())
+        return VXCORE_ERR_INVALID_STATE;
+      before_json["modifiedUtc"] = after_json["modifiedUtc"];
+      if (before_json != after_json) return VXCORE_ERR_INVALID_STATE;
     } else {
-      VXCORE_LOG_WARN("RecoverImports: rolling back import (phase=%s) in %s", phase.c_str(),
-                      PathToUtf8(dir).c_str());
-
-      if (!metadata_target.empty()) {
-        RemoveTreeQuietly(PathFromUtf8(metadata_target));
-      }
-      if (!content_target.empty()) {
-        RemoveTreeQuietly(PathFromUtf8(content_target));
-      }
-
-      // Drop any rows the interrupted transaction may have committed, so the
-      // subsequent rebuild cannot resurrect a tree that no longer exists.
-      if (auto *store = notebook_->GetMetadataStore()) {
-        if (journal.contains(kJournalKeyIds) && journal[kJournalKeyIds].is_array()) {
-          for (const auto &entry : journal[kJournalKeyIds]) {
-            if (!entry.is_string()) {
-              continue;
-            }
-            const std::string id = entry.get<std::string>();
-            store->DeleteFile(id);
-            store->DeleteFolder(id);
-          }
+      // Only the exact old shape is accepted. Absolute fields are checked, never
+      // used as authority for deletion, even when phase claims commitment.
+      if (journal.size() != 8) return VXCORE_ERR_INVALID_STATE;
+      for (const auto *key : {"contentTarget", "metadataTarget"})
+        if (!journal.contains(key) || !journal[key].is_string()) return VXCORE_ERR_INVALID_STATE;
+      if (PathFromUtf8(journal["contentTarget"].get<std::string>()).lexically_normal() != content_target ||
+          PathFromUtf8(journal["metadataTarget"].get<std::string>()).lexically_normal() != metadata_target)
+        return VXCORE_ERR_INVALID_STATE;
+    }
+    std::vector<ImportFolderRecord> current;
+    std::vector<std::string> current_ids;
+    error = ImportScan(root, PathFromUtf8(GetConfigPath(".")).parent_path(), ".", "",
+                       current, current_ids, 0, static_cast<size_t>(-1));
+    if (error != VXCORE_OK) return error;
+    if (!ImportUniqueIds(current_ids)) return VXCORE_ERR_INVALID_STATE;
+    const auto found = std::find_if(current.begin(), current.end(), [&](const ImportFolderRecord &entry) {
+      return entry.config.id == root_id;
+    });
+    // Schema2 committed receipts remain proof after a later rename/move/delete.
+    // This branch never deletes live data, so old target identities may be gone.
+    committed = schema2 && phase == "committed";
+    if (!committed && found != current.end()) {
+      if (schema2) {
+        FileIdentity actual_content, actual_metadata;
+        const auto live_content = PathFromUtf8(GetContentPath(found->path));
+        const auto live_metadata = PathFromUtf8(GetConfigPath(found->path)).parent_path();
+        committed = ImportSafePath(root, live_content) == VXCORE_OK &&
+            ImportSafePath(root, live_metadata) == VXCORE_OK &&
+            GetFileIdentity(live_content, actual_content) == VXCORE_OK &&
+            GetFileIdentity(live_metadata, actual_metadata) == VXCORE_OK &&
+            content_identity.SameObject(actual_content) && metadata_identity.SameObject(actual_metadata);
+      } else {
+        std::unordered_set<std::string> cohort;
+        const auto prefix = found->path + "/";
+        for (const auto &entry : current) {
+          if (entry.path != found->path && entry.path.compare(0, prefix.size(), prefix) != 0) continue;
+          cohort.insert(entry.config.id);
+          for (const auto &file : entry.config.files) cohort.insert(file.id);
         }
-      }
-
-      // Restore the parent's index bytes verbatim. Idempotent: if the commit
-      // point was never reached these bytes are already on disk.
-      if (journal.contains(kJournalKeyParentBytes) && journal[kJournalKeyParentBytes].is_string()) {
-        const std::string bytes = journal[kJournalKeyParentBytes].get<std::string>();
-        if (!bytes.empty()) {
-          const fs::path parent_config = PathFromUtf8(GetConfigPath(dest_path));
-          if (!WriteFileDurable(parent_config, bytes)) {
-            VXCORE_LOG_ERROR("RecoverImports: failed to restore %s",
-                             PathToUtf8(parent_config).c_str());
-          }
+        committed = std::all_of(ids.begin(), ids.end(), [&](const std::string &id) { return cohort.count(id); });
+        if (committed) {
+          error = ImportSafePath(root, PathFromUtf8(GetContentPath(found->path)));
+          if (error != VXCORE_OK) return error;
+          error = ImportValidateTree(PathFromUtf8(GetContentPath(found->path)));
+          if (error != VXCORE_OK) return error;
         }
       }
     }
-
-    RemoveTreeQuietly(dir);
-    ++recovered;
-  }
-
-  if (recovered > 0) {
-    // Any cached config may now describe a tree that was rolled back.
+    if (committed) {
+      // Upgrade a proven old receipt before acknowledging recoverability. If
+      // cleanup is blocked, even later deletion must not make it ambiguous.
+      if (!schema2) {
+        if (GetFileIdentity(PathFromUtf8(GetContentPath(found->path)), content_identity) != VXCORE_OK ||
+            GetFileIdentity(PathFromUtf8(GetConfigPath(found->path)).parent_path(), metadata_identity) != VXCORE_OK ||
+            !content_identity.directory || !metadata_identity.directory ||
+            content_identity.device != stage_identity.device || metadata_identity.device != stage_identity.device)
+          return VXCORE_ERR_INVALID_STATE;
+        auto expected = nlohmann::json::parse(before);
+        expected["folders"].push_back(name);
+        expected["modifiedUtc"] = GetCurrentTimestampMillis();
+        journal.erase("contentTarget");
+        journal.erase("metadataTarget");
+        journal["schema"] = 2;
+        journal["notebookId"] = notebook_->GetId();
+        journal["parentId"] = before_config.id;
+        journal["parentAfterBytes"] = expected.dump(2);
+        journal["stagingIdentity"] = ImportIdentityJson(stage_identity);
+        journal["contentIdentity"] = ImportIdentityJson(content_identity);
+        journal["metadataIdentity"] = ImportIdentityJson(metadata_identity);
+      }
+      if (!schema2 || phase != "committed") {
+        journal["phase"] = "committed";
+        journal_bytes = journal.dump();
+        if (journal_bytes.size() > kImportJournalLimit ||
+            journal["parentAfterBytes"].get_ref<const std::string &>().size() > kImportImageLimit)
+          return VXCORE_ERR_INVALID_STATE;
+        error = ImportWriteAtomic(directory / kImportJournalFileName, journal_bytes);
+        if (error != VXCORE_OK) return error;
+      }
+      // Repair current metadata, not the original cohort: later legitimate edits
+      // and deletions must never be undone by stale derived rows or journal data.
+      ClearCache();
+      error = ImportRepairStore(notebook_->GetMetadataStore(), current);
+      if (error != VXCORE_OK) return error;
+      for (auto &entry : current)
+        CacheConfig(entry.path, std::make_unique<FolderConfig>(std::move(entry.config)));
+      const auto cleanup = ImportCleanup(directory, stage_identity, journal_bytes);
+      if (cleanup != VXCORE_OK) VXCORE_LOG_WARN("Import: committed recovery cleanup deferred (%d)", cleanup);
+      return VXCORE_OK;
+    }
+    const auto parent = std::find_if(current.begin(), current.end(), [&](const ImportFolderRecord &entry) {
+      return entry.path == dest && entry.config.id == before_config.id;
+    });
+    if (parent == current.end()) return VXCORE_ERR_INVALID_STATE;
+    std::string actual_before;
+    error = ImportReadBytes(PathFromUtf8(GetConfigPath(dest)), actual_before);
+    if (error != VXCORE_OK || actual_before != before) return VXCORE_ERR_INVALID_STATE;
+    for (const auto &id : current_ids) if (ids.count(id)) return VXCORE_ERR_INVALID_STATE;
+    const std::array<std::pair<fs::path, FileIdentity>, 4> owned = {{
+        {content_target, content_identity}, {metadata_target, metadata_identity},
+        {directory / "content", content_identity}, {directory / "metadata", metadata_identity}}};
+    // Validate EVERY prospective removal before the first destructive action.
+    for (const auto &entry : owned) {
+      error = ImportSafePath(root, entry.first, true);
+      if (error != VXCORE_OK) return error;
+      bool exists = false;
+      error = ImportExists(entry.first, exists);
+      if (error != VXCORE_OK) return error;
+      if (!exists) continue;
+      // Old journals cannot positively identify a precommit tree. Quarantine it.
+      FileIdentity actual;
+      if (!schema2 || GetFileIdentity(entry.first, actual) != VXCORE_OK ||
+          !entry.second.SameObject(actual)) return VXCORE_ERR_INVALID_STATE;
+      error = ImportValidateTree(entry.first);
+      if (error != VXCORE_OK) return error;
+      if (entry.first == metadata_target || entry.first == directory / "metadata") {
+        std::vector<ImportFolderRecord> cohort;
+        std::vector<std::string> cohort_ids;
+        error = ImportScan(root, entry.first, child, before_config.id, cohort, cohort_ids);
+        if (error != VXCORE_OK || cohort.front().config.id != root_id ||
+            !ImportUniqueIds(cohort_ids) ||
+            std::unordered_set<std::string>(cohort_ids.begin(), cohort_ids.end()) != ids)
+          return VXCORE_ERR_INVALID_STATE;
+      }
+    }
     ClearCache();
+    // Repair rows before removal; a failed DB rollback must retain all evidence.
+    error = ImportRepairStore(notebook_->GetMetadataStore(), current);
+    if (error != VXCORE_OK) return error;
+    for (auto &entry : current)
+      CacheConfig(entry.path, std::make_unique<FolderConfig>(std::move(entry.config)));
+    for (const auto &entry : owned) {
+      error = ImportRemoveOwned(entry.first, entry.second);
+      if (error != VXCORE_OK) return error;
+    }
+    // Parent bytes were already authoritative. Never restore an old snapshot.
+    return ImportCleanup(directory, stage_identity, journal_bytes);
+  } catch (const std::exception &) {
+    return VXCORE_ERR_JSON_PARSE;
   }
-  if (out_recovered_count) {
-    *out_recovered_count = recovered;
+}
+
+VxCoreError BundledFolderManager::RecoverImports(int *out_recovered_count) {
+  if (out_recovered_count) *out_recovered_count = 0;
+  if (notebook_->CheckWritable() != VXCORE_OK) return notebook_->CheckWritable();
+  const auto staging_root = PathFromUtf8(notebook_->GetMetadataFolder()) / kImportStagingDirName;
+  bool exists = false;
+  auto error = ImportExists(staging_root, exists);
+  if (error != VXCORE_OK || !exists) return error;
+  error = ImportSafePath(PathFromUtf8(notebook_->GetRootFolder()), staging_root);
+  if (error != VXCORE_OK) return error;
+  std::vector<fs::path> journals;
+  std::error_code ec;
+  for (fs::directory_iterator it(staging_root, ec), end; !ec && it != end; it.increment(ec)) {
+    FileIdentity identity;
+    if (GetFileIdentity(it->path(), identity) != VXCORE_OK || !identity.directory)
+      return VXCORE_ERR_INVALID_STATE;
+    error = ImportExists(it->path() / kImportJournalFileName, exists);
+    if (error != VXCORE_OK) return error;
+    if (exists) journals.push_back(it->path());
+  }
+  if (ec) return VXCORE_ERR_IO;
+  for (const auto &directory : journals) {
+    bool committed = false;
+    error = CompleteImport(directory, committed);
+    if (error != VXCORE_OK) return error;
+    if (out_recovered_count) ++*out_recovered_count;
   }
   return VXCORE_OK;
 }
@@ -2695,6 +2949,20 @@ void BundledFolderManager::SyncFolderToStore(const std::string &folder_path,
   VXCORE_LOG_INFO("SyncFolderToStore: Syncing folder: id=%s, path=%s", config.id.c_str(),
                   folder_path.c_str());
 
+  // Publish the direct file set and its completion watermark together. Commit
+  // before descending so recursive lazy synchronization never nests BEGIN.
+  if (!store->BeginTransaction()) {
+    VXCORE_LOG_WARN("SyncFolderToStore: Failed to begin cache transaction");
+    return;
+  }
+  struct CacheTransaction {
+    MetadataStore *store;
+    bool committed = false;
+    ~CacheTransaction() {
+      if (!committed) store->RollbackTransaction();
+    }
+  } transaction{store};
+
   // Reuse db_folder from staleness check (folder exists if db_folder has value)
   if (db_folder.has_value()) {
     // Update existing folder
@@ -2712,12 +2980,18 @@ void BundledFolderManager::SyncFolderToStore(const std::string &folder_path,
     }
   }
 
-  // Sync files (add/update/delete orphans)
-  SyncFilesToStore(store, config.id, config.files);
+  // Stop on the first failed statement: SQLite may already have rolled back
+  // after an IO error, so subsequent writes must not escape into autocommit.
+  if (!SyncFilesToStore(store, config.id, config.files)) return;
+  if (!store->CommitTransaction()) {
+    VXCORE_LOG_WARN("SyncFolderToStore: Failed to commit cache transaction");
+    return;
+  }
+  transaction.committed = true;
 
   // Recursively sync subfolders
-  // NOTE: Use LoadFolderConfig (not GetFolderConfig) to avoid infinite recursion.
-  // GetFolderConfig triggers lazy sync which calls SyncFolderToStore again.
+  // GetFolderConfig performs each child's lazy publication after this folder's
+  // transaction has committed; its explicit parent ID avoids parent lookup recursion.
   for (const auto &subfolder_name : config.folders) {
     std::string subfolder_path = ConcatenatePaths(folder_path, subfolder_name);
     FolderConfig *subfolder_config;
@@ -3347,6 +3621,183 @@ VxCoreError BundledFolderManager::ImportFolder(const std::string &dest_folder_pa
   return VXCORE_OK;
 }
 
+VxCoreError BundledFolderManager::IndexChildren(const std::string &folder_path,
+                                               const std::string &names_json) {
+  if (notebook_->CheckWritable() != VXCORE_OK) return notebook_->CheckWritable();
+  if (names_json.size() > kImportImageLimit) return VXCORE_ERR_INVALID_PARAM;
+  nlohmann::json names;
+  try {
+    names = nlohmann::json::parse(names_json);
+  } catch (const std::exception &) {
+    return VXCORE_ERR_JSON_PARSE;
+  }
+  if (!names.is_array() || names.size() > 10000) return VXCORE_ERR_INVALID_PARAM;
+  if (names.empty()) return VXCORE_OK;
+  const auto parent_path = folder_path.empty() ? std::string(".") : folder_path;
+  if (!ImportRelative(parent_path)) return VXCORE_ERR_INVALID_PARAM;
+  const auto root = PathFromUtf8(notebook_->GetRootFolder());
+  const auto metadata = PathFromUtf8(GetConfigPath(".")).parent_path();
+  std::vector<ImportFolderRecord> ancestors;
+  std::string before;
+  nlohmann::json parent_json;
+  auto error = ImportLoadAncestors(root, metadata, parent_path, ancestors, before, parent_json);
+  if (error != VXCORE_OK) return error;
+  const auto &parent = ancestors.back().config;
+  std::unordered_set<std::string> indexed_names(parent.folders.begin(), parent.folders.end());
+  for (const auto &file : parent.files) indexed_names.insert(file.name);
+  using IdentityKey = std::tuple<uint64_t, uint64_t, uint64_t, bool>;
+  const auto key = [](const FileIdentity &identity) {
+    return IdentityKey(identity.device, identity.low, identity.high, identity.directory);
+  };
+  std::set<IdentityKey> identities;
+  const auto content_parent = PathFromUtf8(GetContentPath(parent_path));
+  for (const auto &name : indexed_names) {
+    const auto path = content_parent / PathFromUtf8(name);
+    bool exists = false;
+    error = ImportExists(path, exists);
+    if (error != VXCORE_OK) return error;
+    if (!exists) continue;
+    FileIdentity identity;
+    error = GetFileIdentity(path, identity);
+    if (error != VXCORE_OK) return error;
+    identities.insert(key(identity));
+  }
+  FileIdentity notebook_metadata;
+  if (GetFileIdentity(PathFromUtf8(notebook_->GetMetadataFolder()), notebook_metadata) != VXCORE_OK)
+    return VXCORE_ERR_IO;
+  struct Child {
+    std::string name;
+    FileIdentity source;
+    fs::path metadata;
+    std::string bytes;
+    FileIdentity owned;
+    bool created = false;
+  };
+  std::vector<Child> children;
+  children.reserve(names.size());
+  size_t folder_count = 0;
+  // Validate the entire request, including aliases and private metadata residue,
+  // before making any child config or changing any parent metadata.
+  for (const auto &entry : names) {
+    if (!entry.is_string()) return VXCORE_ERR_INVALID_PARAM;
+    auto name = entry.get<std::string>();
+    if (!ImportName(name)) return VXCORE_ERR_INVALID_PARAM;
+    if (!indexed_names.insert(name).second) return VXCORE_ERR_ALREADY_EXISTS;
+    FileIdentity identity;
+    error = ImportSafePath(root, content_parent / PathFromUtf8(name));
+    if (error != VXCORE_OK) return error;
+    error = GetFileIdentity(content_parent / PathFromUtf8(name), identity);
+    if (error != VXCORE_OK) return error;
+    if ((!identity.directory && identity.links != 1) || identity.SameObject(notebook_metadata))
+      return VXCORE_ERR_INVALID_PARAM;
+    if (!identities.insert(key(identity)).second) return VXCORE_ERR_ALREADY_EXISTS;
+    const auto child_metadata = PathFromUtf8(GetConfigPath(ConcatenatePaths(parent_path, name))).parent_path();
+    bool exists = false;
+    error = ImportExists(child_metadata, exists);
+    if (error != VXCORE_OK) return error;
+    if (exists) {
+      // Files live solely in the parent's array. A source file may have the
+      // same basename as that array's own config, without owning that config.
+      FileIdentity occupied, parent_config_identity;
+      if (identity.directory || GetFileIdentity(child_metadata, occupied) != VXCORE_OK ||
+          GetFileIdentity(PathFromUtf8(GetConfigPath(parent_path)), parent_config_identity) != VXCORE_OK ||
+          !occupied.SameObject(parent_config_identity)) return VXCORE_ERR_ALREADY_EXISTS;
+    }
+    children.push_back({std::move(name), identity, child_metadata, {}, {}, false});
+    if (identity.directory) ++folder_count;
+  }
+  std::vector<ImportFolderRecord> records;
+  records.reserve(folder_count + 1);
+  records.push_back(ancestors.back());
+  const auto now = GetCurrentTimestampMillis();
+  for (auto &child : children) {
+    if (child.source.directory) {
+      FolderConfig config(child.name);
+      child.bytes = config.ToJson().dump(2);
+      parent_json["folders"].push_back(child.name);
+      records.front().config.folders.push_back(child.name);
+      records.push_back({ConcatenatePaths(parent_path, child.name), parent.id, std::move(config)});
+    } else {
+      FileRecord file(child.name);
+      file.created_utc = now;
+      file.modified_utc = now;
+      parent_json["files"].push_back(file.ToJson());
+      records.front().config.files.push_back(std::move(file));
+    }
+  }
+  parent_json["modifiedUtc"] = now;
+  records.front().config.modified_utc = now;
+  const auto after = parent_json.dump(2);
+  if (after.size() > kImportImageLimit) return VXCORE_ERR_INVALID_PARAM;
+  const auto config_path = PathFromUtf8(GetConfigPath(parent_path));
+  const auto cleanup = [&](VxCoreError original) {
+    InvalidateCache(parent_path);
+    std::string actual;
+    if (ImportReadBytes(config_path, actual) != VXCORE_OK || actual != before)
+      return VXCORE_ERR_INVALID_STATE;
+    for (auto it = children.rbegin(); it != children.rend(); ++it) {
+      if (!it->created) continue;
+      FileIdentity identity;
+      if (GetFileIdentity(it->metadata, identity) != VXCORE_OK || !it->owned.SameObject(identity))
+        return VXCORE_ERR_INVALID_STATE;
+      std::error_code ec;
+      for (fs::directory_iterator entry(it->metadata, ec), end; !ec && entry != end; entry.increment(ec)) {
+        if (entry->path().filename() != "vx.json") return VXCORE_ERR_INVALID_STATE;
+      }
+      if (ec) return VXCORE_ERR_IO;
+      bool exists = false;
+      auto checked = ImportExists(it->metadata / "vx.json", exists);
+      if (checked != VXCORE_OK) return checked;
+      if (exists) {
+        checked = ImportReadBytes(it->metadata / "vx.json", actual);
+        if (checked != VXCORE_OK || actual != it->bytes) return VXCORE_ERR_INVALID_STATE;
+        if (!fs::remove(it->metadata / "vx.json", ec) || ec) return VXCORE_ERR_IO;
+      }
+      if (!fs::remove(it->metadata, ec) || ec) return VXCORE_ERR_IO;
+      checked = FlushDirectory(it->metadata.parent_path());
+      if (checked != VXCORE_OK) return checked;
+    }
+    return original;
+  };
+  for (auto &child : children) {
+    if (!child.source.directory) continue;
+    std::error_code ec;
+    if (!fs::create_directory(child.metadata, ec) || ec) return cleanup(VXCORE_ERR_IO);
+    child.created = true;
+    if (GetFileIdentity(child.metadata, child.owned) != VXCORE_OK) return cleanup(VXCORE_ERR_IO);
+    error = ImportWriteAtomic(child.metadata / "vx.json", child.bytes, true);
+    if (error != VXCORE_OK) return cleanup(error);
+  }
+  if (folder_count) {
+    error = FlushDirectory(config_path.parent_path());
+    if (error != VXCORE_OK) return cleanup(error);
+  }
+  for (const auto &child : children) {
+    FileIdentity identity;
+    if (GetFileIdentity(content_parent / PathFromUtf8(child.name), identity) != VXCORE_OK ||
+        !child.source.SameObject(identity)) return cleanup(VXCORE_ERR_INVALID_STATE);
+  }
+  std::string actual;
+  error = ImportReadBytes(config_path, actual);
+  if (error != VXCORE_OK || actual != before) return cleanup(VXCORE_ERR_INVALID_STATE);
+  const auto published = ImportWriteAtomic(config_path, after);
+  InvalidateCache(parent_path);
+  for (const auto &entry : records) InvalidateCache(entry.path);
+  error = ImportReadBytes(config_path, actual);
+  if (error != VXCORE_OK) return published == VXCORE_OK ? error : published;
+  if (actual == before) return cleanup(published == VXCORE_OK ? VXCORE_ERR_IO : published);
+  // A published/ambiguous parent must retain every potentially referenced child.
+  if (actual != after) return VXCORE_ERR_INVALID_STATE;
+  error = ImportStoreFolders(notebook_->GetMetadataStore(), records, false, &ancestors);
+  if (error != VXCORE_OK) return error;
+  for (auto &entry : records)
+    CacheConfig(entry.path, std::make_unique<FolderConfig>(std::move(entry.config)));
+  if (published != VXCORE_OK) return published;
+  EmitEvent(events::kFolderConfigChanged,
+            {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", parent_path}});
+  return VXCORE_OK;
+}
+
 VxCoreError BundledFolderManager::IndexNode(const std::string &node_path) {
   if (notebook_->CheckWritable() != VXCORE_OK) {
     return notebook_->CheckWritable();
@@ -3673,6 +4124,59 @@ VxCoreError BundledFolderManager::GetFileAttachments(const std::string &file_pat
   return VXCORE_OK;
 }
 
+VxCoreError BundledFolderManager::SaveFileAttachmentsAtomic(
+    const std::string &folder_path, const std::string &file_name,
+    const std::vector<std::string> &attachments) {
+  // Never publish speculative state into the cache. Read and edit the disk JSON
+  // so unrelated records (including unknown fields) survive this replacement.
+  InvalidateCache(folder_path);
+  const auto path = PathFromUtf8(GetConfigPath(folder_path));
+  std::string bytes;
+  auto error = ImportReadBytes(path, bytes, static_cast<size_t>(-1));
+  if (error != VXCORE_OK) return error;
+  try {
+    auto json = nlohmann::json::parse(bytes);
+    auto config = FolderConfig::FromJson(json);
+    auto *file = FindFileRecord(config, file_name);
+    if (!file) return VXCORE_ERR_NOT_FOUND;
+    bool changed = false;
+    const auto now = GetCurrentTimestampMillis();
+    for (auto &entry : json["files"]) {
+      if (entry.value("name", std::string()) != file_name) continue;
+      entry["attachments"] = attachments;
+      entry["modifiedUtc"] = now;
+      changed = true;
+      break;
+    }
+    if (!changed) return VXCORE_ERR_INVALID_STATE;
+    json["modifiedUtc"] = now;
+    const auto after = json.dump(2);
+    const auto published = ImportWriteAtomic(path, after);
+    // A rename/flush error can be post-publication. Repair only what a binary
+    // readback actually shows; subsequent getters reload that same disk truth.
+    error = ImportReadBytes(path, bytes, static_cast<size_t>(-1));
+    if (error != VXCORE_OK) return published == VXCORE_OK ? error : published;
+    config = FolderConfig::FromJson(nlohmann::json::parse(bytes));
+    file = FindFileRecord(config, file_name);
+    if (!file) return VXCORE_ERR_INVALID_STATE;
+    auto *store = notebook_->GetMetadataStore();
+    if (!store || !store->BeginTransaction()) return VXCORE_ERR_DATABASE;
+    const bool stored = store->UpdateFolder(config.id, config.name, config.modified_utc, config.metadata.dump()) &&
+        store->CreateFile(ToStoreFileRecord(*file, config.id)) &&
+        store->SetFileTags(file->id, file->tags) && store->SetFileAttachments(file->id, file->attachments);
+    if (!stored || !store->CommitTransaction())
+      return store->RollbackTransaction() ? VXCORE_ERR_DATABASE : VXCORE_ERR_INVALID_STATE;
+    CacheConfig(folder_path, std::make_unique<FolderConfig>(std::move(config)));
+    if (published != VXCORE_OK) return published;
+    if (bytes != after) return VXCORE_ERR_INVALID_STATE;
+    EmitEvent(events::kFolderConfigChanged,
+              {{kJsonKeyNotebookId, notebook_->GetId()}, {"path", folder_path}});
+    return VXCORE_OK;
+  } catch (const std::exception &) {
+    return VXCORE_ERR_JSON_PARSE;
+  }
+}
+
 VxCoreError BundledFolderManager::UpdateFileAttachments(const std::string &file_path,
                                                         const std::string &attachments_json) {
   if (notebook_ && notebook_->CheckWritable() != VXCORE_OK) { return notebook_->CheckWritable(); }
@@ -3701,26 +4205,12 @@ VxCoreError BundledFolderManager::UpdateFileAttachments(const std::string &file_
       return VXCORE_ERR_INVALID_PARAM;
     }
 
-    file->attachments = std::move(new_attachments);
-    file->modified_utc = GetCurrentTimestampMillis();
-
-    config->modified_utc = file->modified_utc;
-
-    error = SaveFolderConfig(folder_path, *config);
-    if (error != VXCORE_OK) {
-      return error;
-    }
-
-    // Write-through to MetadataStore
-    if (auto *store = notebook_->GetMetadataStore()) {
-      if (!store->SetFileAttachments(file->id, file->attachments)) {
-        VXCORE_LOG_WARN("Failed to set file attachments in MetadataStore: id=%s", file->id.c_str());
-      }
-    }
+    error = SaveFileAttachmentsAtomic(folder_path, file_name, new_attachments);
+    if (error != VXCORE_OK) return error;
 
     EmitEvent(events::kFileAttachmentsReplaced, {{kJsonKeyNotebookId, notebook_->GetId()},
                                                  {"path", clean_file_path},
-                                                 {"attachments", file->attachments}});
+                                                 {"attachments", new_attachments}});
     return VXCORE_OK;
   } catch (const std::exception &) {
     return VXCORE_ERR_JSON_PARSE;
@@ -3755,21 +4245,10 @@ VxCoreError BundledFolderManager::AddFileAttachment(const std::string &file_path
     return VXCORE_OK;
   }
 
-  file->attachments.push_back(name);
-  file->modified_utc = GetCurrentTimestampMillis();
-  config->modified_utc = file->modified_utc;
-
-  error = SaveFolderConfig(folder_path, *config);
-  if (error != VXCORE_OK) {
-    return error;
-  }
-
-  // Write-through to MetadataStore
-  if (auto *store = notebook_->GetMetadataStore()) {
-    if (!store->SetFileAttachments(file->id, file->attachments)) {
-      VXCORE_LOG_WARN("Failed to set file attachments in MetadataStore: id=%s", file->id.c_str());
-    }
-  }
+  auto attachments = file->attachments;
+  attachments.push_back(name);
+  error = SaveFileAttachmentsAtomic(folder_path, file_name, attachments);
+  if (error != VXCORE_OK) return error;
 
   EmitEvent(
       events::kFileAttached,
@@ -3805,21 +4284,10 @@ VxCoreError BundledFolderManager::DeleteFileAttachment(const std::string &file_p
     return VXCORE_OK;
   }
 
-  file->attachments.erase(it);
-  file->modified_utc = GetCurrentTimestampMillis();
-  config->modified_utc = file->modified_utc;
-
-  error = SaveFolderConfig(folder_path, *config);
-  if (error != VXCORE_OK) {
-    return error;
-  }
-
-  // Write-through to MetadataStore
-  if (auto *store = notebook_->GetMetadataStore()) {
-    if (!store->SetFileAttachments(file->id, file->attachments)) {
-      VXCORE_LOG_WARN("Failed to set file attachments in MetadataStore: id=%s", file->id.c_str());
-    }
-  }
+  auto attachments = file->attachments;
+  attachments.erase(attachments.begin() + std::distance(file->attachments.begin(), it));
+  error = SaveFileAttachmentsAtomic(folder_path, file_name, attachments);
+  if (error != VXCORE_OK) return error;
 
   EmitEvent(
       events::kFileDetached,

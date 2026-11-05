@@ -899,6 +899,99 @@ int test_streaming_invalid_regex() {
   return 0;
 }
 
+int test_first_match_per_file_repeated_long_line() {
+  std::cout << "  Running test_first_match_per_file_repeated_long_line..." << std::endl;
+  const std::string test_dir =
+      std::filesystem::temp_directory_path().string() + "/vxcore_test_first_match_long";
+  cleanup_test_dir(test_dir);
+  create_directory(test_dir);
+  const std::string line(1024 * 1024, 'x');
+  const std::string path = CleanPath(test_dir + "/long.txt");
+  write_file(path, line + "\nx later\n");
+  const std::vector<SearchFileInfo> files{make_file("long.txt", path)};
+  SimpleSearchBackend backend;
+
+  // One million occurrences must not create one million 1-MiB lineText copies.
+  // Exercise both matcher implementations through both consumer entry points.
+  for (const auto matcher : {SearchOption::kNone, SearchOption::kRegex}) {
+    const auto options = matcher | SearchOption::kFirstMatchPerFile;
+    ContentSearchResult blob;
+    ASSERT_EQ(backend.Search(files, "x", options, {}, 100, blob), VXCORE_OK);
+    ASSERT_EQ(blob.matched_files.size(), 1);
+    ASSERT_FALSE(blob.truncated);
+    const auto &matches = blob.matched_files[0].matches;
+    ASSERT_EQ(matches.size(), 1);
+    ASSERT_EQ(matches[0].line_number, 1);
+    ASSERT_EQ(matches[0].column_start, 0);
+    ASSERT_EQ(matches[0].column_end, 1);
+    ASSERT_EQ(matches[0].line_text, line);
+
+    StreamCollector collector;
+    ASSERT_EQ(backend.SearchStreaming(files, "x", options, {}, 1, collector.fn()), VXCORE_OK);
+    ASSERT_EQ(collector.callback_count, 1);
+    const auto &streamed = collector.by_index.at(0);
+    ASSERT_EQ(streamed.size(), 1);
+    ASSERT_EQ(streamed[0].matches.size(), 1);
+    ASSERT_EQ(streamed[0].matches[0].line_number, 1);
+    ASSERT_EQ(streamed[0].matches[0].column_start, 0);
+    ASSERT_EQ(streamed[0].matches[0].column_end, 1);
+    ASSERT_EQ(streamed[0].matches[0].line_text, line);
+  }
+  cleanup_test_dir(test_dir);
+  return 0;
+}
+
+int test_first_match_per_file_options_and_exclusions() {
+  std::cout << "  Running test_first_match_per_file_options_and_exclusions..." << std::endl;
+  const std::string test_dir =
+      std::filesystem::temp_directory_path().string() + "/vxcore_test_first_match_options";
+  cleanup_test_dir(test_dir);
+  create_directory(test_dir);
+  const std::string line = u8"\U0001F600needles NEEDLE needle needle";
+  const std::string path = CleanPath(test_dir + "/options.txt");
+  write_file(path, "skip needle\n" + line + "\nneedle later\n");
+  const std::vector<SearchFileInfo> files{make_file("options.txt", path)};
+  SimpleSearchBackend backend;
+
+  for (bool regex : {false, true}) {
+    for (bool case_sensitive : {false, true}) {
+      auto options = SearchOption::kWholeWord;
+      if (regex) options |= SearchOption::kRegex;
+      if (case_sensitive) options |= SearchOption::kCaseSensitive;
+      const std::string pattern = regex ? "\\bneedle\\b" : "needle";
+      ContentSearchResult bounded;
+      ASSERT_EQ(backend.Search(files, pattern, options | SearchOption::kFirstMatchPerFile,
+                               {"skip"}, 100, bounded), VXCORE_OK);
+      ASSERT_EQ(bounded.matched_files.size(), 1);
+      const auto &matches = bounded.matched_files[0].matches;
+      ASSERT_EQ(matches.size(), 1);
+      ASSERT_EQ(matches[0].line_number, 2);
+      // The leading non-BMP scalar counts as two UTF-16 code units, not four UTF-8 bytes.
+      ASSERT_EQ(matches[0].column_start, case_sensitive ? 17 : 10);
+      ASSERT_EQ(matches[0].column_end, case_sensitive ? 23 : 16);
+      ASSERT_EQ(matches[0].line_text, line);
+
+      ContentSearchResult ordinary;
+      ASSERT_EQ(backend.Search(files, pattern, options, {"skip"}, 100, ordinary), VXCORE_OK);
+      ASSERT_EQ(ordinary.matched_files.size(), 1);
+      ASSERT_EQ(ordinary.matched_files[0].matches.size(), case_sensitive ? 3 : 4);
+      ASSERT_EQ(ordinary.matched_files[0].matches.back().line_number, 3);
+      StreamCollector collector;
+      ASSERT_EQ(backend.SearchStreaming(files, pattern, options | SearchOption::kFirstMatchPerFile,
+                                        {"skip"}, 1, collector.fn()), VXCORE_OK);
+      const auto &streamed = collector.by_index.at(0);
+      ASSERT_EQ(streamed.size(), 1);
+      ASSERT_EQ(streamed[0].matches.size(), 1);
+      ASSERT_EQ(streamed[0].matches[0].line_number, 2);
+      ASSERT_EQ(streamed[0].matches[0].column_start, matches[0].column_start);
+      ASSERT_EQ(streamed[0].matches[0].column_end, matches[0].column_end);
+      ASSERT_EQ(streamed[0].matches[0].line_text, line);
+    }
+  }
+  cleanup_test_dir(test_dir);
+  return 0;
+}
+
 int main() {
   std::cout << "Running simple_search_backend tests..." << std::endl;
 
@@ -911,6 +1004,8 @@ int main() {
   RUN_TEST(test_matches_pattern_multiple_matches);
   RUN_TEST(test_matches_pattern_utf8);
   RUN_TEST(test_matches_pattern_invalid_regex);
+  RUN_TEST(test_first_match_per_file_repeated_long_line);
+  RUN_TEST(test_first_match_per_file_options_and_exclusions);
   RUN_TEST(test_search_single_file);
   RUN_TEST(test_search_multiple_files);
   RUN_TEST(test_search_case_insensitive);

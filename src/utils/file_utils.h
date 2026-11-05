@@ -2,14 +2,58 @@
 #define VXCORE_FILE_UTILS_H
 
 #include <cstdio>
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "vxcore/vxcore_types.h"
 
 namespace vxcore {
+
+// Only validated private storage opts in. Logical paths always remain unprefixed.
+enum class FileAccess { kDefault, kPrivate };
+
+// A final OS/CRT argument, not a filesystem path. The default/POSIX argument
+// borrows its logical input, which must outlive it. Private Windows spelling is
+// owned and never passed through path normalization or used as stored authority.
+class NativePathArgument final {
+ public:
+  explicit NativePathArgument(const std::filesystem::path &path,
+                              FileAccess access = FileAccess::kDefault);
+  const std::filesystem::path::value_type *c_str() const noexcept;
+
+ private:
+  const std::filesystem::path::value_type *borrowed_ = nullptr;
+#ifdef _WIN32
+  std::wstring owned_;
+#endif
+};
+
+namespace private_io {
+struct PathStatus {
+  bool exists = false, directory = false, regular = false;
+  uint64_t size = 0, modified = 0;
+};
+// Clean absolute logical spelling; no-follow checks from the physical root.
+// Only true not-found is absence. Errors never include the logical path.
+PathStatus Status(const std::filesystem::path &path);
+bool Exists(const std::filesystem::path &path);
+bool IsDirectory(const std::filesystem::path &path);
+bool IsRegularFile(const std::filesystem::path &path);
+bool IsEmpty(const std::filesystem::path &path);
+uint64_t FileSize(const std::filesystem::path &path);
+uint64_t ModifiedTime(const std::filesystem::path &path);  // exact comparison token
+bool MakeDirectory(const std::filesystem::path &path);
+void CreateDirectories(const std::filesystem::path &path);
+bool Remove(const std::filesystem::path &path);  // leaf/empty directory, never recursive
+void VisitDirectory(const std::filesystem::path &path,
+                    const std::function<void(const std::filesystem::path &)> &visitor);
+void Validate(const std::filesystem::path &path, bool allow_missing = false);
+}  // namespace private_io
 
 std::filesystem::path PathFromUtf8(const std::string &utf8_str);
 
@@ -70,7 +114,8 @@ enum class ReparseState { kNo, kYes, kError };
 // Tri-state reparse-point probe. Never follows the link. Prefer this over
 // IsReparsePoint when the caller needs to distinguish a stat failure (an IO
 // error worth reporting) from a confirmed link (a skip).
-ReparseState CheckReparsePoint(const std::string &path);
+ReparseState CheckReparsePoint(const std::string &path,
+                               FileAccess access = FileAccess::kDefault);
 
 // True if |path| is a reparse point.
 // Windows: any FILE_ATTRIBUTE_REPARSE_POINT, which covers symlinks, directory
@@ -81,6 +126,29 @@ ReparseState CheckReparsePoint(const std::string &path);
 // POSIX:   symlink_status().type() == file_type::symlink.
 // Never follows the link. Returns |on_error| if the path cannot be stat'ed.
 bool IsReparsePoint(const std::string &path, bool on_error);
+
+// No-follow identity of an ordinary file or directory. Parent traversal remains
+// the caller's responsibility. Link counts may change without changing identity.
+struct FileIdentity {
+  uint64_t device = 0, low = 0, high = 0, links = 0;
+  bool directory = false;
+  bool SameObject(const FileIdentity &other) const noexcept;
+};
+
+// Resets the output on failure; rejects reparse points, symlinks and special files.
+VxCoreError GetFileIdentity(const std::filesystem::path &path, FileIdentity &out,
+                            FileAccess access = FileAccess::kDefault) noexcept;
+
+// One same-volume atomic attempt; never replaces a destination or copies bytes.
+// Callers own any bounded Windows sharing-violation retry policy.
+VxCoreError RenameNoReplace(const std::filesystem::path &from, const std::filesystem::path &to,
+                           FileAccess access = FileAccess::kDefault);
+
+// POSIX checks directory fsync and close. Windows only verifies an ordinary
+// directory: durability relies on checked file flushes and WRITE_THROUGH moves,
+// not an unsupported directory-fsync/power-loss guarantee.
+VxCoreError FlushDirectory(const std::filesystem::path &path,
+                           FileAccess access = FileAccess::kDefault);
 
 // True if |path| is |root| itself or lies under it.
 // BOTH sides are canonicalized before comparing. Canonicalizing only one side
@@ -123,7 +191,8 @@ VxCoreError WriteFile(const std::filesystem::path &path, const std::string &cont
 // prevent publication; destruction closes and removes an uncommitted temporary sibling.
 class AtomicFileWriter final {
  public:
-  explicit AtomicFileWriter(const std::filesystem::path &path);
+  explicit AtomicFileWriter(const std::filesystem::path &path,
+                            FileAccess access = FileAccess::kDefault);
   ~AtomicFileWriter();
 
   AtomicFileWriter(const AtomicFileWriter &) = delete;
@@ -132,17 +201,23 @@ class AtomicFileWriter final {
   VxCoreError Open();
   VxCoreError Write(const void *data, size_t size);
   VxCoreError Commit();
+  // Publishes only to an absent destination. A post-publication directory-flush
+  // error retains the complete destination for reconciliation, including on destruction.
+  VxCoreError CommitNoReplace();
 
  private:
   std::filesystem::path path_;
   std::filesystem::path temp_path_;
+  FileAccess access_ = FileAccess::kDefault;
+  FileIdentity temp_identity_;
   std::FILE *file_ = nullptr;
   VxCoreError error_ = VXCORE_OK;
   bool opened_ = false;
   bool owns_temp_ = false;
 };
 
-VxCoreError WriteFileAtomic(const std::filesystem::path &path, const std::string &content);
+VxCoreError WriteFileAtomic(const std::filesystem::path &path, const std::string &content,
+                            FileAccess access = FileAccess::kDefault);
 
 VxCoreError LoadJsonFile(const std::filesystem::path &path, nlohmann::json &out_json);
 
@@ -161,7 +236,7 @@ std::string ConcatenatePaths(const std::string &parent_path, const std::string &
 // Either out pointer may be null. Returns false on stat failure (outputs left
 // untouched), true on success.
 bool GetFilesystemTimes(const std::string &utf8_path, int64_t *out_created_ms,
-                        int64_t *out_modified_ms);
+                        int64_t *out_modified_ms, FileAccess access = FileAccess::kDefault);
 
 std::pair<std::string, std::string> SplitPath(const std::string &path);
 

@@ -20,6 +20,15 @@ class WebDavSyncBackend final : public ISyncBackend {
   bool IsInitialized() const override;
   VxCoreError Initialize(const std::string &root_folder, const SyncConfig &config) override;
   VxCoreError Clone(const std::string &target_dir, const SyncConfig &config) override;
+  VxCoreError ValidateCandidate(const std::string &root, const SyncConfig &config,
+                                std::shared_ptr<ICredentialProvider> provider,
+                                const std::string &operation_id) override;
+  VxCoreError RecoverCandidate(const std::string &root, const SyncConfig &config,
+                               std::shared_ptr<ICredentialProvider> provider,
+                               const std::string &recovery_operation_id) override;
+  VxCoreError CommitCandidate(std::shared_ptr<ICredentialProvider> provider) override;
+  bool CandidateCleanupRequired() const override;
+  bool CandidateCommitted() const noexcept override;
   void ReplaceCredsProvider(std::shared_ptr<ICredentialProvider> provider) override;
   std::shared_ptr<ICredentialProvider> GetCredsProviderSnapshot() const override;
   void SetCancellation(SyncCancellationPtr token) override;

@@ -12,6 +12,15 @@
 #include <stdexcept>
 #include <unordered_set>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <chrono>
+#include <thread>
+#include <windows.h>
+#endif
+
 #include "encryptednote.h"
 #include "encryptionkeysource.h"
 #include "folder.h"
@@ -412,21 +421,15 @@ VxCoreError StandardBufferProvider::InsertAssetRaw(const std::string &name,
     return VXCORE_ERR_INVALID_PARAM;
   }
 
-  // Write binary data to file
+  // Publish only a fully written, flushed and closed temporary sibling.
   try {
-    std::ofstream ofs(PathFromUtf8(asset_abs_path), std::ios::binary);
-    if (!ofs) {
-      VXCORE_LOG_ERROR("Failed to open file for writing: %s", asset_abs_path.c_str());
-      return VXCORE_ERR_IO;
-    }
-
-    ofs.write(reinterpret_cast<const char *>(data.data()), data.size());
-    if (!ofs) {
-      VXCORE_LOG_ERROR("Failed to write data to file: %s", asset_abs_path.c_str());
-      return VXCORE_ERR_IO;
-    }
-
-    ofs.close();
+    AtomicFileWriter writer(PathFromUtf8(asset_abs_path));
+    err = writer.Open();
+    if (err == VXCORE_OK) err = writer.Write(data.data(), data.size());
+    if (err == VXCORE_OK) err = writer.CommitNoReplace();
+    if (err != VXCORE_OK) return err;
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Exception while writing asset: %s", e.what());
     return VXCORE_ERR_IO;
@@ -488,10 +491,33 @@ VxCoreError StandardBufferProvider::InsertAsset(const std::string &source_path,
     return VXCORE_ERR_INVALID_PARAM;
   }
 
-  // Copy file
+  // Stream bounded chunks into an exclusive sibling; a name-selection race
+  // must fail rather than overwrite its winner or expose partial live bytes.
   try {
-    std::filesystem::copy_file(PathFromUtf8(source_path), PathFromUtf8(dest_path),
-                               std::filesystem::copy_options::overwrite_existing);
+    if (!std::filesystem::is_regular_file(src_path)) return VXCORE_ERR_IO;
+    std::ifstream input(src_path, std::ios::binary);
+    if (!input) return VXCORE_ERR_IO;
+    AtomicFileWriter writer(PathFromUtf8(dest_path));
+    err = writer.Open();
+    if (err != VXCORE_OK) return err;
+    char chunk[64 * 1024];
+    for (;;) {
+      input.read(chunk, sizeof(chunk));
+      const auto count = input.gcount();
+      if (count > 0) {
+        err = writer.Write(chunk, static_cast<size_t>(count));
+        if (err != VXCORE_OK) return err;
+      }
+      if (input.bad() || (input.fail() && !input.eof())) return VXCORE_ERR_IO;
+      if (input.eof()) break;
+    }
+    input.clear();
+    input.close();
+    if (input.fail()) return VXCORE_ERR_IO;
+    err = writer.CommitNoReplace();
+    if (err != VXCORE_OK) return err;
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
   } catch (const std::exception &e) {
     VXCORE_LOG_ERROR("Failed to copy file: %s", e.what());
     return VXCORE_ERR_IO;
@@ -577,14 +603,8 @@ VxCoreError StandardBufferProvider::InsertAttachment(const std::string &source_p
   err = folder_manager->AddFileAttachment(file_path_, filename);
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to add file attachment: error %d", err);
-    // Try to clean up the file we just created
-    std::string notebook_root = notebook_->GetRootFolder();
-    std::string abs_path = CleanPath(notebook_root + "/" + relative_path);
-    try {
-      std::filesystem::remove(PathFromUtf8(abs_path));
-    } catch (...) {
-      // Ignore cleanup errors
-    }
+    // Publication is complete and metadata failure may be post-commit. Keep
+    // these bytes discoverable as unindexed assets for caller reconciliation.
     return err;
   }
 
@@ -627,8 +647,9 @@ VxCoreError StandardBufferProvider::DeleteAttachment(const std::string &filename
   // Delete from metadata first
   auto folder_manager = notebook_->GetFolderManager();
   VxCoreError err = folder_manager->DeleteFileAttachment(file_path_, filename);
-  if (err != VXCORE_OK && err != VXCORE_ERR_NOT_FOUND) {
+  if (err != VXCORE_OK) {
     VXCORE_LOG_WARN("Failed to remove attachment metadata: error %d", err);
+    return err;
   }
 
   // Delete from filesystem: prefer recycle bin, fallback to permanent delete.
@@ -681,25 +702,43 @@ VxCoreError StandardBufferProvider::RenameAttachment(const std::string &old_file
   std::string new_abs_path = CleanPath(assets_folder_path + "/" + unique_name);
   if (!IsPathWithin(assets_folder_path, new_abs_path, false)) return VXCORE_ERR_INVALID_PARAM;
 
-  try {
-    // Rename the file
-    std::filesystem::rename(PathFromUtf8(old_abs_path), PathFromUtf8(new_abs_path));
-  } catch (const std::exception &e) {
-    VXCORE_LOG_ERROR("Failed to rename attachment: %s", e.what());
-    return VXCORE_ERR_IO;
-  }
-
-  // Update metadata: remove old attachment, add new
+  // Prepare one replacement, preserving every other member. Read/parse errors
+  // precede the physical move; a publication error afterward leaves the bytes
+  // at the actual new basename for caller reconciliation, never silent rollback.
   auto folder_manager = notebook_->GetFolderManager();
-  VxCoreError err = folder_manager->DeleteFileAttachment(file_path_, old_filename);
-  if (err != VXCORE_OK && err != VXCORE_ERR_NOT_FOUND) {
-    VXCORE_LOG_WARN("Failed to remove old attachment metadata: error %d", err);
+  std::string attachments_json;
+  VxCoreError err = folder_manager->GetFileAttachments(file_path_, attachments_json);
+  if (err != VXCORE_OK) return err;
+  try {
+    auto attachments = Json::parse(attachments_json).get<std::vector<std::string>>();
+    auto member = std::find(attachments.begin(), attachments.end(), old_filename);
+    if (member == attachments.end()) attachments.push_back(unique_name);
+    else *member = unique_name;
+    attachments_json = Json(attachments).dump();
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const Json::exception &) {
+    return VXCORE_ERR_JSON_PARSE;
   }
 
-  err = folder_manager->AddFileAttachment(file_path_, unique_name);
-  if (err != VXCORE_OK) {
-    VXCORE_LOG_WARN("Failed to add new attachment metadata: error %d", err);
+  const auto from = PathFromUtf8(old_abs_path);
+  const auto to = PathFromUtf8(new_abs_path);
+#ifdef _WIN32
+  constexpr int kRenameAttempts = 5;
+  for (int attempt = 0; attempt < kRenameAttempts; ++attempt) {
+    err = RenameNoReplace(from, to);
+    if (err == VXCORE_OK) break;
+    if (GetLastError() != ERROR_SHARING_VIOLATION || attempt + 1 == kRenameAttempts) return err;
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
   }
+#else
+  err = RenameNoReplace(from, to);
+  if (err != VXCORE_OK) return err;
+#endif
+  err = FlushDirectory(to.parent_path());
+  if (err != VXCORE_OK) return err;
+  err = folder_manager->UpdateFileAttachments(file_path_, attachments_json);
+  if (err != VXCORE_OK) return err;
 
   out_new_filename = unique_name;
   VXCORE_LOG_INFO("Renamed attachment: %s -> %s", old_filename.c_str(), unique_name.c_str());

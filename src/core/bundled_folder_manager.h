@@ -114,14 +114,16 @@ class BundledFolderManager : public FolderManager {
 
   VxCoreError IndexNode(const std::string &node_path) override;
 
+  // Index only the requested existing immediate children; never changes content bytes.
+  VxCoreError IndexChildren(const std::string &folder_path, const std::string &names_json);
+
   VxCoreError UnindexNode(const std::string &node_path) override;
 
   VxCoreError ListExternalNodes(const std::string &folder_path,
                                 FolderContents &out_contents) override;
 
-  // Syncs the MetadataStore from config files (vx.json)
-  // Called on notebook open to rebuild cache from ground truth
-  // Returns VXCORE_OK on success
+  // Explicitly rebuilds the derived store from authoritative vx.json files.
+  // Normal notebook open uses lazy synchronization, not this full rebuild.
   VxCoreError SyncMetadataStoreFromConfigs();
 
   // Collects EVERY node id (folder AND file, root folder included) by walking
@@ -136,8 +138,8 @@ class BundledFolderManager : public FolderManager {
   VxCoreError AttachImportedFolder(const std::string &dest_folder_path, const std::string &name,
                                    const std::string &staging_dir, std::string &out_folder_id);
 
-  // Replays or rolls back incomplete import journals left by a crash.
-  // Called on notebook open BEFORE SyncMetadataStoreFromConfigs().
+  // Resolves import intent from actual disk state, repairs the derived store,
+  // and preserves ambiguous journals. Called during writable notebook open.
   VxCoreError RecoverImports(int *out_recovered_count);
 
   // Recovers private cross-notebook transfer publication/removal journals.
@@ -200,16 +202,18 @@ class BundledFolderManager : public FolderManager {
                                   const std::string &source_sha256, std::string &out_result);
   VxCoreError CompleteEncryptionTransaction(const std::filesystem::path &directory,
                                             nlohmann::json &journal);
+  VxCoreError CompleteImport(const std::filesystem::path &directory, bool &committed);
+  VxCoreError SaveFileAttachmentsAtomic(const std::string &folder_path,
+                                        const std::string &file_name,
+                                        const std::vector<std::string> &attachments);
   VxCoreError GetFolderConfig(const std::string &folder_path, FolderConfig **out_config,
                               const std::string *parent_id = nullptr);
   VxCoreError LoadFolderConfig(const std::string &folder_path,
                                std::unique_ptr<FolderConfig> &out_config);
   VxCoreError SaveFolderConfig(const std::string &folder_path, const FolderConfig &config);
 
-  // Crash-safe variant of SaveFolderConfig: writes <vx.json>.tmp, flushes it to
-  // stable storage, then renames it over the live file. Used by the import
-  // commit point, where a truncated-then-interrupted in-place rewrite (what
-  // SaveFolderConfig does) would destroy the destination parent's index.
+  // Atomically replaces a config; the existing desktop save policy is unchanged.
+  // Callers must invalidate speculative cache state on any publication error.
   VxCoreError SaveFolderConfigAtomic(const std::string &folder_path, const FolderConfig &config,
                                      bool emit_event = true);
 

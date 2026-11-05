@@ -4,21 +4,41 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <iostream>
+#include <memory>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
+#ifndef _WIN32
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 #include "core/config_manager.h"
+#include "sync/http/sync_http_client.h"
 #include "sync/sync_json_keys.h"
 #include "sync/webdav/webdav_transport.h"
 #include "test_utils.h"
 #include "utils/file_utils.h"
 #include "vxcore/vxcore.h"
+
+#ifdef VXCORE_SYNC_TLS_OPENSSL
+#include <openssl/ec.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/x509v3.h>
+#endif
 
 namespace {
 using namespace vxcore;
@@ -150,6 +170,363 @@ bool XmlFault(const std::string &body, const std::string &path = "") {
                   {"body", body},
                   {"count", 1}});
 }
+
+#ifndef _WIN32
+// A real one-connection loopback peer for framing/hostname cases the DAV fixture does not inject.
+// Listener and accepted sockets are owned by the joined worker, with bounded waits on failure.
+struct LoopbackPeer {
+  std::string url;
+  std::future<void> worker;
+  explicit LoopbackPeer(std::function<void(int)> serve) {
+    const int listener = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener < 0) return;
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)) != 0 ||
+        listen(listener, 1) != 0) {
+      close(listener);
+      return;
+    }
+    socklen_t address_size = sizeof(address);
+    if (getsockname(listener, reinterpret_cast<sockaddr *>(&address), &address_size) != 0) {
+      close(listener);
+      return;
+    }
+    url = "http://127.0.0.1:" + std::to_string(ntohs(address.sin_port)) + "/";
+    worker = std::async(std::launch::async, [listener, serve = std::move(serve)] {
+      struct Socket {
+        int value;
+        ~Socket() { if (value >= 0) close(value); }
+      } listening{listener};
+      pollfd descriptor{listener, POLLIN, 0};
+      if (poll(&descriptor, 1, 5000) <= 0) return;
+      Socket connected{accept(listener, nullptr, nullptr)};
+      if (connected.value < 0) return;
+      timeval timeout{5, 0};
+      if (setsockopt(connected.value, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0 ||
+          setsockopt(connected.value, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) != 0)
+        return;
+#ifdef SO_NOSIGPIPE
+      int enabled = 1;
+      if (setsockopt(connected.value, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) != 0)
+        return;
+#endif
+      serve(connected.value);
+    });
+  }
+  ~LoopbackPeer() { if (worker.valid()) worker.wait(); }
+};
+
+void ServeHttpResponse(int socket, const std::string &response) {
+  std::string request;
+  std::array<char, 2048> buffer{};
+  while (request.find("\r\n\r\n") == std::string::npos) {
+    const auto received = recv(socket, buffer.data(), buffer.size(), 0);
+    if (received <= 0 || request.size() + static_cast<size_t>(received) > 8192) return;
+    request.append(buffer.data(), static_cast<size_t>(received));
+  }
+  size_t sent = 0;
+  while (sent < response.size()) {
+#ifdef MSG_NOSIGNAL
+    constexpr int flags = MSG_NOSIGNAL;
+#else
+    constexpr int flags = 0;
+#endif
+    const auto count = send(socket, response.data() + sent, response.size() - sent, flags);
+    if (count <= 0) return;
+    sent += static_cast<size_t>(count);
+  }
+}
+#endif
+
+VxCoreError RejectTls(const char *, const uint8_t *const *, const uint64_t *, uint64_t,
+                      void *userdata) {
+  ++*static_cast<size_t *>(userdata);
+  return VXCORE_ERR_SYNC_NETWORK;
+}
+
+int TestTlsPolicyAdmission() {
+  size_t calls = 0;
+  SyncTlsPolicy policy{&RejectTls, &calls};
+  WebDavTransport custom("https://127.0.0.1:1/notebook/", {}, nullptr, policy);
+#ifdef VXCORE_SYNC_TLS_OPENSSL
+  ASSERT_EQ(custom.Initialize(), VXCORE_OK);
+#else
+  ASSERT_EQ(custom.Initialize(), VXCORE_ERR_UNSUPPORTED);
+  WebDavResource unused;
+  ASSERT_EQ(custom.Stat("", unused), VXCORE_ERR_UNSUPPORTED);
+  ASSERT_EQ(custom.LastResponse().http_status, 0L);
+#endif
+  ASSERT_EQ(calls, size_t(0));  // Local setup never invokes trust or opens a connection.
+  WebDavTransport plaintext("http://127.0.0.1:1/notebook/", {}, nullptr, policy);
+  ASSERT_EQ(plaintext.Initialize(), VXCORE_ERR_INVALID_PARAM);
+  WebDavTransport defaults("https://127.0.0.1:1/notebook/", {}, nullptr);
+  ASSERT_EQ(defaults.Initialize(), VXCORE_OK);
+  return 0;
+}
+
+#ifdef VXCORE_SYNC_TLS_OPENSSL
+using Certificate = std::unique_ptr<X509, decltype(&X509_free)>;
+using PrivateKey = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
+
+std::vector<uint8_t> CertificateDer(X509 *certificate) {
+  const int length = i2d_X509(certificate, nullptr);
+  if (length <= 0) return {};
+  std::vector<uint8_t> result(static_cast<size_t>(length));
+  auto *output = result.data();
+  if (i2d_X509(certificate, &output) != length) return {};
+  return result;
+}
+
+struct PinnedTrust {
+  std::string host = "localhost";
+  std::vector<std::vector<uint8_t>> certificates;
+  size_t calls = 0;
+  bool matched = false;
+  bool throws = false;
+  VxCoreError result = VXCORE_OK;
+};
+
+// Explicit test trust pins every DER byte and the intended host; never a trust-all callback.
+VxCoreError VerifyPinned(const char *host, const uint8_t *const *der, const uint64_t *lengths,
+                         uint64_t count, void *userdata) {
+  auto &trust = *static_cast<PinnedTrust *>(userdata);
+  ++trust.calls;
+  trust.matched = false;
+  if (!host || host != trust.host || !der || !lengths || count != trust.certificates.size())
+    return VXCORE_ERR_SYNC_NETWORK;
+  for (size_t i = 0; i < trust.certificates.size(); ++i) {
+    if (!der[i] || lengths[i] != trust.certificates[i].size() ||
+        std::memcmp(der[i], trust.certificates[i].data(), trust.certificates[i].size()) != 0)
+      return VXCORE_ERR_SYNC_NETWORK;
+  }
+  trust.matched = true;
+  if (trust.throws) throw std::runtime_error("test verifier exception");
+  return trust.result;
+}
+
+PrivateKey MakeTlsKey() {
+  std::unique_ptr<EVP_PKEY_CTX, decltype(&EVP_PKEY_CTX_free)> context(
+      EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr), EVP_PKEY_CTX_free);
+  EVP_PKEY *key = nullptr;
+  if (!context || EVP_PKEY_keygen_init(context.get()) != 1 ||
+      EVP_PKEY_CTX_set_ec_paramgen_curve_nid(context.get(), NID_X9_62_prime256v1) != 1 ||
+      EVP_PKEY_keygen(context.get(), &key) != 1)
+    return PrivateKey(nullptr, EVP_PKEY_free);
+  return PrivateKey(key, EVP_PKEY_free);
+}
+
+Certificate MakeTlsCertificate(EVP_PKEY *key, long serial, size_t padding = 0) {
+  Certificate certificate(X509_new(), X509_free);
+  if (!certificate || X509_set_version(certificate.get(), 2) != 1 ||
+      ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), serial) != 1 ||
+      !X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -60) ||
+      !X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600) ||
+      X509_set_pubkey(certificate.get(), key) != 1)
+    return Certificate(nullptr, X509_free);
+  auto *name = X509_get_subject_name(certificate.get());
+  if (X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                                 reinterpret_cast<const unsigned char *>("localhost"),
+                                 -1, -1, 0) != 1 ||
+      X509_set_issuer_name(certificate.get(), name) != 1)
+    return Certificate(nullptr, X509_free);
+  if (padding) {
+    std::vector<uint8_t> content(padding, 'x');
+    std::unique_ptr<ASN1_OCTET_STRING, decltype(&ASN1_OCTET_STRING_free)> value(
+        ASN1_OCTET_STRING_new(), ASN1_OCTET_STRING_free);
+    if (!value || ASN1_OCTET_STRING_set(value.get(), content.data(),
+                                       static_cast<int>(content.size())) != 1)
+      return Certificate(nullptr, X509_free);
+    std::unique_ptr<X509_EXTENSION, decltype(&X509_EXTENSION_free)> extension(
+        X509_EXTENSION_create_by_NID(nullptr, NID_netscape_comment, 0, value.get()),
+        X509_EXTENSION_free);
+    if (!extension || X509_add_ext(certificate.get(), extension.get(), -1) != 1)
+      return Certificate(nullptr, X509_free);
+  }
+  if (X509_sign(certificate.get(), key, EVP_sha256()) <= 0)
+    return Certificate(nullptr, X509_free);
+  return certificate;
+}
+
+int VerifyChain(X509 *leaf, const std::vector<X509 *> &intermediates, PinnedTrust &trust,
+                int &verify_error) {
+  std::unique_ptr<X509_STORE, decltype(&X509_STORE_free)> store(X509_STORE_new(), X509_STORE_free);
+  std::unique_ptr<X509_STORE_CTX, decltype(&X509_STORE_CTX_free)> context(
+      X509_STORE_CTX_new(), X509_STORE_CTX_free);
+  struct BorrowedChain {
+    STACK_OF(X509) *value = sk_X509_new_null();
+    ~BorrowedChain() { sk_X509_free(value); }
+  } chain;
+  if (!store || !context || !chain.value) return -1;
+  for (auto *certificate : intermediates)
+    if (!sk_X509_push(chain.value, certificate)) return -1;
+  if (X509_STORE_CTX_init(context.get(), store.get(), leaf, chain.value) != 1) return -1;
+  const int result = sync_http::VerifyTlsPeer(context.get(), trust.host.c_str(),
+                                             SyncTlsPolicy{&VerifyPinned, &trust});
+  verify_error = X509_STORE_CTX_get_error(context.get());
+  return result;
+}
+
+int TestTlsChainExtractionAndBounds() {
+  auto key = MakeTlsKey();
+  ASSERT_TRUE(key != nullptr);
+  std::vector<Certificate> certificates;
+  for (long serial = 1; serial <= 17; ++serial) {
+    certificates.push_back(MakeTlsCertificate(key.get(), serial));
+    ASSERT_TRUE(certificates.back() != nullptr);
+  }
+  PinnedTrust trust;
+  for (size_t i = 0; i < 3; ++i) {
+    trust.certificates.push_back(CertificateDer(certificates[i].get()));
+    ASSERT_FALSE(trust.certificates.back().empty());
+  }
+  // The explicit leaf is not taken from the untrusted stack. All duplicates are removed,
+  // including separate X509 allocations containing the same intermediate DER.
+  Certificate duplicate(X509_dup(certificates[1].get()), X509_free);
+  ASSERT_TRUE(duplicate != nullptr);
+  std::vector<X509 *> chain{certificates[1].get(), certificates[0].get(),
+                            certificates[2].get(), duplicate.get()};
+  int verify_error = -1;
+  ASSERT_EQ(VerifyChain(certificates[0].get(), chain, trust, verify_error), 1);
+  ASSERT_TRUE(trust.matched);
+  ASSERT_EQ(verify_error, X509_V_OK);
+  for (const auto code : {VXCORE_ERR_SYNC_NETWORK, static_cast<VxCoreError>(1)}) {
+    trust.result = code;
+    ASSERT_EQ(VerifyChain(certificates[0].get(), chain, trust, verify_error), 0);
+    ASSERT_EQ(verify_error, X509_V_ERR_APPLICATION_VERIFICATION);
+  }
+  trust.result = VXCORE_OK;
+  trust.throws = true;
+  ASSERT_EQ(VerifyChain(certificates[0].get(), chain, trust, verify_error), 0);
+  ASSERT_EQ(verify_error, X509_V_ERR_APPLICATION_VERIFICATION);
+  trust.throws = false;
+  ASSERT_EQ(sync_http::VerifyTlsPeer(nullptr, "localhost", {&VerifyPinned, &trust}), 0);
+  std::unique_ptr<X509_STORE_CTX, decltype(&X509_STORE_CTX_free)> missing(
+      X509_STORE_CTX_new(), X509_STORE_CTX_free);
+  ASSERT_TRUE(missing != nullptr);
+  const auto before_missing = trust.calls;
+  ASSERT_EQ(sync_http::VerifyTlsPeer(missing.get(), "localhost", {&VerifyPinned, &trust}), 0);
+  ASSERT_EQ(trust.calls, before_missing);
+
+  chain.clear();
+  trust.certificates.clear();
+  for (size_t i = 0; i < 16; ++i) {
+    trust.certificates.push_back(CertificateDer(certificates[i].get()));
+    if (i) chain.push_back(certificates[i].get());
+  }
+  ASSERT_EQ(VerifyChain(certificates[0].get(), chain, trust, verify_error), 1);
+  ASSERT_TRUE(trust.matched);
+  const auto before_overflow = trust.calls;
+  chain.push_back(certificates[16].get());
+  ASSERT_EQ(VerifyChain(certificates[0].get(), chain, trust, verify_error), 0);
+  ASSERT_EQ(trust.calls, before_overflow);
+  ASSERT_EQ(verify_error, X509_V_ERR_APPLICATION_VERIFICATION);
+
+  auto large = MakeTlsCertificate(key.get(), 100, 1024 * 1024 - 4096);
+  ASSERT_TRUE(large != nullptr);
+  trust.certificates = {CertificateDer(large.get())};
+  ASSERT_EQ(VerifyChain(large.get(), {}, trust, verify_error), 1);
+  auto oversized = MakeTlsCertificate(key.get(), 101, 1024 * 1024);
+  ASSERT_TRUE(oversized != nullptr);
+  const auto before_size = trust.calls;
+  ASSERT_EQ(VerifyChain(oversized.get(), {}, trust, verify_error), 0);
+  ASSERT_EQ(trust.calls, before_size);
+  // The one-MiB limit is cumulative, not a per-certificate allowance.
+  std::vector<Certificate> padded;
+  chain.clear();
+  for (long serial = 200; serial < 216; ++serial) {
+    padded.push_back(MakeTlsCertificate(key.get(), serial, 64 * 1024));
+    ASSERT_TRUE(padded.back() != nullptr);
+    if (padded.size() > 1) chain.push_back(padded.back().get());
+  }
+  ASSERT_EQ(VerifyChain(padded[0].get(), chain, trust, verify_error), 0);
+  ASSERT_EQ(trust.calls, before_size);
+  ASSERT_EQ(verify_error, X509_V_ERR_APPLICATION_VERIFICATION);
+  return 0;
+}
+
+int TestCustomTrustPreservesHostnameCheck() {
+  auto key = MakeTlsKey();
+  ASSERT_TRUE(key != nullptr);
+  auto certificate = MakeTlsCertificate(key.get(), 300);
+  ASSERT_TRUE(certificate != nullptr);
+  std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context(SSL_CTX_new(TLS_server_method()),
+                                                         SSL_CTX_free);
+  ASSERT_TRUE(context != nullptr);
+  ASSERT_EQ(SSL_CTX_use_certificate(context.get(), certificate.get()), 1);
+  ASSERT_EQ(SSL_CTX_use_PrivateKey(context.get(), key.get()), 1);
+  LoopbackPeer peer([&](int socket) {
+    std::unique_ptr<SSL, decltype(&SSL_free)> session(SSL_new(context.get()), SSL_free);
+    if (!session || SSL_set_fd(session.get(), socket) != 1 || SSL_accept(session.get()) != 1)
+      return;
+    std::array<char, 2048> request{};
+    if (SSL_read(session.get(), request.data(), static_cast<int>(request.size())) <= 0) return;
+    constexpr char response[] =
+        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    SSL_write(session.get(), response, static_cast<int>(sizeof(response) - 1));
+  });
+  ASSERT_TRUE(peer.worker.valid());
+  PinnedTrust trust;
+  trust.host = "127.0.0.1";
+  trust.certificates = {CertificateDer(certificate.get())};
+  // The verifier explicitly trusts the pinned localhost leaf for this request, but curl's
+  // independent IP-name check must still reject it before any HTTP request can succeed.
+  WebDavTransport transport("https" + peer.url.substr(4), {}, nullptr, {&VerifyPinned, &trust});
+  ASSERT_EQ(transport.Options(), VXCORE_ERR_SYNC_NETWORK);
+  ASSERT_TRUE(trust.calls > 0 && trust.matched);
+  ASSERT_EQ(transport.LastResponse().http_status, 0L);
+  return 0;
+}
+
+int TestReplacingTlsPolicy() {
+  if (RootUrl().compare(0, 8, "https://") != 0) return 0;
+  ASSERT_TRUE(Control({{"action", "reset"}}));
+  const auto ca = Environment("VXCORE_WEBDAV_TEST_CA_FILE");
+  std::unique_ptr<BIO, decltype(&BIO_free)> file(BIO_new_file(ca.c_str(), "r"), BIO_free);
+  ASSERT_TRUE(file != nullptr);
+  Certificate certificate(PEM_read_bio_X509(file.get(), nullptr, nullptr, nullptr), X509_free);
+  ASSERT_TRUE(certificate != nullptr);
+  PinnedTrust trust;
+  sync_http::Url root_url;
+  ASSERT_TRUE(sync_http::ParseUrl(RootUrl(), root_url));
+  trust.host = root_url.host;
+  if (trust.host.front() == '[') trust.host = trust.host.substr(1, trust.host.size() - 2);
+  trust.certificates = {CertificateDer(certificate.get())};
+  ASSERT_FALSE(trust.certificates.front().empty());
+  SyncTlsPolicy policy{&VerifyPinned, &trust};
+  WebDavTransport accepted(RootUrl(), Credentials(), nullptr, policy);
+  // A session owns its policy snapshot, not a reference to the caller's mutable struct.
+  size_t unexpected_calls = 0;
+  policy = {&RejectTls, &unexpected_calls};
+  // The replacement succeeds without OpenSSL's CA store, even with an invalid test CA path.
+  EnvironmentOverride bad_ca("VXCORE_WEBDAV_TEST_CA_FILE", "/nonexistent/vxcore-test-ca.pem");
+  WebDavResource root;
+  ASSERT_EQ(accepted.Stat("", root), VXCORE_OK);
+  ASSERT_TRUE(trust.calls > 0 && trust.matched);
+  const auto previous_calls = trust.calls;
+  ASSERT_EQ(accepted.Stat("", root), VXCORE_OK);
+  ASSERT_TRUE(trust.calls > previous_calls);  // Fixture closes each connection; no resumed trust.
+  ASSERT_EQ(unexpected_calls, size_t(0));
+  // Even when the desktop CA setting trusts this leaf, only exact VXCORE_OK grants trust.
+  bad_ca.Set(ca.c_str());
+  for (const auto code : {VXCORE_ERR_SYNC_NETWORK, static_cast<VxCoreError>(1)}) {
+    trust.result = code;
+    WebDavTransport denied(RootUrl(), Credentials(), nullptr, {&VerifyPinned, &trust});
+    ASSERT_EQ(denied.Stat("", root), VXCORE_ERR_SYNC_NETWORK);
+    ASSERT_EQ(denied.LastResponse().http_status, 0L);
+    ASSERT_TRUE(trust.matched);
+  }
+  trust.result = VXCORE_OK;
+  trust.throws = true;
+  WebDavTransport throwing(RootUrl(), Credentials(), nullptr, {&VerifyPinned, &trust});
+  ASSERT_EQ(throwing.Stat("", root), VXCORE_ERR_SYNC_NETWORK);
+  ASSERT_EQ(throwing.LastResponse().http_status, 0L);
+  WebDavTransport unchanged_default(RootUrl(), Credentials(), nullptr);
+  ASSERT_EQ(unchanged_default.Stat("", root), VXCORE_OK);
+  return 0;
+}
+#endif
 
 int TestAuthenticationAndTls() {
   ASSERT_TRUE(Control({{"action", "reset"}}));
@@ -618,6 +995,63 @@ int TestEtagsAndAtomicDownload() {
   return 0;
 }
 
+int TestBoundedDownloads() {
+  ASSERT_TRUE(Control({{"action", "reset"}}));
+  const std::string body = "bounded-content";
+  ASSERT_TRUE(Control({{"action", "put"}, {"path", "file"}, {"text", body}}));
+  ASSERT_TRUE(Control({{"action", "put"}, {"path", "empty"}, {"text", ""}}));
+  WebDavTransport transport(RootUrl(), Credentials(), nullptr);
+  WebDavResource file, empty;
+  ASSERT_EQ(transport.Stat("file", file), VXCORE_OK);
+  ASSERT_EQ(transport.Stat("empty", empty), VXCORE_OK);
+  LocalDirectory directory;
+  ASSERT_TRUE(directory.Write("download", "preserved"));
+  ASSERT_EQ(transport.Download("file", file.etag, directory.path, "download", body.size() - 1,
+                               body.size()), VXCORE_ERR_INVALID_STATE);
+  ASSERT_EQ(transport.LastResponse().bytes, uint64_t(0));  // Reject declared length before body.
+  ASSERT_EQ(directory.Read("download"), "preserved");
+  ASSERT_EQ(transport.Download("file", file.etag, directory.path, "download", 0, body.size()),
+            VXCORE_ERR_INVALID_STATE);
+  ASSERT_EQ(directory.Read("download"), "preserved");
+  // A short body must not atomically replace the destination just because it fits the cap.
+  ASSERT_EQ(transport.Download("file", file.etag, directory.path, "download", body.size() + 1,
+                               body.size() + 1), VXCORE_ERR_INVALID_STATE);
+  ASSERT_EQ(transport.LastResponse().bytes, static_cast<uint64_t>(body.size()));
+  ASSERT_EQ(directory.Read("download"), "preserved");
+  ASSERT_EQ(transport.Download("file", file.etag, directory.path, "download", body.size(),
+                               body.size()), VXCORE_OK);
+  ASSERT_EQ(directory.Read("download"), body);
+  ASSERT_EQ(transport.Download("empty", empty.etag, directory.path, "download", 0, 0), VXCORE_OK);
+  ASSERT_TRUE(directory.Read("download").empty());
+  // Existing callers retain the default unbounded transfer behavior.
+  ASSERT_EQ(transport.Download("file", file.etag, directory.path, "download"), VXCORE_OK);
+  ASSERT_EQ(directory.Read("download"), body);
+  return 0;
+}
+
+#ifndef _WIN32
+int TestStreamingDownloadBoundsWithoutLength() {
+  for (const bool chunked : {false, true}) {
+    const std::string response =
+        std::string("HTTP/1.1 200 OK\r\nETag: \"stream\"\r\nConnection: close\r\n") +
+        (chunked ? "Transfer-Encoding: chunked\r\n\r\n4\r\nabcd\r\n4\r\nefgh\r\n0\r\n\r\n"
+                 : "\r\nabcdefgh");
+    for (const uint64_t cap : {uint64_t(0), uint64_t(7), uint64_t(8)}) {
+      LoopbackPeer peer([&](int socket) { ServeHttpResponse(socket, response); });
+      ASSERT_TRUE(peer.worker.valid());
+      LocalDirectory directory;
+      ASSERT_TRUE(directory.Write("download", "preserved"));
+      WebDavTransport transport(peer.url, {}, nullptr);
+      ASSERT_EQ(transport.Download("file", "\"stream\"", directory.path, "download", cap, 8),
+                cap < 8 ? VXCORE_ERR_INVALID_STATE : VXCORE_OK);
+      ASSERT_TRUE(transport.LastResponse().bytes <= cap);
+      ASSERT_EQ(directory.Read("download"), cap < 8 ? "preserved" : "abcdefgh");
+    }
+  }
+  return 0;
+}
+#endif
+
 int TestXmlAndDepthBounds() {
   ASSERT_TRUE(Control({{"action", "reset"}}));
   ASSERT_TRUE(Control({{"action", "fault"},
@@ -797,6 +1231,12 @@ int main() {
     return 1;
   }
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK || sodium_init() < 0) return 1;
+  RUN_TEST(TestTlsPolicyAdmission);
+#ifdef VXCORE_SYNC_TLS_OPENSSL
+  RUN_TEST(TestTlsChainExtractionAndBounds);
+  RUN_TEST(TestReplacingTlsPolicy);
+  RUN_TEST(TestCustomTrustPreservesHostnameCheck);
+#endif
   RUN_TEST(TestAuthenticationAndTls);
   RUN_TEST(TestNamesNamespacesAndCompleteListing);
   RUN_TEST(TestPropertyStatusHandling);
@@ -805,6 +1245,10 @@ int main() {
   RUN_TEST(TestReadRedirectsAndWriteRefusal);
   RUN_TEST(TestHostileXmlAndHrefs);
   RUN_TEST(TestEtagsAndAtomicDownload);
+  RUN_TEST(TestBoundedDownloads);
+#ifndef _WIN32
+  RUN_TEST(TestStreamingDownloadBoundsWithoutLength);
+#endif
   RUN_TEST(TestXmlAndDepthBounds);
   RUN_TEST(TestHttpErrorMapping);
   RUN_TEST(TestStreamingAndCancellation);

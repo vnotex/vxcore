@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -188,6 +189,120 @@ int test_file_create() {
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_file_create_nb"));
   std::cout << "  âœ“ test_file_create passed" << std::endl;
+  return 0;
+}
+
+int test_file_update_tags_preserves_existing_orphans() {
+  std::cout << "  Running test_file_update_tags_preserves_existing_orphans..." << std::endl;
+  const std::string root = get_test_path("test_file_orphan_tags_nb");
+  cleanup_test_dir(root);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Orphan tags"})",
+                                  VXCORE_NOTEBOOK_BUNDLED, &notebook_id), VXCORE_OK);
+  const std::string original_notebook_id = notebook_id;
+  char *file_id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id), VXCORE_OK);
+  const std::string original_file_id = file_id;
+  vxcore_string_free(file_id);
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "other.md", &file_id), VXCORE_OK);
+  vxcore_string_free(file_id);
+  const std::string body = "# Keep this note\r\n\r\nOriginal saved body.\r\n";
+  ASSERT(WriteTestFile(root + "/note.md", body));
+  ASSERT_EQ(vxcore_node_update_metadata(ctx, notebook_id, "note.md",
+                                        R"({"author":"keep","custom":{"values":[1,"two"]}})"),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_tag_create(ctx, notebook_id, "work"), VXCORE_OK);
+  ASSERT_EQ(vxcore_tag_create(ctx, notebook_id, "urgent"), VXCORE_OK);
+  ASSERT_EQ(vxcore_file_update_tags(ctx, notebook_id, "note.md", R"(["work"])"), VXCORE_OK);
+  char *json = nullptr;
+  ASSERT_EQ(vxcore_tag_list(ctx, notebook_id, &json), VXCORE_OK);
+  const auto original_definitions = nlohmann::json::parse(json);
+  vxcore_string_free(json);
+  ASSERT_EQ(vxcore_notebook_close(ctx, notebook_id), VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  notebook_id = nullptr;
+
+  // Seed a valid desktop-style orphan assignment while the notebook is closed.
+  const std::string config_path = root + "/vx_notebook/contents/vx.json";
+  std::ifstream input(PathFromUtf8ForTest(config_path), std::ios::binary);
+  ASSERT(input.is_open());
+  nlohmann::json config;
+  input >> config;
+  input.close();
+  bool seeded = false;
+  for (auto &file : config["files"]) {
+    if (file["name"] == "note.md") {
+      file["tags"] = nlohmann::json::array({"orphan", "work"});
+      seeded = true;
+    }
+  }
+  ASSERT_TRUE(seeded);
+  config["modifiedUtc"] = config["modifiedUtc"].get<int64_t>() + 1000;
+  ASSERT(WriteTestFile(config_path, config.dump(2)));
+  ASSERT_EQ(vxcore_notebook_open(ctx, root.c_str(), &notebook_id), VXCORE_OK);
+  ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, "note.md", &json), VXCORE_OK);
+  const auto original_file = nlohmann::json::parse(json);
+  vxcore_string_free(json);
+  ASSERT_EQ(original_file["id"].get<std::string>(), original_file_id);
+  ASSERT(original_file["tags"] == nlohmann::json::array({"orphan", "work"}));
+
+  // Being assigned to another file never permits a new undefined assignment here.
+  ASSERT_EQ(vxcore_file_update_tags(ctx, notebook_id, "other.md", R"(["orphan"])"),
+            VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, "other.md", &json), VXCORE_OK);
+  ASSERT_TRUE(nlohmann::json::parse(json)["tags"].empty());
+  vxcore_string_free(json);
+
+  for (bool preserve_orphan : {true, false}) {
+    const auto desired = preserve_orphan ? nlohmann::json::array({"orphan", "urgent"})
+                                         : nlohmann::json::array({"urgent"});
+    ASSERT_EQ(vxcore_file_update_tags(ctx, notebook_id, "note.md", desired.dump().c_str()),
+              VXCORE_OK);
+    ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, "note.md", &json), VXCORE_OK);
+    const auto before_rejection = nlohmann::json::parse(json);
+    vxcore_string_free(json);
+    // Reject the whole replacement before mutation, including when a valid old orphan
+    // precedes a new unknown name. A removed orphan is also a new undefined assignment.
+    const char *invalid = preserve_orphan ? R"(["orphan","unknown"])"
+                                          : R"(["urgent","orphan"])";
+    ASSERT_EQ(vxcore_file_update_tags(ctx, notebook_id, "note.md", invalid),
+              VXCORE_ERR_INVALID_PARAM);
+    ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, "note.md", &json), VXCORE_OK);
+    ASSERT(nlohmann::json::parse(json) == before_rejection);
+    vxcore_string_free(json);
+
+    ASSERT_EQ(vxcore_notebook_close(ctx, notebook_id), VXCORE_OK);
+    vxcore_string_free(notebook_id);
+    notebook_id = nullptr;
+    ASSERT_EQ(vxcore_notebook_open(ctx, root.c_str(), &notebook_id), VXCORE_OK);
+    ASSERT_EQ(std::string(notebook_id), original_notebook_id);
+    ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, "note.md", &json), VXCORE_OK);
+    const auto reopened = nlohmann::json::parse(json);
+    vxcore_string_free(json);
+    ASSERT(reopened == before_rejection);
+    auto expected = original_file;
+    expected["tags"] = desired;
+    expected["modifiedUtc"] = reopened["modifiedUtc"];
+    // IDs, creation time, source fields and all custom metadata remain unchanged.
+    ASSERT(reopened == expected);
+    std::ifstream source(PathFromUtf8ForTest(root + "/note.md"), std::ios::binary);
+    ASSERT(source.is_open());
+    const std::string reopened_body((std::istreambuf_iterator<char>(source)),
+                                    std::istreambuf_iterator<char>());
+    ASSERT_EQ(reopened_body, body);
+    ASSERT_EQ(vxcore_tag_list(ctx, notebook_id, &json), VXCORE_OK);
+    ASSERT(nlohmann::json::parse(json) == original_definitions);
+    vxcore_string_free(json);
+  }
+  // Reintroduction becomes valid only after the missing definition is explicitly created.
+  ASSERT_EQ(vxcore_tag_create(ctx, notebook_id, "orphan"), VXCORE_OK);
+  ASSERT_EQ(vxcore_file_update_tags(ctx, notebook_id, "note.md", R"(["orphan","urgent"])"),
+            VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
   return 0;
 }
 
@@ -10474,15 +10589,119 @@ int test_copy_folder_prunes_index_for_skipped_content() {
   return 0;
 }
 
+
+int test_batch_index_children_preserves_source_and_identity() {
+  const auto root = get_test_path("batch_index_existing_bytes");
+  cleanup_test_dir(root);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *book = nullptr, *existing = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Batch index"})", VXCORE_NOTEBOOK_BUNDLED, &book), VXCORE_OK);
+  ASSERT_EQ(vxcore_file_create(ctx, book, ".", "Existing.md", &existing), VXCORE_OK);
+  ASSERT_EQ(vxcore_node_update_metadata(ctx, book, "Existing.md", R"({"retained":[1,"two"]})"), VXCORE_OK);
+  const std::string existing_id(existing);
+  const std::string markdown = u8"\xef\xbb\xbf# 笔记\r\nCafe\u0301\r\n";
+  const std::string opaque("\0\xff" "bytes", 7);
+  create_directory(root + "/Batch/Child");
+  write_file(root + "/Batch/Note.md", markdown);
+  write_file(root + "/Batch/.hidden.bin", opaque);
+  write_file(root + "/Batch/untouched.bin", "not selected");
+  write_file(root + "/Batch/Child/deep.txt", "deep\r\n");
+  ASSERT_EQ(vxcore_folder_index_children(ctx, book, ".", R"(["Batch"])"), VXCORE_OK);
+  ASSERT_EQ(vxcore_folder_index_children(ctx, book, "Batch", R"(["Note.md",".hidden.bin","Child"])"), VXCORE_OK);
+  ASSERT_EQ(vxcore_folder_index_children(ctx, book, "Batch/Child", R"(["deep.txt"])"), VXCORE_OK);
+  const auto binary = [](const std::string &path) {
+    std::ifstream input(utf8_to_fs_path(path), std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  };
+  ASSERT_EQ(binary(root + "/Batch/Note.md"), markdown);
+  ASSERT_EQ(binary(root + "/Batch/.hidden.bin"), opaque);
+  ASSERT_EQ(binary(root + "/Batch/untouched.bin"), "not selected");
+  char *json = nullptr;
+  ASSERT_EQ(vxcore_node_get_config(ctx, book, "Batch", &json), VXCORE_OK);
+  const auto batch = nlohmann::json::parse(json); vxcore_string_free(json); json = nullptr;
+  ASSERT_EQ(batch["files"].size(), 2u);
+  ASSERT(batch["folders"] == nlohmann::json::array({"Child"}));
+  std::set<std::string> indexed_names;
+  for (const auto &file : batch["files"]) indexed_names.insert(file["name"].get<std::string>());
+  ASSERT(indexed_names == std::set<std::string>({"Note.md", ".hidden.bin"}));
+  ASSERT(batch["files"][0]["id"] != batch["files"][1]["id"]);
+  ASSERT_EQ(vxcore_notebook_collect_node_ids(ctx, book, &json), VXCORE_OK);
+  const auto ids = nlohmann::json::parse(json).get<std::set<std::string>>(); vxcore_string_free(json); json = nullptr;
+  ASSERT_EQ(ids.size(), 7u);
+  ASSERT_EQ(vxcore_notebook_close(ctx, book), VXCORE_OK);
+  vxcore_string_free(book); book = nullptr;
+  ASSERT_EQ(vxcore_notebook_open(ctx, root.c_str(), &book), VXCORE_OK);
+  ASSERT_EQ(vxcore_node_get_config(ctx, book, "Batch", &json), VXCORE_OK);
+  ASSERT(nlohmann::json::parse(json) == batch); vxcore_string_free(json); json = nullptr;
+  ASSERT_EQ(vxcore_notebook_collect_node_ids(ctx, book, &json), VXCORE_OK);
+  ASSERT(nlohmann::json::parse(json).get<std::set<std::string>>() == ids); vxcore_string_free(json); json = nullptr;
+  ASSERT_EQ(vxcore_node_get_config(ctx, book, "Existing.md", &json), VXCORE_OK);
+  const auto kept = nlohmann::json::parse(json); vxcore_string_free(json);
+  ASSERT(kept["id"] == existing_id && kept["metadata"]["retained"] == nlohmann::json::array({1,"two"}));
+  ASSERT_EQ(vxcore_notebook_close(ctx, book), VXCORE_OK);
+  ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
+  vxcore_string_free(existing); vxcore_string_free(book); vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  return 0;
+}
+
+int test_batch_index_children_rejects_before_parent_publication() {
+  const auto root = get_test_path("batch_index_rejection");
+  cleanup_test_dir(root);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *book = nullptr, *node = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Batch rejection"})", VXCORE_NOTEBOOK_BUNDLED, &book), VXCORE_OK);
+  ASSERT_EQ(vxcore_file_create(ctx, book, ".", "Existing.md", &node), VXCORE_OK);
+  create_directory(root + "/Fresh"); write_file(root + "/fresh.txt", "unaltered");
+  const auto binary = [](const std::string &path) {
+    std::ifstream input(utf8_to_fs_path(path), std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+  };
+  const auto metadata = root + "/vx_notebook/contents/vx.json";
+  const auto before = binary(metadata);
+  for (const auto *request : {R"(["Fresh","missing.txt"])", R"(["Fresh","../escape"])",
+      R"(["fresh.txt","fresh.txt"])", R"(["Fresh","Existing.md"])", "[1]", "{}"}) {
+    ASSERT_NE(vxcore_folder_index_children(ctx, book, ".", request), VXCORE_OK);
+    ASSERT_EQ(binary(metadata), before);
+    ASSERT_FALSE(path_exists(root + "/vx_notebook/contents/Fresh"));
+    ASSERT_EQ(binary(root + "/fresh.txt"), "unaltered");
+  }
+  ASSERT_EQ(vxcore_folder_index_children(ctx, book, ".", "[]"), VXCORE_OK);
+  ASSERT_EQ(binary(metadata), before);
+  nlohmann::json too_many = nlohmann::json::array();
+  for (int i = 0; i < 10001; ++i) too_many.push_back("absent-" + std::to_string(i));
+  ASSERT_NE(vxcore_folder_index_children(ctx, book, ".", too_many.dump().c_str()), VXCORE_OK);
+  ASSERT_EQ(binary(metadata), before);
+  ASSERT_EQ(vxcore_folder_index_children(ctx, book, ".", R"(["Fresh","fresh.txt"])"), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_close(ctx, book), VXCORE_OK);
+  vxcore_string_free(node); vxcore_string_free(book); book = nullptr;
+  const auto raw = get_test_path("batch_index_readonly_raw"); cleanup_test_dir(raw);
+  ASSERT_EQ(vxcore_notebook_create(ctx, raw.c_str(), R"({"name":"Raw"})", VXCORE_NOTEBOOK_RAW, &book), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_set_read_only(ctx, book, true), VXCORE_OK);
+  ASSERT_EQ(vxcore_folder_index_children(ctx, book, ".", "[]"), VXCORE_ERR_READ_ONLY);
+  ASSERT_EQ(vxcore_notebook_set_read_only(ctx, book, false), VXCORE_OK);
+  ASSERT_EQ(vxcore_folder_index_children(ctx, book, ".", "[]"), VXCORE_ERR_UNSUPPORTED);
+  ASSERT_EQ(vxcore_notebook_close(ctx, book), VXCORE_OK);
+  ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
+  vxcore_string_free(book); vxcore_context_destroy(ctx);
+  cleanup_test_dir(root); cleanup_test_dir(raw);
+  return 0;
+}
+
 int main() {
   std::cout << "Running folder tests..." << std::endl;
 
   vxcore_set_test_mode(1);
   vxcore_clear_test_directory();
 
+  RUN_TEST(test_batch_index_children_preserves_source_and_identity);
+  RUN_TEST(test_batch_index_children_rejects_before_parent_publication);
   RUN_TEST(test_folder_create);
   RUN_TEST(test_file_create);
   RUN_TEST(test_file_metadata_and_tags);
+  RUN_TEST(test_file_update_tags_preserves_existing_orphans);
   RUN_TEST(test_folder_delete);
   RUN_TEST(test_folder_create_duplicate);
   RUN_TEST(test_file_create_duplicate);

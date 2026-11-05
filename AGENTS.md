@@ -332,6 +332,16 @@ For tests that drive `GitSyncBackend` end-to-end via libgit2 (e.g., `test_git_sy
 - No Qt dependencies in core library
 - Namespaces: C++ code in `namespace vxcore`; close with `// namespace vxcore`
 
+## Platform isolation and guards
+
+- MUST distinguish general correctness/portability fixes from platform-specific behavior. Keep genuine shared fixes (for example, C/C++ header compatibility and CMake imported dependency targets) platform-independent; do not hide them behind a mobile guard.
+- MUST preserve unaffected platforms' public ABI, default paths, persistence semantics, permissions and dependency selection. A feature for one platform does not authorize changing another platform's defaults.
+- SHOULD isolate substantial platform implementations in clearly named directories/files (for example, `src/mobile/`, `include/vxcore/mobile/`, or an `_android`/`_ios` suffix). Select the implementation and its dependencies explicitly in CMake; keep shared callsites and interfaces small rather than duplicating business logic or scattering conditional blocks.
+- MUST select by the target platform, not the build host. Android and iOS require explicit target checks; `UNIX` also includes Linux desktops and `APPLE` also includes macOS. Source selection, header availability, compile definitions, installed headers and test registration must agree.
+- MUST make desktop-hosted platform-test support explicitly opt-in and separate from production behavior selection. Enabling a mobile API test harness must never silently select mobile persistence or packaging policy for desktop builds.
+- MUST verify the intended platform's changed behavior and the unaffected desktop contract when shared boundaries or build selection change. Keep behavior regressions for permission/link/identity and error boundaries; a host build or conditional-compilation check is not device execution evidence. Report platforms not exercised.
+- MUST update platform contracts and affected callers/tests together. Remove obsolete platform branches/dependencies after a cutover; do not retain forwarding aliases or claim platform readiness from unexecuted configuration alone.
+
 ## Folder Structure
 
 ```
@@ -728,9 +738,9 @@ app-wide locale used for locale-aware, UTF-8 output. Today the only consumer is
 
 ### Adding a New C API Function
 
-1. Declare in `include/vxcore/vxcore.h`
-2. Implement in appropriate `src/api/vxcore_*_api.cpp`
-3. Add tests in `tests/test_*.cpp`
+1. Declare shared APIs in `include/vxcore/vxcore.h`; platform-only APIs belong in the selected platform header (for example, `include/vxcore/mobile/vxcore_mobile.h`).
+2. Implement shared APIs in the appropriate `src/api/vxcore_*_api.cpp`; select platform-only implementation files according to the platform-isolation rules above.
+3. Add behavioral tests in `tests/test_*.cpp` and register them only for the supported API/platform configuration.
 
 ### Adding a New Core Feature
 

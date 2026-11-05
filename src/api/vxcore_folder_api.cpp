@@ -1166,6 +1166,38 @@ VXCORE_API VxCoreError vxcore_folder_get_import_paths(VxCoreContextHandle contex
   }
 }
 
+VXCORE_API VxCoreError vxcore_folder_index_children(VxCoreContextHandle context,
+                                                   const char *notebook_id,
+                                                   const char *parent_path,
+                                                   const char *names_json) {
+  if (!context || !notebook_id || !parent_path || !names_json) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  constexpr size_t maximum = 8 * 1024 * 1024;
+  size_t size = 0;
+  while (size <= maximum && names_json[size] != '\0') ++size;
+  if (size > maximum) return VXCORE_ERR_INVALID_PARAM;
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    if (!ctx->notebook_manager) return VXCORE_ERR_NOT_INITIALIZED;
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) return VXCORE_ERR_NOT_FOUND;
+    const auto writable = notebook->CheckWritable();
+    if (writable != VXCORE_OK) return writable;
+    if (notebook->GetType() != vxcore::NotebookType::Bundled) return VXCORE_ERR_UNSUPPORTED;
+    auto *manager = dynamic_cast<vxcore::BundledFolderManager *>(notebook->GetFolderManager());
+    if (!manager) return VXCORE_ERR_INVALID_STATE;
+    const auto error = manager->IndexChildren(parent_path, std::string(names_json, size));
+    if (error != VXCORE_OK) ctx->last_error = "Failed to index the requested existing children";
+    return error;
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (const std::exception &) {
+    ctx->last_error = "Failed to index the requested existing children";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
 VXCORE_API VxCoreError vxcore_notebook_collect_node_ids(VxCoreContextHandle context,
                                                         const char *notebook_id,
                                                         char **out_ids_json) {

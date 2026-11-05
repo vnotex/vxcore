@@ -1,5 +1,7 @@
 #include <stdlib.h>
 
+#include <utility>
+
 #include "api_utils.h"
 #include "core/activity_manager.h"
 #include "core/buffer_manager.h"
@@ -145,63 +147,69 @@ VXCORE_API const char *vxcore_error_message(VxCoreError error) {
   }
 }
 
+namespace vxcore {
+
+VxCoreError InitializeContext(std::unique_ptr<vxcore::ConfigManager> config_manager,
+                              VxCoreContextHandle *out_context) {
+  // One-shot explicit registration of built-in sync backends. Idempotent
+  // (first-wins inside SyncBackendRegistry::Register) so safe to call on
+  // every context_create. Replaces the previous static-init token in
+  // git_sync_backend.cpp which MSVC /OPT:REF dead-stripped from vnote.exe.
+  vxcore::RegisterBuiltinBackends(vxcore::SyncBackendRegistry::Instance());
+
+  auto ctx = std::make_unique<vxcore::VxCoreContext>();
+  ctx->config_manager = std::move(config_manager);
+
+  VxCoreError err = ctx->config_manager->LoadConfigs();
+  if (err != VXCORE_OK) {
+    return err;
+  }
+
+  ctx->notebook_manager = std::make_unique<vxcore::NotebookManager>(ctx->config_manager.get());
+  ctx->buffer_manager = std::make_unique<vxcore::BufferManager>(ctx->config_manager.get(),
+                                                                ctx->notebook_manager.get());
+  ctx->workspace_manager = std::make_unique<vxcore::WorkspaceManager>(ctx->config_manager.get(),
+                                                                      ctx->buffer_manager.get());
+  ctx->template_manager = std::make_unique<vxcore::TemplateManager>(ctx->config_manager.get());
+  ctx->snippet_manager = std::make_unique<vxcore::SnippetManager>(ctx->config_manager.get());
+  ctx->sync_manager = std::make_unique<vxcore::SyncManager>(ctx->notebook_manager.get());
+  ctx->work_queue_manager = std::make_unique<vxcore::WorkQueueManager>();
+  // Pre-create the content-search queue so caller-helps-drain threads never
+  // spin on an absent queue.
+  ctx->work_queue_manager->GetOrCreate(vxcore::kSearchQueueName);
+  ctx->event_manager = std::make_unique<vxcore::EventManager>();
+  ctx->notebook_manager->SetEventManager(ctx->event_manager.get());
+  ctx->buffer_manager->SetEventManager(ctx->event_manager.get());
+  ctx->sync_manager->SetEventManager(ctx->event_manager.get());
+  ctx->sync_manager->SetWorkQueueManager(ctx->work_queue_manager.get());
+
+  // Activity tracking: app-global, standalone activity.db under LocalData.
+  // Mirror the SyncManager wiring pattern (subscribe to EventManager). A
+  // failed Initialize is non-fatal -- activity is a best-effort side feature,
+  // so the context is still returned; record/query C API calls will report
+  // VXCORE_ERR_INVALID_STATE until a later successful init.
+  ctx->activity_manager = std::make_unique<vxcore::ActivityManager>(
+      ctx->config_manager.get(), ctx->notebook_manager.get());
+  if (ctx->activity_manager->Initialize() == VXCORE_OK) {
+    ctx->activity_manager->SetEventManager(ctx->event_manager.get());
+  } else {
+    VXCORE_LOG_WARN("Activity tracking disabled: failed to initialize activity.db");
+  }
+
+  *out_context = reinterpret_cast<VxCoreContextHandle>(ctx.release());
+  return VXCORE_OK;
+}
+
+}  // namespace vxcore
+
 VXCORE_API VxCoreError vxcore_context_create(const char *config_json,
                                              VxCoreContextHandle *out_context) {
   (void)config_json;
-  if (!out_context) {
-    return VXCORE_ERR_NULL_POINTER;
-  }
-
+  if (!out_context) return VXCORE_ERR_NULL_POINTER;
   try {
-    // One-shot explicit registration of built-in sync backends. Idempotent
-    // (first-wins inside SyncBackendRegistry::Register) so safe to call on
-    // every context_create. Replaces the previous static-init token in
-    // git_sync_backend.cpp which MSVC /OPT:REF dead-stripped from vnote.exe.
-    vxcore::RegisterBuiltinBackends(vxcore::SyncBackendRegistry::Instance());
-
-    auto *ctx = new vxcore::VxCoreContext();
-    ctx->config_manager = std::make_unique<vxcore::ConfigManager>();
-
-    VxCoreError err = ctx->config_manager->LoadConfigs();
-    if (err != VXCORE_OK) {
-      delete ctx;
-      return err;
-    }
-
-    ctx->notebook_manager = std::make_unique<vxcore::NotebookManager>(ctx->config_manager.get());
-    ctx->buffer_manager = std::make_unique<vxcore::BufferManager>(ctx->config_manager.get(),
-                                                                  ctx->notebook_manager.get());
-    ctx->workspace_manager = std::make_unique<vxcore::WorkspaceManager>(ctx->config_manager.get(),
-                                                                        ctx->buffer_manager.get());
-    ctx->template_manager = std::make_unique<vxcore::TemplateManager>(ctx->config_manager.get());
-    ctx->snippet_manager = std::make_unique<vxcore::SnippetManager>(ctx->config_manager.get());
-    ctx->sync_manager = std::make_unique<vxcore::SyncManager>(ctx->notebook_manager.get());
-    ctx->work_queue_manager = std::make_unique<vxcore::WorkQueueManager>();
-    // Pre-create the content-search queue so caller-helps-drain threads never
-    // spin on an absent queue.
-    ctx->work_queue_manager->GetOrCreate(vxcore::kSearchQueueName);
-    ctx->event_manager = std::make_unique<vxcore::EventManager>();
-    ctx->notebook_manager->SetEventManager(ctx->event_manager.get());
-    ctx->buffer_manager->SetEventManager(ctx->event_manager.get());
-    ctx->sync_manager->SetEventManager(ctx->event_manager.get());
-    ctx->sync_manager->SetWorkQueueManager(ctx->work_queue_manager.get());
-
-    // Activity tracking: app-global, standalone activity.db under LocalData.
-    // Mirror the SyncManager wiring pattern (subscribe to EventManager). A
-    // failed Initialize is non-fatal -- activity is a best-effort side feature,
-    // so the context is still returned; record/query C API calls will report
-    // VXCORE_ERR_INVALID_STATE until a later successful init.
-    ctx->activity_manager = std::make_unique<vxcore::ActivityManager>(
-        ctx->config_manager.get(), ctx->notebook_manager.get());
-    if (ctx->activity_manager->Initialize() == VXCORE_OK) {
-      ctx->activity_manager->SetEventManager(ctx->event_manager.get());
-    } else {
-      VXCORE_LOG_WARN("Activity tracking disabled: failed to initialize activity.db");
-    }
-
-    *out_context = reinterpret_cast<VxCoreContextHandle>(ctx);
-    return VXCORE_OK;
+    return vxcore::InitializeContext(std::make_unique<vxcore::ConfigManager>(), out_context);
   } catch (...) {
+    // Preserve the legacy factory's exception-to-error contract.
     return VXCORE_ERR_OUT_OF_MEMORY;
   }
 }
@@ -284,12 +292,17 @@ VXCORE_API VxCoreError vxcore_context_get_last_error(VxCoreContextHandle context
     return VXCORE_ERR_NULL_POINTER;
   }
   auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
-  if (ctx->last_error.empty()) {
-    *out_message = "No error";
-  } else {
-    *out_message = ctx->last_error.c_str();
+  *out_message = nullptr;
+  try {
+    thread_local std::string snapshot;
+    ctx->last_error.CopyTo(snapshot);
+    *out_message = snapshot.c_str();
+    return VXCORE_OK;
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (...) {
+    return VXCORE_ERR_UNKNOWN;
   }
-  return VXCORE_OK;
 }
 
 VXCORE_API VxCoreError vxcore_context_set_locale(VxCoreContextHandle context,

@@ -2139,12 +2139,11 @@ int test_buffer_insert_asset() {
   err = vxcore_buffer_open(ctx, notebook_id, "test.md", &buffer_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  // Create a source file to copy
+  // Exercise several streaming chunks, including NULs, CRLF and non-UTF8 bytes.
   std::string source_path = get_test_path("test_buffer_insert_asset") + "/source_image.png";
-  const uint8_t image_data[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
-  std::ofstream ofs(source_path, std::ios::binary);
-  ofs.write(reinterpret_cast<const char *>(image_data), sizeof(image_data));
-  ofs.close();
+  std::string image_data(3 * 64 * 1024 + 17, '\0');
+  for (size_t i = 0; i < image_data.size(); ++i) image_data[i] = static_cast<char>(i % 256);
+  create_test_file(source_path, image_data);
 
   // Insert asset by copying file (does NOT add to attachment list)
   char *relative_path = nullptr;
@@ -2161,6 +2160,32 @@ int test_buffer_insert_asset() {
   std::string notebook_root = get_test_path("test_buffer_insert_asset");
   std::string asset_abs_path = notebook_root + "/" + rel_path;
   ASSERT_TRUE(path_exists(asset_abs_path));
+  ASSERT_EQ(read_file_content(asset_abs_path), image_data);
+  ASSERT_EQ(read_file_content(source_path), image_data);
+  const std::string second_bytes("different\0\xff\r\n", 13);
+  create_test_file(source_path, second_bytes);
+  char *second_path = nullptr;
+  ASSERT_EQ(vxcore_buffer_insert_asset(ctx, buffer_id, source_path.c_str(), &second_path), VXCORE_OK);
+  ASSERT_NOT_NULL(second_path);
+  ASSERT_TRUE(std::string(second_path).find("source_image_1.png") != std::string::npos);
+  ASSERT_EQ(read_file_content(notebook_root + "/" + second_path), second_bytes);
+  ASSERT_EQ(read_file_content(asset_abs_path), image_data);
+  ASSERT_EQ(read_file_content(source_path), second_bytes);
+  vxcore_string_free(second_path);
+
+  // A directory cannot be mistaken for an empty successfully copied file.
+  const auto invalid_source = notebook_root + "/directory-source";
+  create_directory(invalid_source);
+  char *rejected_path = nullptr;
+  ASSERT_EQ(vxcore_buffer_insert_asset(ctx, buffer_id, invalid_source.c_str(), &rejected_path), VXCORE_ERR_IO);
+  ASSERT_NULL(rejected_path);
+  for (const auto &entry : std::filesystem::directory_iterator(utf8_to_fs_path(asset_abs_path).parent_path())) {
+    ASSERT_TRUE(fs_path_to_utf8(entry.path().filename()).find(".tmp-") == std::string::npos);
+    ASSERT_NE(fs_path_to_utf8(entry.path().filename()), "directory-source");
+  }
+  ASSERT_EQ(vxcore_buffer_close(ctx, buffer_id), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_close(ctx, notebook_id), VXCORE_OK);
+  ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
 
   vxcore_string_free(relative_path);
   vxcore_string_free(file_id);
@@ -2410,8 +2435,6 @@ int test_buffer_delete_attachment() {
   ASSERT_EQ(json.size(), 0u);
   vxcore_string_free(attachments_json);
 
-  config = nlohmann::json::parse(read_file_content(config_path));
-  ASSERT_FALSE(config.at("files").at(0).contains("attachments"));
 
   vxcore_string_free(filename);
   vxcore_string_free(file_id);
@@ -2486,6 +2509,30 @@ int test_buffer_rename_attachment() {
   ASSERT_EQ(json.size(), 1u);
   ASSERT_EQ(json[0].get<std::string>(), "new_name.pdf");
   vxcore_string_free(attachments_json);
+
+  // A requested collision keeps its existing bytes/member, replacing only the
+  // renamed member in one metadata publication with the actual suffixed name.
+  const auto occupied_source = get_test_path("test_buffer_rename_attachment") + "/occupied.pdf";
+  const std::string occupied_bytes("occupied\0\xff\r\n", 12);
+  create_test_file(occupied_source, occupied_bytes);
+  char *occupied_name = nullptr;
+  ASSERT_EQ(vxcore_buffer_insert_attachment(ctx, buffer_id, occupied_source.c_str(), &occupied_name), VXCORE_OK);
+  char *suffixed_name = nullptr;
+  ASSERT_EQ(vxcore_buffer_rename_attachment(ctx, buffer_id, new_filename, occupied_name, &suffixed_name), VXCORE_OK);
+  ASSERT_EQ(std::string(suffixed_name), "occupied_1.pdf");
+  ASSERT_EQ(read_file_content(assets_path + "/occupied.pdf"), occupied_bytes);
+  ASSERT_EQ(read_file_content(assets_path + "/occupied_1.pdf"), "PDF content");
+  ASSERT_EQ(read_file_content(source_path), "PDF content");
+  ASSERT_FALSE(path_exists(assets_path + "/new_name.pdf"));
+  attachments_json = nullptr;
+  ASSERT_EQ(vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json), VXCORE_OK);
+  ASSERT_EQ(nlohmann::json::parse(attachments_json), nlohmann::json::array({"occupied_1.pdf", "occupied.pdf"}));
+  vxcore_string_free(attachments_json);
+  vxcore_string_free(occupied_name);
+  vxcore_string_free(suffixed_name);
+  ASSERT_EQ(vxcore_buffer_close(ctx, buffer_id), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_close(ctx, notebook_id), VXCORE_OK);
+  ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
 
   vxcore_string_free(new_filename);
   vxcore_string_free(filename);
@@ -2641,8 +2688,6 @@ int test_buffer_legacy_attachment_metadata() {
   ASSERT_EQ(read_file_content(notebook_path + "/vx_notebook/recycle_bin/" + renamed_name),
             "attachment content");
   ASSERT_EQ(read_file_content(generic_path), "unrelated generic asset");
-  config = nlohmann::json::parse(read_file_content(config_path));
-  ASSERT_FALSE(config.at("files").at(0).contains("attachments"));
   err = vxcore_buffer_list_attachments(ctx, buffer_id, &attachments_json);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_EQ(nlohmann::json::parse(attachments_json), nlohmann::json::array());
@@ -2703,8 +2748,6 @@ int test_buffer_legacy_attachment_metadata() {
 
   err = vxcore_file_update_attachments(ctx, notebook_id, note_path, "[]");
   ASSERT_EQ(err, VXCORE_OK);
-  config = nlohmann::json::parse(read_file_content(config_path));
-  ASSERT_FALSE(config.at("files").at(0).contains("attachments"));
   ASSERT_EQ(read_file_content(generic_path), "unrelated generic asset");
 
   err = vxcore_notebook_close(ctx, notebook_id);
@@ -3117,15 +3160,17 @@ int test_buffer_asset_unique_name() {
 
   // Insert same-named assets multiple times (using raw)
   const uint8_t data[] = {0x89, 'P', 'N', 'G'};
+  const uint8_t second_data[] = {0, 0xff, '\r', '\n', 1};
+  const uint8_t third_data[] = {0x80, 0, 'x'};
   char *path1 = nullptr;
   char *path2 = nullptr;
   char *path3 = nullptr;
 
   err = vxcore_buffer_insert_asset_raw(ctx, buffer_id, "image.png", data, sizeof(data), &path1);
   ASSERT_EQ(err, VXCORE_OK);
-  err = vxcore_buffer_insert_asset_raw(ctx, buffer_id, "image.png", data, sizeof(data), &path2);
+  err = vxcore_buffer_insert_asset_raw(ctx, buffer_id, "image.png", second_data, sizeof(second_data), &path2);
   ASSERT_EQ(err, VXCORE_OK);
-  err = vxcore_buffer_insert_asset_raw(ctx, buffer_id, "image.png", data, sizeof(data), &path3);
+  err = vxcore_buffer_insert_asset_raw(ctx, buffer_id, "image.png", third_data, sizeof(third_data), &path3);
   ASSERT_EQ(err, VXCORE_OK);
 
   // All paths should be different
@@ -3137,6 +3182,13 @@ int test_buffer_asset_unique_name() {
   ASSERT_TRUE(std::string(path1).find("image.png") != std::string::npos);
   ASSERT_TRUE(std::string(path2).find("image_1.png") != std::string::npos);
   ASSERT_TRUE(std::string(path3).find("image_2.png") != std::string::npos);
+  const auto root = get_test_path("test_buffer_asset_unique");
+  ASSERT_EQ(read_file_content(root + "/" + path1), std::string(reinterpret_cast<const char *>(data), sizeof(data)));
+  ASSERT_EQ(read_file_content(root + "/" + path2), std::string(reinterpret_cast<const char *>(second_data), sizeof(second_data)));
+  ASSERT_EQ(read_file_content(root + "/" + path3), std::string(reinterpret_cast<const char *>(third_data), sizeof(third_data)));
+  ASSERT_EQ(vxcore_buffer_close(ctx, buffer_id), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_close(ctx, notebook_id), VXCORE_OK);
+  ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
 
   vxcore_string_free(path1);
   vxcore_string_free(path2);
@@ -5743,6 +5795,41 @@ int test_self_contained_snapshot_schema() {
     ASSERT_EQ(payload.substr(offset + 8, body.size()), std::string(body.begin(), body.end()));
     ASSERT(nlohmann::json::parse(payload.substr(offset + 12 + body.size())) == manifest);
     ASSERT_FALSE(path_exists(fixture.key_path()));
+  }
+  return 0;
+}
+
+int test_sync_reconfiguration_preserves_trusted_root_boundary() {
+  EncryptionFixture fixture(true);
+  ASSERT_EQ(fixture.error, VXCORE_OK);
+  const auto context = fixture.context.value;
+  const auto notebook = fixture.notebook_id.value;
+  const auto root = utf8_to_fs_path(fixture.path);
+  std::filesystem::create_directory(root / "vx_notebook/vx_sync");
+  ASSERT_EQ(vxcore_sync_check_reconfiguration(context, notebook), VXCORE_OK);
+  for (const auto *relative : {"", "vx_notebook", "vx_notebook/vx_sync"}) {
+    const auto source = *relative ? root / relative : root;
+    const auto target = fixture.directory.path() / "guard-target";
+    std::filesystem::rename(source, target);
+    const auto before = encryption_file_tree(fs_path_to_utf8(target));
+    VxCoreError result = VXCORE_OK;
+    std::map<std::string, std::string> after;
+    {
+      EncryptionTestDirectoryLink link;
+      link.path = fs_path_to_utf8(source);
+      const bool linked = vxcore_test::create_junction(fs_path_to_utf8(target), link.path);
+      if (!linked) {
+        link.path.clear();
+        std::filesystem::rename(target, source);
+        ASSERT_TRUE(linked);
+      }
+      result = vxcore_sync_check_reconfiguration(context, notebook);
+      after = encryption_file_tree(fs_path_to_utf8(target));
+    }
+    std::filesystem::rename(target, source);
+    ASSERT_EQ(result, VXCORE_ERR_INVALID_STATE);
+    ASSERT(after == before);
+    ASSERT_EQ(vxcore_sync_check_reconfiguration(context, notebook), VXCORE_OK);
   }
   return 0;
 }
@@ -8979,6 +9066,115 @@ int test_prepared_save_rejects_file_and_encrypted_buffers() {
   return 0;
 }
 
+
+int test_attachment_metadata_failures_preserve_bytes_and_disk_truth() {
+  int failures = 0;
+#ifdef _WIN32
+  const bool blockers[] = {false, true};
+#else
+  const bool blockers[] = {false};
+#endif
+  for (const bool readonly : blockers) {
+    for (const std::string operation : {"insert", "rename", "delete"}) {
+      const auto fixture = get_test_path("attachment_metadata_failure_" + operation +
+                                         (readonly ? "_readonly" : "_directory"));
+      const auto root = fixture + "/notebook";
+      cleanup_test_dir(fixture);
+      VxCoreContextHandle ctx = nullptr;
+      // BufferTestTempDirectory already isolates the ordinary core test roots.
+      ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+      char *book = nullptr, *note = nullptr, *buffer = nullptr, *name = nullptr, *folder = nullptr;
+      ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Attachment failure"})", VXCORE_NOTEBOOK_BUNDLED, &book), VXCORE_OK);
+      ASSERT_EQ(vxcore_file_create(ctx, book, ".", "Note.md", &note), VXCORE_OK);
+      ASSERT_EQ(vxcore_buffer_open_by_node_id(ctx, note, &buffer), VXCORE_OK);
+      const auto source = root + "/payload.bin";
+      const std::string bytes("\0\xffpayload", 9);
+      write_file(source, bytes);
+      if (operation != "insert") {
+        ASSERT_EQ(vxcore_buffer_insert_attachment(ctx, buffer, source.c_str(), &name), VXCORE_OK);
+        vxcore_string_free(name); name = nullptr;
+      }
+      ASSERT_EQ(vxcore_buffer_get_attachments_folder(ctx, buffer, &folder), VXCORE_OK);
+      const std::string assets(folder); vxcore_string_free(folder); folder = nullptr;
+      const auto metadata = utf8_to_fs_path(root + "/vx_notebook/contents/vx.json");
+      const auto saved = utf8_to_fs_path(root + "/vx_notebook/contents/vx.json.saved");
+      const auto metadata_before = read_file_content(fs_path_to_utf8(metadata));
+      // The directory blocker rejects publication even on root-run POSIX hosts.
+      // Windows additionally exercises a real read-only existing config.
+      if (!readonly) {
+        std::filesystem::rename(metadata, saved);
+        std::filesystem::create_directory(metadata);
+      }
+#ifdef _WIN32
+      const DWORD attributes = GetFileAttributesW(metadata.c_str());
+      if (readonly) {
+        ASSERT_NE(attributes, INVALID_FILE_ATTRIBUTES);
+        ASSERT_TRUE(SetFileAttributesW(metadata.c_str(), attributes | FILE_ATTRIBUTE_READONLY));
+      }
+#endif
+      VxCoreError error = VXCORE_OK;
+      if (operation == "insert") error = vxcore_buffer_insert_attachment(ctx, buffer, source.c_str(), &name);
+      else if (operation == "rename") error = vxcore_buffer_rename_attachment(ctx, buffer, "payload.bin", "renamed.bin", &name);
+      else error = vxcore_buffer_delete_attachment(ctx, buffer, "payload.bin");
+      if (!readonly) {
+        std::filesystem::remove(metadata);
+        std::filesystem::rename(saved, metadata);
+      }
+#ifdef _WIN32
+      if (readonly) ASSERT_TRUE(SetFileAttributesW(metadata.c_str(), attributes));
+#endif
+      ASSERT_EQ(read_file_content(fs_path_to_utf8(metadata)), metadata_before);
+      char *listed = nullptr;
+      const auto listed_error = vxcore_buffer_list_attachments(ctx, buffer, &listed);
+      const auto actual = listed_error == VXCORE_OK ? nlohmann::json::parse(listed) : nlohmann::json();
+      vxcore_string_free(listed);
+      const auto expected = operation == "insert" ? nlohmann::json::array() : nlohmann::json::array({"payload.bin"});
+      const auto physical = assets + (operation == "rename" ? "/renamed.bin" : "/payload.bin");
+      const bool preserved = read_file_content(physical) == bytes;
+      const bool truthful = listed_error == VXCORE_OK && actual == expected;
+      std::cout << "  Attachment " << operation << (readonly ? " readonly" : " directory")
+                << ": status=" << error << ", bytes=" << preserved << ", diskTruth=" << truthful << std::endl;
+      if (error == VXCORE_OK || !preserved || !truthful) ++failures;
+      ASSERT_EQ(read_file_content(source), bytes);
+      if (operation == "rename") ASSERT_FALSE(path_exists(assets + "/payload.bin"));
+      listed = nullptr;
+      ASSERT_EQ(vxcore_buffer_list_unindexed_attachments(ctx, buffer, &listed), VXCORE_OK);
+      const auto unindexed = operation == "delete" ? nlohmann::json::array() :
+          nlohmann::json::array({operation == "rename" ? "renamed.bin" : "payload.bin"});
+      ASSERT_EQ(nlohmann::json::parse(listed), unindexed);
+      vxcore_string_free(listed);
+
+      // Reopening must agree with the same authoritative metadata, not a cache
+      // vector that was speculatively changed before failed publication.
+      ASSERT_EQ(vxcore_buffer_close(ctx, buffer), VXCORE_OK);
+      ASSERT_EQ(vxcore_notebook_close(ctx, book), VXCORE_OK);
+      vxcore_string_free(buffer); buffer = nullptr;
+      vxcore_string_free(book); book = nullptr;
+      ASSERT_EQ(vxcore_notebook_open(ctx, root.c_str(), &book), VXCORE_OK);
+      char *reopened_config = nullptr;
+      ASSERT_EQ(vxcore_node_get_config(ctx, book, "Note.md", &reopened_config), VXCORE_OK);
+      ASSERT_EQ(nlohmann::json::parse(reopened_config).at("id"), std::string(note));
+      vxcore_string_free(reopened_config);
+      // Resolve the explicit path; the freshly reopened derived ID index is lazy.
+      ASSERT_EQ(vxcore_buffer_open(ctx, book, "Note.md", &buffer), VXCORE_OK);
+      listed = nullptr;
+      ASSERT_EQ(vxcore_buffer_list_attachments(ctx, buffer, &listed), VXCORE_OK);
+      ASSERT_EQ(nlohmann::json::parse(listed), expected);
+      vxcore_string_free(listed);
+      ASSERT_EQ(read_file_content(physical), bytes);
+      ASSERT_EQ(vxcore_buffer_close(ctx, buffer), VXCORE_OK);
+      ASSERT_EQ(vxcore_notebook_close(ctx, book), VXCORE_OK);
+      ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
+      vxcore_string_free(name);
+      vxcore_string_free(buffer); vxcore_string_free(note); vxcore_string_free(book);
+      vxcore_context_destroy(ctx);
+      cleanup_test_dir(fixture);
+    }
+  }
+  ASSERT_EQ(failures, 0);
+  return 0;
+}
+
 int main() {
   BufferTestTempDirectory test_directory;
   ASSERT_TRUE(test_directory.valid());
@@ -8987,6 +9183,7 @@ int main() {
   vxcore_set_test_mode(1);
   vxcore_clear_test_directory();
 
+  RUN_TEST(test_attachment_metadata_failures_preserve_bytes_and_disk_truth);
   RUN_TEST(test_reconfiguration_refuses_unregistered_index_conflicts);
 
   RUN_TEST(test_memory_buffer_body_and_failures);
@@ -9119,6 +9316,7 @@ int main() {
   RUN_TEST(test_buffer_hidden_encryption_magic_fails_closed);
   RUN_TEST(test_encryption_status_rejects_malformed_candidates);
   RUN_TEST(test_self_contained_snapshot_schema);
+  RUN_TEST(test_sync_reconfiguration_preserves_trusted_root_boundary);
   RUN_TEST(test_legacy_note_and_backup_migration);
   RUN_TEST(test_legacy_migration_rejects_unsafe_boundaries);
   RUN_TEST(test_encryption_note_through_aliased_parent);

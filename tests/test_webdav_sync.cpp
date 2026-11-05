@@ -11,10 +11,12 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <new>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <regex>
@@ -30,12 +32,39 @@
 #include "sync/credential_provider.h"
 #include "sync/sync_backend_registry.h"
 #include "sync/sync_json_keys.h"
+#include "sync/webdav/webdav_state.h"
 #include "sync/webdav/webdav_sync_backend.h"
 #include "sync/webdav/webdav_transport.h"
 #include "test_utils.h"
 #include "utils/file_utils.h"
 #include "vxcore/vxcore.h"
 
+#if defined(VXCORE_MOBILE_API) && VXCORE_MOBILE_API
+#include "vxcore/mobile/vxcore_mobile.h"
+#endif
+
+namespace {
+// Fail only the first observer allocation after a real candidate commit and
+// successful marker cleanup. No production hook or allocation-count guess.
+thread_local vxcore::WebDavSyncBackend *observer_failure_backend = nullptr;
+thread_local bool observer_failure_seen = false;
+}
+
+void *operator new(std::size_t size) {
+  if (observer_failure_backend && observer_failure_backend->CandidateCommitted() &&
+      !observer_failure_backend->CandidateCleanupRequired()) {
+    observer_failure_backend = nullptr;
+    observer_failure_seen = true;
+    throw std::bad_alloc();
+  }
+  if (void *memory = std::malloc(size ? size : 1)) return memory;
+  throw std::bad_alloc();
+}
+void *operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void *memory) noexcept { std::free(memory); }
+void operator delete[](void *memory) noexcept { std::free(memory); }
+void operator delete(void *memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void *memory, std::size_t) noexcept { std::free(memory); }
 #ifndef _WIN32
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -97,20 +126,26 @@ std::string Decode(const std::string &text) {
   return out;
 }
 
-std::string ReadBytes(const fs::path &path) {
-  std::ifstream file(path, std::ios::binary);
+std::string ReadBytes(const fs::path &path, FileAccess access = FileAccess::kDefault) {
+  if (access == FileAccess::kPrivate) private_io::Validate(path);
+  const NativePathArgument native(path, access);
+  std::ifstream file(native.c_str(), std::ios::binary);
   if (!file) throw std::runtime_error("Could not read test-owned file: " + PathToUtf8(path));
   return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 }
 
-void WriteBytes(const fs::path &path, const std::string &bytes) {
-  fs::create_directories(path.parent_path());
-  if (WriteFileAtomic(path, bytes) != VXCORE_OK)
+void WriteBytes(const fs::path &path, const std::string &bytes,
+                FileAccess access = FileAccess::kDefault) {
+  if (access == FileAccess::kPrivate)
+    private_io::CreateDirectories(path.parent_path());
+  else
+    fs::create_directories(path.parent_path());
+  if (WriteFileAtomic(path, bytes, access) != VXCORE_OK)
     throw std::runtime_error("Could not publish test-owned binary file");
 }
 
-Json ReadJson(const fs::path &path) {
-  const auto value = Json::parse(ReadBytes(path), nullptr, false);
+Json ReadJson(const fs::path &path, FileAccess access = FileAccess::kDefault) {
+  const auto value = Json::parse(ReadBytes(path, access), nullptr, false);
   if (value.is_discarded()) throw std::runtime_error("Expected valid persisted JSON");
   return value;
 }
@@ -234,14 +269,15 @@ std::shared_ptr<ICredentialProvider> Provider(
 
 std::string CredentialsJson() { return Json{{kJsonKeyExtra, Credentials().extra}}.dump(); }
 
+void RemovePrivateTree(const fs::path &directory);
+
 struct Workspace {
   fs::path path;
   Workspace() : path(PathFromUtf8(Environment("VXCORE_WEBDAV_TEST_CLIENT_ROOT")) / RandomName()) {
     fs::create_directories(path);
   }
   ~Workspace() {
-    std::error_code ignored;
-    fs::remove_all(path, ignored);
+    try { RemovePrivateTree(path); } catch (...) {}
   }
 };
 
@@ -274,7 +310,8 @@ struct Client {
   SyncConfig config = Configuration();
   std::unique_ptr<WebDavSyncBackend> backend;
 
-  Client() {
+  explicit Client(size_t minimum_root_length = 0) {
+    while (root.native().size() < minimum_root_length) root /= "desktop_component_012345";
     CoreString created;
     const auto root_text = PathToUtf8(root);
     if (vxcore_notebook_create(context.value, root_text.c_str(),
@@ -290,9 +327,16 @@ struct Client {
     vxcore_notebook_close(context.value, id.c_str());
   }
   fs::path Path(const std::string &path) const { return root / PathFromUtf8(path); }
-  void Write(const std::string &path, const std::string &bytes) { WriteBytes(Path(path), bytes); }
-  std::string Read(const std::string &path) const { return ReadBytes(Path(path)); }
-  Json State() const { return ReadJson(Path(kStatePath)); }
+  static FileAccess Access(const std::string &path) {
+    const std::string prefix = std::string(kPrivatePath) + "/";
+    return path == kPrivatePath || path.compare(0, prefix.size(), prefix) == 0
+               ? FileAccess::kPrivate : FileAccess::kDefault;
+  }
+  void Write(const std::string &path, const std::string &bytes) {
+    WriteBytes(Path(path), bytes, Access(path));
+  }
+  std::string Read(const std::string &path) const { return ReadBytes(Path(path), Access(path)); }
+  Json State() const { return ReadJson(Path(kStatePath), FileAccess::kPrivate); }
   VxCoreError Attach() {
     backend = std::make_unique<WebDavSyncBackend>(config, Provider());
     return backend->Initialize(PathToUtf8(root), config);
@@ -319,22 +363,54 @@ bool CommonFile(const Client &client, const std::string &path) {
          Hash(client.Read(path)) == remote.at("sha256");
 }
 
+void VisitPrivateFiles(const fs::path &directory,
+                       const std::function<void(const fs::path &)> &visitor) {
+  private_io::VisitDirectory(directory, [&](const fs::path &entry) {
+    const auto status = private_io::Status(entry);
+    if (status.directory) VisitPrivateFiles(entry, visitor);
+    else if (status.regular) visitor(entry);
+  });
+}
+
+void RemovePrivateTree(const fs::path &directory) {
+  private_io::VisitDirectory(directory, [&](const fs::path &entry) {
+    if (private_io::IsDirectory(entry)) RemovePrivateTree(entry);
+    else private_io::Remove(entry);
+  });
+  private_io::Remove(directory);
+}
+
+struct PrivateWorkspace {
+  // Resolve the ambient root before admission; all selected paths remain logical.
+  fs::path base = fs::canonical(fs::temp_directory_path()) / ("dav-private-" + RandomName());
+  fs::path path = base;
+  explicit PrivateWorkspace(size_t minimum_length = 290) {
+    while (path.native().size() < minimum_length) path /= "private_component_0123456789";
+    private_io::CreateDirectories(path);
+  }
+  ~PrivateWorkspace() {
+    try { RemovePrivateTree(base); } catch (...) {}
+  }
+};
+
 bool SnapshotContains(const Client &client, const std::string &bytes) {
   const auto snapshots = client.Path(std::string(kPrivatePath) + "/snapshots");
-  if (!fs::exists(snapshots)) return false;
-  for (const auto &entry : fs::recursive_directory_iterator(snapshots)) {
-    if (entry.is_regular_file() && ReadBytes(entry.path()) == bytes) return true;
-  }
-  return false;
+  if (!private_io::Exists(snapshots)) return false;
+  bool found = false;
+  VisitPrivateFiles(snapshots, [&](const fs::path &entry) {
+    found = found || ReadBytes(entry, FileAccess::kPrivate) == bytes;
+  });
+  return found;
 }
 
 bool PendingHasOperations(const fs::path &root) {
   const auto path = root / PathFromUtf8(kPendingPath);
-  return fs::is_regular_file(path) && !ReadJson(path).at("operations").empty();
+  return private_io::IsRegularFile(path) &&
+         !ReadJson(path, FileAccess::kPrivate).at("operations").empty();
 }
 
 bool SafeJournal(const Client &client) {
-  const auto pending = ReadJson(client.Path(kPendingPath));
+  const auto pending = ReadJson(client.Path(kPendingPath), FileAccess::kPrivate);
   if (pending.at("version") != 1 || pending.at("notebookId") != client.id ||
       pending.at("remoteUrl") != client.config.remote_url ||
       pending.at("usernameHash") != Hash(Environment("VXCORE_WEBDAV_TEST_USERNAME")))
@@ -352,7 +428,7 @@ bool SafeJournal(const Client &client) {
       const auto prefix = "snapshots/" + operation_id + "/";
       if (name.compare(0, prefix.size(), prefix) ||
           WebDavTransport::ValidateRelativePath(name) != VXCORE_OK ||
-          !fs::is_regular_file(client.Path(std::string(kPrivatePath) + "/" + name)))
+          !private_io::IsRegularFile(client.Path(std::string(kPrivatePath) + "/" + name)))
         return false;
     }
     for (const auto *field : {"expectedLocalSha256", "oldSha256", "newSha256"}) {
@@ -361,7 +437,7 @@ bool SafeJournal(const Client &client) {
         return false;
     }
   }
-  const auto bytes = ReadBytes(client.Path(kPendingPath));
+  const auto bytes = ReadBytes(client.Path(kPendingPath), FileAccess::kPrivate);
   return bytes.find(Environment("VXCORE_WEBDAV_TEST_PASSWORD")) == std::string::npos &&
          bytes.find(PathToUtf8(client.root)) == std::string::npos;
 }
@@ -878,9 +954,9 @@ int TestMetadataAndCiphertextConflictPolicy() {
     // Both snapshots remain complete revisions; no JSON/ciphertext conflict markers.
     const auto record = client.State().at("conflicts").at(conflict.path);
     const auto local = ReadBytes(client.Path(std::string(kPrivatePath) + "/" +
-                                             record.at("localSnapshot").get<std::string>()));
+                                             record.at("localSnapshot").get<std::string>()), FileAccess::kPrivate);
     const auto remote = ReadBytes(client.Path(std::string(kPrivatePath) + "/" +
-                                              record.at("remoteSnapshot").get<std::string>()));
+                                              record.at("remoteSnapshot").get<std::string>()), FileAccess::kPrivate);
     ASSERT_TRUE(local.find("<<<<<<<") == std::string::npos);
     ASSERT_TRUE(remote.find("<<<<<<<") == std::string::npos);
     if (conflict.path.find(".json") != std::string::npos) {
@@ -1142,6 +1218,541 @@ int TestCancellationAndConcurrentSnapshots() {
   return 0;
 }
 
+std::string OperationId() {
+  std::string id;
+  if (EncryptedNote::GenerateIdentity(id) != VXCORE_OK)
+    throw std::runtime_error("Could not generate lifecycle identity");
+  return id;
+}
+
+std::shared_ptr<ICredentialProvider> AccountProvider(const std::string &username,
+                                                    const std::string &password) {
+  auto credentials = Credentials(password);
+  credentials.extra[kJsonKeyUsername] = username;
+  return std::make_shared<InMemoryCredentialProvider>(std::move(credentials));
+}
+
+int TestPreparedCandidateAuthenticationAndPublication() {
+  Control({{"action", "reset"}});
+  Client client;
+  client.Write("baseline.md", "published account bytes");
+  ASSERT_EQ(client.Attach(), VXCORE_OK);
+  ASSERT_EQ(client.Sync(), VXCORE_OK);
+  const auto baseline = client.Read(kStatePath);
+  const auto old_provider = client.backend->GetCredsProviderSnapshot();
+  Control({{"action", "configure"}, {"anonymous_read", true}});
+  const auto bad = Provider("not-the-account-password");
+  const auto operation = OperationId();
+  const auto cursor = RequestCursor();
+  ASSERT_EQ(client.backend->ValidateCandidate(PathToUtf8(client.root), client.config, bad, operation),
+            VXCORE_ERR_SYNC_AUTH_FAILED);
+  ASSERT_EQ(client.Read(kStatePath), baseline);
+  ASSERT_TRUE(client.backend->GetCredsProviderSnapshot() == old_provider);
+  ASSERT_TRUE(client.backend->IsInitialized());
+  ASSERT_TRUE(client.backend->CandidateCleanupRequired());
+  bool anonymous_read = false, rejected_write = false;
+  const auto requests = Control({{"action", "requests"}, {"since", cursor}});
+  for (const auto &request : requests.at("requests")) {
+    anonymous_read = anonymous_read || (request.at("method") == "GET" &&
+        request.at("status") == 200 && !request.at("authenticated").get<bool>());
+    rejected_write = rejected_write || (request.at("method") == "PUT" && request.at("status") == 401);
+  }
+  ASSERT_TRUE(anonymous_read && rejected_write);
+  ASSERT_NE(client.backend->CommitCandidate(bad), VXCORE_OK);
+  ASSERT_EQ(client.backend->RecoverCandidate(PathToUtf8(client.root), client.config,
+                                              old_provider, operation), VXCORE_OK);
+  ASSERT_FALSE(client.backend->CandidateCleanupRequired());
+  ASSERT_EQ(client.Read(kStatePath), baseline);
+  ASSERT_TRUE(client.backend->GetCredsProviderSnapshot() == old_provider);
+
+  const auto username = "prepared-" + RandomName();
+  const auto password = "prepared-secret-" + RandomName();
+  Control({{"action", "configure"}, {"username", username}, {"password", password}});
+  const auto candidate = AccountProvider(username, password);
+  ASSERT_EQ(client.backend->ValidateCandidate(PathToUtf8(client.root), client.config,
+                                               candidate, OperationId()), VXCORE_OK);
+  ASSERT_FALSE(client.backend->CandidateCleanupRequired());
+  ASSERT_EQ(client.Read(kStatePath), baseline);
+  ASSERT_TRUE(client.backend->GetCredsProviderSnapshot() == old_provider);
+  auto cancellation = std::make_shared<SyncCancellation>();
+  cancellation->Cancel();
+  client.backend->SetCancellation(cancellation);
+  ASSERT_EQ(client.backend->CommitCandidate(candidate), VXCORE_ERR_CANCELLED);
+  ASSERT_EQ(client.Read(kStatePath), baseline);
+  ASSERT_TRUE(client.backend->GetCredsProviderSnapshot() == old_provider);
+  client.backend->SetCancellation(nullptr);
+  const auto commit_cursor = RequestCursor();
+  ASSERT_NE(client.backend->CommitCandidate(old_provider), VXCORE_OK);
+  ASSERT_EQ(client.backend->CommitCandidate(candidate), VXCORE_OK);
+  ASSERT_EQ(RequestCursor(), commit_cursor);
+  ASSERT_TRUE(client.backend->GetCredsProviderSnapshot() == candidate);
+  ASSERT_EQ(client.State().at("usernameHash"), Hash(username));
+  ASSERT_EQ(client.State().at("entries"), Json::parse(baseline).at("entries"));
+  ASSERT_EQ(client.Sync(), VXCORE_OK);
+  return 0;
+}
+
+int TestPreparedCandidateCancellationRecovery() {
+  Control({{"action", "reset"}});
+  Client client;
+  client.Write("baseline.md", "unchanged published bytes");
+  ASSERT_EQ(client.Attach(), VXCORE_OK);
+  ASSERT_EQ(client.Sync(), VXCORE_OK);
+  const auto baseline = client.Read(kStatePath);
+  const auto old_provider = client.backend->GetCredsProviderSnapshot();
+  const auto username = "candidate-" + RandomName();
+  const auto password = "candidate-secret-" + RandomName();
+  const auto candidate = AccountProvider(username, password);
+  Control({{"action", "configure"}, {"username", username}, {"password", password}});
+  const auto operation = OperationId();
+  const auto relative = std::string(kPrivatePath) + "/credential-validation/" + operation;
+  auto token = std::make_shared<SyncCancellation>();
+  client.backend->SetCancellation(token);
+  FaultScope faults;
+  Control({{"action", "barrier"}, {"id", "candidate-upload"}, {"method", "PUT"},
+           {"phase", "after"}});
+  auto worker = std::async(std::launch::async, [&] {
+    return client.backend->ValidateCandidate(PathToUtf8(client.root), client.config,
+                                              candidate, operation);
+  });
+  const bool reached = WaitBarrier("candidate-upload");
+  token->Cancel();
+  const bool timely = worker.wait_for(std::chrono::seconds(3)) == std::future_status::ready;
+  Control({{"action", "release"}, {"id", "candidate-upload"}});
+  const auto result = worker.get();
+  client.backend->SetCancellation(nullptr);
+  ASSERT_TRUE(reached && timely);
+  ASSERT_EQ(result, VXCORE_ERR_CANCELLED);
+  ASSERT_TRUE(client.backend->CandidateCleanupRequired());
+  ASSERT_EQ(client.Read(kStatePath), baseline);
+  ASSERT_TRUE(client.backend->GetCredsProviderSnapshot() == old_provider);
+  const auto journal = ReadJson(client.Path(relative + "/pending.json"), FileAccess::kPrivate);
+  ASSERT_EQ(journal.at("operationId"), operation);
+  ASSERT_EQ(journal.at("notebookId"), client.id);
+  ASSERT_EQ(journal.at("usernameHash"), Hash(username));
+  ASSERT_EQ(journal.at("remoteUrl"), client.config.remote_url);
+  CoreString facts;
+  ASSERT_EQ(vxcore_sync_inspect_storage(PathToUtf8(client.root).c_str(), client.id.c_str(),
+                                        &facts.value), VXCORE_OK);
+  ASSERT_TRUE(Json::parse(facts.value).at("credentialValidation").get<bool>());
+  ASSERT_TRUE(Json::parse(facts.value).at("pending").get<bool>());
+  ASSERT_FALSE(Json::parse(facts.value).at("conflicts").get<bool>());
+
+  // Model restart: the new recovery backend has no prior in-memory candidate authority.
+  WebDavSyncBackend recovery(client.config, old_provider);
+  auto cursor = RequestCursor();
+  ASSERT_NE(recovery.RecoverCandidate(PathToUtf8(client.root), client.config, old_provider,
+                                      operation), VXCORE_OK);
+  ASSERT_EQ(RequestCursor(), cursor);
+  ASSERT_TRUE(recovery.CandidateCleanupRequired());
+  ASSERT_EQ(client.Read(kStatePath), baseline);
+  const auto owned = journal.at("operations").at(0).at("path").get<std::string>();
+  const auto source = journal.at("operations").at(0).at("sourceSnapshot").get<std::string>();
+  const auto payload_path = client.Path(relative + "/" + source);
+  const auto payload = ReadBytes(payload_path, FileAccess::kPrivate);
+  ASSERT_EQ(webdav::HashFile(payload_path, nullptr, FileAccess::kPrivate), Hash(payload));
+  ASSERT_EQ(*RemoteBytes(owned), payload);
+  const auto foreign = ".vnote-webdav-tmp-" + OperationId();
+  PutRemote(foreign, "unrelated scratch must survive");
+  PutRemote(owned, "third-party replacement must survive");
+  cursor = RequestCursor();
+  ASSERT_NE(recovery.RecoverCandidate(PathToUtf8(client.root), client.config, candidate,
+                                      operation), VXCORE_OK);
+  ASSERT_TRUE(NoMutationsSince(cursor));
+  ASSERT_EQ(*RemoteBytes(owned), "third-party replacement must survive");
+  ASSERT_EQ(client.Read(kStatePath), baseline);
+  PutRemote(owned, payload);
+  ASSERT_EQ(recovery.RecoverCandidate(PathToUtf8(client.root), client.config, candidate,
+                                      operation), VXCORE_OK);
+  ASSERT_FALSE(recovery.CandidateCleanupRequired());
+  ASSERT_FALSE(recovery.IsInitialized());
+  ASSERT_TRUE(recovery.GetCredsProviderSnapshot() == old_provider);
+  ASSERT_NE(recovery.CommitCandidate(candidate), VXCORE_OK);
+  ASSERT_FALSE(private_io::Exists(client.Path(relative)));
+  ASSERT_FALSE(Inspect(owned).value("exists", false));
+  ASSERT_EQ(*RemoteBytes(foreign), "unrelated scratch must survive");
+  ASSERT_EQ(client.Read(kStatePath), baseline);
+  cursor = RequestCursor();
+  ASSERT_EQ(recovery.RecoverCandidate(PathToUtf8(client.root), client.config, candidate,
+                                      operation), VXCORE_OK);
+  ASSERT_EQ(RequestCursor(), cursor);
+  return 0;
+}
+
+int TestCandidatePublicationRecoveryEvidence() {
+  Control({{"action", "reset"}});
+  Client client;
+  client.Write("baseline.md", "publication recovery evidence");
+  ASSERT_EQ(client.Attach(), VXCORE_OK);
+  ASSERT_EQ(client.Sync(), VXCORE_OK);
+  const auto baseline = client.Read(kStatePath);
+  const auto original_provider = client.backend->GetCredsProviderSnapshot();
+  const auto username = "publication-" + RandomName();
+  const auto password = "publication-secret-" + RandomName();
+  const auto provider = AccountProvider(username, password);
+  Control({{"action", "configure"}, {"username", username}, {"password", password}});
+  auto operation = OperationId();
+  ASSERT_EQ(client.backend->ValidateCandidate(PathToUtf8(client.root), client.config,
+                                               provider, operation), VXCORE_OK);
+#ifdef _WIN32
+  // Real filesystem refusal at the atomic rename boundary: reads and temp writes
+  // remain permitted, but the live baseline cannot be replaced while this handle is open.
+  struct BaselineLock {
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    ~BaselineLock() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+  } locked;
+  const auto baseline_path = client.Path(kStatePath);
+  private_io::Validate(baseline_path);
+  const NativePathArgument native_baseline(baseline_path, FileAccess::kPrivate);
+  locked.handle = CreateFileW(native_baseline.c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  ASSERT_TRUE(locked.handle != INVALID_HANDLE_VALUE);
+  FileIdentity before_publication, after_refusal;
+  ASSERT_EQ(GetFileIdentity(baseline_path, before_publication, FileAccess::kPrivate), VXCORE_OK);
+  const auto failed_cursor = RequestCursor();
+  ASSERT_NE(client.backend->CommitCandidate(provider), VXCORE_OK);
+  ASSERT_EQ(RequestCursor(), failed_cursor);
+  ASSERT_TRUE(client.backend->CandidateCleanupRequired());
+  ASSERT_FALSE(client.backend->CandidateCommitted());
+  ASSERT_EQ(GetFileIdentity(baseline_path, after_refusal, FileAccess::kPrivate), VXCORE_OK);
+  ASSERT_TRUE(before_publication.SameObject(after_refusal));
+  ASSERT_EQ(client.Read(kStatePath), baseline);
+  ASSERT_TRUE(client.backend->GetCredsProviderSnapshot() == original_provider);
+  const auto marker_path = std::string(kPrivatePath) + "/credential-validation/" + operation;
+  ASSERT_EQ(ReadJson(client.Path(marker_path + "/state.json"), FileAccess::kPrivate).at("usernameHash"), Hash(username));
+  CloseHandle(locked.handle);
+  locked.handle = INVALID_HANDLE_VALUE;
+  ASSERT_EQ(client.backend->RecoverCandidate(PathToUtf8(client.root), client.config,
+                                              provider, operation), VXCORE_OK);
+  ASSERT_EQ(client.Read(kStatePath), baseline);
+  ASSERT_TRUE(client.backend->GetCredsProviderSnapshot() == original_provider);
+  operation = OperationId();
+  ASSERT_EQ(client.backend->ValidateCandidate(PathToUtf8(client.root), client.config,
+                                               provider, operation), VXCORE_OK);
+#endif
+  ASSERT_EQ(client.backend->CommitCandidate(provider), VXCORE_OK);
+  ASSERT_TRUE(client.backend->CandidateCommitted());
+  const auto published = client.Read(kStatePath);
+  ASSERT_EQ(client.State().at("usernameHash"), Hash(username));
+  ASSERT_EQ(client.State().at("entries"), Json::parse(baseline).at("entries"));
+  ASSERT_FALSE(client.backend->CandidateCleanupRequired());
+
+  // A process can die after baseline replacement but before removing its state-only
+  // publication marker. Reconstruct that exact supported durable shape with core State.
+  const auto interrupted = OperationId();
+  webdav::State marker;
+  marker.OpenCandidate(client.root, client.id, client.config.remote_url, Hash(username),
+                       interrupted, true);
+  CoreString facts;
+  ASSERT_EQ(vxcore_sync_inspect_storage(PathToUtf8(client.root).c_str(), client.id.c_str(),
+                                        &facts.value), VXCORE_OK);
+  ASSERT_TRUE(Json::parse(facts.value).at("credentialValidation").get<bool>());
+  ASSERT_EQ(Json::parse(facts.value).at("usernameHash"), Hash(username));
+  WebDavSyncBackend recovery(client.config, original_provider);
+  const auto recovery_cursor = RequestCursor();
+  ASSERT_EQ(recovery.RecoverCandidate(PathToUtf8(client.root), client.config, provider,
+                                      interrupted), VXCORE_OK);
+  ASSERT_EQ(RequestCursor(), recovery_cursor);
+  ASSERT_EQ(client.Read(kStatePath), published);
+  ASSERT_TRUE(recovery.GetCredsProviderSnapshot() == original_provider);
+  ASSERT_FALSE(recovery.IsInitialized());
+  ASSERT_FALSE(recovery.CandidateCleanupRequired());
+  ASSERT_FALSE(recovery.CandidateCommitted());
+  return 0;
+}
+
+int TestCandidateObserverFailurePreservesPublication() {
+  Control({{"action", "reset"}});
+  Client client;
+  client.Write("conflict.md", "baseline");
+  ASSERT_EQ(client.Attach(), VXCORE_OK);
+  ASSERT_EQ(client.Sync(), VXCORE_OK);
+  client.Write("conflict.md", "local revision");
+  PutRemote("conflict.md", "remote revision");
+  ASSERT_EQ(client.Sync(), VXCORE_ERR_SYNC_CONFLICT);
+  const auto baseline = client.State();
+  const auto original_provider = client.backend->GetCredsProviderSnapshot();
+  const auto username = "observer-" + RandomName();
+  const auto password = "observer-secret-" + RandomName();
+  const auto provider = AccountProvider(username, password);
+  Control({{"action", "configure"}, {"username", username}, {"password", password}});
+  // A fresh prepared backend imports the genuine durable conflict, not a synthetic observer.
+  WebDavSyncBackend candidate(client.config, original_provider);
+  ASSERT_EQ(candidate.ValidateCandidate(PathToUtf8(client.root), client.config, provider,
+                                          OperationId()), VXCORE_OK);
+  ASSERT_FALSE(candidate.CandidateCommitted());
+  struct AllocationFault {
+    explicit AllocationFault(WebDavSyncBackend &backend) {
+      observer_failure_seen = false;
+      observer_failure_backend = &backend;
+    }
+    ~AllocationFault() { observer_failure_backend = nullptr; }
+  };
+  VxCoreError code;
+  {
+    AllocationFault fault(candidate);
+    code = candidate.CommitCandidate(provider);
+  }
+  ASSERT_TRUE(observer_failure_seen);
+  ASSERT_EQ(code, VXCORE_ERR_OUT_OF_MEMORY);
+  ASSERT_TRUE(candidate.CandidateCommitted());
+  ASSERT_TRUE(candidate.IsInitialized());
+  ASSERT_FALSE(candidate.CandidateCleanupRequired());
+  ASSERT_TRUE(candidate.GetCredsProviderSnapshot() == provider);
+  ASSERT_EQ(client.State().at("usernameHash"), Hash(username));
+  ASSERT_EQ(client.State().at("entries"), baseline.at("entries"));
+  ASSERT_EQ(client.State().at("conflicts"), baseline.at("conflicts"));
+  ASSERT_FALSE(candidate.GetLastError().empty());
+  // The same observer fault cannot replace a primary operation error.
+  {
+    AllocationFault fault(candidate);
+    code = candidate.CommitCandidate(provider);
+  }
+  ASSERT_TRUE(observer_failure_seen);
+  ASSERT_EQ(code, VXCORE_ERR_INVALID_STATE);
+  ASSERT_TRUE(candidate.CandidateCommitted());
+  ASSERT_EQ(candidate.ResolveConflict("conflict.md", SyncConflictResolution::kKeepLocal), VXCORE_OK);
+  ASSERT_TRUE(ConflictPaths(candidate).count("conflict.md"));
+  ASSERT_EQ(client.Read("conflict.md"), "local revision");
+  ASSERT_EQ(*RemoteBytes("conflict.md"), "remote revision");
+  return 0;
+}
+
+int TestPreparedEnableKeepsIdentityUntilCommit() {
+  Control({{"action", "reset"}});
+  Client client;
+  const auto provider = Provider();
+  WebDavSyncBackend backend(client.config, provider);
+  const auto original = client.Read(kConfigPath);
+  ASSERT_EQ(backend.ValidateCandidate(PathToUtf8(client.root), client.config, provider,
+                                       OperationId()), VXCORE_OK);
+  ASSERT_FALSE(backend.IsInitialized());
+  ASSERT_FALSE(private_io::Exists(client.Path(kStatePath)));
+  ASSERT_EQ(client.Read(kConfigPath), original);
+  ASSERT_FALSE(Inspect(kConfigPath).value("exists", false));
+  const auto cursor = RequestCursor();
+  ASSERT_EQ(backend.CommitCandidate(provider), VXCORE_OK);
+  ASSERT_EQ(RequestCursor(), cursor);
+  ASSERT_TRUE(backend.IsInitialized());
+  ASSERT_EQ(backend.Sync(nullptr, nullptr), VXCORE_OK);
+  ASSERT_TRUE(Inspect(kConfigPath).value("exists", false));
+  ASSERT_EQ(ReadJson(client.Path(kStatePath), FileAccess::kPrivate).at("notebookId"), client.id);
+  return 0;
+}
+
+int TestPublicPreparedLifecyclePublicationAndRecovery() {
+  Control({{"action", "reset"}});
+  Client client(185);
+  ASSERT_TRUE(client.Path(kConfigPath).native().size() < 260);
+  client.Write("baseline.md", "public lifecycle baseline");
+  struct Lifecycle {
+    VxCoreSyncLifecycle *value = nullptr;
+    VxCoreSyncCancellation *cancellation = nullptr;
+    ~Lifecycle() {
+      Reset();
+      vxcore_sync_free_cancellation(cancellation);
+    }
+    void Reset() { vxcore_sync_free_lifecycle(value); value = nullptr; }
+  } enable;
+  // The prepared command uses its closed mobile config, not the legacy optional fields.
+  const auto enable_command = Json{{"version", 1}, {"operationId", OperationId()},
+      {"kind", "enable"}, {"config", {{"backend", "webdav"},
+      {"remoteUrl", client.config.remote_url}, {"autoSyncEnabled", false}}}}.dump();
+  const auto initial_config = client.Read(kConfigPath);
+  const auto credentials = CredentialsJson();
+  ASSERT_EQ(vxcore_sync_prepare_lifecycle(client.context.value, client.id.c_str(),
+      enable_command.c_str(), credentials.c_str(), &enable.value), VXCORE_OK);
+  ASSERT_EQ(client.Read(kConfigPath), initial_config);
+  ASSERT_EQ(vxcore_sync_execute_lifecycle(enable.value, nullptr), VXCORE_OK);
+  ASSERT_EQ(client.Read(kConfigPath), initial_config);
+  ASSERT_FALSE(private_io::Exists(client.Path(kStatePath)));
+  CoreString enabled;
+  auto cursor = RequestCursor();
+  ASSERT_EQ(vxcore_sync_complete_lifecycle(client.context.value, enable.value, &enabled.value), VXCORE_OK);
+  ASSERT_EQ(RequestCursor(), cursor);
+  ASSERT_TRUE(Json::parse(enabled.value).at("committed").get<bool>());
+  ASSERT_EQ(vxcore_sync_trigger(client.context.value, client.id.c_str()), VXCORE_ERR_SYNC_IN_PROGRESS);
+  enable.Reset();  // Completion publishes; free retires the lifecycle lease.
+  // Runtime enable does not persist routing. The consumer's owner config update
+  // must precede refresh/reopen or a later rotation, just as on mobile.
+  CoreString routing;
+  ASSERT_EQ(vxcore_notebook_get_config(client.context.value, client.id.c_str(), &routing.value), VXCORE_OK);
+  auto persisted = Json::parse(routing.value);
+  persisted["syncEnabled"] = true;
+  persisted["syncBackend"] = "webdav";
+  persisted["syncRemoteUrl"] = client.config.remote_url;
+  persisted["autoSyncEnabled"] = false;
+  ASSERT_EQ(vxcore_notebook_update_config(client.context.value, client.id.c_str(), persisted.dump().c_str()), VXCORE_OK);
+  ASSERT_EQ(vxcore_sync_trigger(client.context.value, client.id.c_str()), VXCORE_OK);
+  const auto original_baseline = client.Read(kStatePath);
+  // The ordinary notebook remains desktop-openable. Its actual retired recovery
+  // and credential-operation files exceed MAX_PATH and require private IO.
+  const auto archive = client.Path(std::string(kPrivatePath) + "/retired/" + OperationId() + "/state.json");
+  ASSERT_TRUE(archive.native().size() >= 260);
+  WriteBytes(archive, original_baseline, FileAccess::kPrivate);
+  FileIdentity archive_identity, config_identity, observed_identity;
+  ASSERT_EQ(GetFileIdentity(archive, archive_identity, FileAccess::kPrivate), VXCORE_OK);
+  ASSERT_EQ(GetFileIdentity(client.Path(kConfigPath), config_identity, FileAccess::kPrivate), VXCORE_OK);
+  const auto persisted_config = client.Read(kConfigPath);
+
+  const auto username = "public-rotation-" + RandomName();
+  const auto password = "public-secret-" + RandomName();
+  Control({{"action", "configure"}, {"username", username}, {"password", password}});
+  const auto account = Json{{"extra", {{"username", username}, {"password", password}}}}.dump();
+  const auto rotate_command = Json{{"version", 1}, {"operationId", OperationId()},
+                                    {"kind", "credentials"}}.dump();
+  Lifecycle rotate;
+  for (const auto *provider : {"jianguoyun", "objects", "unknown-provider"}) {
+    const auto unsupported = client.root / "vx_notebook/vx_sync" / provider;
+    const auto retained = unsupported / "retired" / OperationId() / "state.json";
+    ASSERT_TRUE(retained.native().size() >= 260);
+    WriteBytes(retained, "retained provider recovery bytes", FileAccess::kPrivate);
+    FileIdentity retained_identity;
+    ASSERT_EQ(GetFileIdentity(retained, retained_identity, FileAccess::kPrivate), VXCORE_OK);
+    Lifecycle rejected;
+    const auto rejected_cursor = RequestCursor();
+    ASSERT_EQ(vxcore_sync_prepare_lifecycle(client.context.value, client.id.c_str(),
+        rotate_command.c_str(), account.c_str(), &rejected.value), VXCORE_ERR_UNSUPPORTED);
+    ASSERT_NULL(rejected.value);
+    ASSERT_EQ(RequestCursor(), rejected_cursor);
+    ASSERT_EQ(GetFileIdentity(retained, observed_identity, FileAccess::kPrivate), VXCORE_OK);
+    ASSERT_TRUE(retained_identity.SameObject(observed_identity));
+    ASSERT_EQ(ReadBytes(retained, FileAccess::kPrivate), "retained provider recovery bytes");
+    ASSERT_EQ(client.Read(kStatePath), original_baseline);
+    ASSERT_EQ(client.Read(kConfigPath), persisted_config);
+    ASSERT_EQ(GetFileIdentity(client.Path(kConfigPath), observed_identity, FileAccess::kPrivate), VXCORE_OK);
+    ASSERT_TRUE(config_identity.SameObject(observed_identity));
+    RemovePrivateTree(unsupported);
+  }
+#ifdef _WIN32
+  {
+    const NativePathArgument native_archive(archive, FileAccess::kPrivate);
+    struct ArchiveReadLock {
+      HANDLE handle = INVALID_HANDLE_VALUE;
+      ~ArchiveReadLock() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+    } locked;
+    locked.handle = CreateFileW(native_archive.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                                 FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    ASSERT_TRUE(locked.handle != INVALID_HANDLE_VALUE);
+    Lifecycle unreadable;
+    const auto unreadable_cursor = RequestCursor();
+    ASSERT_EQ(vxcore_sync_prepare_lifecycle(client.context.value, client.id.c_str(),
+        rotate_command.c_str(), account.c_str(), &unreadable.value), VXCORE_ERR_IO);
+    ASSERT_NULL(unreadable.value);
+    ASSERT_EQ(RequestCursor(), unreadable_cursor);
+  }
+  ASSERT_EQ(GetFileIdentity(archive, observed_identity, FileAccess::kPrivate), VXCORE_OK);
+  ASSERT_TRUE(archive_identity.SameObject(observed_identity));
+  ASSERT_EQ(ReadBytes(archive, FileAccess::kPrivate), original_baseline);
+  ASSERT_EQ(client.Read(kStatePath), original_baseline);
+#endif
+  ASSERT_EQ(vxcore_sync_prepare_lifecycle(client.context.value, client.id.c_str(),
+      rotate_command.c_str(), account.c_str(), &rotate.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_sync_execute_lifecycle(rotate.value, nullptr), VXCORE_OK);
+  ASSERT_EQ(client.Read(kStatePath), original_baseline);
+#ifdef _WIN32
+  // Deny only final empty-parent deletion. Candidate creation, durable baseline
+  // replacement and in-memory publication still perform their real IO.
+  const auto recovery_parent = client.Path(std::string(kPrivatePath) + "/credential-validation");
+  private_io::CreateDirectories(recovery_parent);
+  struct RecoveryParentLock {
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    ~RecoveryParentLock() { if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle); }
+  } recovery_lock;
+  const NativePathArgument native_parent(recovery_parent, FileAccess::kPrivate);
+  recovery_lock.handle = CreateFileW(native_parent.c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  ASSERT_TRUE(recovery_lock.handle != INVALID_HANDLE_VALUE);
+#endif
+  CoreString rotated;
+  cursor = RequestCursor();
+  const auto completion = vxcore_sync_complete_lifecycle(client.context.value, rotate.value, &rotated.value);
+#ifdef _WIN32
+  ASSERT_EQ(completion, VXCORE_ERR_IO);
+  ASSERT_EQ(Json::parse(rotated.value).at("code"), static_cast<int>(VXCORE_ERR_IO));
+  ASSERT_TRUE(Json::parse(rotated.value).at("cleanupRequired").get<bool>());
+  CloseHandle(recovery_lock.handle);
+  recovery_lock.handle = INVALID_HANDLE_VALUE;
+  ASSERT_TRUE(private_io::IsEmpty(recovery_parent));
+  ASSERT_TRUE(private_io::Remove(recovery_parent));
+#else
+  ASSERT_EQ(completion, VXCORE_OK);
+#endif
+  ASSERT_EQ(RequestCursor(), cursor);
+  ASSERT_TRUE(Json::parse(rotated.value).at("committed").get<bool>());
+  rotate.Reset();
+  ASSERT_EQ(client.State().at("usernameHash"), Hash(username));
+  ASSERT_EQ(client.State().at("entries"), Json::parse(original_baseline).at("entries"));
+  ASSERT_EQ(ReadBytes(archive, FileAccess::kPrivate), original_baseline);
+  ASSERT_EQ(GetFileIdentity(archive, observed_identity, FileAccess::kPrivate), VXCORE_OK);
+  ASSERT_TRUE(archive_identity.SameObject(observed_identity));
+  ASSERT_EQ(client.Read(kConfigPath), persisted_config);
+  ASSERT_EQ(GetFileIdentity(client.Path(kConfigPath), observed_identity, FileAccess::kPrivate), VXCORE_OK);
+  ASSERT_TRUE(config_identity.SameObject(observed_identity));
+  // The real manager must hold the new backend despite the reported cleanup error.
+  ASSERT_EQ(vxcore_sync_trigger(client.context.value, client.id.c_str()), VXCORE_OK);
+  const auto published = client.Read(kStatePath);
+
+  const auto pending_username = "public-pending-" + RandomName();
+  const auto pending_password = "pending-secret-" + RandomName();
+  Control({{"action", "configure"}, {"username", pending_username}, {"password", pending_password}});
+  const auto pending_account = Json{{"extra", {{"username", pending_username},
+                                                {"password", pending_password}}}}.dump();
+  const auto pending_id = OperationId();
+  const auto pending_command = Json{{"version", 1}, {"operationId", pending_id},
+                                     {"kind", "credentials"}}.dump();
+  Lifecycle pending;
+  ASSERT_EQ(vxcore_sync_prepare_lifecycle(client.context.value, client.id.c_str(),
+      pending_command.c_str(), pending_account.c_str(), &pending.value), VXCORE_OK);
+  pending.cancellation = vxcore_sync_create_cancellation();
+  ASSERT_NOT_NULL(pending.cancellation);
+  FaultScope faults;
+  Control({{"action", "barrier"}, {"id", "public-candidate-put"}, {"method", "PUT"},
+           {"phase", "after"}});
+  auto worker = std::async(std::launch::async, [&] {
+    return vxcore_sync_execute_lifecycle(pending.value, pending.cancellation);
+  });
+  const bool reached = WaitBarrier("public-candidate-put");
+  vxcore_sync_cancel(pending.cancellation);
+  const bool timely = worker.wait_for(std::chrono::seconds(3)) == std::future_status::ready;
+  Control({{"action", "release"}, {"id", "public-candidate-put"}});
+  const auto result = worker.get();
+  ASSERT_TRUE(reached && timely);
+  ASSERT_EQ(result, VXCORE_ERR_CANCELLED);
+  CoreString cancelled;
+  ASSERT_EQ(vxcore_sync_complete_lifecycle(client.context.value, pending.value, &cancelled.value),
+            VXCORE_ERR_CANCELLED);
+  const auto cancelled_summary = Json::parse(cancelled.value);
+  ASSERT_FALSE(cancelled_summary.at("committed").get<bool>());
+  ASSERT_TRUE(cancelled_summary.at("cleanupRequired").get<bool>());
+  pending.Reset();
+  ASSERT_EQ(client.Read(kStatePath), published);
+
+  Lifecycle recovery;
+  const auto recovery_command = Json{{"version", 1}, {"operationId", OperationId()},
+      {"kind", "credentialRecovery"}, {"recoveryOperationId", pending_id},
+      {"config", {{"backend", "webdav"}, {"remoteUrl", client.config.remote_url},
+                    {"autoSyncEnabled", false}}}}.dump();
+  ASSERT_EQ(vxcore_sync_prepare_lifecycle(client.context.value, client.id.c_str(),
+      recovery_command.c_str(), pending_account.c_str(), &recovery.value), VXCORE_OK);
+  ASSERT_EQ(vxcore_sync_execute_lifecycle(recovery.value, nullptr), VXCORE_OK);
+  CoreString recovered;
+  cursor = RequestCursor();
+  ASSERT_EQ(vxcore_sync_complete_lifecycle(client.context.value, recovery.value, &recovered.value),
+            VXCORE_OK);
+  ASSERT_EQ(RequestCursor(), cursor);
+  const auto recovered_summary = Json::parse(recovered.value);
+  ASSERT_FALSE(recovered_summary.at("committed").get<bool>());
+  ASSERT_FALSE(recovered_summary.at("cleanupRequired").get<bool>());
+  recovery.Reset();
+  ASSERT_EQ(client.Read(kStatePath), published);
+  Control({{"action", "configure"}, {"username", username}, {"password", password}});
+  ASSERT_EQ(vxcore_sync_trigger(client.context.value, client.id.c_str()), VXCORE_OK);
+  ASSERT_EQ(client.State().at("usernameHash"), Hash(username));
+  return 0;
+}
+
 int TestProviderRotationAndCompositeProgress() {
   Control({{"action", "reset"}});
   Client client;
@@ -1208,12 +1819,14 @@ int TestProviderRotationAndCompositeProgress() {
   ASSERT_EQ(client.Sync(), VXCORE_OK);
   ASSERT_TRUE(CommonFile(client, "payload.bin"));
   ASSERT_EQ(client.State().at("usernameHash"), Hash(Environment("VXCORE_WEBDAV_TEST_USERNAME")));
-  for (const auto &entry : fs::recursive_directory_iterator(client.Path(kPrivatePath))) {
-    if (!entry.is_regular_file()) continue;
-    const auto contents = ReadBytes(entry.path());
-    ASSERT_TRUE(contents.find(new_secret) == std::string::npos);
-    ASSERT_TRUE(contents.find(Environment("VXCORE_WEBDAV_TEST_PASSWORD")) == std::string::npos);
-  }
+  bool private_secrets_absent = true;
+  VisitPrivateFiles(client.Path(kPrivatePath), [&](const fs::path &entry) {
+    const auto contents = ReadBytes(entry, FileAccess::kPrivate);
+    private_secrets_absent = private_secrets_absent &&
+        contents.find(new_secret) == std::string::npos &&
+        contents.find(Environment("VXCORE_WEBDAV_TEST_PASSWORD")) == std::string::npos;
+  });
+  ASSERT_TRUE(private_secrets_absent);
   const auto rotated_tree = RemoteTree();
   for (const auto &entry : rotated_tree.items()) {
     ASSERT_TRUE(entry.key().find(new_secret) == std::string::npos);
@@ -1429,7 +2042,9 @@ int ChildClone(const std::string &mode, const fs::path &root, const fs::path &co
     if (mode == "clone-union") {
       // A never-attached device can have ordinary files but no sync history.
       // Erasing only this fresh clone's clean baseline models that input.
-      fs::remove_all(root / PathFromUtf8(kPrivatePath));
+      ASSERT_TRUE(private_io::Remove(root / PathFromUtf8(kStatePath)));
+      ASSERT_TRUE(private_io::IsEmpty(root / PathFromUtf8(kPrivatePath)));
+      ASSERT_TRUE(private_io::Remove(root / PathFromUtf8(kPrivatePath)));
       fs::remove(root / "note.md");
       WriteBytes(root / "union-local.md", "local without a baseline");
     } else {
@@ -1535,6 +2150,333 @@ int TestTwoDeviceCloneAndPublication() {
       ASSERT_TRUE(bytes.find(Environment("VXCORE_WEBDAV_TEST_PASSWORD")) == std::string::npos);
       ASSERT_TRUE(bytes.find(Environment("VXCORE_WEBDAV_TEST_USERNAME")) == std::string::npos);
     }
+  }
+  return 0;
+}
+
+int TestPrivateCloneBudgetAndCandidateLongPaths() {
+  Control({{"action", "reset"}});
+  Client client;
+  const std::string payload(128 * 1024, 'p');
+  client.Write("assets/payload.bin", payload);
+  ASSERT_EQ(client.Attach(), VXCORE_OK);
+  ASSERT_EQ(client.Sync(), VXCORE_OK);
+  const auto original_config = client.Read(kConfigPath);
+  auto config = client.config;
+  config.private_clone = true;
+  config.clone_limits = {256 * 1024, 2 * 1024 * 1024, 100, 16, 512};
+  PrivateWorkspace reference;
+  ASSERT_TRUE(reference.path.native().size() >= 290);
+  const auto provider = Provider();
+  WebDavSyncBackend clone(config, provider);
+  ASSERT_EQ(clone.Clone(PathToUtf8(reference.path), config), VXCORE_OK);
+  const auto state_path = reference.path / PathFromUtf8(kStatePath);
+  const auto baseline = ReadBytes(state_path, FileAccess::kPrivate);
+  const auto cloned_config = ReadBytes(reference.path / PathFromUtf8(kConfigPath), FileAccess::kPrivate);
+  uint64_t total = 0;
+  VisitPrivateFiles(reference.path, [&](const fs::path &entry) { total += private_io::FileSize(entry); });
+  // The baseline dominates the config-projection sibling peak for this real inventory.
+  ASSERT_TRUE(baseline.size() > cloned_config.size());
+  ASSERT_TRUE(total > payload.size() + baseline.size());
+  for (const auto allowance : {total - 1, total}) {
+    PrivateWorkspace target;
+    FileIdentity before, after;
+    ASSERT_EQ(GetFileIdentity(target.path, before, FileAccess::kPrivate), VXCORE_OK);
+    config.clone_limits.max_total_bytes = allowance;
+    WebDavSyncBackend bounded(config, provider);
+    const auto cursor = RequestCursor();
+    const auto code = bounded.Clone(PathToUtf8(target.path), config);
+    ASSERT_EQ(code, allowance == total ? VXCORE_OK : VXCORE_ERR_INVALID_STATE);
+    ASSERT_TRUE(NoMutationsSince(cursor));
+    ASSERT_EQ(GetFileIdentity(target.path, after, FileAccess::kPrivate), VXCORE_OK);
+    ASSERT_TRUE(before.SameObject(after));
+    ASSERT_EQ(ReadBytes(target.path / "assets/payload.bin", FileAccess::kPrivate), payload);
+    ASSERT_EQ(ReadBytes(target.path / PathFromUtf8(kConfigPath), FileAccess::kPrivate), cloned_config);
+    uint64_t actual = 0;
+    VisitPrivateFiles(target.path, [&](const fs::path &entry) { actual += private_io::FileSize(entry); });
+    ASSERT_TRUE(actual <= allowance);
+    if (allowance == total) {
+      ASSERT_EQ(actual, total);
+      ASSERT_EQ(ReadBytes(target.path / PathFromUtf8(kStatePath), FileAccess::kPrivate), baseline);
+    } else {
+      ASSERT_FALSE(private_io::Exists(target.path / PathFromUtf8(kStatePath)));
+      ASSERT_EQ(actual, total - baseline.size());  // No baseline or temporary sibling was written.
+    }
+  }
+  // The state writer itself rejects insufficient sibling reservation before touching
+  // an existing baseline, preserving both identity and bytes.
+  webdav::State bounded_state;
+  bounded_state.Open(reference.path, client.id, config.remote_url,
+                     Json::parse(baseline).at("usernameHash").get<std::string>());
+  FileIdentity baseline_identity, after;
+  ASSERT_EQ(GetFileIdentity(state_path, baseline_identity, FileAccess::kPrivate), VXCORE_OK);
+  VxCoreError state_code = VXCORE_OK;
+  try { bounded_state.Save(baseline.size() - 1); }
+  catch (const webdav::Failure &failure) { state_code = failure.error; }
+  ASSERT_EQ(state_code, VXCORE_ERR_INVALID_STATE);
+  ASSERT_EQ(GetFileIdentity(state_path, after, FileAccess::kPrivate), VXCORE_OK);
+  ASSERT_TRUE(baseline_identity.SameObject(after));
+  ASSERT_EQ(ReadBytes(state_path, FileAccess::kPrivate), baseline);
+  bounded_state.Save(baseline.size());
+  ASSERT_EQ(ReadBytes(state_path, FileAccess::kPrivate), baseline);
+  CoreString facts;
+  ASSERT_EQ(vxcore_sync_inspect_storage(PathToUtf8(reference.path).c_str(), client.id.c_str(),
+                                        &facts.value), VXCORE_OK);
+  ASSERT_TRUE(Json::parse(facts.value).at("cleanCloneBaseline").get<bool>());
+  const auto username = "long-candidate-" + RandomName();
+  const auto password = "long-secret-" + RandomName();
+  const auto candidate = AccountProvider(username, password);
+  Control({{"action", "configure"}, {"username", username}, {"password", password}});
+  ASSERT_EQ(clone.ValidateCandidate(PathToUtf8(reference.path), config, candidate, OperationId()), VXCORE_OK);
+  ASSERT_FALSE(clone.CandidateCommitted());
+  FileIdentity config_identity;
+  const auto config_path = reference.path / PathFromUtf8(kConfigPath);
+  ASSERT_EQ(GetFileIdentity(config_path, config_identity, FileAccess::kPrivate), VXCORE_OK);
+  ASSERT_EQ(GetFileIdentity(state_path, baseline_identity, FileAccess::kPrivate), VXCORE_OK);
+  ASSERT_NE(clone.CommitCandidate(provider), VXCORE_OK);
+  ASSERT_FALSE(clone.CandidateCommitted());
+  ASSERT_EQ(GetFileIdentity(state_path, after, FileAccess::kPrivate), VXCORE_OK);
+  ASSERT_TRUE(baseline_identity.SameObject(after));
+  ASSERT_EQ(ReadBytes(state_path, FileAccess::kPrivate), baseline);
+  const auto cursor = RequestCursor();
+  ASSERT_EQ(clone.CommitCandidate(candidate), VXCORE_OK);
+  ASSERT_EQ(RequestCursor(), cursor);
+  ASSERT_TRUE(clone.CandidateCommitted());
+  ASSERT_TRUE(clone.GetCredsProviderSnapshot() == candidate);
+  ASSERT_EQ(ReadJson(state_path, FileAccess::kPrivate).at("usernameHash"), Hash(username));
+  ASSERT_EQ(ReadJson(state_path, FileAccess::kPrivate).at("entries"), Json::parse(baseline).at("entries"));
+  ASSERT_EQ(GetFileIdentity(config_path, after, FileAccess::kPrivate), VXCORE_OK);
+  ASSERT_TRUE(config_identity.SameObject(after));
+  ASSERT_EQ(ReadBytes(config_path, FileAccess::kPrivate), cloned_config);
+  ASSERT_EQ(client.Read(kConfigPath), original_config);
+  ASSERT_EQ(client.Read("assets/payload.bin"), payload);
+  return 0;
+}
+
+int TestPreparedCloneImportInventoryAdmission() {
+  Client client;
+  const auto notebook = webdav::ProjectConfig(Json::parse(client.Read(kConfigPath)));
+  const std::string recovery_bytes = "preserved foreign import recovery";
+  const std::string asset_bytes = "eligible long private asset";
+  for (int scenario = 0; scenario != 3; ++scenario) {
+    Control({{"action", "reset"}});
+    Workspace target;
+    const size_t boundary = scenario == 0 ? 259 : 260;
+    std::string recovery = u8"vx_notebook/vx_import/恢复-";
+    ASSERT_TRUE((target.path / PathFromUtf8(recovery)).native().size() < boundary);
+    while ((target.path / PathFromUtf8(recovery)).native().size() < boundary) recovery += 'x';
+    ASSERT_EQ((target.path / PathFromUtf8(recovery)).native().size(), boundary);
+    std::string asset = "assets";
+    while ((target.path / PathFromUtf8(asset)).native().size() < 290)
+      asset += "/private_asset_component";
+    asset += "/payload.bin";
+    PutRemote(kConfigPath, notebook);
+    PutRemote(recovery, recovery_bytes);
+    PutRemote(asset, asset_bytes);
+    const auto remote_before = RemoteTree();
+    auto config = client.config;
+    config.private_clone = true;
+    config.clone_limits = {256 * 1024, 2 * 1024 * 1024, 100, 32, 1024};
+    if (scenario == 2) config.exclude_paths.push_back("vx_notebook/vx_import/");
+    FileIdentity original, after;
+    ASSERT_EQ(GetFileIdentity(target.path, original, FileAccess::kPrivate), VXCORE_OK);
+    WebDavSyncBackend clone(config, Provider());
+    const auto cursor = RequestCursor();
+    const auto code = clone.Clone(PathToUtf8(target.path), config);
+    bool refused = false;
+#if defined(_WIN32)
+    refused = scenario == 1;
+#endif
+    ASSERT_EQ(code, refused ? VXCORE_ERR_UNSUPPORTED : VXCORE_OK);
+    ASSERT_EQ(GetFileIdentity(target.path, after, FileAccess::kPrivate), VXCORE_OK);
+    ASSERT_TRUE(original.SameObject(after));
+    ASSERT_TRUE(NoMutationsSince(cursor));
+    ASSERT_TRUE(RemoteTree() == remote_before);
+    ASSERT_EQ(*RemoteBytes(recovery), recovery_bytes);
+    ASSERT_EQ(*RemoteBytes(asset), asset_bytes);
+    if (refused) {
+      ASSERT_TRUE(private_io::IsEmpty(target.path));
+      const auto requests = Control({{"action", "requests"}, {"since", cursor}});
+      for (const auto &request : requests.at("requests")) ASSERT_NE(request.at("method"), "GET");
+    } else {
+      ASSERT_EQ(ReadBytes(target.path / PathFromUtf8(asset), FileAccess::kPrivate), asset_bytes);
+      if (scenario == 2)
+        ASSERT_FALSE(private_io::Exists(target.path / "vx_notebook/vx_import"));
+      else
+        ASSERT_EQ(ReadBytes(target.path / PathFromUtf8(recovery), FileAccess::kPrivate), recovery_bytes);
+      ASSERT_EQ(ReadJson(target.path / PathFromUtf8(kStatePath), FileAccess::kPrivate).at("notebookId"), client.id);
+    }
+  }
+  return 0;
+}
+
+int TestPreparedClonePrivateDescendantsAndRegistration() {
+#if defined(VXCORE_MOBILE_API) && VXCORE_MOBILE_API
+  Control({{"action", "reset"}});
+  Client client;
+  ASSERT_EQ(client.Attach(), VXCORE_OK);
+  ASSERT_EQ(client.Sync(), VXCORE_OK);
+  PrivateWorkspace owner(0);
+  const auto wrapper = owner.path / "imports" / OperationId();
+  const auto target = wrapper / "unpacked";
+  private_io::CreateDirectories(target);
+  ASSERT_TRUE((target / PathFromUtf8(kConfigPath)).native().size() < 260);
+  std::string relative = "assets";
+  while ((target / PathFromUtf8(relative)).native().size() < 290)
+    relative += "/private_clone_component";
+  relative += "/payload.bin";
+  const std::string payload("private clone\0payload", 21);
+  PutRemote(relative, payload);
+  struct PrivateContext {
+    VxCoreContextHandle value = nullptr;
+    ~PrivateContext() { vxcore_context_destroy(value); }
+  } context;
+  ASSERT_EQ(vxcore_context_create_with_paths(nullptr, PathToUtf8(wrapper / "runtime/app").c_str(),
+      PathToUtf8(wrapper / "runtime/local").c_str(), &context.value), VXCORE_OK);
+  struct Lifecycle {
+    VxCoreSyncLifecycle *value = nullptr;
+    ~Lifecycle() { vxcore_sync_free_lifecycle(value); }
+  } lifecycle;
+  const auto command = Json{{"version", 1}, {"operationId", OperationId()}, {"kind", "clone"},
+      {"target", PathToUtf8(target)},
+      {"config", {{"backend", "webdav"}, {"remoteUrl", client.config.remote_url}, {"autoSyncEnabled", false}}},
+      {"limits", {{"maxFileBytes", 256 * 1024}, {"maxTotalBytes", 2 * 1024 * 1024},
+                  {"maxEntries", 100}, {"maxDepth", 32}, {"maxPathBytes", 1024}}}}.dump();
+  const auto credentials = CredentialsJson();
+  ASSERT_EQ(vxcore_sync_prepare_lifecycle(context.value, nullptr, command.c_str(), credentials.c_str(),
+                                          &lifecycle.value), VXCORE_OK);
+  const auto cursor = RequestCursor();
+  VxCoreError execution = VXCORE_ERR_UNKNOWN;
+  std::thread worker([&] { execution = vxcore_sync_execute_lifecycle(lifecycle.value, nullptr); });
+  worker.join();
+  ASSERT_EQ(execution, VXCORE_OK);
+  ASSERT_TRUE(NoMutationsSince(cursor));
+  ASSERT_EQ(ReadBytes(target / PathFromUtf8(relative), FileAccess::kPrivate), payload);
+  CoreString result;
+  ASSERT_EQ(vxcore_sync_complete_lifecycle(context.value, lifecycle.value, &result.value), VXCORE_OK);
+  ASSERT_TRUE(Json::parse(result.value).at("committed").get<bool>());
+  ASSERT_EQ(Json::parse(result.value).at("notebookId"), client.id);
+  CoreString registered;
+  ASSERT_EQ(vxcore_notebook_get_config(context.value, client.id.c_str(), &registered.value), VXCORE_OK);
+  ASSERT_EQ(Json::parse(registered.value).at("id"), client.id);
+  ASSERT_EQ(ReadBytes(target / PathFromUtf8(relative), FileAccess::kPrivate), payload);
+  vxcore_sync_free_lifecycle(lifecycle.value);
+  lifecycle.value = nullptr;
+  ASSERT_EQ(vxcore_notebook_close(context.value, client.id.c_str()), VXCORE_OK);
+  vxcore_context_destroy(context.value);
+  context.value = nullptr;
+  ASSERT_EQ(ReadBytes(target / PathFromUtf8(relative), FileAccess::kPrivate), payload);
+#else
+  std::cout << "SKIP: private C API clone registration requires VXCORE_MOBILE_API\n";
+#endif
+  return 0;
+}
+
+int TestPreparedCloneInventoryLimits() {
+  Control({{"action", "reset"}});
+  Client client;
+  client.Write("assets/large.bin", std::string(128 * 1024, 'b'));
+  ASSERT_EQ(client.Attach(), VXCORE_OK);
+  ASSERT_EQ(client.Sync(), VXCORE_OK);
+  for (int restriction = 0; restriction != 5; ++restriction) {
+    auto config = client.config;
+    switch (restriction) {
+      case 0: config.clone_limits.max_file_bytes = 1; break;
+      case 1: config.clone_limits.max_total_bytes = 1; break;
+      case 2: config.clone_limits.max_entries = 1; break;
+      case 3: config.clone_limits.max_depth = 1; break;
+      case 4: config.clone_limits.max_path_bytes = 5; break;
+    }
+    Workspace target;
+    WebDavSyncBackend clone(config, Provider());
+    const auto cursor = RequestCursor();
+    ASSERT_NE(clone.Clone(PathToUtf8(target.path), config), VXCORE_OK);
+    ASSERT_TRUE(fs::is_empty(target.path));
+    ASSERT_TRUE(NoMutationsSince(cursor));
+    const auto requests = Control({{"action", "requests"}, {"since", cursor}});
+    for (const auto &request : requests.at("requests"))
+      ASSERT_NE(request.at("method"), "GET");
+  }
+  auto config = client.config;
+  config.clone_limits.max_file_bytes = 256 * 1024;
+  config.clone_limits.max_total_bytes = 1024 * 1024;
+  config.clone_limits.max_entries = 100;
+  config.clone_limits.max_depth = 16;
+  config.clone_limits.max_path_bytes = 512;
+  auto remote_config = Json::parse(*RemoteBytes(kConfigPath));
+  remote_config["syncEnabled"] = true;
+  remote_config["syncBackend"] = "webdav";
+  remote_config["syncRemoteUrl"] = config.remote_url;
+  remote_config["autoSyncEnabled"] = true;
+  PutRemote(kConfigPath, remote_config.dump());
+  Workspace target;
+  WebDavSyncBackend clone(config, Provider());
+  ASSERT_EQ(clone.Clone(PathToUtf8(target.path), config), VXCORE_OK);
+  ASSERT_EQ(ReadBytes(target.path / "assets/large.bin"), std::string(128 * 1024, 'b'));
+  const auto cloned_config = ReadJson(target.path / PathFromUtf8(kConfigPath));
+  for (const auto *key : {"syncEnabled", "syncBackend", "syncRemoteUrl", "autoSyncEnabled"})
+    ASSERT_FALSE(cloned_config.contains(key));
+  const auto state = ReadJson(target.path / PathFromUtf8(kStatePath), FileAccess::kPrivate);
+  ASSERT_EQ(state.at("notebookId"), client.id);
+  ASSERT_EQ(state.at("entries").at("assets/large.bin").at("sha256"),
+            Hash(std::string(128 * 1024, 'b')));
+  ASSERT_FALSE(private_io::Exists(target.path / PathFromUtf8(kPendingPath)));
+  return 0;
+}
+
+int TestPreparedCloneRejectsDishonestLengths() {
+  Control({{"action", "reset"}});
+  Client client;
+  client.Write("oversized.bin", std::string(128 * 1024, 'x'));
+  ASSERT_EQ(client.Attach(), VXCORE_OK);
+  ASSERT_EQ(client.Sync(), VXCORE_OK);
+  const auto inventory = RemoteTree();
+  for (uint64_t advertised : {uint64_t(0), uint64_t(32)}) {
+    // A real, complete Depth:1 inventory with one dishonest file size. The GET still
+    // returns the authentic ETag and real body; only the transport's streaming cap saves disk.
+    std::string xml = "<multistatus xmlns='DAV:'>";
+    auto response = [&](const std::string &path, bool collection,
+                        const std::string &etag, uint64_t size) {
+      xml += "<response><href>/notebook/" + path + (collection && !path.empty() ? "/" : "") +
+             "</href><propstat><prop><resourcetype>";
+      if (collection) xml += "<collection/>";
+      xml += "</resourcetype>";
+      if (!collection)
+        xml += "<getetag>" + etag + "</getetag><getcontentlength>" + std::to_string(size) +
+               "</getcontentlength>";
+      xml += "</prop><status>HTTP/1.1 200 OK</status></propstat></response>";
+    };
+    response("", true, "", 0);
+    for (const auto &item : inventory.items()) {
+      if (item.key().empty() || item.key().find('/') != std::string::npos) continue;
+      const bool collection = item.value().at("kind") == "collection";
+      response(item.key(), collection, collection ? "" : item.value().at("etag").get<std::string>(),
+               item.key() == "oversized.bin" ? advertised : item.value().value("size", uint64_t(0)));
+    }
+    xml += "</multistatus>";
+    FaultScope faults;
+    Control({{"action", "fault"}, {"method", "PROPFIND"}, {"path", ""}, {"effect", "xml"},
+             {"body", xml}, {"count", -1}});
+    auto config = client.config;
+    config.clone_limits.max_file_bytes = 1024 * 1024;
+    config.clone_limits.max_total_bytes = 2 * 1024 * 1024;
+    Workspace target;
+    WebDavSyncBackend clone(config, Provider());
+    ASSERT_NE(clone.Clone(PathToUtf8(target.path), config), VXCORE_OK);
+    ASSERT_FALSE(fs::exists(target.path / "oversized.bin"));
+    ASSERT_FALSE(private_io::Exists(target.path / PathFromUtf8(kStatePath)));
+    uint64_t staged = 0;
+    for (fs::recursive_directory_iterator it(target.path), end; it != end; ++it) {
+      if (it->path() == target.path / PathFromUtf8(kPrivatePath)) {
+        it.disable_recursion_pending();
+        VisitPrivateFiles(it->path(), [&](const fs::path &entry) {
+          staged += private_io::FileSize(entry);
+        });
+      } else if (it->is_regular_file())
+        staged += it->file_size();
+    }
+    ASSERT_TRUE(staged < 128 * 1024);
+    ASSERT_EQ(*RemoteBytes("oversized.bin"), std::string(128 * 1024, 'x'));
   }
   return 0;
 }
@@ -1730,9 +2672,9 @@ int TestCrashAfterLocalReplacementBeforeBaseline() {
   ASSERT_EQ(client.Read("installed.md"), "old local revision");
   // A nonempty directory at the final publication target makes the real atomic
   // baseline rename fail on Windows and POSIX. It does not corrupt journal data.
-  fs::rename(state_file, held_state);
-  fs::create_directory(state_file);
-  WriteBytes(state_file / "owned-obstruction", "prevent baseline commit");
+  ASSERT_EQ(RenameNoReplace(state_file, held_state, FileAccess::kPrivate), VXCORE_OK);
+  ASSERT_TRUE(private_io::MakeDirectory(state_file));
+  WriteBytes(state_file / "owned-obstruction", "prevent baseline commit", FileAccess::kPrivate);
   child.Continue();
   ASSERT_TRUE(child.WaitFile("result.json"));
   ASSERT_NE(child.Report().at("result").get<int>(), int(VXCORE_OK));
@@ -1744,9 +2686,9 @@ int TestCrashAfterLocalReplacementBeforeBaseline() {
   ASSERT_TRUE(SnapshotContains(client, "remote revision to install"));
   ASSERT_TRUE(child.KillClient());
   ASSERT_NE(child.Wait(), 0);
-  fs::remove(state_file / "owned-obstruction");
-  fs::remove(state_file);
-  fs::rename(held_state, state_file);
+  ASSERT_TRUE(private_io::Remove(state_file / "owned-obstruction"));
+  ASSERT_TRUE(private_io::Remove(state_file));
+  ASSERT_EQ(RenameNoReplace(held_state, state_file, FileAccess::kPrivate), VXCORE_OK);
   Child restarted("sync", client.root);
   ASSERT_TRUE(restarted.WaitFile("ready.json"));
   restarted.Continue();
@@ -1820,7 +2762,7 @@ int TestDamagedStateAndJournalFailClosed() {
   ASSERT_EQ(client.backend->StageAndCommit(nullptr), VXCORE_OK);
   ASSERT_EQ(client.backend->FetchRebasePush(), VXCORE_OK);
   ASSERT_TRUE(PendingHasOperations(client.root));
-  const auto pending = ReadJson(client.Path(kPendingPath));
+  const auto pending = ReadJson(client.Path(kPendingPath), FileAccess::kPrivate);
   client.backend.reset();
   Workspace outside;
   WriteBytes(outside.path / "sentinel", "outside notebook must survive");
@@ -1852,7 +2794,7 @@ int TestDamagedStateAndJournalFailClosed() {
     const auto before = RemoteTree();
     ASSERT_NE(client.Attach(), VXCORE_OK);
     ASSERT_FALSE(client.backend->IsInitialized());
-    ASSERT_EQ(ReadJson(client.Path(kPendingPath)), value);
+    ASSERT_EQ(ReadJson(client.Path(kPendingPath), FileAccess::kPrivate), value);
     ASSERT_EQ(ReadBytes(outside.path / "sentinel"), "outside notebook must survive");
     ASSERT_EQ(client.Read("preserved.md"), "baseline bytes");
     ASSERT_TRUE(RemoteTree() == before);
@@ -1865,6 +2807,44 @@ int TestDamagedStateAndJournalFailClosed() {
   ASSERT_EQ(client.Attach(), VXCORE_OK);
   ASSERT_EQ(client.Sync(), VXCORE_OK);
   ASSERT_TRUE(CommonFile(client, "preserved.md"));
+  return 0;
+}
+
+int TestCancelledApplyRetainsOperationResultDuringRefresh() {
+  Control({{"action", "reset"}});
+  Client client;
+  client.Write("refresh.md", "old working bytes");
+  const auto config = client.config.ToJson().dump();
+  const auto credentials = CredentialsJson();
+  ASSERT_EQ(vxcore_sync_enable(client.context.value, client.id.c_str(), config.c_str(),
+                               credentials.c_str()), VXCORE_OK);
+  ASSERT_EQ(vxcore_sync_trigger(client.context.value, client.id.c_str()), VXCORE_OK);
+  const auto baseline = client.Read(kStatePath);
+  PutRemote("refresh.md", "incoming private snapshot");
+  int committed = 1;
+  ASSERT_EQ(vxcore_sync_stage_only(client.context.value, client.id.c_str(), nullptr, &committed),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_sync_network_phase(client.context.value, client.id.c_str(), nullptr), VXCORE_OK);
+  VxCoreSyncCancellation *token = vxcore_sync_create_cancellation();
+  ASSERT_NOT_NULL(token);
+  vxcore_sync_cancel(token);
+  CoreString changed;
+  const auto cursor = RequestCursor();
+  const auto applied = vxcore_sync_apply_phase(client.context.value, client.id.c_str(), token,
+                                               nullptr, &changed.value);
+  vxcore_sync_free_cancellation(token);
+  ASSERT_EQ(applied, VXCORE_ERR_CANCELLED);
+  ASSERT_EQ(client.Read("refresh.md"), "old working bytes");
+  ASSERT_EQ(client.Read(kStatePath), baseline);
+  int32_t refreshed = VXCORE_ERR_UNKNOWN;
+  ASSERT_EQ(vxcore_sync_refresh_notebook_result(client.context.value, client.id.c_str(), &refreshed),
+            VXCORE_ERR_CANCELLED);
+  ASSERT_EQ(refreshed, VXCORE_OK);
+  ASSERT_EQ(RequestCursor(), cursor);
+  ASSERT_EQ(client.Read("refresh.md"), "old working bytes");
+  ASSERT_TRUE(PendingHasOperations(client.root));
+  ASSERT_EQ(vxcore_sync_trigger(client.context.value, client.id.c_str()), VXCORE_OK);
+  ASSERT_EQ(client.Read("refresh.md"), "incoming private snapshot");
   return 0;
 }
 
@@ -2086,13 +3066,16 @@ int TestFailedProbeCleanupIsRecoverable() {
   }
   ASSERT_FALSE(owned.empty());
   bool journaled = false;
-  for (const auto &entry : fs::recursive_directory_iterator(client.Path(kPrivatePath))) {
-    if (!entry.is_regular_file() || entry.path().extension() != ".json") continue;
-    const auto bytes = ReadBytes(entry.path());
+  bool private_secrets_absent = true;
+  VisitPrivateFiles(client.Path(kPrivatePath), [&](const fs::path &entry) {
+    if (entry.extension() != ".json") return;
+    const auto bytes = ReadBytes(entry, FileAccess::kPrivate);
     for (const auto &scratch : owned)
       journaled = journaled || bytes.find(scratch) != std::string::npos;
-    ASSERT_TRUE(bytes.find(Environment("VXCORE_WEBDAV_TEST_PASSWORD")) == std::string::npos);
-  }
+    private_secrets_absent = private_secrets_absent &&
+        bytes.find(Environment("VXCORE_WEBDAV_TEST_PASSWORD")) == std::string::npos;
+  });
+  ASSERT_TRUE(private_secrets_absent);
   ASSERT_TRUE(journaled);
   Control({{"action", "clear_faults"}});
   client.backend.reset();
@@ -2149,14 +3132,26 @@ int main(int argc, char **argv) {
         {"conditional-race", TestConditionalRacesPreserveThirdPartyVersion},
         {"cancellation", TestCancellationAndConcurrentSnapshots},
         {"credentials-progress", TestProviderRotationAndCompositeProgress},
+        {"prepared-credentials", TestPreparedCandidateAuthenticationAndPublication},
+        {"candidate-recovery", TestPreparedCandidateCancellationRecovery},
+        {"candidate-publication-recovery", TestCandidatePublicationRecoveryEvidence},
+        {"candidate-observer-failure", TestCandidateObserverFailurePreservesPublication},
+        {"prepared-enable", TestPreparedEnableKeepsIdentityUntilCommit},
+        {"prepared-capi", TestPublicPreparedLifecyclePublicationAndRecovery},
         {"two-device", TestTwoDeviceCloneAndPublication},
         {"clone-stability", TestCloneRevalidatesAndCancellation},
+        {"clone-limits", TestPreparedCloneInventoryLimits},
+        {"clone-private-budget", TestPrivateCloneBudgetAndCandidateLongPaths},
+        {"clone-private-capi", TestPreparedClonePrivateDescendantsAndRegistration},
+        {"clone-import-admission", TestPreparedCloneImportInventoryAdmission},
+        {"clone-lengths", TestPreparedCloneRejectsDishonestLengths},
         {"lost-ack", TestLostAcknowledgementsAreNotReplayed},
         {"process-crashes", TestProcessCrashJournalBoundaries},
         {"local-crash", TestCrashAfterLocalReplacementBeforeBaseline},
         {"divergent-recovery", TestRecoveryPreservesDivergentVersion},
         {"damaged-state", TestDamagedStateAndJournalFailClosed},
         {"capi-apply", TestCapiDeferredApplyAndErrorOutputs},
+        {"capi-refresh-cancel", TestCancelledApplyRetainsOperationResultDuringRefresh},
         {"capi-cancel", TestCapiCloneCancellationClearsOutput},
         {"truncated-body", TestUnstableRemoteDownloadNeverPublishesPartialBytes},
         {"invalid-metadata", TestMetadataValidationPrecedesPublication},

@@ -12,6 +12,30 @@ option(VXCORE_BUILD_TESTS "Build tests" ON)
 option(VXCORE_BUILD_TOOLS "Build diagnostic tools" OFF)
 option(VXCORE_INSTALL "Enable install targets" ON)
 
+# Select by target platform, never by the machine running CMake.
+set(VXCORE_MOBILE_PLATFORM OFF)
+if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(VXCORE_MOBILE_PLATFORM ON)
+endif()
+option(VXCORE_ENABLE_MOBILE_TEST_API "Expose mobile context API for desktop-hosted tests only" OFF)
+if(VXCORE_ENABLE_MOBILE_TEST_API AND NOT VXCORE_MOBILE_PLATFORM AND VXCORE_INSTALL)
+    message(FATAL_ERROR "Desktop mobile-API tests require VXCORE_INSTALL=OFF")
+endif()
+set(VXCORE_MOBILE_API_ENABLED ${VXCORE_MOBILE_PLATFORM})
+if(VXCORE_ENABLE_MOBILE_TEST_API)
+    set(VXCORE_MOBILE_API_ENABLED ON)
+endif()
+
+# Shared with direct-compile tests. Test-only API opt-in NEVER selects this policy.
+if(VXCORE_MOBILE_PLATFORM)
+    set(VXCORE_BUFFER_SAVE_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/mobile/buffer_file_save_mobile.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/mobile/file_writer_mobile.cpp)
+else()
+    set(VXCORE_BUFFER_SAVE_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/buffer_file_save_desktop.cpp)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -26,8 +50,8 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(Threads REQUIRED)
 
-# OpenSSL is only required on Linux; Windows uses WinHTTP and macOS uses SecureTransport.
-if(UNIX AND NOT APPLE)
+# Android, iOS and other Unix targets use OpenSSL; desktop Apple retains SecureTransport.
+if((UNIX AND NOT APPLE) OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
     find_package(OpenSSL REQUIRED)
 endif()
 
@@ -84,7 +108,7 @@ if(VXCORE_INSTALL)
     get_target_property(_vxcore_pugixml_license pugixml VXCORE_LICENSE_FILE)
     install(FILES "${_vxcore_pugixml_license}"
         DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/vxcore RENAME LICENSE.pugixml)
-    if(NOT APPLE)
+    if(NOT APPLE OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
         get_target_property(_vxcore_curl_license vxcore_webdav_curl VXCORE_LICENSE_FILE)
         install(FILES "${_vxcore_curl_license}"
             DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/vxcore RENAME LICENSE.curl)
@@ -92,8 +116,13 @@ if(VXCORE_INSTALL)
 
     install(DIRECTORY include/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-        FILES_MATCHING PATTERN "*.h"
+        FILES_MATCHING PATTERN "*.h" PATTERN "mobile" EXCLUDE
     )
+    if(VXCORE_MOBILE_PLATFORM)
+        install(DIRECTORY include/vxcore/mobile/
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vxcore/mobile
+            FILES_MATCHING PATTERN "*.h")
+    endif()
 
     install(DIRECTORY data/
         DESTINATION ${CMAKE_INSTALL_BINDIR}/data
