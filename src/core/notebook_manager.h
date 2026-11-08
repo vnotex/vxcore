@@ -59,6 +59,10 @@ class NotebookManager {
   // pre-T14 default).
   void RecordNotebookReadOnly(const std::string &notebook_id, bool read_only);
 
+  // Save local trust before publishing it to the live notebook. A failed save
+  // leaves both the record and runtime state unchanged, including when read-only.
+  VxCoreError SetNotebookTrusted(const std::string &notebook_id, bool trusted);
+
   // Encryption-only entry points. Lazy state remains null for ordinary use.
   // Existing notebook lifecycle/metadata synchronization remains caller-owned.
   struct EncryptionSetup;

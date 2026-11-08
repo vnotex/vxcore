@@ -306,6 +306,22 @@ VXCORE_API VxCoreError vxcore_notebook_set_read_only(VxCoreContextHandle context
 VXCORE_API VxCoreError vxcore_notebook_is_read_only(VxCoreContextHandle context,
                                                     const char *notebook_id, bool *out_read_only);
 
+// ============ Local Trust Operations ============
+// Trust defaults to false and is stored only in this device's opened-notebook
+// session record, never in notebook config. It survives restarts until the
+// notebook is explicitly closed. Generic create/open do not grant trust.
+// Both functions require a live notebook and a nonempty ID. Null arguments
+// return VXCORE_ERR_NULL_POINTER; an empty ID returns VXCORE_ERR_INVALID_PARAM;
+// an unknown ID returns VXCORE_ERR_NOT_FOUND.
+// A non-null out_trusted is reset to false before validation.
+VXCORE_API VxCoreError vxcore_notebook_is_trusted(VxCoreContextHandle context,
+                                                  const char *notebook_id, bool *out_trusted);
+
+// Persist before publishing runtime trust. Save errors leave trust unchanged
+// and are returned to the caller. Allowed for read-only notebooks.
+VXCORE_API VxCoreError vxcore_notebook_set_trusted(VxCoreContextHandle context,
+                                                   const char *notebook_id, bool trusted);
+
 // ============ Recycle Bin Operations (Bundled Notebooks Only) ============
 typedef struct VxCoreRecycleBinCleanup VxCoreRecycleBinCleanup;
 

@@ -141,13 +141,11 @@ VxCoreError ConfigManager::SaveSessionConfig() {
   try {
     auto session_config_path = local_data_path_ / kSessionConfigFileName;
     VXCORE_LOG_DEBUG("Saving session config: %s", PathToUtf8(session_config_path).c_str());
-    std::ofstream file(session_config_path);
-    if (!file.is_open()) {
-      VXCORE_LOG_ERROR("Failed to open session config file for writing");
-      return VXCORE_ERR_IO;
+    auto error = WriteFileAtomic(session_config_path, session_config_.ToJson().dump(2));
+    if (error != VXCORE_OK) {
+      VXCORE_LOG_ERROR("Failed to save session config atomically: error=%d", error);
+      return error;
     }
-    nlohmann::json json = session_config_.ToJson();
-    file << json.dump(2);
     VXCORE_LOG_DEBUG("Session config saved successfully");
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &e) {

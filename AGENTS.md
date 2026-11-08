@@ -53,6 +53,23 @@ The vxcore submodule currently has **no git tags**, so there is no formal releas
 - Enum additions MUST be appended before the `VXCORE_ERR_UNKNOWN = 999` sentinel with an explicit value; never reorder existing enumerators.
 - Cut `v0.1.0` at the next stable point and adopt SemVer thereafter (MAJOR for `!` commits, MINOR for pure additions, PATCH for internal fixes).
 
+## Local notebook trust
+
+`vxcore_notebook_is_trusted` / `vxcore_notebook_set_trusted` expose a consumer-assigned
+local fact in `vxsession.json`'s `notebooks[].trusted`, never in shared `NotebookConfig`.
+Generic create/open and absent or non-boolean fields are untrusted. Consumers own consent
+policy; read-only notebooks may change trust because only local session state changes.
+
+Restore approval only for the same cleaned root, nonempty notebook ID and type. Stale IDs
+reset trust; duplicate loadable records combine effective trust with AND. Temporarily
+unavailable records retain approval for a later matching open, but copies/new roots do not.
+Normal context teardown retains records; successful explicit close removes approval.
+
+The setter publishes runtime trust only after an atomic session save, rolling back its
+record boolean on failure. Close saves record removal before runtime/local-data teardown
+and restores original record order on failure; previously closed buffers are not reopened.
+Coverage: `test_notebook_trust` and `test_notebook_record_reconcile` (run serially).
+
 ## Strict ordinary-file trash
 
 `vxcore_node_trash(context, notebook_id, node_path, out_trashed, out_recovery_required)`

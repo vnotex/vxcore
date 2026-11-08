@@ -184,6 +184,7 @@ int test_reappear_after_id_drift() {
   ASSERT_NOT_NULL(id1);
   const std::string sid1(id1);
   vxcore_string_free(id1);
+  ASSERT_EQ(vxcore_notebook_set_trusted(ctx1, sid1.c_str(), true), VXCORE_OK);
 
   // Capture the EXACT stored rootFolder string for all later comparisons.
   const std::string root = StoredRootForId(sid1);
@@ -206,6 +207,15 @@ int test_reappear_after_id_drift() {
   // 5. The session now has exactly ONE record for this root, reconciled to id2.
   ASSERT_EQ(CountRecordsForRoot(root), 1);
   ASSERT_EQ(RecordIdForRoot(root), id2);
+  bool trusted = true;
+  ASSERT_EQ(vxcore_notebook_is_trusted(ctx2, id2.c_str(), &trusted), VXCORE_OK);
+  ASSERT_FALSE(trusted);
+  const auto reconciled_session = LoadSession();
+  for (const auto &record : reconciled_session["notebooks"]) {
+    if (record.value("rootFolder", std::string()) == root) {
+      ASSERT_EQ(record["trusted"], nlohmann::json(false));
+    }
+  }
 
   // 6. Close by the reconciled id -> success.
   ASSERT_EQ(vxcore_notebook_close(ctx2, id2.c_str()), VXCORE_OK);
@@ -277,6 +287,55 @@ int test_same_root_dedupe() {
 
   cleanup_test_dir(nb_path);
   std::cout << "    \xE2\x9C\x93 test_same_root_dedupe passed" << std::endl;
+  return 0;
+}
+
+// Every order must retain the AND of effective trust, including when the last
+// loaded object replaces the runtime entry. An identity mismatch is never trusted.
+int test_duplicate_trust_is_conservative_in_both_orders() {
+  for (int mismatch = 0; mismatch < 3; ++mismatch) {
+    for (int reversed = 0; reversed < 2; ++reversed) {
+      vxcore_clear_test_directory();
+      const auto path = get_test_path("reconcile_trust_duplicates");
+      cleanup_test_dir(path);
+      VxCoreContextHandle ctx = nullptr;
+      ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+      char *allocated_id = nullptr;
+      ASSERT_EQ(vxcore_notebook_create(ctx, path.c_str(), "{\"name\":\"Duplicates\"}",
+                                       VXCORE_NOTEBOOK_BUNDLED, &allocated_id),
+                VXCORE_OK);
+      ASSERT_NOT_NULL(allocated_id);
+      const std::string id(allocated_id);
+      vxcore_string_free(allocated_id);
+      ASSERT_EQ(vxcore_notebook_set_trusted(ctx, id.c_str(), true), VXCORE_OK);
+      const auto root = StoredRootForId(id);
+      ASSERT_FALSE(root.empty());
+      vxcore_context_destroy(ctx);
+      auto session = LoadSession();
+      ASSERT_EQ(session["notebooks"].size(), 1u);
+      const auto approved = session["notebooks"][0];
+      auto conflicting = approved;
+      if (mismatch) {
+        // Even a true boolean cannot authorize a different or absent identity.
+        conflicting["id"] = mismatch == 1 ? "11111111-dead-beef-cafe-111111111111" : "";
+      } else {
+        conflicting["trusted"] = false;
+      }
+      session["notebooks"] = reversed ? nlohmann::json::array({conflicting, approved})
+                                      : nlohmann::json::array({approved, conflicting});
+      WriteSession(session);
+      ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+      bool trusted = true;
+      ASSERT_EQ(vxcore_notebook_is_trusted(ctx, id.c_str(), &trusted), VXCORE_OK);
+      ASSERT_FALSE(trusted);
+      ASSERT_EQ(CountRecordsForRoot(root), 1);
+      ASSERT_EQ(RecordIdForRoot(root), id);
+      const auto retained = LoadSession();
+      ASSERT_EQ(retained["notebooks"][0]["trusted"], nlohmann::json(false));
+      vxcore_context_destroy(ctx);
+      cleanup_test_dir(path);
+    }
+  }
   return 0;
 }
 
@@ -365,6 +424,7 @@ int main() {
 
   RUN_TEST(test_reappear_after_id_drift);
   RUN_TEST(test_same_root_dedupe);
+  RUN_TEST(test_duplicate_trust_is_conservative_in_both_orders);
   RUN_TEST(test_create_on_existing_preserves_id);
   RUN_TEST(test_close_then_restart_stays_closed);
 

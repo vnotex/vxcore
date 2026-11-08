@@ -63,6 +63,8 @@ else()
 endif()
 add_vxcore_test(test_error_codes)
 add_vxcore_test(test_notebook)
+add_vxcore_test(test_notebook_trust)
+target_link_libraries(test_notebook_trust PRIVATE nlohmann_json)
 
 # test_session_record_readonly: Tests NotebookRecord serialization.
 # Needs internal C++ symbols so we link against vxcore library via add_vxcore_test.

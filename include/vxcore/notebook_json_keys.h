@@ -70,6 +70,7 @@ inline constexpr const char *kJsonKeyId = "id";
 inline constexpr const char *kJsonKeyRootFolder = "rootFolder";
 inline constexpr const char *kJsonKeyType = "type";
 inline constexpr const char *kJsonKeyReadOnly = "readOnly";
+inline constexpr const char *kJsonKeyTrusted = "trusted";
 
 // ---------- NotebookConfig keys (vx_notebook/config.json) -------------------
 // Stored per-notebook in `vx_notebook/config.json`. Synced across devices.

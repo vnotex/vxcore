@@ -1,21 +1,21 @@
 #include "notebook_manager.h"
 
+#include <vxcore/notebook_json_keys.h>
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
-
-#include <vxcore/notebook_json_keys.h>
-
 #include <unordered_map>
+#include <utility>
 
 #include "buffer_manager.h"
 #include "bundled_notebook.h"
-#include "encryptionkeysource.h"
 #include "config_manager.h"
 #include "core/event_manager.h"
 #include "core/event_names.h"
 #include "core/folder_manager.h"
+#include "encryptionkeysource.h"
 #include "metadata_store.h"
 #include "raw_notebook.h"
 #include "sync/sync_encryption_guard.h"
@@ -962,6 +962,11 @@ void NotebookManager::LoadOpenNotebooks() {
       // Reconcile a stale persisted id against the ground-truth id loaded from
       // config.json (the root_folder is the stable identity on this device).
       NotebookRecord kept = record;
+      bool trusted = record.trusted && !record.id.empty() && record.id == notebook->GetId();
+      kept.trusted = trusted;
+      if (kept.trusted != record.trusted) {
+        changed = true;
+      }
       if (record.id != notebook->GetId()) {
         VXCORE_LOG_WARN("LoadOpenNotebooks: reconciling stale record id %s -> %s for root=%s",
                         record.id.c_str(), notebook->GetId().c_str(), root_clean.c_str());
@@ -989,11 +994,17 @@ void NotebookManager::LoadOpenNotebooks() {
           root_loaded[root_clean] = true;
           changed = true;
         } else {
-          // Slot already loaded: drop this duplicate.
+          // Keep the first record, but no duplicate may grant trust on its own.
+          auto &retained = reconciled[found->second];
+          trusted = trusted && retained.trusted;
+          retained.trusted = trusted;
           changed = true;
         }
       }
 
+      // The incoming object wins the runtime map even when its record was
+      // deduplicated, so publish the aggregate rather than its individual flag.
+      notebook->SetTrusted(trusted);
       notebooks_[notebook->GetId()] = std::move(notebook);
     } else {
       // Phantom: KEEP the record (a load failure is often transient) but dedupe
@@ -1138,6 +1149,20 @@ VxCoreError NotebookManager::OpenNotebook(const std::string &root_folder,
     return err;
   }
 
+  // A registered phantom may have become available again. Restore approval
+  // only when every same-root record still identifies this exact notebook.
+  bool found_record = false;
+  bool trusted = true;
+  for (const auto &record : config_manager_->GetSessionConfig().notebooks) {
+    if (CleanPath(record.root_folder) != root_folder_clean) {
+      continue;
+    }
+    found_record = true;
+    trusted = trusted && record.trusted && !record.id.empty() && record.id == notebook->GetId() &&
+              record.type == notebook->GetType();
+  }
+  notebook->SetTrusted(found_record && trusted);
+
   err = UpdateNotebookRecord(*notebook);
   if (err != VXCORE_OK) {
     VXCORE_LOG_ERROR("Failed to save notebook record after open: id=%s, error=%d",
@@ -1169,28 +1194,45 @@ VxCoreError NotebookManager::CloseNotebook(const std::string &notebook_id) {
   }
   if (it->second->IsSyncApplyInProgress()) return VXCORE_ERR_SYNC_IN_PROGRESS;
 
-  // Capture the cleaned root before the runtime entry is erased so the session
-  // record can be matched by root even when its persisted id is stale.
+  // Match by id OR cleaned root so stale records are removed as well. Collect
+  // indexes before moving anything: allocation/path failures leave state intact.
   const std::string root_clean = CleanPath(it->second->GetRootFolder());
+  auto &records = config_manager_->GetSessionConfig().notebooks;
+  std::vector<std::pair<size_t, NotebookRecord>> removed_records;
+  for (size_t index = 0; index < records.size(); ++index) {
+    if (records[index].id == notebook_id || CleanPath(records[index].root_folder) == root_clean) {
+      removed_records.emplace_back(index, NotebookRecord{});
+    }
+  }
 
-  // Close notebook first to release DB file lock before deleting local data
+  size_t kept_count = 0;
+  size_t removed_index = 0;
+  for (size_t index = 0; index < records.size(); ++index) {
+    if (removed_index < removed_records.size() && removed_records[removed_index].first == index) {
+      removed_records[removed_index++].second = std::move(records[index]);
+    } else {
+      if (kept_count != index) {
+        records[kept_count] = std::move(records[index]);
+      }
+      ++kept_count;
+    }
+  }
+  records.erase(records.begin() + kept_count, records.end());
+
+  auto error = config_manager_->SaveSessionConfig();
+  if (error != VXCORE_OK) {
+    // Erase retained the original capacity; restoring in index order neither
+    // allocates nor changes the relative order of any notebook records.
+    for (auto &removed : removed_records) {
+      records.insert(records.begin() + removed.first, std::move(removed.second));
+    }
+    return error;
+  }
+
+  // Forget trust durably before runtime teardown or deleting local data.
   it->second->Close();
-
   DeleteNotebookLocalData(*it->second);
-
   notebooks_.erase(it);
-
-  // Remove notebook record(s) from session config: match by id OR cleaned root,
-  // so a record with a stale id (diverged from config.json) is still removed.
-  auto &session_config = config_manager_->GetSessionConfig();
-  session_config.notebooks.erase(
-      std::remove_if(session_config.notebooks.begin(), session_config.notebooks.end(),
-                     [&notebook_id, &root_clean](const NotebookRecord &r) {
-                       return r.id == notebook_id || CleanPath(r.root_folder) == root_clean;
-                     }),
-      session_config.notebooks.end());
-
-  config_manager_->SaveSessionConfig();
 
   VXCORE_LOG_INFO("Notebook closed successfully: id=%s", notebook_id.c_str());
   if (event_manager_) {
@@ -1327,6 +1369,7 @@ VxCoreError NotebookManager::UpdateNotebookRecord(const Notebook &notebook) {
   // can re-apply it via Notebook::SetReadOnly. Bundled and Raw notebooks
   // both participate; the runtime flag lives on the base class.
   record->read_only = notebook.IsReadOnly();
+  record->trusted = notebook.IsTrusted();
 
   config_manager_->SaveSessionConfig();
   return VXCORE_OK;
@@ -1357,6 +1400,29 @@ void NotebookManager::RecordNotebookReadOnly(const std::string &notebook_id, boo
     VXCORE_LOG_WARN("RecordNotebookReadOnly: UpdateNotebookRecord failed for id=%s, err=%d",
                     notebook_id.c_str(), err);
   }
+}
+
+VxCoreError NotebookManager::SetNotebookTrusted(const std::string &notebook_id, bool trusted) {
+  auto *notebook = GetNotebook(notebook_id);
+  auto *record = FindNotebookRecord(notebook_id);
+  if (!notebook || !record || record->id != notebook->GetId() ||
+      record->type != notebook->GetType() ||
+      CleanPath(record->root_folder) != CleanPath(notebook->GetRootFolder())) {
+    return VXCORE_ERR_NOT_FOUND;
+  }
+  if (notebook->IsTrusted() == trusted && record->trusted == trusted) {
+    return VXCORE_OK;
+  }
+
+  const bool previous_trust = record->trusted;
+  record->trusted = trusted;
+  auto error = config_manager_->SaveSessionConfig();
+  if (error != VXCORE_OK) {
+    record->trusted = previous_trust;
+    return error;
+  }
+  notebook->SetTrusted(trusted);
+  return VXCORE_OK;
 }
 
 NotebookRecord *NotebookManager::FindNotebookRecord(const std::string &id) {

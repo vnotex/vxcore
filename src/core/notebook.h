@@ -70,6 +70,7 @@ struct VXCORE_API NotebookRecord {
   std::string root_folder;
   NotebookType type;
   bool read_only = false;
+  bool trusted = false;
 
   NotebookRecord();
 
@@ -147,6 +148,9 @@ class Notebook {
   // Both bundled and raw notebooks support this flag.
   void SetReadOnly(bool read_only) noexcept;
   bool IsReadOnly() const noexcept;
+
+  // Consumer-assigned per-device trust, persisted only in NotebookRecord.
+  bool IsTrusted() const noexcept;
 
   // Runtime-only reservation. Callers drain existing writers before setting it.
   void SetSyncApplyInProgress(bool active) noexcept;
@@ -231,6 +235,10 @@ class Notebook {
   std::shared_ptr<NotebookEncryption> encryption_;
 
   static const char *kConfigFileName;
+
+ private:
+  void SetTrusted(bool trusted) noexcept;
+  bool trusted_ = false;
 };
 
 }  // namespace vxcore

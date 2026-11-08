@@ -1021,3 +1021,57 @@ VXCORE_API VxCoreError vxcore_notebook_is_read_only(VxCoreContextHandle context,
     return VXCORE_ERR_UNKNOWN;
   }
 }
+
+VXCORE_API VxCoreError vxcore_notebook_is_trusted(VxCoreContextHandle context,
+                                                  const char *notebook_id, bool *out_trusted) {
+  if (out_trusted) {
+    *out_trusted = false;
+  }
+  if (!context || !notebook_id || !out_trusted) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (notebook_id[0] == '\0') {
+    ctx->last_error = "Notebook ID must not be empty";
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  try {
+    auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+    if (!notebook) {
+      ctx->last_error = "Notebook not found";
+      return VXCORE_ERR_NOT_FOUND;
+    }
+
+    *out_trusted = notebook->IsTrusted();
+    return VXCORE_OK;
+  } catch (...) {
+    ctx->last_error = "Unknown error getting notebook trust";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}
+
+VXCORE_API VxCoreError vxcore_notebook_set_trusted(VxCoreContextHandle context,
+                                                   const char *notebook_id, bool trusted) {
+  if (!context || !notebook_id) {
+    return VXCORE_ERR_NULL_POINTER;
+  }
+
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  if (notebook_id[0] == '\0') {
+    ctx->last_error = "Notebook ID must not be empty";
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+
+  try {
+    auto error = ctx->notebook_manager->SetNotebookTrusted(notebook_id, trusted);
+    if (error != VXCORE_OK) {
+      ctx->last_error = "Failed to save notebook trust";
+    }
+    return error;
+  } catch (...) {
+    ctx->last_error = "Unknown error setting notebook trust";
+    return VXCORE_ERR_UNKNOWN;
+  }
+}

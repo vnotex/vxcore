@@ -266,6 +266,9 @@ NotebookRecord NotebookRecord::FromJson(const nlohmann::json &json) {
   if (json.contains(kJsonKeyReadOnly) && json[kJsonKeyReadOnly].is_boolean()) {
     record.read_only = json[kJsonKeyReadOnly].get<bool>();
   }
+  if (json.contains(kJsonKeyTrusted) && json[kJsonKeyTrusted].is_boolean()) {
+    record.trusted = json[kJsonKeyTrusted].get<bool>();
+  }
   return record;
 }
 
@@ -275,6 +278,7 @@ nlohmann::json NotebookRecord::ToJson() const {
   json[kJsonKeyRootFolder] = root_folder;
   json[kJsonKeyType] = (type == NotebookType::Raw) ? "raw" : "bundled";
   json[kJsonKeyReadOnly] = read_only;
+  json[kJsonKeyTrusted] = trusted;
   return json;
 }
 
@@ -486,6 +490,10 @@ void Notebook::SetReadOnly(bool read_only) noexcept {
 bool Notebook::IsReadOnly() const noexcept {
   return read_only_;
 }
+
+void Notebook::SetTrusted(bool trusted) noexcept { trusted_ = trusted; }
+
+bool Notebook::IsTrusted() const noexcept { return trusted_; }
 
 void Notebook::SetSyncApplyInProgress(bool active) noexcept {
   sync_apply_in_progress_.store(active, std::memory_order_release);
