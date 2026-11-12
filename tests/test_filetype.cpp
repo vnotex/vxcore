@@ -1,3 +1,5 @@
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <nlohmann/json.hpp>
 
@@ -14,7 +16,7 @@ int test_filetype_defaults() {
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(ctx);
 
-  for (const auto *name : {"Markdown", "Text", "MindMap", "Others"}) {
+  for (const auto *name : {"Markdown", "Text", "MindMap", "Typst", "TODO", "Others"}) {
     char *json_str = nullptr;
     err = vxcore_filetype_get_by_name(ctx, name, &json_str);
     ASSERT_EQ(err, VXCORE_OK);
@@ -69,6 +71,44 @@ int test_filetype_typst_routing() {
     ASSERT_NE(type["name"], "Typst");
   }
 
+  vxcore_context_destroy(ctx);
+  return 0;
+}
+
+int test_filetype_todo_routing() {
+  vxcore_set_test_mode(1);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  ASSERT_NOT_NULL(ctx);
+
+  for (const auto *suffix : {"todo", "TODO", "ToDo"}) {
+    char *json = nullptr;
+    ASSERT_EQ(vxcore_filetype_get_by_suffix(ctx, suffix, &json), VXCORE_OK);
+    ASSERT_NOT_NULL(json);
+    const auto type = nlohmann::json::parse(json);
+    vxcore_string_free(json);
+    ASSERT_EQ(type["name"], "TODO");
+    ASSERT_EQ(type["displayName"], "TODO");
+    ASSERT_EQ(type["suffixes"], nlohmann::json::array({"todo"}));
+    ASSERT_TRUE(type["isNewable"]);
+    ASSERT_TRUE(type["isSearchable"]);
+  }
+  for (const auto *name : {"TODO", "todo", "tOdO"}) {
+    char *json = nullptr;
+    ASSERT_EQ(vxcore_filetype_get_by_name(ctx, name, &json), VXCORE_OK);
+    ASSERT_NOT_NULL(json);
+    const auto type = nlohmann::json::parse(json);
+    vxcore_string_free(json);
+    ASSERT_EQ(type["name"], "TODO");
+  }
+  for (const auto *suffix : {"tod", "TOD"}) {
+    char *json = nullptr;
+    ASSERT_EQ(vxcore_filetype_get_by_suffix(ctx, suffix, &json), VXCORE_OK);
+    ASSERT_NOT_NULL(json);
+    const auto type = nlohmann::json::parse(json);
+    vxcore_string_free(json);
+    ASSERT_EQ(type["name"], "Others");
+  }
   vxcore_context_destroy(ctx);
   return 0;
 }
@@ -562,6 +602,127 @@ int test_filetype_set_remove_type() {
   return 0;
 }
 
+int test_filetype_saved_registry_migrations() {
+  using nlohmann::json;
+  vxcore_set_test_mode(1);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *raw = nullptr;
+  ASSERT_EQ(vxcore_context_get_config(ctx, &raw), VXCORE_OK);
+  ASSERT_NOT_NULL(raw);
+  const auto original = json::parse(raw);
+  vxcore_string_free(raw);
+  raw = nullptr;
+  ASSERT_EQ(vxcore_context_get_config_path(ctx, &raw), VXCORE_OK);
+  ASSERT_NOT_NULL(raw);
+  const auto config_path = std::filesystem::u8path(raw);
+  vxcore_string_free(raw);
+  vxcore_context_destroy(ctx);
+  ctx = nullptr;
+
+  const json rows = json::array(
+      {{{"name", "Text"},
+        {"suffixes", {"TxT"}},
+        {"displayName", "My notes"},
+        {"isNewable", false},
+        {"isSearchable", false},
+        {"metadata", {{"displayName_ja_JP", "ノート"}, {"custom", {3, false, "value"}}}}},
+       {{"name", "Others"},
+        {"suffixes", json::array()},
+        {"displayName", "Other files"},
+        {"isNewable", true},
+        {"isSearchable", false}}});
+  json registries = json::array({json{{"fileTypes", rows}}});
+  for (const auto &version : json::array({nullptr, false, "invalid", -1, 0, 1, 2, 17})) {
+    registries.push_back({{"fileTypes", rows}, {"schemaVersion", version}});
+  }
+  for (const auto &registry : registries) {
+    auto input = original;
+    input["fileTypes"] = registry;
+    {
+      std::ofstream file(config_path, std::ios::binary | std::ios::trunc);
+      ASSERT_TRUE(file.is_open());
+      file << input.dump(2);
+      file.close();
+      ASSERT_TRUE(file.good());
+    }
+    ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+    ASSERT_NOT_NULL(ctx);
+    raw = nullptr;
+    ASSERT_EQ(vxcore_context_get_config(ctx, &raw), VXCORE_OK);
+    ASSERT_NOT_NULL(raw);
+    const auto loaded = json::parse(raw)["fileTypes"];
+    vxcore_string_free(raw);
+    const auto version = registry.value("schemaVersion", json(0));
+    const int input_version =
+        version.is_number_integer() && version.get<int>() > 0 ? version.get<int>() : 0;
+    auto expected_rows = rows;
+    if (input_version == 0) {
+      expected_rows.push_back({{"name", "Typst"},
+                               {"suffixes", {"typst"}},
+                               {"displayName", "Typst"},
+                               {"isNewable", true},
+                               {"isSearchable", true}});
+    }
+    if (input_version < 2) {
+      expected_rows.push_back({{"name", "TODO"},
+                               {"suffixes", {"todo"}},
+                               {"displayName", "TODO"},
+                               {"isNewable", true},
+                               {"isSearchable", true}});
+    }
+    ASSERT_EQ(loaded["fileTypes"], expected_rows);
+    ASSERT_EQ(loaded["schemaVersion"], input_version > 2 ? input_version : 2);
+
+    // A disk restart must retain the upgraded schema before and after deletion.
+    ASSERT_EQ(vxcore_filetype_set(ctx, expected_rows.dump().c_str()), VXCORE_OK);
+    vxcore_context_destroy(ctx);
+    ctx = nullptr;
+    ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+    raw = nullptr;
+    ASSERT_EQ(vxcore_context_get_config(ctx, &raw), VXCORE_OK);
+    ASSERT_NOT_NULL(raw);
+    ASSERT_EQ(json::parse(raw)["fileTypes"], loaded);
+    vxcore_string_free(raw);
+
+    json without_todo = json::array();
+    for (const auto &row : expected_rows) {
+      if (row["name"] != "TODO") {
+        without_todo.push_back(row);
+      }
+    }
+    ASSERT_EQ(vxcore_filetype_set(ctx, without_todo.dump().c_str()), VXCORE_OK);
+    for (int restart = 0; restart < 2; ++restart) {
+      vxcore_context_destroy(ctx);
+      ctx = nullptr;
+      ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+      raw = nullptr;
+      ASSERT_EQ(vxcore_context_get_config(ctx, &raw), VXCORE_OK);
+      ASSERT_NOT_NULL(raw);
+      const auto saved = json::parse(raw)["fileTypes"];
+      vxcore_string_free(raw);
+      ASSERT_EQ(saved["fileTypes"], without_todo);
+      ASSERT_EQ(saved["schemaVersion"], loaded["schemaVersion"]);
+      raw = nullptr;
+      ASSERT_EQ(vxcore_filetype_get_by_name(ctx, "TODO", &raw), VXCORE_ERR_NOT_FOUND);
+      ASSERT_NULL(raw);
+      ASSERT_EQ(vxcore_filetype_get_by_suffix(ctx, "ToDo", &raw), VXCORE_OK);
+      ASSERT_NOT_NULL(raw);
+      ASSERT_EQ(json::parse(raw)["name"], "Others");
+      vxcore_string_free(raw);
+      ASSERT_EQ(vxcore_filetype_set(ctx, without_todo.dump().c_str()), VXCORE_OK);
+    }
+    vxcore_context_destroy(ctx);
+    ctx = nullptr;
+  }
+  std::ofstream restore(config_path, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(restore.is_open());
+  restore << original.dump(2);
+  restore.close();
+  ASSERT_TRUE(restore.good());
+  return 0;
+}
+
 int main() {
   std::cout << "Running filetype tests..." << std::endl;
 
@@ -570,6 +731,7 @@ int main() {
 
   RUN_TEST(test_filetype_defaults);
   RUN_TEST(test_filetype_typst_routing);
+  RUN_TEST(test_filetype_todo_routing);
   RUN_TEST(test_filetype_get_by_suffix_md);
   RUN_TEST(test_filetype_get_by_suffix_unknown);
   RUN_TEST(test_filetype_case_insensitive);
@@ -586,6 +748,7 @@ int main() {
   RUN_TEST(test_filetype_set_empty_name);
   RUN_TEST(test_filetype_set_invalid_json);
   RUN_TEST(test_filetype_set_remove_type);
+  RUN_TEST(test_filetype_saved_registry_migrations);
 
   std::cout << "✓ All filetype tests passed" << std::endl;
   return 0;

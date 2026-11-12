@@ -84,6 +84,11 @@ VxCoreError ConfigManager::LoadConfigs() {
   }
 
   default_json.merge_patch(user_json);
+  // The registry owns its defaults and migration version. A default schemaVersion
+  // must not mask an absent version in an older saved registry.
+  if (user_json.contains("fileTypes")) {
+    default_json["fileTypes"] = user_json["fileTypes"];
+  }
   config_ = VxCoreConfig::FromJson(default_json);
   session_config_ = VxCoreSessionConfig::FromJson(session_json);
 

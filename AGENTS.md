@@ -521,8 +521,9 @@ VxCoreContext
 Content search fans out one work item per FILE-CHUNK (default 64 files) onto the pre-created `"vxcore.search"` `WorkQueue`; the caller's threads drain it (the initiating thread self-drains too), so `SearchManager` holds NO vxcore-owned thread pool. A search that fits in one chunk (≤ 64 files by default) runs inline sequentially.
 
 Content search without an explicit `scope.filePatterns` value includes only file types whose
-`isSearchable` flag is true. The built-in defaults enable Markdown, Text, and MindMap and disable
-PDF and Others. Any explicit file pattern overrides that type filter; `*.*` therefore opts into
+`isSearchable` flag is true. The built-in defaults enable Markdown, Text, MindMap, Typst and TODO
+and disable PDF and Others. TODO content search reads raw Markdown, including comment JSON/IDs;
+it is not the editor's task-aware search. Any explicit file pattern overrides that type filter; `*.*` therefore opts into
 all files with a suffix. This filtering applies only to content search, never filename or tag
 search.
 
@@ -533,6 +534,30 @@ is normalized to UTF-8; reported match columns are UTF-16 code-unit indices beca
 apply them to `QString`. `RgSearchBackend` does not implement this codec policy.
 
 ## Important Implementation Details
+
+### File-type registry migrations
+
+`FileTypesConfig` is the authority for file associations. Its registry-local `schemaVersion`
+is 2; this is independent of the application config version. New profiles include newable,
+searchable `TODO` (display name `TODO`, suffix `todo`) immediately before Others. Lookup remains
+case-insensitive; `.tod` is not a TODO suffix. Missing `isSearchable` on a TODO row infers true,
+while an explicit false remains authoritative.
+
+Missing, invalid, negative and zero input versions are version 0. Explicit nonempty version-0
+registries first apply the existing Typst migration, then append TODO; version 1 appends only
+TODO. Existing case-insensitive type names retain all suffixes, names, flags and metadata. If
+another row already claims a built-in's suffix, the appended row has no suffixes. Explicit empty
+arrays stay empty; missing/non-array `fileTypes` retain constructor defaults. Emit
+`max(validInputVersion, 2)` and never reinsert deleted rows for schema 2 or future versions.
+
+`ConfigManager::LoadConfigs()` restores the saved `fileTypes` object after the general default
+merge. Otherwise a missing registry version inherits the constructor's current version and
+skips migration. Partial updates of an already-loaded config keep their normal merge semantics.
+
+Coverage lives in `test_filetype_config`, `test_filetype` and the parent's
+`tests/core/test_filetypeservice.cpp`, including actual persisted-profile restart and
+delete/save/reload behavior. The consumer owns the TODO editor and planner projections;
+vxcore does not build a notebook-wide task index or change encryption support.
 
 ### Notebook Types
 

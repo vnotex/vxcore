@@ -52,7 +52,7 @@ FileTypeEntry FileTypeEntry::FromJson(const nlohmann::json &json) {
     // Migration for configs written before isSearchable existed.
     const std::string lower_name = ToLowerString(entry.name);
     entry.is_searchable = lower_name == "markdown" || lower_name == "text" ||
-                          lower_name == "mindmap" || lower_name == "typst";
+                          lower_name == "mindmap" || lower_name == "typst" || lower_name == "todo";
   }
 
   if (json.contains("displayName") && json["displayName"].is_string()) {
@@ -116,6 +116,7 @@ FileTypesConfig::FileTypesConfig() {
   types.push_back(FileTypeEntry("PDF", {"pdf"}, false, "Portable Document Format", false));
   types.push_back(FileTypeEntry("MindMap", {"mmm", "emind"}, true, "Mind Map", true));
   types.push_back(FileTypeEntry("Typst", {"typst"}, true, "Typst", true));
+  types.push_back(FileTypeEntry("TODO", {"todo"}, true, "TODO", true));
   types.push_back(FileTypeEntry("Others", {}, true, "Others", false));
 }
 
@@ -171,21 +172,21 @@ SetTypesResult FileTypesConfig::SetTypes(std::vector<FileTypeEntry> new_types) {
 FileTypesConfig FileTypesConfig::FromJson(const nlohmann::json &json) {
   FileTypesConfig config;
   const auto version = json.find("schemaVersion");
-  const bool legacy = version == json.end() || !version->is_number_integer() ||
-                      (version->is_number_unsigned() ? version->get<std::uint64_t>() < 1
-                                                     : version->get<std::int64_t>() < 1);
-  if (!legacy) {
-    config.schema_version = version->get<std::uint64_t>();
+  std::uint64_t input_version = 0;
+  if (version != json.end() && version->is_number_integer() &&
+      (version->is_number_unsigned() || version->get<std::int64_t>() > 0)) {
+    input_version = version->get<std::uint64_t>();
   }
+  config.schema_version = std::max(input_version, config.schema_version);
 
   if (json.contains("fileTypes") && json["fileTypes"].is_array()) {
     config.types.clear();
     for (const auto &entry_json : json["fileTypes"]) {
       config.types.push_back(FileTypeEntry::FromJson(entry_json));
     }
-    // Only legacy, nonempty saved registries gain the built-in. User rows and
+    // Only version-0, nonempty saved registries gain Typst. User rows and
     // existing suffix ownership remain authoritative, including empty Typst rows.
-    if (legacy && !config.types.empty() && !config.GetByName("Typst")) {
+    if (input_version == 0 && !config.types.empty() && !config.GetByName("Typst")) {
       const bool claimed = std::any_of(config.types.begin(), config.types.end(),
                                        [](const FileTypeEntry &entry) {
         return std::any_of(entry.suffixes.begin(), entry.suffixes.end(),
@@ -196,6 +197,19 @@ FileTypesConfig FileTypesConfig::FromJson(const nlohmann::json &json) {
       config.types.emplace_back("Typst", claimed ? std::vector<std::string>{}
                                                  : std::vector<std::string>{"typst"},
                                 true, "Typst", true);
+    }
+    // Schema 2 and later preserve deliberate TODO deletion, just as an empty
+    // registry or an existing custom TODO row remains authoritative.
+    if (input_version < 2 && !config.types.empty() && !config.GetByName("TODO")) {
+      const bool claimed =
+          std::any_of(config.types.begin(), config.types.end(), [](const FileTypeEntry &entry) {
+            return std::any_of(
+                entry.suffixes.begin(), entry.suffixes.end(),
+                [](const std::string &suffix) { return ToLowerString(suffix) == "todo"; });
+          });
+      config.types.emplace_back(
+          "TODO", claimed ? std::vector<std::string>{} : std::vector<std::string>{"todo"}, true,
+          "TODO", true);
     }
   }
 
