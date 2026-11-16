@@ -915,9 +915,37 @@ VxCoreError FlushDirectory(const std::filesystem::path &path, FileAccess access)
 #ifdef _WIN32
   // Windows does not provide the POSIX directory-fsync contract. Check the
   // directory, relying on the writer's file flush and WRITE_THROUGH publication.
-  FileIdentity identity;
-  const auto error = GetFileIdentity(path, identity, access);
-  return error != VXCORE_OK ? error : identity.directory ? VXCORE_OK : VXCORE_ERR_IO;
+  if (access == FileAccess::kPrivate) {
+    FileIdentity identity;
+    const auto error = GetFileIdentity(path, identity, access);
+    return error != VXCORE_OK ? error : identity.directory ? VXCORE_OK : VXCORE_ERR_IO;
+  }
+  // Ordinary publication needs a no-follow directory check, not a stable file
+  // identity: shared-folder drivers may lack FileIdInfo or return zero IDs.
+  try {
+    if (path.empty() || path.native().find(std::filesystem::path::value_type{}) !=
+                            std::filesystem::path::string_type::npos) {
+      return VXCORE_ERR_INVALID_PARAM;
+    }
+    if (!path.has_filename() && path.has_relative_path()) {
+      return FlushDirectory(path.parent_path(), access);
+    }
+    HANDLE handle = CreateFileW(
+        path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) return VXCORE_ERR_IO;
+    BY_HANDLE_FILE_INFORMATION info{};
+    const bool valid =
+        GetFileType(handle) == FILE_TYPE_DISK && GetFileInformationByHandle(handle, &info) &&
+        (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT |
+                                  FILE_ATTRIBUTE_DEVICE)) == FILE_ATTRIBUTE_DIRECTORY;
+    const bool closed = CloseHandle(handle) != 0;
+    return valid && closed ? VXCORE_OK : VXCORE_ERR_IO;
+  } catch (const std::bad_alloc &) {
+    return VXCORE_ERR_OUT_OF_MEMORY;
+  } catch (...) {
+    return VXCORE_ERR_IO;
+  }
 #else
   try {
   if (access == FileAccess::kPrivate && !private_io::IsDirectory(path)) return VXCORE_ERR_IO;

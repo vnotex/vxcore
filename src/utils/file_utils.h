@@ -147,6 +147,8 @@ VxCoreError RenameNoReplace(const std::filesystem::path &from, const std::filesy
 // POSIX checks directory fsync and close. Windows only verifies an ordinary
 // directory: durability relies on checked file flushes and WRITE_THROUGH moves,
 // not an unsupported directory-fsync/power-loss guarantee.
+// Default Windows access does not require file identity support; private access
+// retains strict path and identity validation.
 VxCoreError FlushDirectory(const std::filesystem::path &path,
                            FileAccess access = FileAccess::kDefault);
 

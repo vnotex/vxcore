@@ -431,6 +431,16 @@ add_executable(test_file_utils test_file_utils.cpp ${CMAKE_SOURCE_DIR}/src/utils
 target_include_directories(test_file_utils PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
 add_test(NAME test_file_utils COMMAND test_file_utils)
 
+if(WIN32)
+    # Includes the implementation once with test-local filesystem capability faults.
+    add_executable(test_file_utils_windows test_file_utils_windows.cpp)
+    target_include_directories(test_file_utils_windows PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party)
+    add_test(NAME test_file_utils_windows COMMAND test_file_utils_windows)
+endif()
+
 add_executable(test_process_utils test_process_utils.cpp ${CMAKE_SOURCE_DIR}/src/platform/process_utils.cpp)
 target_include_directories(test_process_utils PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 add_test(NAME test_process_utils COMMAND test_process_utils)
