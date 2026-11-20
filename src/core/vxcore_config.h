@@ -10,10 +10,9 @@
 namespace vxcore {
 
 struct SearchConfig {
-  std::vector<std::string> backends;
   std::vector<std::string> encodings;
 
-  SearchConfig() : backends({"simple", "rg"}), encodings({"UTF-8", "GB18030"}) {}
+  SearchConfig() : encodings({"UTF-8", "GB18030"}) {}
 
   static SearchConfig FromJson(const nlohmann::json &json);
   nlohmann::json ToJson() const;

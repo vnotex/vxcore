@@ -85,8 +85,22 @@ External tools/plugins ────────┤── (optional) Msgpack‑RP
 - DB could be rebuilt from metadata files.
 
 ## 8) Search & Indexing
-- Call third-party searching tool (such as `ag`) for full text search.
-- Abstract `ISearchBackend` to allow future engines.
+- `SearchManager` embeds the single built-in `SimpleSearchBackend`; no external process,
+  engine selector or polymorphic search interface is used. Shared native result and callback
+  records live in `search_backend.h`.
+- JSON and typed C search APIs share the same producer and matching semantics: one-based lines,
+  zero-based end-exclusive UTF-16 columns and UTF-8 line text. `firstMatchPerFile` defaults false;
+  true stops at the first qualifying occurrence after ordinary options and line exclusions.
+- Caller-owned work-queue draining runs chunks (default 64 files) without core-owned threads.
+  Blob result caps, uncapped streaming batches, encrypted-skip metadata and cancellation
+  checks at dispatch/callback/completion boundaries are preserved.
+- `vxcore.json` retains `search.encodings`, default `["UTF-8", "GB18030"]`, and explicit overrides.
+  Older `search.backends` keys are ignored on load and omitted on normal save; empty or unknown
+  lists do not disable search. Other recognized config fields retain their normal persistence.
+- `test_core` owns legacy disk upgrade/custom-config/save/restart regressions; `test_search`
+  owns actual Unicode search and first-match regressions under legacy settings. The optional
+  `vxsearch-validate` tool uses external ripgrep only as an independent oracle (see
+  [tools guide](../tools/AGENTS.md)), not as an application engine.
 
 ## 9) Events
 - Typed, JSON payload notifications: `NoteCreated`, `NoteUpdated`, `NoteMoved`, `NoteDeleted`, `TagAddedToNote`, `AttachmentAdded`, `IndexUpdated`.

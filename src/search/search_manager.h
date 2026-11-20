@@ -2,13 +2,12 @@
 #define VXCORE_SEARCH_MANAGER_H
 
 #include <functional>
-#include <memory>
 #include <string>
 #include <vector>
 
-#include "search_backend.h"
 #include "search_file_info.h"
 #include "search_query.h"
+#include "simple_search_backend.h"
 #include "vxcore/vxcore_types.h"
 
 namespace vxcore {
@@ -32,8 +31,7 @@ struct ManagedContentSearchResult {
 
 class SearchManager {
  public:
-  explicit SearchManager(Notebook *notebook, const std::string &search_backend,
-                         const FileTypesConfig *file_types = nullptr,
+  explicit SearchManager(Notebook *notebook, const FileTypesConfig *file_types = nullptr,
                          std::vector<std::string> search_encodings = {});
   ~SearchManager();
 
@@ -103,8 +101,7 @@ class SearchManager {
   void CalculateAbsolutePaths(std::vector<SearchFileInfo> &files) const;
 
   Notebook *notebook_;
-  std::unique_ptr<ISearchBackend> search_backend_;
-  WorkQueue *work_queue_ = nullptr;
+  SimpleSearchBackend search_backend_;
   const FileTypesConfig *file_types_ = nullptr;
   const volatile int *cancel_flag_ = nullptr;
 };

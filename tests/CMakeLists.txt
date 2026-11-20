@@ -5,8 +5,8 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/sync_http_sources.cmake)
 # Test sources are UTF-8 without a BOM. Without /utf-8 MSVC decodes them using
 # the active ANSI code page, silently mangling every non-ASCII string literal —
 # including the CJK path fixtures guarding issue #2729 and the existing
-# non-ASCII fixtures in test_file_utils, test_process_utils and the two search
-# backend tests. Applied DIRECTORY-WIDE (add_compile_options, not
+# non-ASCII fixtures in test_file_utils and test_simple_search_backend.
+# Applied DIRECTORY-WIDE (add_compile_options, not
 # target_compile_options) because most test targets here are declared with a
 # manual add_executable() rather than the add_vxcore_test() helper, and a
 # per-target flag is silently forgotten by the next one added.
@@ -441,21 +441,6 @@ if(WIN32)
     add_test(NAME test_file_utils_windows COMMAND test_file_utils_windows)
 endif()
 
-add_executable(test_process_utils test_process_utils.cpp ${CMAKE_SOURCE_DIR}/src/platform/process_utils.cpp)
-target_include_directories(test_process_utils PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
-add_test(NAME test_process_utils COMMAND test_process_utils)
-
-add_executable(test_rg_search_backend test_rg_search_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/search/rg_search_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/search/search_file_info.cpp
-    ${CMAKE_SOURCE_DIR}/src/platform/process_utils.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/string_utils.cpp
-    ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp)
-target_include_directories(test_rg_search_backend PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/third_party)
-target_link_libraries(test_rg_search_backend PRIVATE nlohmann_json)
-add_test(NAME test_rg_search_backend COMMAND test_rg_search_backend)
-
 add_executable(test_simple_search_backend test_simple_search_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/search/simple_search_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/search/search_file_info.cpp
@@ -543,7 +528,6 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/db/sqlite_metadata_store.cpp
     ${CMAKE_SOURCE_DIR}/src/search/search_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/search/simple_search_backend.cpp
-    ${CMAKE_SOURCE_DIR}/src/search/rg_search_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/search/search_file_info.cpp
     ${CMAKE_SOURCE_DIR}/src/search/search_query.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/path_provider.cpp
@@ -561,7 +545,6 @@ add_executable(test_folder_manager test_folder_manager.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/git_error_translator.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/git/libgit2_init.cpp
     ${CMAKE_SOURCE_DIR}/src/sync/sync_cancellation.cpp
-    ${CMAKE_SOURCE_DIR}/src/platform/process_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/logger.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/file_utils.cpp
     ${CMAKE_SOURCE_DIR}/src/utils/utils.cpp

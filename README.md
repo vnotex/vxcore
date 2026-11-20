@@ -8,20 +8,30 @@ vxcore is a cross-platform C/C++ library providing notebook management functiona
 - **File Operations**: Create, delete, rename, move, copy files with metadata
 - **Tag System**: Create tags at notebook level, apply/remove tags on files
 - **Configuration**: JSON-based configuration with session persistence
-- **Search**: Integration with external search tools (future)
+- **Search**: Built-in content, file/path and tag search, with JSON and typed C results
 
 ## API Usage
 
 ### First-match content search and existing tag assignments
 
-Content search queries may set `"firstMatchPerFile": true` with the simple
-backend. Both blob and streaming APIs return only the first qualifying occurrence
-in each matched file, retaining the usual line number and UTF-16 columns. Literal,
-regex, case, whole-word and excluded-line rules still apply. The matchers stop
-before copying a second matching line, avoiding repeated-line allocation growth.
-The default remains every occurrence; non-simple backends reject the opt-in with
-`VXCORE_ERR_UNSUPPORTED`. File count, source size and result transport still need
-consumer bounds; the streaming API does not enforce `maxResults`.
+Content search always uses the built-in Simple engine; no external executable or
+backend selection is required. JSON and typed APIs share the same native results:
+one-based line numbers, zero-based end-exclusive UTF-16 columns, and UTF-8 line text.
+Queries may set `"firstMatchPerFile": true`. Both blob and streaming APIs then return
+only the first qualifying occurrence in each matched file. Literal, regex, case,
+whole-word and excluded-line rules still apply. The matchers stop before copying a
+second matching line, avoiding repeated-line allocation growth. The default remains
+every occurrence. File count, source size and result transport still need consumer
+bounds; the streaming API does not enforce `maxResults`.
+
+`vxcore.json` retains `search.encodings` (default `["UTF-8", "GB18030"]`) and explicit
+encoding overrides. Retired `search.backends` values in older files are ignored,
+including rg-only, ordered, unknown and empty lists; ordinary config saves omit that
+key while preserving other recognized settings. Search is never disabled by an old
+empty list. `test_core` covers disk load/save/restart and custom configuration retention;
+`test_search` covers real Unicode searches, first-match results and restart under legacy
+configuration. The optional [search validator](tools/AGENTS.md) compares the built-in
+engine with an external ripgrep oracle; it does not select an application backend.
 
 For bundled notes, `vxcore_file_update_tags` accepts a replacement name when it is
 a current notebook definition **or already assigned to that same file**. This

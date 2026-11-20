@@ -73,7 +73,9 @@ VXCORE_API VxCoreError vxcore_context_get_config(VxCoreContextHandle context, ch
 // full config to disk. Fields the caller does not include are preserved.
 // Recognized top-level keys: "version" (string), "search" (object),
 // "fileTypes" (object), "recoverLastSession" (boolean), "autoSyncDebounceSeconds" (integer).
-// Unknown keys are silently ignored.
+// Search recognizes "encodings" (default ["UTF-8", "GB18030"]); content search always
+// uses the built-in engine. Unknown keys, including retired "search.backends", are
+// ignored and omitted from the saved config.
 // The argument must parse to a JSON object; returns VXCORE_ERR_INVALID_PARAM
 // otherwise.
 VXCORE_API VxCoreError vxcore_context_update_config(VxCoreContextHandle context,
@@ -1001,13 +1003,14 @@ VXCORE_API VxCoreError vxcore_search_files(VxCoreContextHandle context, const ch
                                            const char *query_json, const char *input_files_json,
                                            char **out_results_json);
 
+// All content search APIs use the built-in engine, with one-based line numbers and
+// zero-based, end-exclusive UTF-16 columns; lineText is UTF-8.
 // Content query_json optionally accepts "firstMatchPerFile": true (default false).
-// The simple backend then returns only the first qualifying occurrence in each file, after
-// applying ordinary options and line exclusions, with unchanged line/UTF-16 column offsets.
-// It stops matching before allocating another occurrence's lineText, avoiding repeated-match
-// quadratic allocation. This is not a file-size cap or filesystem snapshot. Other active
-// backends return VXCORE_ERR_UNSUPPORTED for this mode. Applies to all content search APIs;
-// omitted/false preserves ordinary multiple-match results and maxResults behavior.
+// It returns only the first qualifying occurrence in each file after applying ordinary
+// options and line exclusions, and stops before allocating another occurrence's lineText.
+// This avoids repeated-match quadratic allocation; it is not a file-size cap or filesystem
+// snapshot. Applies to all JSON and typed content search APIs; omitted/false preserves
+// ordinary multiple-match results and maxResults behavior.
 VXCORE_API VxCoreError vxcore_search_content(VxCoreContextHandle context, const char *notebook_id,
                                              const char *query_json, const char *input_files_json,
                                              char **out_results_json);

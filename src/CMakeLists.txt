@@ -68,7 +68,6 @@ set(VXCORE_SOURCES
     search/search_manager.cpp
     search/search_query.cpp
     search/search_file_info.cpp
-    search/rg_search_backend.cpp
     search/simple_search_backend.cpp
     sync/sync_types.cpp
     sync/sync_json_keys.cpp
@@ -93,7 +92,6 @@ sync/sync_progress_dispatcher.cpp
     utils/logger.cpp
     utils/file_utils.cpp
     platform/path_provider.cpp
-    platform/process_utils.cpp
     core/content_processor/markdown_handler.cpp
     core/content_processor/content_processor.cpp
     core/content_processor/asset_utils.cpp

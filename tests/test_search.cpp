@@ -1464,7 +1464,6 @@ int test_typed_search_owners_and_errors() {
   cleanup_test_dir(root);
   VxCoreContextHandle ctx = nullptr;
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
-  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["simple"]}})"), VXCORE_OK);
   char *notebook_id = nullptr;
   ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Typed owners"})",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
@@ -1639,7 +1638,6 @@ int test_typed_streaming_interleaving_and_boundaries() {
   cleanup_test_dir(root);
   VxCoreContextHandle ctx = nullptr;
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
-  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["simple"]}})"), VXCORE_OK);
   char *notebook_id = nullptr;
   ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Typed streaming"})",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
@@ -1753,7 +1751,26 @@ int test_content_search_first_match_per_file() {
   cleanup_test_dir(root);
   VxCoreContextHandle ctx = nullptr;
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
-  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["simple"]}})"), VXCORE_OK);
+  char *config_json = nullptr;
+  ASSERT_EQ(vxcore_context_get_config(ctx, &config_json), VXCORE_OK);
+  auto search_config = nlohmann::json::parse(config_json);
+  vxcore_string_free(config_json);
+  search_config["search"]["encodings"] = {"UTF-8", "GB18030"};
+  auto legacy_config = search_config;
+  legacy_config["search"]["backends"] = {"rg"};
+  ASSERT_EQ(vxcore_context_update_config_by_name(ctx, VXCORE_DATA_APP, "vxcore",
+                                                 legacy_config.dump().c_str()),
+            VXCORE_OK);
+  vxcore_context_destroy(ctx);
+  ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  ASSERT_EQ(vxcore_context_get_config_by_name(ctx, VXCORE_DATA_APP, "vxcore", &config_json),
+            VXCORE_OK);
+  ASSERT_TRUE(nlohmann::json::parse(config_json) == legacy_config);
+  vxcore_string_free(config_json);
+  ASSERT_EQ(vxcore_context_get_config(ctx, &config_json), VXCORE_OK);
+  ASSERT_TRUE(nlohmann::json::parse(config_json) == search_config);
+  vxcore_string_free(config_json);
   char *notebook_id = nullptr;
   ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"First match"})",
                                    VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
@@ -1789,6 +1806,12 @@ int test_content_search_first_match_per_file() {
             VXCORE_OK);
   ASSERT_TRUE(typed_content_json(*vxcore_content_search_result_view(typed)) == bounded);
   vxcore_content_search_result_free(typed);
+  typed = nullptr;
+  ASSERT_EQ(vxcore_search_content_ex_typed(ctx, notebook_id, query.dump().c_str(), input, nullptr,
+                                           &typed),
+            VXCORE_OK);
+  ASSERT_TRUE(typed_content_json(*vxcore_content_search_result_view(typed)) == bounded);
+  vxcore_content_search_result_free(typed);
   CApiStreamCollector typed_collector;
   ASSERT_EQ(vxcore_search_content_streaming_typed(ctx, notebook_id, query.dump().c_str(), input, 1,
                                                   typed_stream_cb, &typed_collector, nullptr),
@@ -1817,6 +1840,8 @@ int test_content_search_first_match_per_file() {
   const auto ordinary = nlohmann::json::parse(results);
   vxcore_string_free(results);
   ASSERT_EQ(ordinary["matches"][0]["matches"].size(), 3);
+  ASSERT_EQ(ordinary["matches"][0]["matches"][1]["columnStart"].get<int>(), 9);
+  ASSERT_EQ(ordinary["matches"][0]["matches"][1]["columnEnd"].get<int>(), 15);
   query.erase("firstMatchPerFile");
   results = nullptr;
   ASSERT_EQ(vxcore_search_content(ctx, notebook_id, query.dump().c_str(), input, &results),
@@ -1840,43 +1865,48 @@ int test_content_search_first_match_per_file() {
             VXCORE_ERR_JSON_PARSE);
   ASSERT_EQ(invalid_collector.callback_count, 0);
 
-  // rg selection falls back to simple when unavailable. It must either explicitly reject
-  // this query or honor it via that fallback, never silently emit all rg occurrences.
-  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["rg"]}})"), VXCORE_OK);
-  query["firstMatchPerFile"] = true;
-  results = nullptr;
-  const auto rg_error =
-      vxcore_search_content(ctx, notebook_id, query.dump().c_str(), input, &results);
-  ASSERT_TRUE(rg_error == VXCORE_ERR_UNSUPPORTED || rg_error == VXCORE_OK);
-  CApiStreamCollector rg_collector;
-  ASSERT_EQ(vxcore_search_content_streaming(ctx, notebook_id, query.dump().c_str(), input, 1,
-                                            capi_stream_cb, &rg_collector, nullptr),
-            rg_error);
-  typed = nullptr;
-  ASSERT_EQ(vxcore_search_content_ex_typed(ctx, notebook_id, query.dump().c_str(), input, nullptr,
-                                           &typed),
-            rg_error);
-  if (rg_error == VXCORE_OK) {
-    ASSERT_TRUE(typed_content_json(*vxcore_content_search_result_view(typed)) == bounded);
-  } else {
-    ASSERT_NULL(typed);
-  }
-  vxcore_content_search_result_free(typed);
-  CApiStreamCollector typed_rg_collector;
-  ASSERT_EQ(vxcore_search_content_streaming_typed(ctx, notebook_id, query.dump().c_str(), input, 1,
-                                                  typed_stream_cb, &typed_rg_collector, nullptr),
-            rg_error);
-  ASSERT_EQ(typed_rg_collector.callback_count, rg_collector.callback_count);
-  if (rg_error == VXCORE_ERR_UNSUPPORTED) {
-    ASSERT_TRUE(results == nullptr);
-    ASSERT_EQ(rg_collector.callback_count, 0);
-  } else {
+  // Retired selection values are inert even when supplied by an older client. Normal
+  // persistence and a fresh context must retain the encoding config and real search results.
+  const nlohmann::json retired_values[] = {
+      {"rg"}, {"rg", "simple"}, {"unknown-engine"}, nlohmann::json::array()};
+  for (const auto &retired : retired_values) {
+    const nlohmann::json update = {{"search", {{"backends", retired}}}};
+    ASSERT_EQ(vxcore_context_update_config(ctx, update.dump().c_str()), VXCORE_OK);
+    ASSERT_EQ(vxcore_context_get_config_by_name(ctx, VXCORE_DATA_APP, "vxcore", &config_json),
+              VXCORE_OK);
+    ASSERT_TRUE(nlohmann::json::parse(config_json) == search_config);
+    vxcore_string_free(config_json);
+    ASSERT_EQ(vxcore_notebook_close(ctx, notebook_id), VXCORE_OK);
+    vxcore_string_free(notebook_id);
+    vxcore_context_destroy(ctx);
+    ctx = nullptr;
+    notebook_id = nullptr;
+    ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+    ASSERT_EQ(vxcore_context_get_config(ctx, &config_json), VXCORE_OK);
+    ASSERT_TRUE(nlohmann::json::parse(config_json) == search_config);
+    vxcore_string_free(config_json);
+    ASSERT_EQ(vxcore_notebook_open(ctx, root.c_str(), &notebook_id), VXCORE_OK);
+
+    query["firstMatchPerFile"] = true;
+    results = nullptr;
+    ASSERT_EQ(vxcore_search_content(ctx, notebook_id, query.dump().c_str(), input, &results),
+              VXCORE_OK);
     ASSERT_TRUE(nlohmann::json::parse(results) == bounded);
-    ASSERT_TRUE(rg_collector.by_index.at(0) == bounded);
     vxcore_string_free(results);
-    std::cout << "    rg unavailable: verified simple fallback" << std::endl;
+    typed = nullptr;
+    ASSERT_EQ(vxcore_search_content_ex_typed(ctx, notebook_id, query.dump().c_str(), input, nullptr,
+                                             &typed),
+              VXCORE_OK);
+    ASSERT_TRUE(typed_content_json(*vxcore_content_search_result_view(typed)) == bounded);
+    vxcore_content_search_result_free(typed);
+
+    query.erase("firstMatchPerFile");
+    results = nullptr;
+    ASSERT_EQ(vxcore_search_content(ctx, notebook_id, query.dump().c_str(), input, &results),
+              VXCORE_OK);
+    ASSERT_TRUE(nlohmann::json::parse(results) == ordinary);
+    vxcore_string_free(results);
   }
-  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["simple"]}})"), VXCORE_OK);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(root);

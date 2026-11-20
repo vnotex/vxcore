@@ -165,7 +165,7 @@ int test_update_config_merges_all_fields() {
   const char *bulk =
       "{"
       "\"version\":\"9.9.9\","
-      "\"search\":{\"backends\":[\"only-rg\"],\"encodings\":[\"UTF-8\",\"GB18030\"]},"
+      "\"search\":{\"encodings\":[\"UTF-8\",\"GB18030\"]},"
       "\"fileTypes\":{\"types\":[]},"
       "\"recoverLastSession\":false,"
       "\"autoSyncDebounceSeconds\":300,"
@@ -181,9 +181,7 @@ int test_update_config_merges_all_fields() {
   ASSERT_EQ(j["version"].get<std::string>(), std::string("9.9.9"));
   ASSERT_EQ(j["recoverLastSession"].get<bool>(), false);
   ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 300);
-  ASSERT_TRUE(j["search"]["backends"].is_array());
-  ASSERT_EQ(j["search"]["backends"].size(), static_cast<size_t>(1));
-  ASSERT_EQ(j["search"]["backends"][0].get<std::string>(), std::string("only-rg"));
+  ASSERT_FALSE(j["search"].contains("backends"));
   ASSERT_EQ(j["search"]["encodings"].size(), static_cast<size_t>(2));
   ASSERT_EQ(j["search"]["encodings"][1].get<std::string>(), std::string("GB18030"));
   ASSERT_FALSE(j.contains("someUnknownKey"));
@@ -201,7 +199,7 @@ int test_update_config_merges_all_fields() {
   ASSERT_EQ(j["recoverLastSession"].get<bool>(), true);
   ASSERT_EQ(j["version"].get<std::string>(), std::string("9.9.9"));
   ASSERT_EQ(j["autoSyncDebounceSeconds"].get<int>(), 300);
-  ASSERT_EQ(j["search"]["backends"][0].get<std::string>(), std::string("only-rg"));
+  ASSERT_FALSE(j["search"].contains("backends"));
   ASSERT_EQ(j["search"]["encodings"][0].get<std::string>(), std::string("UTF-8"));
 
   // 3. Invalid input: non-object JSON must be rejected, leaving state intact.
@@ -227,9 +225,75 @@ int test_update_config_merges_all_fields() {
   ASSERT_EQ(j["search"]["encodings"].size(), static_cast<size_t>(2));
   ASSERT_EQ(j["search"]["encodings"][0].get<std::string>(), std::string("UTF-8"));
   ASSERT_EQ(j["search"]["encodings"][1].get<std::string>(), std::string("GB18030"));
+  ASSERT_FALSE(j["search"].contains("backends"));
   vxcore_context_destroy(ctx2);
 
   std::cout << "  ✓ test_update_config_merges_all_fields passed" << std::endl;
+  return 0;
+}
+
+int test_legacy_search_config_disk_upgrade() {
+  vxcore_clear_test_directory();
+  const nlohmann::json retired_values[] = {
+      {"rg"}, {"rg", "simple"}, {"simple", "rg"}, {"unknown-engine"}, nlohmann::json::array()};
+  const auto custom_types = nlohmann::json::parse(R"({
+    "schemaVersion": 2,
+    "fileTypes": [{"name":"Custom", "suffixes":["custom"], "isNewable":false,
+                   "isSearchable":true, "displayName":"Custom notes",
+                   "metadata":{"displayName_zh":"Custom translated", "customValue":17}}]
+  })");
+  for (const auto &retired : retired_values) {
+    VxCoreContextHandle ctx = nullptr;
+    ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+    nlohmann::json expected = {{"version", "9.8.7"},
+                               {"search", {{"encodings", {"GB18030", "UTF-8"}}}},
+                               {"fileTypes", custom_types},
+                               {"recoverLastSession", false},
+                               {"autoSyncDebounceSeconds", 345}};
+    // An explicitly empty encoding list is also a supported persisted choice.
+    if (retired.empty()) {
+      expected["search"]["encodings"] = nlohmann::json::array();
+    }
+    auto legacy = expected;
+    legacy["search"]["backends"] = retired;
+    // Raw config writes bypass the current schema, reproducing a real older vxcore.json.
+    ASSERT_EQ(
+        vxcore_context_update_config_by_name(ctx, VXCORE_DATA_APP, "vxcore", legacy.dump().c_str()),
+        VXCORE_OK);
+    vxcore_context_destroy(ctx);
+    ctx = nullptr;
+    ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+    char *json = nullptr;
+    ASSERT_EQ(vxcore_context_get_config_by_name(ctx, VXCORE_DATA_APP, "vxcore", &json), VXCORE_OK);
+    ASSERT_TRUE(nlohmann::json::parse(json) == legacy);
+    vxcore_string_free(json);
+    ASSERT_EQ(vxcore_context_get_config(ctx, &json), VXCORE_OK);
+    ASSERT_TRUE(nlohmann::json::parse(json) == expected);
+    vxcore_string_free(json);
+
+    // An ordinary partial save strips the retired key without dropping custom state.
+    ASSERT_EQ(vxcore_context_update_config(ctx, R"({"recoverLastSession":true})"), VXCORE_OK);
+    expected["recoverLastSession"] = true;
+    ASSERT_EQ(vxcore_context_get_config_by_name(ctx, VXCORE_DATA_APP, "vxcore", &json), VXCORE_OK);
+    ASSERT_TRUE(nlohmann::json::parse(json) == expected);
+    vxcore_string_free(json);
+    vxcore_context_destroy(ctx);
+    ctx = nullptr;
+    ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+    ASSERT_EQ(vxcore_context_get_config(ctx, &json), VXCORE_OK);
+    ASSERT_TRUE(nlohmann::json::parse(json) == expected);
+    vxcore_string_free(json);
+
+    // Old clients still sending only the retired field cannot reset encoding overrides.
+    const nlohmann::json update = {{"search", {{"backends", retired}}}};
+    ASSERT_EQ(vxcore_context_update_config(ctx, update.dump().c_str()), VXCORE_OK);
+    ASSERT_EQ(vxcore_context_get_config_by_name(ctx, VXCORE_DATA_APP, "vxcore", &json), VXCORE_OK);
+    ASSERT_TRUE(nlohmann::json::parse(json) == expected);
+    vxcore_string_free(json);
+    vxcore_context_destroy(ctx);
+  }
+  vxcore_clear_test_directory();
   return 0;
 }
 
@@ -248,6 +312,7 @@ int main() {
   RUN_TEST(test_update_config_raw_content);
   RUN_TEST(test_config_by_name_both_locations);
   RUN_TEST(test_update_config_merges_all_fields);
+  RUN_TEST(test_legacy_search_config_disk_upgrade);
 
   std::cout << "✓ All core tests passed" << std::endl;
   return 0;

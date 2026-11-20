@@ -9,10 +9,11 @@ build never compiles them.
 
 ## search-validate (`vxsearch-validate`)
 
-Cross-checks vxcore content search against **ripgrep (`rg`)** as ground truth. It opens a
-real bundled notebook, runs the search **exactly the way VNote does** (streaming primitive
-+ multi-threaded drain pool, per the root [Search Threading Contract](../../../AGENTS.md#search-threading-contract)),
-and classifies every discrepancy into one of three buckets.
+Cross-checks vxcore's built-in **Simple** content search against external **ripgrep (`rg`)**
+as an independent oracle, not a vxcore backend. It opens a real bundled notebook, runs the
+search **exactly the way VNote does** (streaming primitive + multi-threaded drain pool, per the
+root [Search Threading Contract](../../../AGENTS.md#search-threading-contract)), and classifies
+every discrepancy into one of three buckets.
 
 ### Build
 
@@ -53,7 +54,6 @@ spam by default. Pass `--verbose` to see vxcore's internal logging.
 | `--regex` | Treat pattern as a regex (**diagnostic-only** mode). |
 | `--word` | Whole-word match (**diagnostic-only** mode). Cannot combine with `--regex`. |
 | `--folder <subtree>` | Restrict to a notebook subtree (default: whole notebook). |
-| `--backend simple\|rg` | vxcore backend to validate (default: `simple`). |
 | `--max-results <N>` | File-boundary cap mirroring VNote. `0` = uncapped (default; required for pass/fail — see below). |
 | `--limit <N>` | Max detail lines printed per bucket (default: 50). |
 | `--strict` | Non-zero exit on ANY non-empty bucket (incl. discovery/diagnostic). |
@@ -61,9 +61,9 @@ spam by default. Pass `--verbose` to see vxcore's internal logging.
 | `--verbose` | Do not suppress vxcore's internal console logging. |
 | `-h`, `--help` | Show help. |
 
-`--word --regex` is rejected at parse time: the simple backend **ignores `wholeWord` on the
+`--word --regex` is rejected at parse time: the Simple engine **ignores `wholeWord` on the
 regex path** (`simple_search_backend.cpp` `RunMatch`), so there is nothing meaningful to
-compare.
+compare. There is no engine selector; the obsolete `--backend` flag is an unknown option.
 
 ### The three buckets
 
@@ -98,7 +98,7 @@ indexed.
 
 ### Validation fidelity policy (per mode)
 
-The tool validates the **current simple-backend semantics** (not desired/product semantics).
+The tool validates the **current built-in Simple semantics** (not desired/product semantics).
 `rg` is an authoritative pass/fail oracle only where it can be configured to match those
 byte-level semantics exactly; elsewhere its differences are **expected** and are reported but
 do **not** fail the exit code (unless `--strict`).
@@ -106,9 +106,9 @@ do **not** fail the exit code (unless `--strict`).
 | Query mode | `rg` config | Status |
 |---|---|---|
 | Literal, case-sensitive | `--fixed-strings -s` | **Pass/fail** — byte substring; both engines agree exactly. |
-| Literal, case-insensitive, ASCII line | `--fixed-strings --ignore-case --no-unicode` | **Pass/fail** — ASCII byte-fold matches the backend's `std::tolower`. |
+| Literal, case-insensitive, ASCII line | `--fixed-strings --ignore-case --no-unicode` | **Pass/fail** — ASCII byte-fold matches Simple's `std::tolower`. |
 | Literal, case-insensitive, non-ASCII line | same | **Diagnostic-only** — Unicode vs byte case-fold differ; such lines are flagged and excluded from pass/fail. |
-| `--word` (literal only) | `--fixed-strings --word-regexp` | **Diagnostic-only** — `rg` treats `_` as a word char while the simple backend treats `_` as a boundary. |
+| `--word` (literal only) | `--fixed-strings --word-regexp` | **Diagnostic-only** — `rg` treats `_` as a word char while Simple treats `_` as a boundary. |
 | `--regex` | `-e <pattern>` (no `--fixed-strings`) | **Diagnostic-only** — ECMAScript `std::regex` vs Rust regex dialects differ. |
 | `--word` + `--regex` | — | **Rejected** at arg-parse. |
 
@@ -129,15 +129,15 @@ bug:
 
 - **Regex dialect:** vxcore uses ECMAScript `std::regex`; `rg` uses Rust's regex crate.
   Anchors, classes, and escapes diverge.
-- **`_` word-boundary rule:** `rg --word-regexp` treats `_` as a word char; the simple
-  backend treats `_` as a boundary (`isalnum` check).
-- **Unicode vs ASCII case-fold:** `rg` default case-folding is Unicode-aware; the backend
-  folds ASCII bytes only. The tool adds `--no-unicode` to align on ASCII, so only **non-ASCII**
-  lines diverge (and those are diagnostic-only).
+- **`_` word-boundary rule:** `rg --word-regexp` treats `_` as a word char; Simple treats `_`
+  as a boundary (`isalnum` check).
+- **Unicode vs ASCII case-fold:** `rg` default case-folding is Unicode-aware; Simple folds
+  ASCII bytes only. The tool adds `--no-unicode` to align on ASCII, so only **non-ASCII** lines
+  diverge (and those are diagnostic-only).
 - **CRLF / trailing `\r`:** identity is `(relpath, line)`, not `lineText`, so EOL noise is
   already excluded.
-- **Binary / UTF-16 indexed files:** both the simple backend and `rg --text` read bytes and
-  split on `\n`; multi-byte encodings can misalign lines.
+- **Binary / UTF-16 indexed files:** both Simple and `rg --text` read bytes and split on `\n`;
+  multi-byte encodings can misalign lines.
 
 ### Exit codes
 
@@ -157,6 +157,8 @@ bug:
   the same discipline VNote's `SearchWorker` uses. Validating the reassembled streaming result
   against `rg` is explicitly part of the check: it catches concurrency regressions the blocking
   API would hide. (Repeated runs are byte-identical — streaming parity.)
-- Backend is pinned per run via `vxcore_context_update_config` (`{"search":{"backends":[...]}}`),
-  because `vxcore_context_create` ignores its `config_json` arg and `CreateSearchManager`
-  re-reads `GetConfig()` per search.
+- Every vxcore search uses the built-in Simple engine. The tool neither selects an engine nor
+  writes search configuration. Text reports identify `Engine: Simple (built-in)`; JSON reports
+  identify `"engine": "Simple (built-in)"`.
+- External `rg --version` preflight and the separate `RunRg` comparison remain required for
+  the oracle only. They never select, replace or provide a fallback for vxcore's search engine.

@@ -76,7 +76,7 @@ For tests that link the full vxcore library, use the helper in `tests/CMakeLists
 add_vxcore_test(test_mymodule)
 ```
 
-For tests that link only specific source files (unit-level isolation), add a manual `add_executable` block (see `test_db`, `test_rg_search_backend` in `tests/CMakeLists.txt` for examples).
+For tests that link only specific source files (unit-level isolation), add a manual `add_executable` block (see `test_db`, `test_simple_search_backend` in `tests/CMakeLists.txt` for examples).
 
 ### Available Test Macros
 
@@ -84,7 +84,7 @@ For tests that link only specific source files (unit-level isolation), add a man
 
 ### Test Modules
 
-`test_core`, `test_notebook`, `test_folder`, `test_node`, `test_search`, `test_tag_sync`, `test_filetype`, `test_workspace`, `test_buffer`, `test_file_utils`, `test_process_utils`, `test_rg_search_backend`, `test_simple_search_backend`, `test_db`, `test_metadata_store`, `test_folder_manager`.
+`test_core`, `test_notebook`, `test_folder`, `test_node`, `test_search`, `test_tag_sync`, `test_filetype`, `test_workspace`, `test_buffer`, `test_file_utils`, `test_simple_search_backend`, `test_db`, `test_metadata_store`, `test_folder_manager`.
 
 ## Architecture
 
@@ -112,21 +112,35 @@ C API (vxcore_*)
                         │       └── DbManager + FileDb + TagDb
                         ├── BufferManager (open file handles)
                         ├── WorkspaceManager (split pane state)
-                        └── SearchManager → ISearchBackend (rg / simple)
+                        └── SearchManager → SimpleSearchBackend (embedded built-in engine)
 ```
 
 ### Key Design Patterns
 
 1. **Context-based API:** All operations go through `VxCoreContextHandle` (opaque pointer)
-2. **JSON boundaries:** All complex data crosses the C ABI as JSON strings (using nlohmann/json internally)
+2. **C result boundaries:** JSON APIs remain supported; folder-child, search and tag reads also expose frozen typed snapshots. Both transports share native producers.
 3. **Caller-frees strings:** C API returns `char*` that the caller must free with `vxcore_string_free()`
 4. **Unified Node API:** `vxcore_node_*` functions work on both files and folders, returning a `"type"` field in JSON
 5. **Two notebook types:**
    - **Bundled:** Self-contained, config in `<root>/vx_notebook/config.json`, metadata in `<root>/vx_notebook/`
    - **Raw:** Config in session only, metadata in `<local_data>/notebooks/<id>/`
 6. **FolderManager abstraction:** `BundledFolderManager` and `RawFolderManager` implement different storage strategies behind a common interface
-7. **Search backends:** Pluggable via `ISearchBackend` (ripgrep for performance, simple built-in as fallback)
+7. **Search engine:** `SearchManager` embeds `SimpleSearchBackend` by value, with no engine selector or external-process dependency. Shared result/callback records live in `search_backend.h`. JSON and typed APIs use one-based lines, zero-based end-exclusive UTF-16 columns and UTF-8 line text. `firstMatchPerFile` selects only the first qualifying occurrence per file; default false preserves every occurrence. Blob caps, streaming's uncapped batches, encrypted skips and cancellation boundaries remain part of the contract.
 8. **Buffer providers:** `StandardBufferProvider` for notebook files, `ExternalBufferProvider` for standalone files
+
+Search settings in `vxcore.json` retain `search.encodings` (default `["UTF-8", "GB18030"]`)
+and explicit overrides. Retired `search.backends` values are ignored on read and omitted
+from normal saves, without dropping other recognized settings or disabling search for an
+old empty list. `test_core` includes disk upgrade/persistence/restart and custom-config
+regressions; `test_search` includes actual Unicode multiple/first-match searches across JSON
+and typed APIs under old rg-only settings. `test_simple_search_backend` exercises the engine;
+`test_folder_manager` also directly compiles its sources. Native tests share test-mode roots:
+run serially. These are regression locations, not a claim of verification for an edit.
+
+Content search creates no threads. It runs one chunk inline or enqueues file chunks on
+`vxcore.search` (default 64 files) and help-drains on the initiating caller thread; consumers
+may add drain threads. The optional [validator](tools/AGENTS.md) compares this built-in engine
+to external ripgrep as an oracle, never as an application backend.
 
 ### Public Headers
 
@@ -134,6 +148,7 @@ C API (vxcore_*)
 |--------|----------|
 | `vxcore.h` | All C API functions (context, notebook, folder, file, node, tag, search, buffer, workspace) |
 | `vxcore_types.h` | Error codes (`VxCoreError`), handles (`VxCoreContextHandle`), enums, version struct |
+| `vxcore_results.h` | Typed folder-child, search and tag snapshots, borrowed views and context-free frees |
 | `vxcore_log.h` | Log level control and file/console output |
 
 ### Thread Safety

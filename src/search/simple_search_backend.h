@@ -8,15 +8,18 @@
 
 #include "core/work_queue.h"
 #include "search_backend.h"
+#include "search_query.h"
+#include "vxcore/vxcore_types.h"
 
 class SimpleSearchBackendTest;
 
 namespace vxcore {
 
-class SimpleSearchBackend : public ISearchBackend {
+struct SearchFileInfo;
+
+class SimpleSearchBackend {
  public:
   explicit SimpleSearchBackend(std::vector<std::string> encodings = {});
-  ~SimpleSearchBackend() override = default;
 
   // Blob content search. Reimplemented as a thin accumulating wrapper over SearchStreaming:
   // it collects the streamed chunk slices by batch_index, reassembles them in input-file
@@ -24,7 +27,7 @@ class SimpleSearchBackend : public ISearchBackend {
   // byte-identical to the pre-streaming implementation unless kFirstMatchPerFile is enabled.
   VxCoreError Search(const std::vector<SearchFileInfo> &files, const std::string &pattern,
                      SearchOption options, const std::vector<std::string> &content_exclude_patterns,
-                     int max_results, ContentSearchResult &out_result) override;
+                     int max_results, ContentSearchResult &out_result);
 
   // Streaming content search primitive. Scans |files| in chunks of |batch_size| files (0 ->
   // kDefaultSearchChunkSize) and fires |emit_batch| exactly once per chunk (including
@@ -36,7 +39,7 @@ class SimpleSearchBackend : public ISearchBackend {
   VxCoreError SearchStreaming(const std::vector<SearchFileInfo> &files, const std::string &pattern,
                               SearchOption options,
                               const std::vector<std::string> &content_exclude_patterns,
-                              int batch_size, const SearchBatchEmitFn &emit_batch) override;
+                              int batch_size, const SearchBatchEmitFn &emit_batch);
 
   void SetWorkQueue(WorkQueue *queue);
   void SetCancelFlag(const volatile int *flag);

@@ -56,8 +56,8 @@ typedef struct {
   uint8_t truncated;
 } VxCoreFileSearchView;
 
-// Preserve backend address units: Simple uses one-based lines and zero-based,
-// end-exclusive UTF-16 columns. rg byte offsets do not authorize replacement.
+// One-based lines and zero-based, end-exclusive UTF-16 columns for every content
+// search API. line_text contains UTF-8 bytes, not UTF-16 code units.
 typedef struct {
   int32_t line_number;
   int32_t column_start;
@@ -180,7 +180,7 @@ VXCORE_API VxCoreError vxcore_search_content_ex_typed(VxCoreContextHandle contex
 // truncated is always 0. Consumers cap raw occurrences before grouping lines.
 // The blocking call help-drains the existing queue and returns only after its
 // work/callbacks have settled, including cancellation/error. NULL cancel disables
-// cancellation; batch_size == 0 selects the existing backend default.
+// cancellation; batch_size == 0 selects the default 64 files per chunk.
 typedef void (*VxCoreSearchBatchTypedCallback)(int batch_index, int total_batches,
                                                const VxCoreContentSearchView *batch,
                                                void *userdata);

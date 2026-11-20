@@ -2,8 +2,8 @@
 //
 // Standalone diagnostic that opens a real bundled notebook, runs a content search the way
 // VNote does (streaming primitive + multi-threaded drain pool), and cross-checks the results
-// against ripgrep (rg) as ground truth. See tools/AGENTS.md for the full contract, the per-mode
-// validation fidelity policy, and how to read the three result buckets.
+// against external ripgrep (rg) as an independent oracle, not a vxcore backend. See
+// tools/AGENTS.md for the full contract, per-mode fidelity policy, and three result buckets.
 //
 // This tool is a runtime diagnostic, NOT a ctest: it needs a real notebook on disk and is not
 // registered with add_test. It links vxcore and calls only the public C ABI.
@@ -322,7 +322,6 @@ struct Options {
   bool regex = false;
   bool word = false;
   std::string folder = ".";  // scope subtree; "." == whole notebook
-  std::string backend = "simple";
   int max_results = 0;  // 0 == uncapped (validation completeness)
   int limit = 50;       // per-bucket detail cap
   bool strict = false;
@@ -333,7 +332,7 @@ struct Options {
 
 void PrintUsage() {
   std::cout <<
-      R"(vxsearch-validate — cross-check vxcore content search against ripgrep (rg)
+      R"(vxsearch-validate — cross-check vxcore's built-in Simple search against external ripgrep (rg)
 
 Usage:
   vxsearch-validate <notebook-root> --pattern <text> [options]
@@ -347,7 +346,6 @@ Query options:
   --regex                Treat pattern as a regular expression (diagnostic-only mode).
   --word                 Whole-word match (diagnostic-only mode). Cannot combine with --regex.
   --folder <subtree>     Restrict to a notebook subtree (default: whole notebook).
-  --backend simple|rg    vxcore search backend to validate (default: simple).
 
 Comparison / output:
   --max-results <N>      Cap results (file-boundary), mirroring VNote. 0 = uncapped (default).
@@ -390,8 +388,6 @@ bool ParseArgs(int argc, char **argv, Options *opts, std::string *err) {
       opts->word = true;
     } else if (a == "--folder") {
       if (!need_value(i, a, &opts->folder)) return false;
-    } else if (a == "--backend") {
-      if (!need_value(i, a, &opts->backend)) return false;
     } else if (a == "--max-results") {
       std::string v;
       if (!need_value(i, a, &v)) return false;
@@ -437,11 +433,7 @@ bool ParseArgs(int argc, char **argv, Options *opts, std::string *err) {
     return false;
   }
   if (opts->word && opts->regex) {
-    *err = "--word cannot be combined with --regex (simple backend ignores wholeWord under regex)";
-    return false;
-  }
-  if (opts->backend != "simple" && opts->backend != "rg") {
-    *err = "--backend must be 'simple' or 'rg'";
+    *err = "--word cannot be combined with --regex (Simple ignores wholeWord under regex)";
     return false;
   }
   // A --folder scope must be a notebook subtree; reject above-root traversal rather than
@@ -736,7 +728,7 @@ std::vector<RgHit> RunRg(const Options &opts, const std::string &scope_abs_utf8,
   if (opts.case_sensitive) {
     args.push_back("-s");
   } else {
-    // ASCII byte-folding to match the simple backend's std::tolower path.
+    // ASCII byte-folding to match the Simple engine's std::tolower path.
     args.push_back("--ignore-case");
     args.push_back("--no-unicode");
   }
@@ -939,22 +931,6 @@ int main(int argc, char **argv) {
     return 2;
   }
 
-  // Pin the search backend. CreateSearchManager picks the first of search.backends that is
-  // "simple" or ("rg" and available), so ["rg","simple"] prefers rg with a simple fallback.
-  {
-    json cfg;
-    if (opts.backend == "rg") {
-      cfg["search"]["backends"] = json::array({"rg", "simple"});
-    } else {
-      cfg["search"]["backends"] = json::array({"simple"});
-    }
-    VxCoreError cfg_err = vxcore_context_update_config(ctx, cfg.dump().c_str());
-    if (cfg_err != VXCORE_OK) {
-      std::cerr << "warning: failed to pin backend (" << vxcore_error_message(cfg_err)
-                << "); proceeding with default\n";
-    }
-  }
-
   char *notebook_id_c = nullptr;
   err = vxcore_notebook_open(ctx, root.c_str(), &notebook_id_c);
   if (err != VXCORE_OK || !notebook_id_c) {
@@ -1055,7 +1031,7 @@ int main(int argc, char **argv) {
     out["scopeFolder"] = opts.folder;
     out["pattern"] = opts.pattern;
     out["mode"] = ModeBanner(opts);
-    out["backend"] = opts.backend;
+    out["engine"] = "Simple (built-in)";
     out["drainThreads"] = vres.drain_threads;
     out["truncated"] = vres.truncated;
     out["indexedFiles"] = indexed.file_count;
@@ -1122,7 +1098,7 @@ int main(int argc, char **argv) {
   std::cout << "Scope folder:  " << opts.folder << "\n";
   std::cout << "Pattern:       \"" << opts.pattern << "\"\n";
   std::cout << "Mode:          " << ModeBanner(opts) << "\n";
-  std::cout << "Backend:       " << opts.backend << " (pinned)\n";
+  std::cout << "Engine:        Simple (built-in)\n";
   std::cout << "Drain threads: " << vres.drain_threads << "\n";
   std::cout << "Indexed files: " << indexed.file_count;
   if (!indexed.phantom_folders.empty())

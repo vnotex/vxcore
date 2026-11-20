@@ -72,7 +72,8 @@ Streaming search is callback-only. Copy borrowed batch data before returning or 
 it. Callbacks may overlap and arrive out of order; they must not throw or reenter core.
 Only batch zero carries the scan's encrypted-skipped count, including the synthetic
 all-encrypted empty batch; streaming truncation is always false. Cap occurrences before
-grouping same-line results. Simple UTF-16 offsets and rg byte offsets remain distinct.
+grouping same-line results. All occurrence columns are zero-based, end-exclusive UTF-16
+offsets; lines are one-based and line text is UTF-8.
 
 Arbitrary metadata alone remains a JSON value: zero bytes mean `{}`, while JSON `null`
 is explicitly encoded as `null`. Folder existence stays output-only; raw tag listing
@@ -433,9 +434,8 @@ vxcore/
 │   │
 │   ├── search/              # Search subsystem
 │   │   ├── search_manager.h/.cpp    # Search orchestration
-│   │   ├── search_backend.h         # ISearchBackend interface
+│   │   ├── search_backend.h         # Shared native result records and batch callback
 │   │   ├── simple_search_backend.h/.cpp  # Built-in search implementation
-│   │   ├── rg_search_backend.h/.cpp      # Ripgrep integration
 │   │   ├── search_query.h/.cpp      # SearchQuery, SearchScope, SearchOption
 │   │   └── search_file_info.h/.cpp  # SearchFileInfo struct
 │   │
@@ -446,8 +446,7 @@ vxcore/
 │   │   └── AGENTS.md               # Detailed sync module documentation
 │   │
 │   ├── platform/            # Platform-specific code
-│   │   ├── path_provider.h/.cpp     # AppData, LocalData paths per platform
-│   │   └── process_utils.h/.cpp     # External process execution (for rg)
+│   │   └── path_provider.h/.cpp     # AppData, LocalData paths per platform
 │   │
 │   └── utils/               # General utilities
 │       ├── utils.h/.cpp             # GenerateUUID(), GetCurrentTimestampMillis(), HasFlag()
@@ -501,15 +500,32 @@ vxcore/
 
 1. **Context-based API**: All operations go through `VxCoreContextHandle`
 2. **Opaque handles**: C API uses opaque pointers for type safety
-3. **JSON boundaries**: All complex data crosses C ABI as JSON strings
+3. **C result boundaries**: JSON APIs remain supported; folder-child, search and tag reads also expose owning typed snapshots with context-free frees.
 4. **Two notebook types**:
    - **Bundled**: Config stored in `<root>/vx_notebook/config.json`, metadata in `<root>/vx_notebook/`
    - **Raw**: Config stored in session config only, metadata in local data folder
 5. **FolderManager abstraction**: `BundledFolderManager` and `RawFolderManager` implement different storage strategies
-6. **Search backends**: Pluggable via `ISearchBackend` interface (ripgrep, simple built-in). Content search owns NO thread pool. `vxcore_search_content` / `_content_ex` / `_content_streaming` enqueue one work item per FILE-CHUNK (default 64 files, tunable via the streaming `batch_size`) onto the pre-created `"vxcore.search"` `WorkQueue`, and the caller's threads drain them (caller-helps-drain: the initiating thread self-drains its own items via `ProcessNext(5ms)` until the batch is done). A search that fits in one chunk (≤ 64 files by default) runs inline sequentially; larger searches fan out one queued item per chunk. Chunking subsumes the former per-file fan-out and the 50-file inline threshold.
+6. **Search engine**: `SearchManager` embeds the sole concrete `SimpleSearchBackend`; shared result/callback records live in `search_backend.h`. There is no engine selection, process probe or external-process search path. Content search owns NO thread pool. JSON and typed content APIs enqueue one work item per FILE-CHUNK (default 64 files, tunable via the streaming `batch_size`) onto the pre-created `"vxcore.search"` `WorkQueue`, and the caller's threads drain them (caller-helps-drain: the initiating thread self-drains its own items via `ProcessNext(5ms)` until the batch is done). A search that fits in one chunk (≤ 64 files by default) runs inline sequentially; larger searches fan out one queued item per chunk. Chunking subsumes the former per-file fan-out and the 50-file inline threshold.
 7. **Sync backends**: Pluggable via `ISyncBackend` interface (Git, WebDAV, etc. — see `src/sync/AGENTS.md`)
 8. **Event system**: `EventManager` provides fire-and-forget notifications (not cancellable). Events are emitted by `FolderManager` and `NotebookManager` on mutations. `SyncManager` subscribes to mark notebooks dirty for auto-sync.
 9. **Work queues**: `WorkQueueManager` provides named thread-safe queues. vxcore does NOT create threads; the caller owns worker threads and calls `vxcore_work_queue_process_next()`. This now has ZERO exceptions. The former content-search thread pool (`BS::thread_pool`) was removed, so content search also runs entirely on caller threads via the `"vxcore.search"` queue, with the initiating thread's self-drain as the correctness floor.
+
+Content search preserves literal/regex, case, whole-word, excluded-line and encrypted-skip
+semantics. `firstMatchPerFile` defaults false; true emits only the first qualifying
+occurrence per file in both JSON and typed APIs. Blob result caps stay deterministic;
+streaming has no result cap. `SearchManager` forwards work-queue/cancel settings to its
+engine and guards dispatch, callback delivery and completion against cancellation.
+
+`vxcore.json` search settings contain only `encodings`, defaulting to `["UTF-8", "GB18030"]`.
+Explicit encoding lists remain authoritative. Retired `search.backends` keys are ordinary
+unknown fields: rg-only, ordered, unknown and empty lists are ignored on load and omitted
+on normal save, never disabling search. No consumer-config migration is needed. Regression
+coverage lives in `test_core` (actual legacy disk load, custom config/encodings, save/restart)
+and `test_search` (real Unicode multiple/first occurrences across JSON/typed APIs and restart).
+`test_simple_search_backend` covers the concrete matcher and queue implementation;
+`test_folder_manager` directly compiles search sources too. Run native tests serially.
+The optional `vxsearch-validate` tool uses external ripgrep only as an independent oracle,
+not as a library engine; see [tools/AGENTS.md](tools/AGENTS.md).
 
 ### Thread Safety
 
@@ -540,7 +556,7 @@ VxCoreContext
                     ├── FolderManager (folder/file operations, emits events)
                     │       └── DbManager + FileDb + TagDb
                     └── SearchManager (search operations)
-                            └── ISearchBackend (rg/simple)
+                            └── SimpleSearchBackend (embedded built-in engine)
 ```
 
 Content search fans out one work item per FILE-CHUNK (default 64 files) onto the pre-created `"vxcore.search"` `WorkQueue`; the caller's threads drain it (the initiating thread self-drains too), so `SearchManager` holds NO vxcore-owned thread pool. A search that fits in one chunk (≤ 64 files by default) runs inline sequentially.
@@ -556,7 +572,7 @@ search.
 order (default UTF-8, then GB18030). Every decoder is strict: an invalid byte sequence rejects
 that codec, all rejected codecs skip only that file, and the search continues. Successful input
 is normalized to UTF-8; reported match columns are UTF-16 code-unit indices because Qt consumers
-apply them to `QString`. `RgSearchBackend` does not implement this codec policy.
+apply them to `QString`.
 
 ## Important Implementation Details
 
@@ -656,8 +672,8 @@ decodes them with the ANSI code page unless `/utf-8` is passed. `tests/CMakeList
 therefore applies `/utf-8` **directory-wide** via `add_compile_options`, not per target:
 most test targets there are declared with a manual `add_executable()` rather than the
 `add_vxcore_test()` helper, and a per-target flag is silently forgotten by the next target
-added. Several tests already depend on this (`test_file_utils`, `test_process_utils`,
-`test_rg_search_backend`, `test_simple_search_backend` all carry CJK fixtures).
+added. Several tests already depend on this (`test_file_utils` and
+`test_simple_search_backend` carry CJK fixtures).
 `test_asset_utils.cpp` additionally pins one literal against its exact expected UTF-8 bytes
 (`test_cjk_fixtures_are_utf8`) as a cheap sanity check — note this is NOT a reliable detector
 of a lost `/utf-8`, since a single-byte ACP can round-trip those particular bytes unchanged.
@@ -764,10 +780,9 @@ Permanent rules:
 ### Logging
 
 Shared note operations in both raw and bundled backends are also reached by the HTTP API.
-Open/save/create/rename, metadata persistence, node resolution and both search backends must not
+Open/save/create/rename, metadata persistence, node resolution and content search must not
 log note names, paths, bodies, queries or raw exception text, including at debug level.
-Keep existing stable IDs, counts and
-error codes; never print candidate paths or the constructed ripgrep command.
+Keep existing stable IDs, counts and error codes; never print candidate paths.
 
 ```cpp
 #include "utils/logger.h"

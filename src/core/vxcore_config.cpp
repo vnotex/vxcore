@@ -4,14 +4,6 @@ namespace vxcore {
 
 SearchConfig SearchConfig::FromJson(const nlohmann::json &json) {
   SearchConfig config;
-  if (json.contains("backends") && json["backends"].is_array()) {
-    config.backends.clear();
-    for (const auto &backend : json["backends"]) {
-      if (backend.is_string()) {
-        config.backends.push_back(backend.get<std::string>());
-      }
-    }
-  }
   if (json.contains("encodings") && json["encodings"].is_array()) {
     config.encodings.clear();
     for (const auto &encoding : json["encodings"]) {
@@ -25,7 +17,6 @@ SearchConfig SearchConfig::FromJson(const nlohmann::json &json) {
 
 nlohmann::json SearchConfig::ToJson() const {
   nlohmann::json json = nlohmann::json::object();
-  json["backends"] = backends;
   json["encodings"] = encodings;
   return json;
 }

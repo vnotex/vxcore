@@ -5,42 +5,24 @@
 #include "core/filetype_config.h"
 #include "core/folder_manager.h"
 #include "core/notebook.h"
-#include "rg_search_backend.h"
-#include "simple_search_backend.h"
 #include "utils/logger.h"
 #include "utils/string_utils.h"
 #include "vxcore/notebook_json_keys.h"
 
 namespace vxcore {
 
-SearchManager::SearchManager(Notebook *notebook, const std::string &search_backend,
-                             const FileTypesConfig *file_types,
+SearchManager::SearchManager(Notebook *notebook, const FileTypesConfig *file_types,
                              std::vector<std::string> search_encodings)
-    : notebook_(notebook), search_backend_(nullptr), file_types_(file_types) {
-  if (search_backend == "rg") {
-    if (RgSearchBackend::IsAvailable()) {
-      VXCORE_LOG_DEBUG("Using ripgrep (rg) as the search backend");
-      search_backend_.reset(new RgSearchBackend());
-    } else {
-      VXCORE_LOG_WARN(
-          "ripgrep (rg) requested but not available, falling back to SimpleSearchBackend");
-      search_backend_.reset(new SimpleSearchBackend(std::move(search_encodings)));
-    }
-  } else if (search_backend == "simple") {
-    VXCORE_LOG_DEBUG("Using SimpleSearchBackend");
-    search_backend_.reset(new SimpleSearchBackend(std::move(search_encodings)));
-  } else {
-    VXCORE_LOG_WARN("Unknown search backend '%s', using SimpleSearchBackend",
-                    search_backend.c_str());
-    search_backend_.reset(new SimpleSearchBackend(std::move(search_encodings)));
-  }
-}
+    : notebook_(notebook), search_backend_(std::move(search_encodings)), file_types_(file_types) {}
 
 SearchManager::~SearchManager() = default;
 
-void SearchManager::SetWorkQueue(WorkQueue *queue) { work_queue_ = queue; }
+void SearchManager::SetWorkQueue(WorkQueue *queue) { search_backend_.SetWorkQueue(queue); }
 
-void SearchManager::SetCancelFlag(const volatile int *flag) { cancel_flag_ = flag; }
+void SearchManager::SetCancelFlag(const volatile int *flag) {
+  cancel_flag_ = flag;
+  search_backend_.SetCancelFlag(flag);
+}
 
 VxCoreError SearchManager::SearchFiles(const std::string &query_json,
                                        const std::string &input_files_json,
@@ -84,11 +66,6 @@ VxCoreError SearchManager::SearchContent(const std::string &query_json,
                                          ManagedContentSearchResult &out_result) {
   try {
     auto query = SearchContentQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
-    // Reject unsupported bounded mode before enumeration or any callback, including no files.
-    if ((query.options & SearchOption::kFirstMatchPerFile) != SearchOption::kNone &&
-        !dynamic_cast<SimpleSearchBackend *>(search_backend_.get())) {
-      return VXCORE_ERR_UNSUPPORTED;
-    }
     size_t encrypted_skipped = 0;
     auto filtered_files =
         FetchFilesToSearch(query.scope, input_files_json, false, &encrypted_skipped);
@@ -97,38 +74,26 @@ VxCoreError SearchManager::SearchContent(const std::string &query_json,
 
     ManagedContentSearchResult result;
     result.encrypted_skipped_count = encrypted_skipped;
-    if (search_backend_) {
-      if (auto *simple = dynamic_cast<SimpleSearchBackend *>(search_backend_.get())) {
-        simple->SetWorkQueue(work_queue_);
-        simple->SetCancelFlag(cancel_flag_);
-      }
+    // Keep cancellation checks at the public boundary as well as inside the scan,
+    // including empty searches and cancellation after the final chunk completes.
+    auto is_cancelled = [this]() { return cancel_flag_ && *cancel_flag_ != 0; };
+    if (is_cancelled()) {
+      return VXCORE_ERR_CANCELLED;
+    }
 
-      // Cancellation must be honored for ALL backends on the blob path too (this backs the
-      // cancellable vxcore_search_content_ex C API). SimpleSearchBackend observes cancel_flag_
-      // internally, but RgSearchBackend's single-shot Search() does not, so guard the boundary
-      // here: bail before dispatch if already cancelled, and translate a backend VXCORE_OK into
-      // VXCORE_ERR_CANCELLED when the flag is set. This mirrors SearchContentStreaming and does
-      // NOT alter the successful (non-cancelled) blob output, preserving byte-identity.
-      auto is_cancelled = [this]() { return cancel_flag_ && *cancel_flag_ != 0; };
-      if (is_cancelled()) {
-        return VXCORE_ERR_CANCELLED;
-      }
-
-      ContentSearchResult search_result;
-
-      VxCoreError search_err =
-          search_backend_->Search(filtered_files, query.pattern, query.options,
-                                  query.exclude_patterns, query.max_results, search_result);
-      if (search_err == VXCORE_OK && is_cancelled()) {
-        return VXCORE_ERR_CANCELLED;
-      }
-      if (search_err == VXCORE_OK) {
-        result.content = std::move(search_result);
-      } else if (search_err == VXCORE_ERR_CANCELLED) {
-        return VXCORE_ERR_CANCELLED;
-      } else {
-        VXCORE_LOG_WARN("Search backend failed with error: %d", search_err);
-      }
+    ContentSearchResult search_result;
+    VxCoreError search_err =
+        search_backend_.Search(filtered_files, query.pattern, query.options, query.exclude_patterns,
+                               query.max_results, search_result);
+    if (search_err == VXCORE_OK && is_cancelled()) {
+      return VXCORE_ERR_CANCELLED;
+    }
+    if (search_err == VXCORE_OK) {
+      result.content = std::move(search_result);
+    } else if (search_err == VXCORE_ERR_CANCELLED) {
+      return VXCORE_ERR_CANCELLED;
+    } else {
+      VXCORE_LOG_WARN("Content search failed with error: %d", search_err);
     }
 
     out_result = std::move(result);
@@ -148,32 +113,14 @@ VxCoreError SearchManager::SearchContentStreaming(const std::string &query_json,
                                                   const SearchContentBatchFn &on_batch) {
   try {
     auto query = SearchContentQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
-    // Reject unsupported bounded mode before enumeration or any callback, including no files.
-    if ((query.options & SearchOption::kFirstMatchPerFile) != SearchOption::kNone &&
-        !dynamic_cast<SimpleSearchBackend *>(search_backend_.get())) {
-      return VXCORE_ERR_UNSUPPORTED;
-    }
     size_t encrypted_skipped = 0;
     auto filtered_files =
         FetchFilesToSearch(query.scope, input_files_json, false, &encrypted_skipped);
     FilterDefaultContentFileTypes(filtered_files, query.scope);
     CalculateAbsolutePaths(filtered_files);
 
-    if (!search_backend_) {
-      return VXCORE_OK;
-    }
-
-    if (auto *simple = dynamic_cast<SimpleSearchBackend *>(search_backend_.get())) {
-      simple->SetWorkQueue(work_queue_);
-      simple->SetCancelFlag(cancel_flag_);
-    }
-
-    // Cancellation is part of the streaming contract for ALL backends, not just
-    // SimpleSearchBackend (which observes cancel_flag_ mid-drain via SetCancelFlag above).
-    // RgSearchBackend is a single external-process shot with no cancel hook, so guard the
-    // boundaries here: bail before dispatch if already cancelled, suppress any batch callback
-    // once cancellation is requested, and translate a backend VXCORE_OK into VXCORE_ERR_CANCELLED
-    // when the flag is set. This keeps the C API honest (no VXCORE_OK + late batch after cancel).
+    // Guard dispatch, callback delivery and completion in addition to the scan's
+    // cancellation checks, so no late batch or success is published after cancel.
     auto is_cancelled = [this]() { return cancel_flag_ && *cancel_flag_ != 0; };
     if (is_cancelled()) {
       return VXCORE_ERR_CANCELLED;
@@ -189,7 +136,7 @@ VxCoreError SearchManager::SearchContentStreaming(const std::string &query_json,
       on_batch(batch_index, total_batches, batch_files, batch_index == 0 ? encrypted_skipped : 0);
     };
 
-    // No backend chunk exists when every candidate was excluded. Still deliver
+    // No scan chunk exists when every candidate was excluded. Still deliver
     // the exclusion fact; an all-plaintext empty search retains its old shape.
     if (filtered_files.empty() && encrypted_skipped != 0) {
       std::vector<ContentSearchMatchedFile> empty_batch;
@@ -197,8 +144,8 @@ VxCoreError SearchManager::SearchContentStreaming(const std::string &query_json,
       return is_cancelled() ? VXCORE_ERR_CANCELLED : VXCORE_OK;
     }
 
-    VxCoreError err = search_backend_->SearchStreaming(filtered_files, query.pattern, query.options,
-                                                       query.exclude_patterns, batch_size, emit);
+    VxCoreError err = search_backend_.SearchStreaming(filtered_files, query.pattern, query.options,
+                                                      query.exclude_patterns, batch_size, emit);
     if (err == VXCORE_OK && is_cancelled()) {
       return VXCORE_ERR_CANCELLED;
     }

@@ -1,3 +1,4 @@
+#include <memory>
 #include <new>
 
 #include "api/api_utils.h"
@@ -5,7 +6,6 @@
 #include "core/context.h"
 #include "core/notebook_manager.h"
 #include "core/work_queue.h"
-#include "search/rg_search_backend.h"
 #include "search/search_manager.h"
 #include "search/search_queue_name.h"
 #include "vxcore/notebook_json_keys.h"
@@ -148,25 +148,15 @@ std::unique_ptr<vxcore::SearchManager> CreateSearchManager(vxcore::VxCoreContext
                                                            vxcore::Notebook *notebook,
                                                            vxcore::WorkQueue *queue,
                                                            const volatile int *cancel_flag) {
-  std::string backend = "simple";
   const vxcore::FileTypesConfig *file_types = nullptr;
   std::vector<std::string> encodings;
   if (ctx && ctx->config_manager) {
     const auto &config = ctx->config_manager->GetConfig();
     file_types = &config.file_types;
     encodings = config.search.encodings;
-    for (const auto &b : config.search.backends) {
-      if (b == "rg" && vxcore::RgSearchBackend::IsAvailable()) {
-        backend = "rg";
-        break;
-      } else if (b == "simple") {
-        backend = "simple";
-        break;
-      }
-    }
   }
   auto manager =
-      std::make_unique<vxcore::SearchManager>(notebook, backend, file_types, std::move(encodings));
+      std::make_unique<vxcore::SearchManager>(notebook, file_types, std::move(encodings));
   manager->SetWorkQueue(queue);
   manager->SetCancelFlag(cancel_flag);
   return manager;
@@ -382,9 +372,7 @@ VXCORE_API VxCoreError vxcore_search_by_tags(VxCoreContextHandle context, const 
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    // SearchByTags never uses the search backend (no content search), so always
-    // use "simple" to avoid initializing ripgrep unnecessarily.
-    auto search_manager = std::make_unique<vxcore::SearchManager>(notebook, std::string("simple"));
+    auto search_manager = std::make_unique<vxcore::SearchManager>(notebook);
 
     vxcore::FileSearchResult result;
     std::string input_files_str = input_files_json ? input_files_json : "";
@@ -431,8 +419,7 @@ VxCoreError SearchFilesTyped(VxCoreContextHandle context, const char *notebook_i
       ctx->last_error = "Notebook not found";
       return VXCORE_ERR_NOT_FOUND;
     }
-    // Generic tag search does not need to initialize a content backend.
-    auto manager = by_tags ? std::make_unique<vxcore::SearchManager>(notebook, "simple")
+    auto manager = by_tags ? std::make_unique<vxcore::SearchManager>(notebook)
                            : CreateSearchManager(ctx, notebook, nullptr, nullptr);
     vxcore::FileSearchResult result;
     const std::string input = input_files_json ? input_files_json : "";
