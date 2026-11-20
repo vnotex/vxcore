@@ -20,6 +20,16 @@ class WorkQueue;
 struct FileRecord;
 struct FolderRecord;
 
+struct FileSearchResult {
+  std::vector<SearchFileInfo> files;
+  bool truncated = false;
+};
+
+struct ManagedContentSearchResult {
+  ContentSearchResult content;
+  size_t encrypted_skipped_count = 0;
+};
+
 class SearchManager {
  public:
   explicit SearchManager(Notebook *notebook, const std::string &search_backend,
@@ -28,34 +38,31 @@ class SearchManager {
   ~SearchManager();
 
   VxCoreError SearchFiles(const std::string &query_json, const std::string &input_files_json,
-                          std::string &out_results_json);
+                          FileSearchResult &out_result);
 
   VxCoreError SearchContent(const std::string &query_json, const std::string &input_files_json,
-                            std::string &out_results_json);
+                            ManagedContentSearchResult &out_result);
 
-  // Streaming content search. Fetches the target file set, then dispatches to the backend's
-  // SearchStreaming primitive, JSON-encoding each completed chunk slice into the existing
-  // content-search shape ({"matchCount","truncated":false,"matches":[...]}) before invoking
-  // |on_batch|. NO truncation is applied (the primitive owns none). |batch_size| == 0 selects
-  // the backend default. |on_batch| MAY be invoked concurrently from multiple drain threads
-  // and MUST be thread-safe; the batch_json string is valid only for the call's duration.
-  // Returns VXCORE_ERR_CANCELLED if a configured cancel flag was observed mid-stream.
-  using SearchContentBatchFn =
-      std::function<void(int batch_index, int total_batches, const std::string &batch_json)>;
+  // Native streaming sink, before representation-specific projection/serialization.
+  // The files are borrowed for the callback duration; callbacks may overlap and arrive
+  // out of order. No cap is applied. Skipped count is reported only by batch zero.
+  using SearchContentBatchFn = std::function<void(
+      int batch_index, int total_batches, const std::vector<ContentSearchMatchedFile> &files,
+      size_t encrypted_skipped_count)>;
   VxCoreError SearchContentStreaming(const std::string &query_json,
                                      const std::string &input_files_json, int batch_size,
                                      const SearchContentBatchFn &on_batch);
 
   VxCoreError SearchByTags(const std::string &query_json, const std::string &input_files_json,
-                           std::string &out_results_json);
+                           FileSearchResult &out_result);
 
   void SetWorkQueue(WorkQueue *queue);
   void SetCancelFlag(const volatile int *flag);
 
  private:
   std::vector<SearchFileInfo> GetAllFiles(const SearchScope &scope,
-                                          const SearchInputFiles *input_files,
-                                          bool include_folders, size_t *encrypted_skipped);
+                                          const SearchInputFiles *input_files, bool include_folders,
+                                          size_t *encrypted_skipped);
 
   std::vector<SearchFileInfo> FilterFilesByTagsAndDate(std::vector<SearchFileInfo> files,
                                                        const SearchScope &scope);
@@ -78,9 +85,6 @@ class SearchManager {
                                                     const std::string &tag_operator,
                                                     int max_results);
 
-  std::string SerializeFileResults(const std::vector<SearchFileInfo> &matched_files,
-                                   int max_results);
-
   void CollectFilesInFolder(const std::string &folder_path, const SearchScope &scope,
                             const std::vector<std::string> &lower_path_patterns,
                             const std::vector<std::string> &lower_exclude_path_patterns,
@@ -88,7 +92,7 @@ class SearchManager {
                             size_t *encrypted_skipped);
 
   bool SkipEncryptedCandidate(const std::string &path, const FileRecord &record,
-                               const SearchScope &scope, size_t &encrypted_skipped) const;
+                              const SearchScope &scope, size_t &encrypted_skipped) const;
 
   bool MatchesTags(const std::vector<std::string> &file_tags,
                    const std::vector<std::string> &search_tags,

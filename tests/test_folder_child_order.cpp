@@ -20,19 +20,17 @@
 //      callback count == 1 across one successful reorder + one no-op + one
 //      permutation-mismatch).
 
-#include "test_utils.h"
-#include "vxcore/vxcore.h"
-
 #include <chrono>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 
-#include <nlohmann/json.hpp>
-
 #include "core/event_names.h"
+#include "test_utils.h"
+#include "vxcore/vxcore.h"
 
 namespace {
 
@@ -68,17 +66,15 @@ std::string root_vx_json_path(const std::string &notebook_root) {
 }
 
 // Build the absolute vx.json path for a subfolder inside a bundled notebook.
-std::string sub_vx_json_path(const std::string &notebook_root,
-                             const std::string &folder_rel_path) {
+std::string sub_vx_json_path(const std::string &notebook_root, const std::string &folder_rel_path) {
   return notebook_root + "/vx_notebook/contents/" + folder_rel_path + "/vx.json";
 }
 
 // Helper: create a notebook with the supplied folders/files seeded at root.
 // Returns out_notebook_id (caller frees) and out_ctx (caller destroys).
-VxCoreError seed_notebook(const std::string &nb_path,
-                          const std::vector<std::string> &folders,
-                          const std::vector<std::string> &files,
-                          VxCoreContextHandle *out_ctx, char **out_notebook_id) {
+VxCoreError seed_notebook(const std::string &nb_path, const std::vector<std::string> &folders,
+                          const std::vector<std::string> &files, VxCoreContextHandle *out_ctx,
+                          char **out_notebook_id) {
   *out_ctx = nullptr;
   *out_notebook_id = nullptr;
 
@@ -86,8 +82,7 @@ VxCoreError seed_notebook(const std::string &nb_path,
   if (err != VXCORE_OK) {
     return err;
   }
-  err = vxcore_notebook_create(*out_ctx, nb_path.c_str(),
-                               "{\"name\":\"ReorderTestNotebook\"}",
+  err = vxcore_notebook_create(*out_ctx, nb_path.c_str(), "{\"name\":\"ReorderTestNotebook\"}",
                                VXCORE_NOTEBOOK_BUNDLED, out_notebook_id);
   if (err != VXCORE_OK) {
     return err;
@@ -120,32 +115,21 @@ VxCoreError read_root_order(VxCoreContextHandle ctx, const char *notebook_id,
                             std::vector<std::string> &out_files) {
   out_folders.clear();
   out_files.clear();
-  char *children_json = nullptr;
-  VxCoreError err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  VxCoreFolderListing *result = nullptr;
+  const auto err = vxcore_folder_list_children_typed(ctx, notebook_id, ".", &result);
   if (err != VXCORE_OK) {
     return err;
   }
-  try {
-    auto j = nlohmann::json::parse(children_json);
-    if (j.contains("folders") && j["folders"].is_array()) {
-      for (const auto &item : j["folders"]) {
-        if (item.contains("name")) {
-          out_folders.push_back(item["name"].get<std::string>());
-        }
-      }
-    }
-    if (j.contains("files") && j["files"].is_array()) {
-      for (const auto &item : j["files"]) {
-        if (item.contains("name")) {
-          out_files.push_back(item["name"].get<std::string>());
-        }
-      }
-    }
-  } catch (const std::exception &) {
-    vxcore_string_free(children_json);
-    return VXCORE_ERR_JSON_PARSE;
+  const auto *view = vxcore_folder_listing_view(result);
+  out_folders.reserve(view->folder_count);
+  for (size_t i = 0; i < view->folder_count; ++i) {
+    out_folders.emplace_back(view->folders[i].name.data, view->folders[i].name.size);
   }
-  vxcore_string_free(children_json);
+  out_files.reserve(view->file_count);
+  for (size_t i = 0; i < view->file_count; ++i) {
+    out_files.emplace_back(view->files[i].name.data, view->files[i].name.size);
+  }
+  vxcore_folder_listing_free(result);
   return VXCORE_OK;
 }
 
@@ -174,8 +158,7 @@ int test_reorder_folders_only() {
   ASSERT_EQ(before_folders[2], std::string("c"));
 
   // Reorder to ["c","a","b"].
-  err = vxcore_folder_set_children_order(ctx, notebook_id, ".",
-                                          R"({"folders":["c","a","b"]})");
+  err = vxcore_folder_set_children_order(ctx, notebook_id, ".", R"({"folders":["c","a","b"]})");
   ASSERT_EQ(err, VXCORE_OK);
 
   // Verify new disk order.
@@ -204,12 +187,11 @@ int test_reorder_files_only() {
 
   VxCoreContextHandle ctx = nullptr;
   char *notebook_id = nullptr;
-  VxCoreError err =
-      seed_notebook(nb_path, {}, {"x.md", "y.md", "z.md"}, &ctx, &notebook_id);
+  VxCoreError err = seed_notebook(nb_path, {}, {"x.md", "y.md", "z.md"}, &ctx, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   err = vxcore_folder_set_children_order(ctx, notebook_id, ".",
-                                          R"({"files":["z.md","y.md","x.md"]})");
+                                         R"({"files":["z.md","y.md","x.md"]})");
   ASSERT_EQ(err, VXCORE_OK);
 
   std::vector<std::string> after_folders, after_files;
@@ -240,9 +222,8 @@ int test_reorder_both_atomically() {
   VxCoreError err = seed_notebook(nb_path, {"a", "b"}, {"x.md", "y.md"}, &ctx, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  err = vxcore_folder_set_children_order(
-      ctx, notebook_id, ".",
-      R"({"folders":["b","a"],"files":["y.md","x.md"]})");
+  err = vxcore_folder_set_children_order(ctx, notebook_id, ".",
+                                         R"({"folders":["b","a"],"files":["y.md","x.md"]})");
   ASSERT_EQ(err, VXCORE_OK);
 
   std::vector<std::string> after_folders, after_files;
@@ -281,8 +262,7 @@ int test_incomplete_permutation_rejected() {
   ASSERT_FALSE(before.empty());
 
   // Missing "c" — not an exact permutation.
-  err = vxcore_folder_set_children_order(ctx, notebook_id, ".",
-                                          R"({"folders":["a","b"]})");
+  err = vxcore_folder_set_children_order(ctx, notebook_id, ".", R"({"folders":["a","b"]})");
   ASSERT_EQ(err, VXCORE_ERR_PERMUTATION_MISMATCH);
 
   std::string after = read_file_bytes(vx_json);
@@ -313,8 +293,7 @@ int test_foreign_name_rejected() {
   ASSERT_FALSE(before.empty());
 
   // "d" does not exist — foreign name.
-  err = vxcore_folder_set_children_order(ctx, notebook_id, ".",
-                                          R"({"folders":["a","b","d"]})");
+  err = vxcore_folder_set_children_order(ctx, notebook_id, ".", R"({"folders":["a","b","d"]})");
   ASSERT_EQ(err, VXCORE_ERR_PERMUTATION_MISMATCH);
 
   std::string after = read_file_bytes(vx_json);
@@ -350,8 +329,7 @@ int test_noop_does_not_write() {
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
   // Submit current order unchanged.
-  err = vxcore_folder_set_children_order(ctx, notebook_id, ".",
-                                          R"({"folders":["a","b","c"]})");
+  err = vxcore_folder_set_children_order(ctx, notebook_id, ".", R"({"folders":["a","b","c"]})");
   ASSERT_EQ(err, VXCORE_OK);
 
   auto mtime_after = std::filesystem::last_write_time(vx_fs);
@@ -379,8 +357,7 @@ int test_null_params_rejected() {
 
   ASSERT_EQ(vxcore_folder_set_children_order(nullptr, notebook_id, ".", "{}"),
             VXCORE_ERR_INVALID_PARAM);
-  ASSERT_EQ(vxcore_folder_set_children_order(ctx, nullptr, ".", "{}"),
-            VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(vxcore_folder_set_children_order(ctx, nullptr, ".", "{}"), VXCORE_ERR_INVALID_PARAM);
   ASSERT_EQ(vxcore_folder_set_children_order(ctx, notebook_id, nullptr, "{}"),
             VXCORE_ERR_INVALID_PARAM);
   ASSERT_EQ(vxcore_folder_set_children_order(ctx, notebook_id, ".", nullptr),
@@ -413,8 +390,7 @@ int test_malformed_json_rejected() {
   ASSERT_EQ(vxcore_folder_set_children_order(ctx, notebook_id, ".", "[1,2,3]"),
             VXCORE_ERR_INVALID_PARAM);
   // "folders" entry is not an array.
-  ASSERT_EQ(vxcore_folder_set_children_order(ctx, notebook_id, ".",
-                                              R"({"folders":42})"),
+  ASSERT_EQ(vxcore_folder_set_children_order(ctx, notebook_id, ".", R"({"folders":42})"),
             VXCORE_ERR_INVALID_PARAM);
 
   vxcore_string_free(notebook_id);
@@ -438,8 +414,7 @@ int test_empty_path_targets_root() {
   ASSERT_EQ(err, VXCORE_OK);
 
   // Empty string -> root.
-  err = vxcore_folder_set_children_order(ctx, notebook_id, "",
-                                          R"({"folders":["b","a"]})");
+  err = vxcore_folder_set_children_order(ctx, notebook_id, "", R"({"folders":["b","a"]})");
   ASSERT_EQ(err, VXCORE_OK);
 
   std::vector<std::string> folders, files;
@@ -450,8 +425,7 @@ int test_empty_path_targets_root() {
   ASSERT_EQ(folders[1], std::string("a"));
 
   // Then "." -> root, reorder back to original.
-  err = vxcore_folder_set_children_order(ctx, notebook_id, ".",
-                                          R"({"folders":["a","b"]})");
+  err = vxcore_folder_set_children_order(ctx, notebook_id, ".", R"({"folders":["a","b"]})");
   ASSERT_EQ(err, VXCORE_OK);
 
   err = read_root_order(ctx, notebook_id, folders, files);
@@ -487,18 +461,15 @@ int test_event_fires_on_success_only() {
   ASSERT_EQ(err, VXCORE_OK);
 
   // 1) Successful reorder — MUST emit once.
-  err = vxcore_folder_set_children_order(ctx, notebook_id, ".",
-                                          R"({"folders":["c","a","b"]})");
+  err = vxcore_folder_set_children_order(ctx, notebook_id, ".", R"({"folders":["c","a","b"]})");
   ASSERT_EQ(err, VXCORE_OK);
 
   // 2) No-op (resubmit current order) — MUST NOT emit.
-  err = vxcore_folder_set_children_order(ctx, notebook_id, ".",
-                                          R"({"folders":["c","a","b"]})");
+  err = vxcore_folder_set_children_order(ctx, notebook_id, ".", R"({"folders":["c","a","b"]})");
   ASSERT_EQ(err, VXCORE_OK);
 
   // 3) Permutation mismatch — MUST NOT emit.
-  err = vxcore_folder_set_children_order(ctx, notebook_id, ".",
-                                          R"({"folders":["c","a","d"]})");
+  err = vxcore_folder_set_children_order(ctx, notebook_id, ".", R"({"folders":["c","a","d"]})");
   ASSERT_EQ(err, VXCORE_ERR_PERMUTATION_MISMATCH);
 
   ASSERT_EQ(cap.call_count, 1);

@@ -53,6 +53,31 @@ The vxcore submodule currently has **no git tags**, so there is no formal releas
 - Enum additions MUST be appended before the `VXCORE_ERR_UNKNOWN = 999` sentinel with an explicit value; never reorder existing enumerators.
 - Cut `v0.1.0` at the next stable point and adopt SemVer thereafter (MAJOR for `!` commits, MINOR for pure additions, PATCH for internal fixes).
 
+### Typed result snapshots
+
+`include/vxcore/vxcore_results.h` defines the `_typed` folder-child, search, and tag
+read APIs. They expose frozen C record layouts and UTF-8 byte views, never live
+notebook/config/SQLite objects or C++ containers. Existing JSON C APIs serialize
+the same native producers and remain supported; query and persistence formats do not change.
+
+Eight owning reads clear a valid output pointer before work, never free its incoming
+value, and publish an owner only on success (including empty results). Views survive
+notebook mutation/closure and context destruction until their matching context-free
+`vxcore_*_free()` call. `free(NULL)` is harmless; `view(NULL)` returns NULL. Acquisition
+keeps existing thread/gate restrictions; do not free an owner concurrently with readers.
+Finalize backing storage before projecting view pointers. Array strides are ABI:
+incompatible record additions require a new versioned type/API.
+
+Streaming search is callback-only. Copy borrowed batch data before returning or queueing
+it. Callbacks may overlap and arrive out of order; they must not throw or reenter core.
+Only batch zero carries the scan's encrypted-skipped count, including the synthetic
+all-encrypted empty batch; streaming truncation is always false. Cap occurrences before
+grouping same-line results. Simple UTF-16 offsets and rg byte offsets remain distinct.
+
+Arbitrary metadata alone remains a JSON value: zero bytes mean `{}`, while JSON `null`
+is explicitly encoded as `null`. Folder existence stays output-only; raw tag listing
+succeeds empty while raw direct tag queries/counts remain unsupported.
+
 ## Local notebook trust
 
 `vxcore_notebook_is_trusted` / `vxcore_notebook_set_trusted` expose a consumer-assigned

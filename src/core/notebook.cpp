@@ -64,8 +64,8 @@ VxCoreError NotebookEncryption::InstallNotebookKey(
 }
 
 VxCoreError NotebookEncryption::AcquireNotebookKey(
-    std::shared_ptr<const EncryptedNote::Key> &out_key,
-    EncryptedNote::KeyEnvelope *out_envelope, const EncryptedNote::ObjectHeader *header) const {
+    std::shared_ptr<const EncryptedNote::Key> &out_key, EncryptedNote::KeyEnvelope *out_envelope,
+    const EncryptedNote::ObjectHeader *header) const {
   out_key.reset();
   try {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -124,7 +124,6 @@ VxCoreError Notebook::EnsureEncryption(NotebookEncryption *&out_encryption) {
     return VXCORE_ERR_OUT_OF_MEMORY;
   }
 }
-
 
 const char *Notebook::kConfigFileName = "config.json";
 
@@ -455,16 +454,15 @@ VxCoreError Notebook::SyncTagsToMetadataStore() {
 
 void Notebook::SetLastSyncUtc(int64_t ts_millis) {
   if (!metadata_store_) {
-    VXCORE_LOG_WARN("Notebook::SetLastSyncUtc: metadata_store_ is null, "
-                    "skipping write for notebook=%s",
-                    config_.id.c_str());
+    VXCORE_LOG_WARN(
+        "Notebook::SetLastSyncUtc: metadata_store_ is null, "
+        "skipping write for notebook=%s",
+        config_.id.c_str());
     return;
   }
-  const bool ok =
-      metadata_store_->SetNotebookMetadata("last_sync_utc", std::to_string(ts_millis));
+  const bool ok = metadata_store_->SetNotebookMetadata("last_sync_utc", std::to_string(ts_millis));
   if (!ok) {
-    VXCORE_LOG_WARN("Notebook::SetLastSyncUtc: write failed for notebook=%s",
-                    config_.id.c_str());
+    VXCORE_LOG_WARN("Notebook::SetLastSyncUtc: write failed for notebook=%s", config_.id.c_str());
   }
 }
 
@@ -483,13 +481,9 @@ int64_t Notebook::GetLastSyncUtc() const {
   }
 }
 
-void Notebook::SetReadOnly(bool read_only) noexcept {
-  read_only_ = read_only;
-}
+void Notebook::SetReadOnly(bool read_only) noexcept { read_only_ = read_only; }
 
-bool Notebook::IsReadOnly() const noexcept {
-  return read_only_;
-}
+bool Notebook::IsReadOnly() const noexcept { return read_only_; }
 
 void Notebook::SetTrusted(bool trusted) noexcept { trusted_ = trusted; }
 
@@ -527,7 +521,9 @@ TagNode *Notebook::FindTag(const std::string &tag_name) {
 }
 
 VxCoreError Notebook::CreateTag(const std::string &tag_name, const std::string &parent_tag) {
-  if (CheckWritable() != VXCORE_OK) { return CheckWritable(); }
+  if (CheckWritable() != VXCORE_OK) {
+    return CheckWritable();
+  }
 
   if (tag_name.empty()) {
     return VXCORE_ERR_INVALID_PARAM;
@@ -557,7 +553,9 @@ VxCoreError Notebook::CreateTag(const std::string &tag_name, const std::string &
 }
 
 VxCoreError Notebook::CreateTagPath(const std::string &tag_path) {
-  if (CheckWritable() != VXCORE_OK) { return CheckWritable(); }
+  if (CheckWritable() != VXCORE_OK) {
+    return CheckWritable();
+  }
 
   if (tag_path.empty()) {
     return VXCORE_ERR_INVALID_PARAM;
@@ -586,7 +584,9 @@ VxCoreError Notebook::CreateTagPath(const std::string &tag_path) {
 }
 
 VxCoreError Notebook::DeleteTag(const std::string &tag_name) {
-  if (CheckWritable() != VXCORE_OK) { return CheckWritable(); }
+  if (CheckWritable() != VXCORE_OK) {
+    return CheckWritable();
+  }
 
   if (tag_name.empty()) {
     return VXCORE_ERR_INVALID_PARAM;
@@ -658,7 +658,9 @@ VxCoreError Notebook::DeleteTag(const std::string &tag_name) {
 }
 
 VxCoreError Notebook::MoveTag(const std::string &tag_name, const std::string &parent_tag) {
-  if (CheckWritable() != VXCORE_OK) { return CheckWritable(); }
+  if (CheckWritable() != VXCORE_OK) {
+    return CheckWritable();
+  }
 
   if (tag_name.empty()) {
     return VXCORE_ERR_INVALID_PARAM;
@@ -704,14 +706,7 @@ VxCoreError Notebook::MoveTag(const std::string &tag_name, const std::string &pa
   return VXCORE_OK;
 }
 
-VxCoreError Notebook::GetTags(std::string &out_tags_json) const {
-  nlohmann::json tags_array = nlohmann::json::array();
-  for (const auto &tag : config_.tags) {
-    tags_array.push_back(tag.ToJson());
-  }
-  out_tags_json = tags_array.dump();
-  return VXCORE_OK;
-}
+const std::vector<TagNode> &Notebook::GetTags() const { return config_.tags; }
 
 std::string Notebook::GetCleanRelativePath(const std::string &path) const {
   const auto clean_path = CleanPath(path);
@@ -726,46 +721,24 @@ std::string Notebook::GetAbsolutePath(const std::string &relative_path) const {
 }
 
 VxCoreError Notebook::FindFilesByTags(const std::vector<std::string> &tags, bool use_and,
-                                      std::string &out_results_json) {
+                                      std::vector<StoreTagQueryResult> &out_results) {
+  out_results.clear();
   if (!metadata_store_ || !metadata_store_->IsOpen()) {
     return VXCORE_ERR_INVALID_STATE;
   }
 
-  auto results = use_and ? metadata_store_->FindFilesByTagsAnd(tags)
-                         : metadata_store_->FindFilesByTagsOr(tags);
-
-  nlohmann::json matches = nlohmann::json::array();
-  for (const auto &result : results) {
-    nlohmann::json match = nlohmann::json::object();
-    match["filePath"] = result.file_path;
-    match["fileName"] = result.file_name;
-    match["tags"] = result.tags;
-    matches.push_back(std::move(match));
-  }
-
-  nlohmann::json output = nlohmann::json::object();
-  output["matchCount"] = static_cast<int>(matches.size());
-  output["matches"] = std::move(matches);
-  out_results_json = output.dump();
+  out_results = use_and ? metadata_store_->FindFilesByTagsAnd(tags)
+                        : metadata_store_->FindFilesByTagsOr(tags);
   return VXCORE_OK;
 }
 
-VxCoreError Notebook::CountFilesByTag(std::string &out_results_json) {
+VxCoreError Notebook::CountFilesByTag(std::vector<std::pair<std::string, int>> &out_counts) {
+  out_counts.clear();
   if (!metadata_store_ || !metadata_store_->IsOpen()) {
     return VXCORE_ERR_INVALID_STATE;
   }
 
-  auto counts = metadata_store_->CountFilesByTag();
-
-  nlohmann::json results = nlohmann::json::array();
-  for (const auto &pair : counts) {
-    nlohmann::json entry = nlohmann::json::object();
-    entry["tag"] = pair.first;
-    entry["count"] = pair.second;
-    results.push_back(std::move(entry));
-  }
-
-  out_results_json = results.dump();
+  out_counts = metadata_store_->CountFilesByTag();
   return VXCORE_OK;
 }
 

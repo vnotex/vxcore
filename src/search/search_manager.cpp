@@ -13,33 +13,6 @@
 
 namespace vxcore {
 
-namespace {
-
-// Encodes a single matched file into the per-file content-search JSON shape shared by the
-// blob (SearchContent) and streaming (SearchContentStreaming) paths. Kept as the SINGLE
-// source of truth so the two paths can never drift; key insertion order is fixed
-// (path, id, matchCount, matches; lineNumber, columnStart, columnEnd, lineText) to preserve
-// byte-identical blob output.
-nlohmann::json EncodeMatchedFileJson(const ContentSearchMatchedFile &matched_file) {
-  nlohmann::json item;
-  item["path"] = matched_file.path;
-  item["id"] = matched_file.id;
-  item["matchCount"] = matched_file.matches.size();
-  item["matches"] = nlohmann::json::array();
-  auto &matches = item["matches"];
-  for (const auto &match : matched_file.matches) {
-    nlohmann::json m;
-    m["lineNumber"] = match.line_number;
-    m["columnStart"] = match.column_start;
-    m["columnEnd"] = match.column_end;
-    m["lineText"] = match.line_text;
-    matches.push_back(std::move(m));
-  }
-  return item;
-}
-
-}  // namespace
-
 SearchManager::SearchManager(Notebook *notebook, const std::string &search_backend,
                              const FileTypesConfig *file_types,
                              std::vector<std::string> search_encodings)
@@ -71,7 +44,7 @@ void SearchManager::SetCancelFlag(const volatile int *flag) { cancel_flag_ = fla
 
 VxCoreError SearchManager::SearchFiles(const std::string &query_json,
                                        const std::string &input_files_json,
-                                       std::string &out_results_json) {
+                                       FileSearchResult &out_result) {
   try {
     auto query = SearchFilesQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
     VXCORE_LOG_DEBUG(
@@ -88,7 +61,8 @@ VxCoreError SearchManager::SearchFiles(const std::string &query_json,
                                  query.include_folders, query.match_target, query.max_results);
     VXCORE_LOG_DEBUG("SearchManager::SearchFiles: matched_files count=%zu", matched_files.size());
 
-    out_results_json = SerializeFileResults(matched_files, query.max_results);
+    out_result.truncated = static_cast<int>(matched_files.size()) >= query.max_results;
+    out_result.files = std::move(matched_files);
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &) {
     VXCORE_LOG_ERROR("SearchFiles JSON error");
@@ -107,7 +81,7 @@ void SearchManager::CalculateAbsolutePaths(std::vector<SearchFileInfo> &files) c
 
 VxCoreError SearchManager::SearchContent(const std::string &query_json,
                                          const std::string &input_files_json,
-                                         std::string &out_results_json) {
+                                         ManagedContentSearchResult &out_result) {
   try {
     auto query = SearchContentQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
     // Reject unsupported bounded mode before enumeration or any callback, including no files.
@@ -121,14 +95,8 @@ VxCoreError SearchManager::SearchContent(const std::string &query_json,
     FilterDefaultContentFileTypes(filtered_files, query.scope);
     CalculateAbsolutePaths(filtered_files);
 
-    nlohmann::json result;
-    result["matchCount"] = 0;
-    result["truncated"] = false;
-    result["matches"] = nlohmann::json::array();
-    if (encrypted_skipped != 0) {
-      result[kJsonKeyEncryptedSkippedCount] = encrypted_skipped;
-    }
-    auto &total_matches = result["matches"];
+    ManagedContentSearchResult result;
+    result.encrypted_skipped_count = encrypted_skipped;
     if (search_backend_) {
       if (auto *simple = dynamic_cast<SimpleSearchBackend *>(search_backend_.get())) {
         simple->SetWorkQueue(work_queue_);
@@ -143,7 +111,6 @@ VxCoreError SearchManager::SearchContent(const std::string &query_json,
       // NOT alter the successful (non-cancelled) blob output, preserving byte-identity.
       auto is_cancelled = [this]() { return cancel_flag_ && *cancel_flag_ != 0; };
       if (is_cancelled()) {
-        out_results_json = result.dump();
         return VXCORE_ERR_CANCELLED;
       }
 
@@ -153,25 +120,18 @@ VxCoreError SearchManager::SearchContent(const std::string &query_json,
           search_backend_->Search(filtered_files, query.pattern, query.options,
                                   query.exclude_patterns, query.max_results, search_result);
       if (search_err == VXCORE_OK && is_cancelled()) {
-        out_results_json = result.dump();
         return VXCORE_ERR_CANCELLED;
       }
       if (search_err == VXCORE_OK) {
-        for (const auto &matched_file : search_result.matched_files) {
-          total_matches.push_back(EncodeMatchedFileJson(matched_file));
-        }
-
-        result["matchCount"] = result["matches"].size();
-        result["truncated"] = search_result.truncated;
+        result.content = std::move(search_result);
       } else if (search_err == VXCORE_ERR_CANCELLED) {
-        out_results_json = result.dump();
         return VXCORE_ERR_CANCELLED;
       } else {
         VXCORE_LOG_WARN("Search backend failed with error: %d", search_err);
       }
     }
 
-    out_results_json = result.dump();
+    out_result = std::move(result);
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &) {
     VXCORE_LOG_ERROR("SearchContent JSON error");
@@ -219,26 +179,14 @@ VxCoreError SearchManager::SearchContentStreaming(const std::string &query_json,
       return VXCORE_ERR_CANCELLED;
     }
 
-    // Encode each completed chunk slice into the existing content-search shape and hand the
-    // serialized batch to the consumer. The lambda MAY run concurrently across drain threads;
-    // it only builds thread-local JSON and defers all shared-state policy to |on_batch|.
+    // Forward native chunk storage without copying occurrence strings. The sink owns
+    // representation-specific projection and must finish borrowing before returning.
     SearchBatchEmitFn emit = [&](int batch_index, int total_batches,
                                  std::vector<ContentSearchMatchedFile> &batch_files) {
       if (is_cancelled()) {
         return;
       }
-      nlohmann::json batch;
-      batch["matchCount"] = batch_files.size();
-      batch["truncated"] = false;
-      batch["matches"] = nlohmann::json::array();
-      if (batch_index == 0 && encrypted_skipped != 0) {
-        batch[kJsonKeyEncryptedSkippedCount] = encrypted_skipped;
-      }
-      auto &matches = batch["matches"];
-      for (const auto &matched_file : batch_files) {
-        matches.push_back(EncodeMatchedFileJson(matched_file));
-      }
-      on_batch(batch_index, total_batches, batch.dump());
+      on_batch(batch_index, total_batches, batch_files, batch_index == 0 ? encrypted_skipped : 0);
     };
 
     // No backend chunk exists when every candidate was excluded. Still deliver
@@ -266,7 +214,7 @@ VxCoreError SearchManager::SearchContentStreaming(const std::string &query_json,
 
 VxCoreError SearchManager::SearchByTags(const std::string &query_json,
                                         const std::string &input_files_json,
-                                        std::string &out_results_json) {
+                                        FileSearchResult &out_result) {
   try {
     auto query = SearchByTagsQuery::FromJson(notebook_, nlohmann::json::parse(query_json));
     auto filtered_files = FetchFilesToSearch(query.scope, input_files_json, false);
@@ -274,7 +222,8 @@ VxCoreError SearchManager::SearchByTags(const std::string &query_json,
     auto matched_files = GetMatchedFilesByTags(std::move(filtered_files), query.tags,
                                                query.tag_operator, query.max_results);
 
-    out_results_json = SerializeFileResults(matched_files, query.max_results);
+    out_result.truncated = static_cast<int>(matched_files.size()) >= query.max_results;
+    out_result.files = std::move(matched_files);
     return VXCORE_OK;
   } catch (const nlohmann::json::exception &) {
     VXCORE_LOG_ERROR("SearchByTags JSON error");
@@ -365,20 +314,6 @@ std::vector<SearchFileInfo> SearchManager::GetMatchedFilesByTags(
     }
   }
   return matched_files;
-}
-
-std::string SearchManager::SerializeFileResults(const std::vector<SearchFileInfo> &matched_files,
-                                                int max_results) {
-  nlohmann::json result;
-  result["matchCount"] = matched_files.size();
-  result["truncated"] = static_cast<int>(matched_files.size()) >= max_results;
-  result["matches"] = nlohmann::json::array();
-  auto &matches = result["matches"];
-  for (const auto &file : matched_files) {
-    matches.push_back(file.ToJson());
-  }
-
-  return result.dump();
 }
 
 std::vector<SearchFileInfo> SearchManager::GetAllFiles(const SearchScope &scope,

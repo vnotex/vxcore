@@ -1,4 +1,5 @@
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include <string>
 
 #include "test_utils.h"
@@ -1664,9 +1665,9 @@ int test_notebook_ignored_empty_default() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(ctx, get_test_path("test_nb_ignored_empty").c_str(),
-                               "{\"name\":\"Empty Ignored\"}", VXCORE_NOTEBOOK_BUNDLED,
-                               &notebook_id);
+  err =
+      vxcore_notebook_create(ctx, get_test_path("test_nb_ignored_empty").c_str(),
+                             "{\"name\":\"Empty Ignored\"}", VXCORE_NOTEBOOK_BUNDLED, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
   char *config_json = nullptr;
@@ -1736,10 +1737,10 @@ int test_raw_ignored_config_roundtrip() {
   ASSERT_EQ(err, VXCORE_OK);
 
   char *notebook_id = nullptr;
-  err = vxcore_notebook_create(
-      ctx1, get_test_path("test_raw_ignored_rt").c_str(),
-      "{\"name\":\"Raw Ignored\",\"ignored\":[\"node_modules/\",\"*.bak\"]}",
-      VXCORE_NOTEBOOK_RAW, &notebook_id);
+  err =
+      vxcore_notebook_create(ctx1, get_test_path("test_raw_ignored_rt").c_str(),
+                             "{\"name\":\"Raw Ignored\",\"ignored\":[\"node_modules/\",\"*.bak\"]}",
+                             VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
   ASSERT_NOT_NULL(notebook_id);
 
@@ -1803,6 +1804,133 @@ int test_open_bundled_notebook_with_non_ascii_root() {
   return 0;
 }
 
+static std::string tag_view_text(VxCoreUtf8View text) {
+  return text.size == 0 ? std::string() : std::string(text.data, text.size);
+}
+
+static int assert_tag_list(const VxCoreTagListView *view, const nlohmann::json &expected) {
+  ASSERT_NOT_NULL(view);
+  ASSERT_EQ(view->tag_count, expected.size());
+  if (view->tag_count != 0) {
+    ASSERT_NOT_NULL(view->tags);
+  }
+  for (size_t i = 0; i < view->tag_count; ++i) {
+    const auto &tag = view->tags[i];
+    for (const auto text : {tag.name, tag.parent, tag.metadata_json}) {
+      if (text.size != 0) {
+        ASSERT_NOT_NULL(text.data);
+      }
+    }
+    ASSERT_EQ(tag_view_text(tag.name), expected[i]["name"].get<std::string>());
+    ASSERT_EQ(tag_view_text(tag.parent), expected[i]["parent"].get<std::string>());
+    const auto metadata = tag.metadata_json.size == 0
+                              ? nlohmann::json::object()
+                              : nlohmann::json::parse(tag_view_text(tag.metadata_json));
+    ASSERT_EQ(metadata, expected[i]["metadata"]);
+    if (expected[i]["metadata"] == nlohmann::json::object()) {
+      ASSERT_EQ(tag.metadata_json.size, 0u);
+    } else {
+      ASSERT_NE(tag.metadata_json.size, 0u);
+    }
+  }
+  return 0;
+}
+
+int test_tag_list_typed_metadata_and_lifetime() {
+  const auto root = get_test_path("test_nb_typed_tag_list");
+  cleanup_test_dir(root);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+
+  // Deliberately nonalphabetic config order, a flat hierarchy, and nested metadata values.
+  // Public tag config parsing accepts objects only; do not change that policy here.
+  const auto expected = nlohmann::json::parse(R"([
+    {"name":"z-root","parent":"","metadata":{}},
+    {"name":"\u6807\u7b7e","parent":"z-root","metadata":{}},
+    {"name":"a-object","parent":"","metadata":{
+      "color":"blue","nested":[1,null,false],"text":"text\u0000\u6807"}},
+    {"name":"removed","parent":"","metadata":{}}
+  ])");
+  const auto config = nlohmann::json({{"name", "Typed tags"}, {"tags", expected}}).dump();
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), config.c_str(), VXCORE_NOTEBOOK_BUNDLED,
+                                   &notebook_id),
+            VXCORE_OK);
+
+  VxCoreTagList *owner = nullptr;
+  ASSERT_EQ(vxcore_tag_list_typed(ctx, notebook_id, &owner), VXCORE_OK);
+  ASSERT_NOT_NULL(owner);
+  const auto *view = vxcore_tag_list_view(owner);
+  ASSERT_EQ(assert_tag_list(view, expected), 0);
+  char *legacy_json = nullptr;
+  ASSERT_EQ(vxcore_tag_list(ctx, notebook_id, &legacy_json), VXCORE_OK);
+  ASSERT_EQ(assert_tag_list(view, nlohmann::json::parse(legacy_json)), 0);
+  vxcore_string_free(legacy_json);
+
+  ASSERT_EQ(vxcore_tag_move(ctx, notebook_id, "a-object", "z-root"), VXCORE_OK);
+  ASSERT_EQ(vxcore_tag_delete(ctx, notebook_id, "removed"), VXCORE_OK);
+  VxCoreTagList *changed = nullptr;
+  ASSERT_EQ(vxcore_tag_list_typed(ctx, notebook_id, &changed), VXCORE_OK);
+  auto changed_expected = expected;
+  changed_expected[2]["parent"] = "z-root";
+  changed_expected.erase(changed_expected.begin() + 3);
+  ASSERT_EQ(assert_tag_list(vxcore_tag_list_view(changed), changed_expected), 0);
+  vxcore_tag_list_free(changed);
+  ASSERT_EQ(assert_tag_list(view, expected), 0);
+
+  ASSERT_EQ(vxcore_notebook_close(ctx, notebook_id), VXCORE_OK);
+  ASSERT_EQ(assert_tag_list(view, expected), 0);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  ASSERT_EQ(assert_tag_list(view, expected), 0);
+  ASSERT_EQ(vxcore_tag_list_view(owner), view);
+  vxcore_tag_list_free(owner);
+  cleanup_test_dir(root);
+  return 0;
+}
+
+int test_tag_list_typed_empty_and_errors() {
+  ASSERT_NULL(vxcore_tag_list_view(nullptr));
+  vxcore_tag_list_free(nullptr);
+  const auto root = get_test_path("test_nb_typed_tag_empty");
+  cleanup_test_dir(root);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), "{\"name\":\"Empty tags\"}",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  VxCoreTagList *owner = nullptr;
+  ASSERT_EQ(vxcore_tag_list_typed(ctx, notebook_id, &owner), VXCORE_OK);
+  ASSERT_NOT_NULL(owner);
+  ASSERT_EQ(assert_tag_list(vxcore_tag_list_view(owner), nlohmann::json::array()), 0);
+
+  // Output reset must not release the incoming owner, even when acquisition fails.
+  VxCoreTagList *out = owner;
+  ASSERT_EQ(vxcore_tag_list_typed(nullptr, notebook_id, &out), VXCORE_ERR_NULL_POINTER);
+  ASSERT_NULL(out);
+  out = owner;
+  ASSERT_EQ(vxcore_tag_list_typed(ctx, nullptr, &out), VXCORE_ERR_NULL_POINTER);
+  ASSERT_NULL(out);
+  out = owner;
+  ASSERT_EQ(vxcore_tag_list_typed(ctx, "missing-notebook", &out), VXCORE_ERR_NOT_FOUND);
+  ASSERT_NULL(out);
+  ASSERT_EQ(vxcore_tag_list_typed(ctx, notebook_id, nullptr), VXCORE_ERR_NULL_POINTER);
+
+  // Success also replaces only the output slot, not the previously owned result.
+  out = owner;
+  ASSERT_EQ(vxcore_tag_list_typed(ctx, notebook_id, &out), VXCORE_OK);
+  ASSERT_NOT_NULL(out);
+  ASSERT_NE(out, owner);
+  vxcore_tag_list_free(out);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  ASSERT_EQ(assert_tag_list(vxcore_tag_list_view(owner), nlohmann::json::array()), 0);
+  vxcore_tag_list_free(owner);
+  cleanup_test_dir(root);
+  return 0;
+}
+
 int main() {
   std::cout << "Running notebook tests..." << std::endl;
 
@@ -1823,6 +1951,8 @@ int main() {
   RUN_TEST(test_notebook_ignored_empty_default);
   RUN_TEST(test_notebook_ignored_persistence);
   RUN_TEST(test_tag_create_list);
+  RUN_TEST(test_tag_list_typed_metadata_and_lifetime);
+  RUN_TEST(test_tag_list_typed_empty_and_errors);
   RUN_TEST(test_tag_duplicate_create);
   RUN_TEST(test_tag_delete);
   RUN_TEST(test_file_tag_operations);

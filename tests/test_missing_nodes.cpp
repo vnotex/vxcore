@@ -17,9 +17,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <string>
-
 #include <nlohmann/json.hpp>
+#include <string>
 
 #include "test_utils.h"
 #include "vxcore/vxcore.h"
@@ -309,31 +308,42 @@ int test_list_children_marks_missing() {
   file_id = nullptr;
   ASSERT_EQ(vxcore_file_create(ctx, notebook_id, "f", "b.md", &file_id), VXCORE_OK);
   vxcore_string_free(file_id);
+  ASSERT_EQ(vxcore_node_update_metadata(ctx, notebook_id, "f/a.md",
+                                        R"({"color":"retained","nested":{"n":null}})"),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, "f", "missing-folder", &folder_id), VXCORE_OK);
+  vxcore_string_free(folder_id);
+  delete_disk_path(content_path(nb_path, "f/missing-folder"));
 
   // Delete only "f/a.md" content; keep its index entry and keep "f/b.md".
   delete_disk_path(content_path(nb_path, "f/a.md"));
 
-  char *children_json = nullptr;
-  ASSERT_EQ(vxcore_folder_list_children(ctx, notebook_id, "f", &children_json), VXCORE_OK);
-  ASSERT_NOT_NULL(children_json);
-
-  nlohmann::json j = nlohmann::json::parse(children_json);
-  vxcore_string_free(children_json);
-
-  ASSERT_TRUE(j.contains("files") && j["files"].is_array());
+  VxCoreFolderListing *result = nullptr;
+  ASSERT_EQ(vxcore_folder_list_children_typed(ctx, notebook_id, "f", &result), VXCORE_OK);
+  ASSERT_NOT_NULL(result);
+  const auto *view = vxcore_folder_listing_view(result);
+  ASSERT_EQ(view->file_count, size_t(2));
+  ASSERT_EQ(view->folder_count, size_t(1));
+  ASSERT_TRUE(view->folders[0].exists_known);
+  ASSERT_FALSE(view->folders[0].exists);
   bool saw_a = false, saw_b = false;
-  for (const auto &entry : j["files"]) {
-    ASSERT_TRUE(entry.contains("name"));
-    // Every bundled child carries the transient "exists" flag.
-    ASSERT_TRUE(entry.contains("exists"));
-    if (entry["name"] == "a.md") {
+  for (size_t i = 0; i < view->file_count; ++i) {
+    const auto &entry = view->files[i];
+    const std::string name(entry.name.data, entry.name.size);
+    ASSERT_TRUE(entry.exists_known);
+    if (name == "a.md") {
       saw_a = true;
-      ASSERT_FALSE(entry["exists"].get<bool>());  // missing content -> false
-    } else if (entry["name"] == "b.md") {
+      ASSERT_FALSE(entry.exists);
+      const auto metadata =
+          nlohmann::json::parse(std::string(entry.metadata_json.data, entry.metadata_json.size));
+      ASSERT_EQ(metadata["color"].get<std::string>(), std::string("retained"));
+      ASSERT_TRUE(metadata["nested"]["n"].is_null());
+    } else if (name == "b.md") {
       saw_b = true;
-      ASSERT_TRUE(entry["exists"].get<bool>());  // healthy -> true
+      ASSERT_TRUE(entry.exists);
     }
   }
+  vxcore_folder_listing_free(result);
   // Phantom child is MARKED, not filtered: both still appear.
   ASSERT_TRUE(saw_a);
   ASSERT_TRUE(saw_b);
@@ -371,17 +381,21 @@ int test_list_children_missing_folder() {
   vxcore_string_free(file_id);
 
   // Before deletion: listing succeeds.
-  char *children_json = nullptr;
-  ASSERT_EQ(vxcore_folder_list_children(ctx, notebook_id, "g", &children_json), VXCORE_OK);
-  vxcore_string_free(children_json);
-  children_json = nullptr;
+  VxCoreFolderListing *result = nullptr;
+  ASSERT_EQ(vxcore_folder_list_children_typed(ctx, notebook_id, "g", &result), VXCORE_OK);
+  ASSERT_NOT_NULL(result);
+  auto *snapshot = result;
 
   // Delete "g" content dir (and its descendants' content); metadata survives.
   delete_disk_path(content_path(nb_path, "g"));
 
-  ASSERT_EQ(vxcore_folder_list_children(ctx, notebook_id, "g", &children_json),
+  ASSERT_EQ(vxcore_folder_list_children_typed(ctx, notebook_id, "g", &result),
             VXCORE_ERR_NODE_NOT_EXISTS);
-  ASSERT_NULL(children_json);
+  ASSERT_NULL(result);
+  // Resetting the output must not free its previous owner on failure.
+  ASSERT_EQ(vxcore_folder_listing_view(snapshot)->file_count, size_t(1));
+  ASSERT_TRUE(vxcore_folder_listing_view(snapshot)->files[0].exists);
+  vxcore_folder_listing_free(snapshot);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
@@ -415,22 +429,14 @@ int test_list_children_no_persist() {
   // Create a phantom child, then list (which computes "exists" on the fly).
   delete_disk_path(content_path(nb_path, "f/a.md"));
 
-  char *children_json = nullptr;
-  ASSERT_EQ(vxcore_folder_list_children(ctx, notebook_id, "f", &children_json), VXCORE_OK);
-  ASSERT_NOT_NULL(children_json);
-  // Sanity: the listing JSON itself does carry the flag.
-  {
-    nlohmann::json listed = nlohmann::json::parse(children_json);
-    bool any_exists_key = false;
-    for (const auto &entry : listed["files"]) {
-      if (entry.contains("exists")) {
-        any_exists_key = true;
-        break;
-      }
-    }
-    ASSERT_TRUE(any_exists_key);
-  }
-  vxcore_string_free(children_json);
+  VxCoreFolderListing *result = nullptr;
+  ASSERT_EQ(vxcore_folder_list_children_typed(ctx, notebook_id, "f", &result), VXCORE_OK);
+  ASSERT_NOT_NULL(result);
+  const auto *view = vxcore_folder_listing_view(result);
+  ASSERT_EQ(view->file_count, size_t(1));
+  ASSERT_TRUE(view->files[0].exists_known);
+  ASSERT_FALSE(view->files[0].exists);
+  vxcore_folder_listing_free(result);
 
   // The on-disk folder vx.json must NOT contain the transient "exists" key.
   {
@@ -467,8 +473,7 @@ int test_rename_phantom_file_returns_node_not_exists() {
 
   delete_disk_path(content_path(nb_path, "a.md"));
 
-  ASSERT_EQ(vxcore_node_rename(ctx, notebook_id, "a.md", "b.md"),
-            VXCORE_ERR_NODE_NOT_EXISTS);
+  ASSERT_EQ(vxcore_node_rename(ctx, notebook_id, "a.md", "b.md"), VXCORE_ERR_NODE_NOT_EXISTS);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
@@ -500,8 +505,7 @@ int test_move_phantom_file_returns_node_not_exists() {
 
   delete_disk_path(content_path(nb_path, "a.md"));
 
-  ASSERT_EQ(vxcore_node_move(ctx, notebook_id, "a.md", "dst"),
-            VXCORE_ERR_NODE_NOT_EXISTS);
+  ASSERT_EQ(vxcore_node_move(ctx, notebook_id, "a.md", "dst"), VXCORE_ERR_NODE_NOT_EXISTS);
 
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);

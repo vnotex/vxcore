@@ -6,6 +6,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/jianguoyun_sources.cmake)
 set(VXCORE_PUBLIC_HEADERS
     ${PROJECT_SOURCE_DIR}/include/vxcore/vxcore.h
     ${PROJECT_SOURCE_DIR}/include/vxcore/vxcore_types.h
+    ${PROJECT_SOURCE_DIR}/include/vxcore/vxcore_results.h
     ${PROJECT_SOURCE_DIR}/include/vxcore/vxcore_log.h
     ${PROJECT_SOURCE_DIR}/include/vxcore/notebook_json_keys.h
 )

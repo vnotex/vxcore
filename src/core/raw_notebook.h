@@ -21,15 +21,14 @@ class RawNotebook : public Notebook {
   VxCoreError EmptyRecycleBin() override;
 
   // Tag operations are unsupported for raw notebooks
-  VxCoreError CreateTag(const std::string &tag_name,
-                        const std::string &parent_tag = "") override;
+  VxCoreError CreateTag(const std::string &tag_name, const std::string &parent_tag = "") override;
   VxCoreError CreateTagPath(const std::string &tag_path) override;
   VxCoreError DeleteTag(const std::string &tag_name) override;
   VxCoreError MoveTag(const std::string &tag_name, const std::string &parent_tag) override;
-  VxCoreError GetTags(std::string &out_tags_json) const override;
+  const std::vector<TagNode> &GetTags() const override;
   VxCoreError FindFilesByTags(const std::vector<std::string> &tags, bool use_and,
-                              std::string &out_results_json) override;
-  VxCoreError CountFilesByTag(std::string &out_results_json) override;
+                              std::vector<StoreTagQueryResult> &out_results) override;
+  VxCoreError CountFilesByTag(std::vector<std::pair<std::string, int>> &out_counts) override;
 
  private:
   RawNotebook(const std::string &local_data_folder, const std::string &root_folder);

@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <nlohmann/json.hpp>
+#include <utility>
 
 #include "api/api_utils.h"
 #include "core/bundled_folder_manager.h"
@@ -175,8 +176,7 @@ VXCORE_API VxCoreError vxcore_file_update_attachments(VxCoreContextHandle contex
 }
 
 VXCORE_API VxCoreError vxcore_file_add_attachment(VxCoreContextHandle context,
-                                                  const char *notebook_id,
-                                                  const char *file_path,
+                                                  const char *notebook_id, const char *file_path,
                                                   const char *attachment) {
   if (!context || !notebook_id || !file_path || !attachment) {
     return VXCORE_ERR_INVALID_PARAM;
@@ -204,8 +204,7 @@ VXCORE_API VxCoreError vxcore_file_add_attachment(VxCoreContextHandle context,
 }
 
 VXCORE_API VxCoreError vxcore_file_delete_attachment(VxCoreContextHandle context,
-                                                     const char *notebook_id,
-                                                     const char *file_path,
+                                                     const char *notebook_id, const char *file_path,
                                                      const char *attachment) {
   if (!context || !notebook_id || !file_path || !attachment) {
     return VXCORE_ERR_INVALID_PARAM;
@@ -286,6 +285,176 @@ VXCORE_API VxCoreError vxcore_file_untag(VxCoreContextHandle context, const char
   }
 }
 
+namespace {
+
+struct FolderListingData {
+  vxcore::FolderManager::FolderContents contents;
+  std::vector<uint8_t> file_exists;
+  std::vector<uint8_t> folder_exists;
+  bool exists_known = false;
+};
+
+VxCoreError AcquireFolderListing(vxcore::VxCoreContext *ctx, const char *notebook_id,
+                                 const char *folder_path, FolderListingData &out) {
+  auto *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
+  if (!notebook) {
+    ctx->last_error = "Notebook not found";
+    return VXCORE_ERR_NOT_FOUND;
+  }
+  auto *manager = notebook->GetFolderManager();
+  if (!manager) {
+    ctx->last_error = "FolderManager not available";
+    return VXCORE_ERR_INVALID_STATE;
+  }
+  const std::string path = folder_path ? folder_path : ".";
+  const auto error = manager->ListFolderContents(path, true, out.contents);
+  if (error != VXCORE_OK) {
+    return error;
+  }
+  out.exists_known = notebook->GetType() == vxcore::NotebookType::Bundled;
+  if (out.exists_known) {
+    // Raw listing already reconciles disk state. Bundled existence is transient,
+    // including the missing-parent guard; never persist it into folder metadata.
+    if (!manager->NodeContentExistsOnDisk(path, true)) {
+      return VXCORE_ERR_NODE_NOT_EXISTS;
+    }
+    out.file_exists.reserve(out.contents.files.size());
+    for (const auto &file : out.contents.files) {
+      out.file_exists.push_back(
+          manager->NodeContentExistsOnDisk(vxcore::ConcatenatePaths(path, file.name), false));
+    }
+    out.folder_exists.reserve(out.contents.folders.size());
+    for (const auto &folder : out.contents.folders) {
+      out.folder_exists.push_back(
+          manager->NodeContentExistsOnDisk(vxcore::ConcatenatePaths(path, folder.name), true));
+    }
+  }
+  return VXCORE_OK;
+}
+
+VxCoreUtf8View Utf8View(const std::string &text) { return {text.data(), text.size()}; }
+
+void SetFolderListingException(vxcore::VxCoreContext *ctx, const char *message) noexcept {
+  try {
+    ctx->last_error = std::string("Exception: ") + message;
+  } catch (...) {
+    // Even allocation failure while recording an error must stay inside the C ABI.
+  }
+}
+
+}  // namespace
+
+struct VxCoreFolderListing {
+  explicit VxCoreFolderListing(FolderListingData &&data) : data_(std::move(data)) {
+    files_.reserve(data_.contents.files.size());
+    folders_.reserve(data_.contents.folders.size());
+    size_t string_count = 0;
+    for (const auto &file : data_.contents.files) {
+      string_count += file.tags.size() + file.attachments.size();
+    }
+    strings_.reserve(string_count);
+    for (size_t i = 0; i < data_.contents.files.size(); ++i) {
+      auto &file = data_.contents.files[i];
+      auto entry = MakeEntry(file, data_.exists_known ? data_.file_exists[i] : 1);
+      const auto tag_offset = strings_.size();
+      for (const auto &tag : file.tags) {
+        strings_.push_back(Utf8View(tag));
+      }
+      entry.tag_count = file.tags.size();
+      entry.tags = entry.tag_count ? strings_.data() + tag_offset : nullptr;
+      const auto attachment_offset = strings_.size();
+      for (const auto &attachment : file.attachments) {
+        strings_.push_back(Utf8View(attachment));
+      }
+      entry.attachment_count = file.attachments.size();
+      entry.attachments = entry.attachment_count ? strings_.data() + attachment_offset : nullptr;
+      files_.push_back(entry);
+    }
+    for (size_t i = 0; i < data_.contents.folders.size(); ++i) {
+      folders_.push_back(
+          MakeEntry(data_.contents.folders[i], data_.exists_known ? data_.folder_exists[i] : 1));
+    }
+    // Metadata bytes share one buffer. Publish pointers only after all appends.
+    size_t offset = 0;
+    for (auto *entries : {&files_, &folders_}) {
+      for (auto &entry : *entries) {
+        if (entry.metadata_json.size) {
+          entry.metadata_json.data = metadata_.data() + offset;
+          offset += entry.metadata_json.size;
+        }
+      }
+    }
+    view_ = {files_.empty() ? nullptr : files_.data(), files_.size(),
+             folders_.empty() ? nullptr : folders_.data(), folders_.size()};
+  }
+
+  VxCoreFolderListing(const VxCoreFolderListing &) = delete;
+  VxCoreFolderListing &operator=(const VxCoreFolderListing &) = delete;
+
+  const VxCoreFolderListingView *View() const { return &view_; }
+
+ private:
+  template <typename Record>
+  VxCoreFolderEntryView MakeEntry(Record &record, uint8_t exists) {
+    VxCoreFolderEntryView entry{};
+    entry.id = Utf8View(record.id);
+    entry.name = Utf8View(record.name);
+    entry.created_utc = record.created_utc;
+    entry.modified_utc = record.modified_utc;
+    entry.exists_known = data_.exists_known;
+    entry.exists = exists;
+    if (!record.metadata.is_object() || !record.metadata.empty()) {
+      const auto begin = metadata_.size();
+      metadata_ += record.metadata.dump();
+      entry.metadata_json.size = metadata_.size() - begin;
+    }
+    // The view exposes encoded metadata; do not retain a second JSON tree.
+    record.metadata = nullptr;
+    return entry;
+  }
+
+  FolderListingData data_;
+  std::vector<VxCoreFolderEntryView> files_;
+  std::vector<VxCoreFolderEntryView> folders_;
+  std::vector<VxCoreUtf8View> strings_;
+  std::string metadata_;
+  VxCoreFolderListingView view_{};
+};
+
+VXCORE_API const VxCoreFolderListingView *vxcore_folder_listing_view(
+    const VxCoreFolderListing *result) {
+  return result ? result->View() : nullptr;
+}
+
+VXCORE_API void vxcore_folder_listing_free(VxCoreFolderListing *result) { delete result; }
+
+VXCORE_API VxCoreError vxcore_folder_list_children_typed(VxCoreContextHandle context,
+                                                         const char *notebook_id,
+                                                         const char *folder_path,
+                                                         VxCoreFolderListing **out_result) {
+  if (out_result) {
+    *out_result = nullptr;
+  }
+  if (!context || !notebook_id || !out_result) {
+    return VXCORE_ERR_INVALID_PARAM;
+  }
+  auto *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
+  try {
+    FolderListingData data;
+    const auto error = AcquireFolderListing(ctx, notebook_id, folder_path, data);
+    if (error != VXCORE_OK) {
+      return error;
+    }
+    *out_result = new VxCoreFolderListing(std::move(data));
+    return VXCORE_OK;
+  } catch (const std::exception &e) {
+    SetFolderListingException(ctx, e.what());
+  } catch (...) {
+    SetFolderListingException(ctx, "Unknown folder listing failure");
+  }
+  return VXCORE_ERR_UNKNOWN;
+}
+
 VXCORE_API VxCoreError vxcore_folder_list_children(VxCoreContextHandle context,
                                                    const char *notebook_id, const char *folder_path,
                                                    char **out_children_json) {
@@ -296,72 +465,36 @@ VXCORE_API VxCoreError vxcore_folder_list_children(VxCoreContextHandle context,
   vxcore::VxCoreContext *ctx = reinterpret_cast<vxcore::VxCoreContext *>(context);
 
   try {
-    vxcore::Notebook *notebook = ctx->notebook_manager->GetNotebook(notebook_id);
-    if (!notebook) {
-      ctx->last_error = "Notebook not found";
-      return VXCORE_ERR_NOT_FOUND;
-    }
-
-    vxcore::FolderManager *folder_manager = notebook->GetFolderManager();
-    if (!folder_manager) {
-      ctx->last_error = "FolderManager not available";
-      return VXCORE_ERR_INVALID_STATE;
-    }
-
-    std::string path = folder_path ? folder_path : ".";
-    vxcore::FolderManager::FolderContents contents;
-
-    VxCoreError error = folder_manager->ListFolderContents(path, true, contents);
+    FolderListingData data;
+    const auto error = AcquireFolderListing(ctx, notebook_id, folder_path, data);
     if (error != VXCORE_OK) {
       return error;
     }
-
-    // Per-child existence reporting is a BUNDLED-only, OUTPUT-ONLY concern. Raw
-    // notebooks self-heal on read and must keep byte-identical listing output.
-    const bool is_bundled = notebook->GetType() == vxcore::NotebookType::Bundled;
-
-    // Folder-missing guard (bundled only): if the listed folder's own content
-    // dir is gone from disk, surface it as a missing node rather than emitting a
-    // phantom listing. Metadata (vx.json) may still exist, so ListFolderContents
-    // above succeeds; the disk check is what distinguishes a phantom folder.
-    if (is_bundled && !folder_manager->NodeContentExistsOnDisk(path, /*is_folder=*/true)) {
-      return VXCORE_ERR_NODE_NOT_EXISTS;
-    }
-
-    // Build JSON response
     nlohmann::json result;
-    nlohmann::json files_json = nlohmann::json::array();
-    nlohmann::json folders_json = nlohmann::json::array();
-
-    for (const auto &file : contents.files) {
-      nlohmann::json file_json = file.ToJsonWithType();
-      // Mark (do NOT filter) children whose on-disk content is gone, so the UI
-      // can gray + offer removal. Transient: never persisted to vx.json.
-      if (is_bundled) {
-        const std::string child_path = vxcore::ConcatenatePaths(path, file.name);
-        file_json[vxcore::kJsonKeyNodeExists] =
-            folder_manager->NodeContentExistsOnDisk(child_path, /*is_folder=*/false);
+    auto &files = result["files"] = nlohmann::json::array();
+    auto &folders = result["folders"] = nlohmann::json::array();
+    for (size_t i = 0; i < data.contents.files.size(); ++i) {
+      auto item = data.contents.files[i].ToJsonWithType();
+      if (data.exists_known) {
+        item[vxcore::kJsonKeyNodeExists] = data.file_exists[i] != 0;
       }
-      files_json.push_back(file_json);
+      files.push_back(std::move(item));
     }
-
-    for (const auto &folder : contents.folders) {
-      nlohmann::json folder_json = folder.ToJson();
-      if (is_bundled) {
-        const std::string child_path = vxcore::ConcatenatePaths(path, folder.name);
-        folder_json[vxcore::kJsonKeyNodeExists] =
-            folder_manager->NodeContentExistsOnDisk(child_path, /*is_folder=*/true);
+    for (size_t i = 0; i < data.contents.folders.size(); ++i) {
+      auto item = data.contents.folders[i].ToJson();
+      if (data.exists_known) {
+        item[vxcore::kJsonKeyNodeExists] = data.folder_exists[i] != 0;
       }
-      folders_json.push_back(folder_json);
+      folders.push_back(std::move(item));
     }
-
-    result["files"] = files_json;
-    result["folders"] = folders_json;
 
     *out_children_json = vxcore_strdup(result.dump().c_str());
     return VXCORE_OK;
   } catch (const std::exception &e) {
-    ctx->last_error = std::string("Exception: ") + e.what();
+    SetFolderListingException(ctx, e.what());
+    return VXCORE_ERR_UNKNOWN;
+  } catch (...) {
+    SetFolderListingException(ctx, "Unknown folder listing failure");
     return VXCORE_ERR_UNKNOWN;
   }
 }
@@ -789,8 +922,7 @@ VxCoreError LoadFolderConfigJson(const std::filesystem::path &config_dir,
 
 // Count how many times @name appears in a folder config's "folders" array.
 size_t CountFolderChild(const nlohmann::json &config, const std::string &name) {
-  if (!config.contains(vxcore::kJsonKeyFolders) ||
-      !config[vxcore::kJsonKeyFolders].is_array()) {
+  if (!config.contains(vxcore::kJsonKeyFolders) || !config[vxcore::kJsonKeyFolders].is_array()) {
     return 0;
   }
   size_t count = 0;
@@ -804,12 +936,9 @@ size_t CountFolderChild(const nlohmann::json &config, const std::string &name) {
 
 }  // namespace
 
-VXCORE_API VxCoreError vxcore_folder_get_share_paths(VxCoreContextHandle context,
-                                                     const char *notebook_id,
-                                                     const char *folder_path,
-                                                     char **out_notebook_root,
-                                                     char **out_content_root,
-                                                     char **out_metadata_root) {
+VXCORE_API VxCoreError vxcore_folder_get_share_paths(
+    VxCoreContextHandle context, const char *notebook_id, const char *folder_path,
+    char **out_notebook_root, char **out_content_root, char **out_metadata_root) {
   // Initialize every output before any validation so a failing caller never
   // frees an uninitialized pointer.
   if (out_notebook_root) {
@@ -852,8 +981,7 @@ VXCORE_API VxCoreError vxcore_folder_get_share_paths(VxCoreContextHandle context
     // so is_relative() alone is not a sufficient guard.
     {
       const std::filesystem::path requested = vxcore::PathFromUtf8(raw_path);
-      if (requested.has_root_name() || requested.has_root_directory() ||
-          !requested.is_relative()) {
+      if (requested.has_root_name() || requested.has_root_directory() || !requested.is_relative()) {
         ctx->last_error = "Folder path must be relative to the notebook root";
         return VXCORE_ERR_INVALID_PARAM;
       }
@@ -895,8 +1023,7 @@ VXCORE_API VxCoreError vxcore_folder_get_share_paths(VxCoreContextHandle context
       }
     }
 
-    const std::filesystem::path notebook_root =
-        vxcore::PathFromUtf8(notebook->GetRootFolder());
+    const std::filesystem::path notebook_root = vxcore::PathFromUtf8(notebook->GetRootFolder());
     const std::filesystem::path metadata_contents =
         vxcore::PathFromUtf8(notebook->GetMetadataFolder()) / "contents";
 
@@ -991,12 +1118,9 @@ VXCORE_API VxCoreError vxcore_folder_get_share_paths(VxCoreContextHandle context
   }
 }
 
-VXCORE_API VxCoreError vxcore_folder_get_import_paths(VxCoreContextHandle context,
-                                                      const char *notebook_id,
-                                                      const char *dest_folder_path,
-                                                      char **out_notebook_root,
-                                                      char **out_content_root,
-                                                      char **out_metadata_root) {
+VXCORE_API VxCoreError vxcore_folder_get_import_paths(
+    VxCoreContextHandle context, const char *notebook_id, const char *dest_folder_path,
+    char **out_notebook_root, char **out_content_root, char **out_metadata_root) {
   // Initialize every output before any validation so a failing caller never
   // frees an uninitialized pointer.
   if (out_notebook_root) {
@@ -1167,9 +1291,9 @@ VXCORE_API VxCoreError vxcore_folder_get_import_paths(VxCoreContextHandle contex
 }
 
 VXCORE_API VxCoreError vxcore_folder_index_children(VxCoreContextHandle context,
-                                                   const char *notebook_id,
-                                                   const char *parent_path,
-                                                   const char *names_json) {
+                                                    const char *notebook_id,
+                                                    const char *parent_path,
+                                                    const char *names_json) {
   if (!context || !notebook_id || !parent_path || !names_json) {
     return VXCORE_ERR_INVALID_PARAM;
   }
@@ -1221,8 +1345,7 @@ VXCORE_API VxCoreError vxcore_notebook_collect_node_ids(VxCoreContextHandle cont
       return VXCORE_ERR_UNSUPPORTED;
     }
 
-    auto *manager =
-        dynamic_cast<vxcore::BundledFolderManager *>(notebook->GetFolderManager());
+    auto *manager = dynamic_cast<vxcore::BundledFolderManager *>(notebook->GetFolderManager());
     if (!manager) {
       ctx->last_error = "FolderManager not available";
       return VXCORE_ERR_INVALID_STATE;
@@ -1268,8 +1391,7 @@ VXCORE_API VxCoreError vxcore_folder_attach_imported(VxCoreContextHandle context
       return VXCORE_ERR_UNSUPPORTED;
     }
 
-    auto *manager =
-        dynamic_cast<vxcore::BundledFolderManager *>(notebook->GetFolderManager());
+    auto *manager = dynamic_cast<vxcore::BundledFolderManager *>(notebook->GetFolderManager());
     if (!manager) {
       ctx->last_error = "FolderManager not available";
       return VXCORE_ERR_INVALID_STATE;
@@ -1313,8 +1435,7 @@ VXCORE_API VxCoreError vxcore_notebook_recover_imports(VxCoreContextHandle conte
       return VXCORE_ERR_UNSUPPORTED;
     }
 
-    auto *manager =
-        dynamic_cast<vxcore::BundledFolderManager *>(notebook->GetFolderManager());
+    auto *manager = dynamic_cast<vxcore::BundledFolderManager *>(notebook->GetFolderManager());
     if (!manager) {
       ctx->last_error = "FolderManager not available";
       return VXCORE_ERR_INVALID_STATE;
@@ -1345,7 +1466,8 @@ VXCORE_API VxCoreError vxcore_file_peek(VxCoreContextHandle context, const char 
       return VXCORE_ERR_NOT_FOUND;
     }
 
-    std::filesystem::path abs_path = vxcore::PathFromUtf8(notebook->GetRootFolder()) / vxcore::PathFromUtf8(file_path);
+    std::filesystem::path abs_path =
+        vxcore::PathFromUtf8(notebook->GetRootFolder()) / vxcore::PathFromUtf8(file_path);
     if (!std::filesystem::exists(abs_path) || !std::filesystem::is_regular_file(abs_path)) {
       ctx->last_error = "File not found: " + std::string(file_path);
       return VXCORE_ERR_NOT_FOUND;
@@ -1367,9 +1489,8 @@ VXCORE_API VxCoreError vxcore_file_peek(VxCoreContextHandle context, const char 
 }
 
 VXCORE_API VxCoreError vxcore_node_update_timestamps(VxCoreContextHandle context,
-                                                     const char *notebook_id,
-                                                     const char *node_path, int64_t created_utc,
-                                                     int64_t modified_utc) {
+                                                     const char *notebook_id, const char *node_path,
+                                                     int64_t created_utc, int64_t modified_utc) {
   if (!context || !notebook_id || !node_path) {
     return VXCORE_ERR_INVALID_PARAM;
   }

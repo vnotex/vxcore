@@ -3,9 +3,11 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <set>
+#include <memory>
 #include <nlohmann/json.hpp>
+#include <set>
 #include <string>
+#include <string_view>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -71,16 +73,17 @@ std::string PathToUtf8ForTest(const std::filesystem::path &path) {
 
 bool RootListingContainsFolder(VxCoreContextHandle ctx, const char *notebook_id,
                                const std::string &folder_name) {
-  char *children_json = nullptr;
-  VxCoreError err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
-  if (err != VXCORE_OK || !children_json) {
+  VxCoreFolderListing *result = nullptr;
+  const auto err = vxcore_folder_list_children_typed(ctx, notebook_id, ".", &result);
+  const std::unique_ptr<VxCoreFolderListing, decltype(&vxcore_folder_listing_free)> owner(
+      result, vxcore_folder_listing_free);
+  if (err != VXCORE_OK) {
     return false;
   }
-
-  auto children = nlohmann::json::parse(children_json);
-  vxcore_string_free(children_json);
-  for (const auto &folder : children["folders"]) {
-    if (folder.value("name", std::string()) == folder_name) {
+  const auto *view = vxcore_folder_listing_view(result);
+  for (size_t i = 0; i < view->folder_count; ++i) {
+    const auto &name = view->folders[i].name;
+    if (std::string_view(name.data, name.size) == folder_name) {
       return true;
     }
   }
@@ -200,7 +203,8 @@ int test_file_update_tags_preserves_existing_orphans() {
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
   char *notebook_id = nullptr;
   ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Orphan tags"})",
-                                  VXCORE_NOTEBOOK_BUNDLED, &notebook_id), VXCORE_OK);
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
   const std::string original_notebook_id = notebook_id;
   char *file_id = nullptr;
   ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id), VXCORE_OK);
@@ -265,8 +269,7 @@ int test_file_update_tags_preserves_existing_orphans() {
     vxcore_string_free(json);
     // Reject the whole replacement before mutation, including when a valid old orphan
     // precedes a new unknown name. A removed orphan is also a new undefined assignment.
-    const char *invalid = preserve_orphan ? R"(["orphan","unknown"])"
-                                          : R"(["urgent","orphan"])";
+    const char *invalid = preserve_orphan ? R"(["orphan","unknown"])" : R"(["urgent","orphan"])";
     ASSERT_EQ(vxcore_file_update_tags(ctx, notebook_id, "note.md", invalid),
               VXCORE_ERR_INVALID_PARAM);
     ASSERT_EQ(vxcore_node_get_config(ctx, notebook_id, "note.md", &json), VXCORE_OK);
@@ -6058,16 +6061,15 @@ int test_raw_list_empty_folder() {
                                "{\"name\":\"Raw Empty\"}", VXCORE_NOTEBOOK_RAW, &notebook_id);
   ASSERT_EQ(err, VXCORE_OK);
 
-  char *children_json = nullptr;
-  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  VxCoreFolderListing *result = nullptr;
+  err = vxcore_folder_list_children_typed(ctx, notebook_id, ".", &result);
   ASSERT_EQ(err, VXCORE_OK);
-  ASSERT_NOT_NULL(children_json);
-
-  auto j = nlohmann::json::parse(children_json);
-  ASSERT_TRUE(j["files"].empty());
-  ASSERT_TRUE(j["folders"].empty());
-
-  vxcore_string_free(children_json);
+  ASSERT_NOT_NULL(result);
+  const auto *view = vxcore_folder_listing_view(result);
+  ASSERT_NOT_NULL(view);
+  ASSERT_EQ(view->file_count, size_t(0));
+  ASSERT_EQ(view->folder_count, size_t(0));
+  vxcore_folder_listing_free(result);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_raw_list_empty_nb"));
@@ -6092,18 +6094,18 @@ int test_raw_list_root_files() {
   std::string root = get_test_path("test_raw_list_root_nb");
   write_file(root + "/test.md", "# Test");
 
-  char *children_json = nullptr;
-  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  VxCoreFolderListing *result = nullptr;
+  err = vxcore_folder_list_children_typed(ctx, notebook_id, ".", &result);
   ASSERT_EQ(err, VXCORE_OK);
-  ASSERT_NOT_NULL(children_json);
-
-  auto j = nlohmann::json::parse(children_json);
-  ASSERT_EQ(j["files"].size(), (size_t)1);
-  ASSERT_EQ(j["files"][0]["name"].get<std::string>(), std::string("test.md"));
-  // Should have a UUID assigned
-  ASSERT_FALSE(j["files"][0]["id"].get<std::string>().empty());
-
-  vxcore_string_free(children_json);
+  ASSERT_NOT_NULL(result);
+  const auto *view = vxcore_folder_listing_view(result);
+  ASSERT_EQ(view->file_count, size_t(1));
+  const auto &file = view->files[0];
+  ASSERT_EQ(std::string(file.name.data, file.name.size), std::string("test.md"));
+  ASSERT_TRUE(file.id.size > 0);
+  ASSERT_FALSE(file.exists_known);
+  ASSERT_TRUE(file.exists);
+  vxcore_folder_listing_free(result);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_raw_list_root_nb"));
@@ -6201,23 +6203,25 @@ int test_raw_list_removes_stale_db_records() {
   write_file(root + "/ephemeral.md", "# Temp");
 
   // First list to register the file in DB
-  char *children_json = nullptr;
-  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  VxCoreFolderListing *before = nullptr;
+  err = vxcore_folder_list_children_typed(ctx, notebook_id, ".", &before);
   ASSERT_EQ(err, VXCORE_OK);
-  auto j1 = nlohmann::json::parse(children_json);
-  ASSERT_EQ(j1["files"].size(), (size_t)1);
-  vxcore_string_free(children_json);
+  const auto *before_view = vxcore_folder_listing_view(before);
+  ASSERT_EQ(before_view->file_count, size_t(1));
 
   // Delete file directly from filesystem
   std::filesystem::remove(PathFromUtf8ForTest(root + "/ephemeral.md"));
 
   // Second list should no longer show the file
-  err = vxcore_folder_list_children(ctx, notebook_id, ".", &children_json);
+  VxCoreFolderListing *after = nullptr;
+  err = vxcore_folder_list_children_typed(ctx, notebook_id, ".", &after);
   ASSERT_EQ(err, VXCORE_OK);
-  auto j2 = nlohmann::json::parse(children_json);
-  ASSERT_TRUE(j2["files"].empty());
-
-  vxcore_string_free(children_json);
+  ASSERT_EQ(vxcore_folder_listing_view(after)->file_count, size_t(0));
+  ASSERT_EQ(before_view->file_count, size_t(1));
+  ASSERT_EQ(std::string(before_view->files[0].name.data, before_view->files[0].name.size),
+            std::string("ephemeral.md"));
+  vxcore_folder_listing_free(before);
+  vxcore_folder_listing_free(after);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(get_test_path("test_raw_list_stale_nb"));
@@ -10589,26 +10593,33 @@ int test_copy_folder_prunes_index_for_skipped_content() {
   return 0;
 }
 
-
 int test_batch_index_children_preserves_source_and_identity() {
   const auto root = get_test_path("batch_index_existing_bytes");
   cleanup_test_dir(root);
   VxCoreContextHandle ctx = nullptr;
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
   char *book = nullptr, *existing = nullptr;
-  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Batch index"})", VXCORE_NOTEBOOK_BUNDLED, &book), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Batch index"})",
+                                   VXCORE_NOTEBOOK_BUNDLED, &book),
+            VXCORE_OK);
   ASSERT_EQ(vxcore_file_create(ctx, book, ".", "Existing.md", &existing), VXCORE_OK);
-  ASSERT_EQ(vxcore_node_update_metadata(ctx, book, "Existing.md", R"({"retained":[1,"two"]})"), VXCORE_OK);
+  ASSERT_EQ(vxcore_node_update_metadata(ctx, book, "Existing.md", R"({"retained":[1,"two"]})"),
+            VXCORE_OK);
   const std::string existing_id(existing);
   const std::string markdown = u8"\xef\xbb\xbf# 笔记\r\nCafe\u0301\r\n";
-  const std::string opaque("\0\xff" "bytes", 7);
+  const std::string opaque(
+      "\0\xff"
+      "bytes",
+      7);
   create_directory(root + "/Batch/Child");
   write_file(root + "/Batch/Note.md", markdown);
   write_file(root + "/Batch/.hidden.bin", opaque);
   write_file(root + "/Batch/untouched.bin", "not selected");
   write_file(root + "/Batch/Child/deep.txt", "deep\r\n");
   ASSERT_EQ(vxcore_folder_index_children(ctx, book, ".", R"(["Batch"])"), VXCORE_OK);
-  ASSERT_EQ(vxcore_folder_index_children(ctx, book, "Batch", R"(["Note.md",".hidden.bin","Child"])"), VXCORE_OK);
+  ASSERT_EQ(
+      vxcore_folder_index_children(ctx, book, "Batch", R"(["Note.md",".hidden.bin","Child"])"),
+      VXCORE_OK);
   ASSERT_EQ(vxcore_folder_index_children(ctx, book, "Batch/Child", R"(["deep.txt"])"), VXCORE_OK);
   const auto binary = [](const std::string &path) {
     std::ifstream input(utf8_to_fs_path(path), std::ios::binary);
@@ -10619,7 +10630,9 @@ int test_batch_index_children_preserves_source_and_identity() {
   ASSERT_EQ(binary(root + "/Batch/untouched.bin"), "not selected");
   char *json = nullptr;
   ASSERT_EQ(vxcore_node_get_config(ctx, book, "Batch", &json), VXCORE_OK);
-  const auto batch = nlohmann::json::parse(json); vxcore_string_free(json); json = nullptr;
+  const auto batch = nlohmann::json::parse(json);
+  vxcore_string_free(json);
+  json = nullptr;
   ASSERT_EQ(batch["files"].size(), 2u);
   ASSERT(batch["folders"] == nlohmann::json::array({"Child"}));
   std::set<std::string> indexed_names;
@@ -10627,21 +10640,32 @@ int test_batch_index_children_preserves_source_and_identity() {
   ASSERT(indexed_names == std::set<std::string>({"Note.md", ".hidden.bin"}));
   ASSERT(batch["files"][0]["id"] != batch["files"][1]["id"]);
   ASSERT_EQ(vxcore_notebook_collect_node_ids(ctx, book, &json), VXCORE_OK);
-  const auto ids = nlohmann::json::parse(json).get<std::set<std::string>>(); vxcore_string_free(json); json = nullptr;
+  const auto ids = nlohmann::json::parse(json).get<std::set<std::string>>();
+  vxcore_string_free(json);
+  json = nullptr;
   ASSERT_EQ(ids.size(), 7u);
   ASSERT_EQ(vxcore_notebook_close(ctx, book), VXCORE_OK);
-  vxcore_string_free(book); book = nullptr;
+  vxcore_string_free(book);
+  book = nullptr;
   ASSERT_EQ(vxcore_notebook_open(ctx, root.c_str(), &book), VXCORE_OK);
   ASSERT_EQ(vxcore_node_get_config(ctx, book, "Batch", &json), VXCORE_OK);
-  ASSERT(nlohmann::json::parse(json) == batch); vxcore_string_free(json); json = nullptr;
+  ASSERT(nlohmann::json::parse(json) == batch);
+  vxcore_string_free(json);
+  json = nullptr;
   ASSERT_EQ(vxcore_notebook_collect_node_ids(ctx, book, &json), VXCORE_OK);
-  ASSERT(nlohmann::json::parse(json).get<std::set<std::string>>() == ids); vxcore_string_free(json); json = nullptr;
+  ASSERT(nlohmann::json::parse(json).get<std::set<std::string>>() == ids);
+  vxcore_string_free(json);
+  json = nullptr;
   ASSERT_EQ(vxcore_node_get_config(ctx, book, "Existing.md", &json), VXCORE_OK);
-  const auto kept = nlohmann::json::parse(json); vxcore_string_free(json);
-  ASSERT(kept["id"] == existing_id && kept["metadata"]["retained"] == nlohmann::json::array({1,"two"}));
+  const auto kept = nlohmann::json::parse(json);
+  vxcore_string_free(json);
+  ASSERT(kept["id"] == existing_id &&
+         kept["metadata"]["retained"] == nlohmann::json::array({1, "two"}));
   ASSERT_EQ(vxcore_notebook_close(ctx, book), VXCORE_OK);
   ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
-  vxcore_string_free(existing); vxcore_string_free(book); vxcore_context_destroy(ctx);
+  vxcore_string_free(existing);
+  vxcore_string_free(book);
+  vxcore_context_destroy(ctx);
   cleanup_test_dir(root);
   return 0;
 }
@@ -10652,17 +10676,21 @@ int test_batch_index_children_rejects_before_parent_publication() {
   VxCoreContextHandle ctx = nullptr;
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
   char *book = nullptr, *node = nullptr;
-  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Batch rejection"})", VXCORE_NOTEBOOK_BUNDLED, &book), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Batch rejection"})",
+                                   VXCORE_NOTEBOOK_BUNDLED, &book),
+            VXCORE_OK);
   ASSERT_EQ(vxcore_file_create(ctx, book, ".", "Existing.md", &node), VXCORE_OK);
-  create_directory(root + "/Fresh"); write_file(root + "/fresh.txt", "unaltered");
+  create_directory(root + "/Fresh");
+  write_file(root + "/fresh.txt", "unaltered");
   const auto binary = [](const std::string &path) {
     std::ifstream input(utf8_to_fs_path(path), std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
   };
   const auto metadata = root + "/vx_notebook/contents/vx.json";
   const auto before = binary(metadata);
-  for (const auto *request : {R"(["Fresh","missing.txt"])", R"(["Fresh","../escape"])",
-      R"(["fresh.txt","fresh.txt"])", R"(["Fresh","Existing.md"])", "[1]", "{}"}) {
+  for (const auto *request :
+       {R"(["Fresh","missing.txt"])", R"(["Fresh","../escape"])", R"(["fresh.txt","fresh.txt"])",
+        R"(["Fresh","Existing.md"])", "[1]", "{}"}) {
     ASSERT_NE(vxcore_folder_index_children(ctx, book, ".", request), VXCORE_OK);
     ASSERT_EQ(binary(metadata), before);
     ASSERT_FALSE(path_exists(root + "/vx_notebook/contents/Fresh"));
@@ -10676,17 +10704,145 @@ int test_batch_index_children_rejects_before_parent_publication() {
   ASSERT_EQ(binary(metadata), before);
   ASSERT_EQ(vxcore_folder_index_children(ctx, book, ".", R"(["Fresh","fresh.txt"])"), VXCORE_OK);
   ASSERT_EQ(vxcore_notebook_close(ctx, book), VXCORE_OK);
-  vxcore_string_free(node); vxcore_string_free(book); book = nullptr;
-  const auto raw = get_test_path("batch_index_readonly_raw"); cleanup_test_dir(raw);
-  ASSERT_EQ(vxcore_notebook_create(ctx, raw.c_str(), R"({"name":"Raw"})", VXCORE_NOTEBOOK_RAW, &book), VXCORE_OK);
+  vxcore_string_free(node);
+  vxcore_string_free(book);
+  book = nullptr;
+  const auto raw = get_test_path("batch_index_readonly_raw");
+  cleanup_test_dir(raw);
+  ASSERT_EQ(
+      vxcore_notebook_create(ctx, raw.c_str(), R"({"name":"Raw"})", VXCORE_NOTEBOOK_RAW, &book),
+      VXCORE_OK);
   ASSERT_EQ(vxcore_notebook_set_read_only(ctx, book, true), VXCORE_OK);
   ASSERT_EQ(vxcore_folder_index_children(ctx, book, ".", "[]"), VXCORE_ERR_READ_ONLY);
   ASSERT_EQ(vxcore_notebook_set_read_only(ctx, book, false), VXCORE_OK);
   ASSERT_EQ(vxcore_folder_index_children(ctx, book, ".", "[]"), VXCORE_ERR_UNSUPPORTED);
   ASSERT_EQ(vxcore_notebook_close(ctx, book), VXCORE_OK);
   ASSERT_EQ(vxcore_prepare_shutdown(ctx), VXCORE_OK);
-  vxcore_string_free(book); vxcore_context_destroy(ctx);
-  cleanup_test_dir(root); cleanup_test_dir(raw);
+  vxcore_string_free(book);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  cleanup_test_dir(raw);
+  return 0;
+}
+
+int test_typed_folder_snapshot_lifetime_and_metadata() {
+  const auto root = get_test_path("typed_folder_snapshot_nb");
+  cleanup_test_dir(root);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Snapshot"})",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  using Owner = std::unique_ptr<VxCoreFolderListing, decltype(&vxcore_folder_listing_free)>;
+  VxCoreFolderListing *result = nullptr;
+  ASSERT_EQ(vxcore_folder_list_children_typed(ctx, notebook_id, nullptr, &result), VXCORE_OK);
+  Owner empty(result, vxcore_folder_listing_free);
+  ASSERT_EQ(vxcore_folder_listing_view(empty.get())->file_count, size_t(0));
+  ASSERT_EQ(vxcore_folder_listing_view(empty.get())->folder_count, size_t(0));
+
+  char *id = nullptr;
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "zeta", &id), VXCORE_OK);
+  const std::string folder_id(id);
+  vxcore_string_free(id);
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "alpha", &id), VXCORE_OK);
+  vxcore_string_free(id);
+  const std::string name = u8"\u7b14\u8bb0.md";
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", name.c_str(), &id), VXCORE_OK);
+  const std::string file_id(id);
+  vxcore_string_free(id);
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "empty.md", &id), VXCORE_OK);
+  vxcore_string_free(id);
+  const nlohmann::json metadata = {
+      {"textColor", "custom-color"},
+      {"nullable", nullptr},
+      {"values", nlohmann::json::array({false, 42, "text", nlohmann::json::object()})},
+      {"long", std::string(4096, 'x')}};
+  ASSERT_EQ(vxcore_node_update_metadata(ctx, notebook_id, name.c_str(), metadata.dump().c_str()),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_node_update_metadata(ctx, notebook_id, "zeta", R"({"nested":{"n":null}})"),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_tag_create(ctx, notebook_id, "work"), VXCORE_OK);
+  ASSERT_EQ(vxcore_tag_create(ctx, notebook_id, u8"\u6807\u7b7e"), VXCORE_OK);
+  ASSERT_EQ(
+      vxcore_file_update_tags(ctx, notebook_id, name.c_str(), u8"[\"work\",\"\u6807\u7b7e\"]"),
+      VXCORE_OK);
+  ASSERT_EQ(vxcore_file_update_attachments(ctx, notebook_id, name.c_str(),
+                                           R"(["first.pdf","second.zip"])"),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_file_update_tags(ctx, notebook_id, "empty.md", R"(["work"])"), VXCORE_OK);
+  ASSERT_EQ(vxcore_file_update_attachments(ctx, notebook_id, "empty.md", R"(["other.pdf"])"),
+            VXCORE_OK);
+  ASSERT_EQ(
+      vxcore_node_update_timestamps(ctx, notebook_id, name.c_str(), 1705318200123, 1705404600456),
+      VXCORE_OK);
+  ASSERT_EQ(vxcore_folder_list_children_typed(ctx, notebook_id, ".", &result), VXCORE_OK);
+  Owner snapshot(result, vxcore_folder_listing_free);
+  const auto *view = vxcore_folder_listing_view(snapshot.get());
+  const auto text = [](VxCoreUtf8View value) { return std::string(value.data, value.size); };
+  ASSERT_EQ(view->file_count, size_t(2));
+  ASSERT_EQ(view->folder_count, size_t(2));
+  ASSERT_EQ(text(view->folders[0].name), std::string("zeta"));
+  ASSERT_EQ(text(view->folders[1].name), std::string("alpha"));
+  ASSERT_EQ(text(view->folders[0].id), folder_id);
+  ASSERT_EQ(text(view->files[0].name), name);
+  ASSERT_EQ(text(view->files[0].id), file_id);
+  ASSERT_EQ(view->files[0].created_utc, int64_t(1705318200123));
+  ASSERT_EQ(view->files[0].modified_utc, int64_t(1705404600456));
+  ASSERT_TRUE(nlohmann::json::parse(text(view->files[0].metadata_json)) == metadata);
+  ASSERT_EQ(view->files[1].metadata_json.size, size_t(0));
+  ASSERT_EQ(view->files[1].tag_count, size_t(1));
+  ASSERT_EQ(text(view->files[1].tags[0]), std::string("work"));
+  ASSERT_EQ(view->files[1].attachment_count, size_t(1));
+  ASSERT_EQ(text(view->files[1].attachments[0]), std::string("other.pdf"));
+  ASSERT_TRUE(nlohmann::json::parse(text(view->folders[0].metadata_json)) ==
+              nlohmann::json::parse(R"({"nested":{"n":null}})"));
+  ASSERT_EQ(view->folders[1].metadata_json.size, size_t(0));
+  ASSERT_EQ(view->files[0].tag_count, size_t(2));
+  ASSERT_EQ(text(view->files[0].tags[0]), std::string("work"));
+  ASSERT_EQ(text(view->files[0].tags[1]), std::string(u8"\u6807\u7b7e"));
+  ASSERT_EQ(view->files[0].attachment_count, size_t(2));
+  ASSERT_EQ(text(view->files[0].attachments[1]), std::string("second.zip"));
+  ASSERT_TRUE(view->files[0].exists_known && view->files[0].exists);
+  ASSERT_EQ(view->folders[0].tag_count, size_t(0));
+  ASSERT_EQ(view->folders[0].attachment_count, size_t(0));
+
+  // Both failure and success overwrite the output without releasing an older owner.
+  result = snapshot.get();
+  ASSERT_EQ(vxcore_folder_list_children_typed(nullptr, notebook_id, ".", &result),
+            VXCORE_ERR_INVALID_PARAM);
+  ASSERT_NULL(result);
+  result = snapshot.get();
+  ASSERT_EQ(vxcore_folder_list_children_typed(ctx, "missing-notebook", ".", &result),
+            VXCORE_ERR_NOT_FOUND);
+  ASSERT_NULL(result);
+  ASSERT_EQ(vxcore_folder_list_children_typed(ctx, notebook_id, ".", nullptr),
+            VXCORE_ERR_INVALID_PARAM);
+  ASSERT_EQ(vxcore_node_rename(ctx, notebook_id, name.c_str(), "renamed.md"), VXCORE_OK);
+  ASSERT_EQ(vxcore_node_update_metadata(ctx, notebook_id, "renamed.md", R"({"changed":true})"),
+            VXCORE_OK);
+  ASSERT_EQ(vxcore_folder_set_children_order(
+                ctx, notebook_id, ".",
+                R"({"folders":["alpha","zeta"],"files":["empty.md","renamed.md"]})"),
+            VXCORE_OK);
+  result = snapshot.get();
+  ASSERT_EQ(vxcore_folder_list_children_typed(ctx, notebook_id, ".", &result), VXCORE_OK);
+  Owner changed(result, vxcore_folder_listing_free);
+  ASSERT_EQ(text(vxcore_folder_listing_view(changed.get())->files[0].name),
+            std::string("empty.md"));
+  ASSERT_EQ(vxcore_notebook_close(ctx, notebook_id), VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  ASSERT_EQ(text(view->files[0].name), name);
+  ASSERT_EQ(text(view->files[0].id), file_id);
+  ASSERT_EQ(text(view->folders[0].name), std::string("zeta"));
+  ASSERT_TRUE(nlohmann::json::parse(text(view->files[0].metadata_json)) == metadata);
+  ASSERT_EQ(text(view->files[0].tags[1]), std::string(u8"\u6807\u7b7e"));
+  ASSERT_EQ(text(view->files[0].attachments[0]), std::string("first.pdf"));
+  ASSERT_EQ(vxcore_folder_listing_view(empty.get())->file_count, size_t(0));
+  ASSERT_NULL(vxcore_folder_listing_view(nullptr));
+  vxcore_folder_listing_free(nullptr);
+  cleanup_test_dir(root);
   return 0;
 }
 
@@ -10696,6 +10852,7 @@ int main() {
   vxcore_set_test_mode(1);
   vxcore_clear_test_directory();
 
+  RUN_TEST(test_typed_folder_snapshot_lifetime_and_metadata);
   RUN_TEST(test_batch_index_children_preserves_source_and_identity);
   RUN_TEST(test_batch_index_children_rejects_before_parent_publication);
   RUN_TEST(test_folder_create);

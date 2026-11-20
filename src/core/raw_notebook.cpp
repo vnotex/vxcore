@@ -65,8 +65,7 @@ VxCoreError RawNotebook::LoadConfig() {
     try {
       config_.metadata = nlohmann::json::parse(meta.value());
     } catch (const nlohmann::json::exception &) {
-      VXCORE_LOG_WARN("Failed to parse metadata JSON for raw notebook: id=%s",
-                      config_.id.c_str());
+      VXCORE_LOG_WARN("Failed to parse metadata JSON for raw notebook: id=%s", config_.id.c_str());
     }
   }
 
@@ -82,8 +81,7 @@ VxCoreError RawNotebook::LoadConfig() {
         }
       }
     } catch (const nlohmann::json::exception &) {
-      VXCORE_LOG_WARN("Failed to parse ignored JSON for raw notebook: id=%s",
-                      config_.id.c_str());
+      VXCORE_LOG_WARN("Failed to parse ignored JSON for raw notebook: id=%s", config_.id.c_str());
     }
   }
 
@@ -108,7 +106,7 @@ VxCoreError RawNotebook::SaveConfigToDb() {
     return VXCORE_ERR_DATABASE;
   }
   if (!metadata_store_->SetNotebookMetadata(kMetaKeyIgnored,
-                                             nlohmann::json(config_.ignored).dump())) {
+                                            nlohmann::json(config_.ignored).dump())) {
     return VXCORE_ERR_DATABASE;
   }
 
@@ -242,21 +240,21 @@ VxCoreError RawNotebook::MoveTag(const std::string &tag_name, const std::string 
   return VXCORE_ERR_UNSUPPORTED;
 }
 
-VxCoreError RawNotebook::GetTags(std::string &out_tags_json) const {
-  out_tags_json = "[]";
-  return VXCORE_OK;
+const std::vector<TagNode> &RawNotebook::GetTags() const {
+  static const std::vector<TagNode> empty;
+  return empty;
 }
 
 VxCoreError RawNotebook::FindFilesByTags(const std::vector<std::string> &tags, bool use_and,
-                                         std::string &out_results_json) {
+                                         std::vector<StoreTagQueryResult> &out_results) {
   (void)tags;
   (void)use_and;
-  (void)out_results_json;
+  out_results.clear();
   return VXCORE_ERR_UNSUPPORTED;
 }
 
-VxCoreError RawNotebook::CountFilesByTag(std::string &out_results_json) {
-  (void)out_results_json;
+VxCoreError RawNotebook::CountFilesByTag(std::vector<std::pair<std::string, int>> &out_counts) {
+  out_counts.clear();
   return VXCORE_ERR_UNSUPPORTED;
 }
 

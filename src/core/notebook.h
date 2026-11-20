@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "encryptednote.h"
@@ -21,6 +22,7 @@ class EventManager;
 class FolderManager;
 class MetadataStore;
 class NotebookManager;
+struct StoreTagQueryResult;
 
 enum class NotebookType { Bundled, Raw };
 
@@ -88,12 +90,12 @@ class NotebookEncryption final {
   // Install authenticated keys only. Existing entries are verified, never replaced.
   // Every protected job/buffer retains an NK lease through its complete lifetime.
   VxCoreError InstallNotebookKey(const EncryptedNote::KeyEnvelope &envelope,
-                                EncryptedNote::Key &&notebook_key);
+                                 EncryptedNote::Key &&notebook_key);
   VxCoreError InstallNotebookKey(const EncryptedNote::KeyEnvelope &envelope,
-                                std::shared_ptr<const EncryptedNote::Key> notebook_key);
+                                 std::shared_ptr<const EncryptedNote::Key> notebook_key);
   VxCoreError AcquireNotebookKey(std::shared_ptr<const EncryptedNote::Key> &out_key,
-                                EncryptedNote::KeyEnvelope *out_envelope = nullptr,
-                                const EncryptedNote::ObjectHeader *header = nullptr) const;
+                                 EncryptedNote::KeyEnvelope *out_envelope = nullptr,
+                                 const EncryptedNote::ObjectHeader *header = nullptr) const;
   VxCoreError LockNotebookKey();
 
  private:
@@ -185,13 +187,14 @@ class Notebook {
   virtual VxCoreError CreateTagPath(const std::string &tag_path);
   virtual VxCoreError DeleteTag(const std::string &tag_name);
   virtual VxCoreError MoveTag(const std::string &tag_name, const std::string &parent_tag);
-  virtual VxCoreError GetTags(std::string &out_tags_json) const;
+  // Internal synchronous view, like GetConfig(); typed C results copy what they own.
+  virtual const std::vector<TagNode> &GetTags() const;
   TagNode *FindTag(const std::string &tag_name);
 
   // Direct DB-backed tag queries (bypasses SearchManager for efficiency)
   virtual VxCoreError FindFilesByTags(const std::vector<std::string> &tags, bool use_and,
-                              std::string &out_results_json);
-  virtual VxCoreError CountFilesByTag(std::string &out_results_json);
+                                      std::vector<StoreTagQueryResult> &out_results);
+  virtual VxCoreError CountFilesByTag(std::vector<std::pair<std::string, int>> &out_counts);
 
   // Rebuild the metadata cache from ground truth (config files).
   // Returns VXCORE_OK on success.

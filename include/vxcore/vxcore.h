@@ -1,6 +1,7 @@
 #ifndef VXCORE_H
 #define VXCORE_H
 
+#include "vxcore_results.h"
 #include "vxcore_types.h"
 
 #ifdef __cplusplus
@@ -160,8 +161,8 @@ typedef struct VxCoreEncryptionSetup_ *VxCoreEncryptionSetupHandle;
 // safety and must bind this classification to the bytes it subsequently consumes.
 // out_required is false on failure; NULL arguments return NULL_POINTER, an empty
 // path returns INVALID_PARAM, and unreadable files return IO.
-VXCORE_API VxCoreError vxcore_encryption_requires_notebook_key(
-    const char *file_path, bool *out_required);
+VXCORE_API VxCoreError vxcore_encryption_requires_notebook_key(const char *file_path,
+                                                               bool *out_required);
 
 // Legacy-vault reconciliation only; never a prerequisite for v2 notes or setup.
 // Caller holds maintenance then the notebook IO gate. No KDF or contents scan.
@@ -171,8 +172,9 @@ VXCORE_API VxCoreError vxcore_encryption_requires_notebook_key(
 // Unknown without consent returns INVALID_STATE. Read-only is supported only when
 // no write is needed. Writes preserve other config fields and emit config_changed.
 // Never creates, replaces or deletes a key; queries and unlock never migrate markers.
-VXCORE_API VxCoreError vxcore_encryption_reconcile_notebook(
-    VxCoreContextHandle context, const char *notebook_id, bool confirm_uninitialized);
+VXCORE_API VxCoreError vxcore_encryption_reconcile_notebook(VxCoreContextHandle context,
+                                                            const char *notebook_id,
+                                                            bool confirm_uninitialized);
 
 // Synchronous worker operation, outside NotebookIoGate: performs KDF/wrapping and
 // creates no files. Prepares an ephemeral v2 writing context, independent of the
@@ -198,28 +200,29 @@ VXCORE_API VxCoreError vxcore_encryption_prepare_notebook(
 // Attribute failure may retain the ephemeral context but does not publish a note.
 // Consumes an owned handle on success AND failure; foreign/stale handles return
 // INVALID_PARAM without touching another context's state.
-VXCORE_API VxCoreError vxcore_encryption_commit_notebook(
-    VxCoreContextHandle context, VxCoreEncryptionSetupHandle setup);
+VXCORE_API VxCoreError vxcore_encryption_commit_notebook(VxCoreContextHandle context,
+                                                         VxCoreEncryptionSetupHandle setup);
 
 // Discard an uncommitted handle and wipe its keys. NULL/foreign/consumed are no-ops.
-VXCORE_API void vxcore_encryption_free_setup(
-    VxCoreContextHandle context, VxCoreEncryptionSetupHandle setup);
+VXCORE_API void vxcore_encryption_free_setup(VxCoreContextHandle context,
+                                             VxCoreEncryptionSetupHandle setup);
 
 // Explicit legacy-vault unlock only. Reads/authenticates encryption.vne on a worker,
 // outside the IO gate. Read-only notebooks are supported; failure changes neither
 // files nor existing unlocked state. Use unlock_note for every selected-note open.
-VXCORE_API VxCoreError vxcore_encryption_unlock_notebook(
-    VxCoreContextHandle context, const char *notebook_id,
-    const void *password, size_t password_size);
+VXCORE_API VxCoreError vxcore_encryption_unlock_notebook(VxCoreContextHandle context,
+                                                         const char *notebook_id,
+                                                         const void *password,
+                                                         size_t password_size);
 
 // Exact selected-note unlock on a worker outside the IO gate. v2 uses only the
 // embedded envelope; v1 resolves its legacy vault and fails closed on vault errors.
 // Validates notebook/path/metadata, authenticates the selected wrapped document key,
 // then revalidates the captured source after KDF before installing runtime keys.
 // Password bytes are borrowed, never stored. No file or marker writes; read-only OK.
-VXCORE_API VxCoreError vxcore_encryption_unlock_note(
-    VxCoreContextHandle context, const char *notebook_id, const char *file_path,
-    const void *password, size_t password_size);
+VXCORE_API VxCoreError vxcore_encryption_unlock_note(VxCoreContextHandle context,
+                                                     const char *notebook_id, const char *file_path,
+                                                     const void *password, size_t password_size);
 
 // Explicit writable-open migration, under caller maintenance then notebook IO.
 // No KDF: requires the exact cached NK or its cached master. v2 is a no-op;
@@ -227,8 +230,9 @@ VXCORE_API VxCoreError vxcore_encryption_unlock_note(
 // before rewriting only wrapped-key headers. Invalid backups leave both unchanged.
 // A partial durable rewrite emits file.saved even when a later write fails, so the
 // retryable backup-first transition is observable. No generic load/search migration.
-VXCORE_API VxCoreError vxcore_encryption_migrate_note(
-    VxCoreContextHandle context, const char *notebook_id, const char *file_path);
+VXCORE_API VxCoreError vxcore_encryption_migrate_note(VxCoreContextHandle context,
+                                                      const char *notebook_id,
+                                                      const char *file_path);
 
 // Atomically refuses while any setup, protected operation or key lease is alive.
 // On success all master/notebook keys have been released and wiped. Ordinary
@@ -245,9 +249,9 @@ VXCORE_API VxCoreError vxcore_encryption_lock_all(VxCoreContextHandle context);
 // Selected v1 remains fail-closed. Read-only: no migration, writes or contents scan.
 // Suffix/metadata/header disagreements and notebook identity errors still fail.
 // Output is NULL on failure; free success with vxcore_string_free().
-VXCORE_API VxCoreError vxcore_encryption_get_status(
-    VxCoreContextHandle context, const char *notebook_id,
-    const char *file_path, char **out_status_json);
+VXCORE_API VxCoreError vxcore_encryption_get_status(VxCoreContextHandle context,
+                                                    const char *notebook_id, const char *file_path,
+                                                    char **out_status_json);
 
 // Transactional body-only protection of an existing managed Markdown, text or MindMap
 // note. The caller captures its current body (which may be dirty), freezes all views
@@ -261,10 +265,11 @@ VXCORE_API VxCoreError vxcore_encryption_get_status(
 // A failure after preparation returns ENCRYPTION_RECOVERY_REQUIRED and blocks further
 // notebook mutation/sync until keyless startup recovery completes. Outputs are NULL
 // on failure; successful strings are released with vxcore_string_free().
-VXCORE_API VxCoreError vxcore_encryption_protect_note(
-    VxCoreContextHandle context, const char *notebook_id, const char *file_path,
-    const void *body, size_t body_size, const char *source_sha256,
-    char **out_encrypted_path);
+VXCORE_API VxCoreError vxcore_encryption_protect_note(VxCoreContextHandle context,
+                                                      const char *notebook_id,
+                                                      const char *file_path, const void *body,
+                                                      size_t body_size, const char *source_sha256,
+                                                      char **out_encrypted_path);
 
 // Transactionally remove body protection from a managed note, preserving its UUID and
 // all assets/metadata except the encryption markers. The target is the current path
@@ -280,18 +285,20 @@ VXCORE_API VxCoreError vxcore_encryption_protect_note(
 // After durable preparation, failures return ENCRYPTION_RECOVERY_REQUIRED and block
 // mutation/sync until keyless startup recovery completes. Output is NULL on failure;
 // free the successful normal-note path with vxcore_string_free().
-VXCORE_API VxCoreError vxcore_encryption_unprotect_note(
-    VxCoreContextHandle context, const char *notebook_id, const char *file_path,
-    const void *body, size_t body_size, const char *source_sha256,
-    char **out_plaintext_path);
+VXCORE_API VxCoreError vxcore_encryption_unprotect_note(VxCoreContextHandle context,
+                                                        const char *notebook_id,
+                                                        const char *file_path, const void *body,
+                                                        size_t body_size, const char *source_sha256,
+                                                        char **out_plaintext_path);
 
 // Same maintenance/IO/key preconditions. Publishes an encrypted note without ever
 // creating an empty/plaintext indexed file. name is the original visible filename
 // (without ".vne"); editor_type is "markdown", "text" or "mindmap". Returns its new stable UUID.
-VXCORE_API VxCoreError vxcore_encryption_create_note(
-    VxCoreContextHandle context, const char *notebook_id, const char *parent_path,
-    const char *name, const char *editor_type, const void *body, size_t body_size,
-    char **out_file_id);
+VXCORE_API VxCoreError vxcore_encryption_create_note(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     const char *parent_path, const char *name,
+                                                     const char *editor_type, const void *body,
+                                                     size_t body_size, char **out_file_id);
 
 // ============ Read-Only Flag Operations ============
 // Set the notebook's read-only flag. This is a per-device runtime flag,
@@ -683,9 +690,9 @@ VXCORE_API VxCoreError vxcore_folder_import(VxCoreContextHandle context, const c
 // retrying; final cohort publication uses vxcore_folder_attach_imported.
 // READ_ONLY precedes UNSUPPORTED for read-only raw notebooks.
 VXCORE_API VxCoreError vxcore_folder_index_children(VxCoreContextHandle context,
-                                                   const char *notebook_id,
-                                                   const char *parent_path,
-                                                   const char *names_json);
+                                                    const char *notebook_id,
+                                                    const char *parent_path,
+                                                    const char *names_json);
 
 // Replace a bundled file's tags with tags_json (an array of names). New names must have
 // notebook definitions; existing undefined assignments may be preserved or explicitly removed.
@@ -774,13 +781,14 @@ VXCORE_API VxCoreError vxcore_node_transfer_prepare(
 // unlocked. Commit/free/event ownership is identical to node_transfer_prepare.
 VXCORE_API VxCoreError vxcore_node_transfer_prepare_encrypted_bundle(
     VxCoreContextHandle context, const char *bundle_root, const char *folder_name,
-    const char *destination_notebook_id, const char *destination_folder_path,
-    const void *password, size_t password_size, VxCoreNodeTransferHandle *out_transfer);
+    const char *destination_notebook_id, const char *destination_folder_path, const void *password,
+    size_t password_size, VxCoreNodeTransferHandle *out_transfer);
 
 // Normalize managed asset links in an owned plaintext export staging file.
 // Uses the built-in file-type parser; ciphertext/magic is rejected, never decoded.
-VXCORE_API VxCoreError vxcore_rewrite_plaintext_asset_links(
-    const char *staged_file_path, const char *old_assets_path, const char *new_assets_path);
+VXCORE_API VxCoreError vxcore_rewrite_plaintext_asset_links(const char *staged_file_path,
+                                                            const char *old_assets_path,
+                                                            const char *new_assets_path);
 
 // Publishes a prepared destination atomically and optionally removes the
 // source for Move. Callback-free: mutation events are retained in a
@@ -836,8 +844,8 @@ VXCORE_API VxCoreError vxcore_node_get_config(VxCoreContextHandle context, const
 // arguments or invalid paths, NOT_FOUND for a missing notebook/file,
 // PERMISSION_DENIED for access errors, and IO for non-regular files/other IO errors.
 VXCORE_API VxCoreError vxcore_node_get_file_size(VxCoreContextHandle context,
-                                                 const char *notebook_id,
-                                                 const char *file_path, uint64_t *out_size);
+                                                 const char *notebook_id, const char *file_path,
+                                                 uint64_t *out_size);
 
 // Delete node (file or folder)
 VXCORE_API VxCoreError vxcore_node_delete(VxCoreContextHandle context, const char *notebook_id,
@@ -1198,8 +1206,8 @@ VXCORE_API VxCoreError vxcore_buffer_open_virtual(VxCoreContextHandle context, c
 // Existing addresses return ALREADY_EXISTS (no callback or ownership transfer).
 // out_id is NULL on failure; free successful IDs using vxcore_string_free.
 VXCORE_API VxCoreError vxcore_buffer_open_memory(VxCoreContextHandle context, const char *address,
-                                                 const char *options_json,
-                                                 const void *initial_data, size_t initial_size,
+                                                 const char *options_json, const void *initial_data,
+                                                 size_t initial_size,
                                                  const VxCoreBufferContentCallbacks *callbacks,
                                                  char **out_id);
 
@@ -1394,8 +1402,7 @@ typedef void (*VxCoreResourceReadCallback)(const void *data, size_t size, void *
 // Read-only notebooks and protected notes with unloaded bodies remain readable.
 // No network requests, logical resource IDs or decryption of file bytes.
 VXCORE_API VxCoreError vxcore_buffer_read_resource(VxCoreContextHandle context,
-                                                   const char *buffer_id,
-                                                   const char *resource_url,
+                                                   const char *buffer_id, const char *resource_url,
                                                    VxCoreResourceReadCallback callback,
                                                    void *userdata);
 
@@ -1668,8 +1675,7 @@ typedef struct VxCoreSyncLifecycle_ VxCoreSyncLifecycle;
 // backend/clone/lifecycle. Userdata must outlive all backends and joined workers.
 // A custom policy on an unsupported TLS/backend combination fails explicitly.
 VXCORE_API VxCoreError vxcore_sync_set_tls_verifier(VxCoreContextHandle context,
-                                                    VxCoreSyncTlsVerifier verifier,
-                                                    void *userdata);
+                                                    VxCoreSyncTlsVerifier verifier, void *userdata);
 
 // Prepared WebDAV lifecycle: prepare O (no network), execute W (no metadata
 // manager/SQLite), complete O (no network), then free after worker/callback join.
@@ -1678,9 +1684,11 @@ VXCORE_API VxCoreError vxcore_sync_set_tls_verifier(VxCoreContextHandle context,
 // clone/config/target/limits; all include canonical operationId. Credentials are
 // separate {extra:{username,password}}. Clone requires transaction-private runtime
 // roots beside an empty unpacked target, never a shared library context.
-VXCORE_API VxCoreError vxcore_sync_prepare_lifecycle(
-    VxCoreContextHandle context, const char *notebook_id, const char *command_json,
-    const char *credentials_json, VxCoreSyncLifecycle **out_lifecycle);
+VXCORE_API VxCoreError vxcore_sync_prepare_lifecycle(VxCoreContextHandle context,
+                                                     const char *notebook_id,
+                                                     const char *command_json,
+                                                     const char *credentials_json,
+                                                     VxCoreSyncLifecycle **out_lifecycle);
 VXCORE_API VxCoreError vxcore_sync_execute_lifecycle(VxCoreSyncLifecycle *lifecycle,
                                                      VxCoreSyncCancellation *cancellation);
 // Exactly once, after execute returns. Output is bounded JSON (vxcore_string_free):
@@ -1696,8 +1704,7 @@ VXCORE_API void vxcore_sync_free_lifecycle(VxCoreSyncLifecycle *lifecycle);
 // retained; unknown/linked/replaced/recovery material never grants deletion authority.
 VXCORE_API VxCoreError vxcore_sync_provider_transaction(VxCoreContextHandle context,
                                                         const char *notebook_id,
-                                                        const char *command_json,
-                                                        char **out_json);
+                                                        const char *command_json, char **out_json);
 // Context-free read-only storage validation; never registers, repairs or authorizes
 // import. cleanCloneBaseline is diagnostic, NOT authority to import a sync cursor.
 VXCORE_API VxCoreError vxcore_sync_inspect_storage(const char *notebook_root,

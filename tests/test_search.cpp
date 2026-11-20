@@ -1,11 +1,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <filesystem>
 #include <future>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -1392,17 +1394,370 @@ static void capi_stream_cb(int batch_index, int total_batches, const char *batch
   c->by_index[batch_index] = std::move(parsed);
 }
 
+static std::string typed_string(VxCoreUtf8View text) {
+  return std::string(text.data ? text.data : "", text.size);
+}
+
+// Test-only projections compare the typed contract with the retained public JSON API.
+static nlohmann::json typed_content_json(const VxCoreContentSearchView &view) {
+  nlohmann::json result = {{"matchCount", view.file_count},
+                           {"truncated", view.truncated != 0},
+                           {"matches", nlohmann::json::array()}};
+  if (view.encrypted_skipped_count != 0) {
+    result["encryptedSkippedCount"] = view.encrypted_skipped_count;
+  }
+  for (size_t i = 0; i < view.file_count; ++i) {
+    const auto &file = view.files[i];
+    nlohmann::json item = {{"path", typed_string(file.path)},
+                           {"id", typed_string(file.id)},
+                           {"matchCount", file.match_count},
+                           {"matches", nlohmann::json::array()}};
+    for (size_t j = 0; j < file.match_count; ++j) {
+      const auto &match = file.matches[j];
+      item["matches"].push_back({{"lineNumber", match.line_number},
+                                 {"columnStart", match.column_start},
+                                 {"columnEnd", match.column_end},
+                                 {"lineText", typed_string(match.line_text)}});
+    }
+    result["matches"].push_back(std::move(item));
+  }
+  return result;
+}
+
+static nlohmann::json typed_file_json(const VxCoreFileSearchView &view) {
+  nlohmann::json result = {{"matchCount", view.file_count},
+                           {"truncated", view.truncated != 0},
+                           {"matches", nlohmann::json::array()}};
+  for (size_t i = 0; i < view.file_count; ++i) {
+    const auto &file = view.files[i];
+    nlohmann::json tags = nlohmann::json::array();
+    for (size_t j = 0; j < file.tag_count; ++j) {
+      tags.push_back(typed_string(file.tags[j]));
+    }
+    result["matches"].push_back({{"type", file.is_folder ? "folder" : "file"},
+                                 {"path", typed_string(file.path)},
+                                 {"absolute_path", typed_string(file.absolute_path)},
+                                 {"id", typed_string(file.id)},
+                                 {"createdUtc", file.created_utc},
+                                 {"modifiedUtc", file.modified_utc},
+                                 {"tags", std::move(tags)}});
+  }
+  return result;
+}
+
+static void typed_stream_cb(int index, int total, const VxCoreContentSearchView *view,
+                            void *userdata) noexcept {
+  auto *collector = static_cast<CApiStreamCollector *>(userdata);
+  try {
+    auto snapshot = typed_content_json(*view);
+    std::lock_guard<std::mutex> guard(collector->mu);
+    collector->total_batches = total;
+    ++collector->callback_count;
+    collector->by_index[index] = std::move(snapshot);
+  } catch (...) {
+    std::terminate();  // A test collector must not silently lose a callback or cross the C ABI.
+  }
+}
+
+int test_typed_search_owners_and_errors() {
+  const std::string root = get_test_path("typed_search_owners");
+  cleanup_test_dir(root);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["simple"]}})"), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Typed owners"})",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  const std::string name = u8"\u7b14\u8bb0.md";
+  const std::string line = u8"\U0001f600needle needle";
+  char *id = nullptr;
+  ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", name.c_str(), &id), VXCORE_OK);
+  const std::string file_id = id;
+  vxcore_string_free(id);
+  ASSERT_EQ(vxcore_folder_create(ctx, notebook_id, ".", "folder", &id), VXCORE_OK);
+  vxcore_string_free(id);
+  write_file(root + "/" + name, line + "\n");
+  ASSERT_EQ(vxcore_tag_create(ctx, notebook_id, u8"\u6807\u7b7e"), VXCORE_OK);
+  ASSERT_EQ(vxcore_tag_create(ctx, notebook_id, "second"), VXCORE_OK);
+  ASSERT_EQ(vxcore_file_tag(ctx, notebook_id, name.c_str(), u8"\u6807\u7b7e"), VXCORE_OK);
+  ASSERT_EQ(vxcore_file_tag(ctx, notebook_id, name.c_str(), "second"), VXCORE_OK);
+
+  const char *files_query = R"({"pattern":"*","includeFolders":true,"maxResults":100})";
+  VxCoreFileSearchResult *raw_files = nullptr;
+  ASSERT_EQ(vxcore_search_files_typed(ctx, notebook_id, files_query, nullptr, &raw_files),
+            VXCORE_OK);
+  std::unique_ptr<VxCoreFileSearchResult, decltype(&vxcore_file_search_result_free)> files(
+      raw_files, vxcore_file_search_result_free);
+  const auto *files_view = vxcore_file_search_result_view(files.get());
+  ASSERT_NOT_NULL(files_view);
+  ASSERT_EQ(files_view->file_count, size_t(2));
+  char *json = nullptr;
+  ASSERT_EQ(vxcore_search_files(ctx, notebook_id, files_query, nullptr, &json), VXCORE_OK);
+  const auto files_expected = nlohmann::json::parse(json);
+  vxcore_string_free(json);
+  ASSERT_TRUE(typed_file_json(*files_view) == files_expected);
+
+  const auto tags_query = nlohmann::json({{"tags", {u8"\u6807\u7b7e"}}, {"maxResults", 1}}).dump();
+  VxCoreFileSearchResult *raw_tags = nullptr;
+  ASSERT_EQ(vxcore_search_by_tags_typed(ctx, notebook_id, tags_query.c_str(), nullptr, &raw_tags),
+            VXCORE_OK);
+  std::unique_ptr<VxCoreFileSearchResult, decltype(&vxcore_file_search_result_free)> tags(
+      raw_tags, vxcore_file_search_result_free);
+  const auto *tags_view = vxcore_file_search_result_view(tags.get());
+  ASSERT_EQ(tags_view->file_count, size_t(1));
+  ASSERT_EQ(tags_view->files[0].tag_count, size_t(2));
+  ASSERT_EQ(typed_string(tags_view->files[0].id), file_id);
+  ASSERT_TRUE(tags_view->truncated != 0);
+  ASSERT_EQ(vxcore_search_by_tags(ctx, notebook_id, tags_query.c_str(), nullptr, &json), VXCORE_OK);
+  const auto tags_expected = nlohmann::json::parse(json);
+  vxcore_string_free(json);
+  ASSERT_TRUE(typed_file_json(*tags_view) == tags_expected);
+
+  const char *content_query = R"({"pattern":"needle","maxResults":0})";
+  VxCoreContentSearchResult *raw_content = nullptr;
+  ASSERT_EQ(vxcore_search_content_typed(ctx, notebook_id, content_query, nullptr, &raw_content),
+            VXCORE_OK);
+  std::unique_ptr<VxCoreContentSearchResult, decltype(&vxcore_content_search_result_free)> content(
+      raw_content, vxcore_content_search_result_free);
+  const auto *content_view = vxcore_content_search_result_view(content.get());
+  ASSERT_EQ(content_view->file_count, size_t(1));
+  ASSERT_EQ(content_view->files[0].match_count, size_t(2));
+  ASSERT_EQ(content_view->files[0].matches[0].column_start, 2);
+  ASSERT_EQ(content_view->files[0].matches[0].column_end, 8);
+  ASSERT_EQ(typed_string(content_view->files[0].matches[0].line_text), line);
+  ASSERT_EQ(vxcore_search_content(ctx, notebook_id, content_query, nullptr, &json), VXCORE_OK);
+  const auto content_expected = nlohmann::json::parse(json);
+  vxcore_string_free(json);
+  ASSERT_TRUE(typed_content_json(*content_view) == content_expected);
+
+  VxCoreContentSearchResult *capped = nullptr;
+  ASSERT_EQ(
+      vxcore_search_content_ex_typed(ctx, notebook_id, R"({"pattern":"needle","maxResults":1})",
+                                     nullptr, nullptr, &capped),
+      VXCORE_OK);
+  ASSERT_TRUE(vxcore_content_search_result_view(capped)->truncated != 0);
+  ASSERT_EQ(vxcore_content_search_result_view(capped)->files[0].match_count, size_t(1));
+  vxcore_content_search_result_free(capped);
+
+  // Every valid output is reset without reading/freeing its incoming owner. Existing
+  // owners remain readable after errors and after a successful empty replacement.
+  for (auto function : {vxcore_search_files_typed, vxcore_search_by_tags_typed}) {
+    auto *output = files.get();
+    ASSERT_EQ(function(nullptr, notebook_id, "{}", nullptr, &output), VXCORE_ERR_NULL_POINTER);
+    ASSERT_NULL(output);
+    output = files.get();
+    ASSERT_EQ(function(ctx, "missing-notebook", "{}", nullptr, &output), VXCORE_ERR_NOT_FOUND);
+    ASSERT_NULL(output);
+    output = files.get();
+    ASSERT_EQ(function(ctx, notebook_id, "{", nullptr, &output), VXCORE_ERR_JSON_PARSE);
+    ASSERT_NULL(output);
+    ASSERT_EQ(function(ctx, notebook_id, "{}", nullptr, nullptr), VXCORE_ERR_NULL_POINTER);
+    ASSERT_TRUE(typed_file_json(*files_view) == files_expected);
+  }
+  auto *empty_files = files.get();
+  ASSERT_EQ(vxcore_search_files_typed(ctx, notebook_id, R"({"pattern":"no-such-file"})", nullptr,
+                                      &empty_files),
+            VXCORE_OK);
+  ASSERT_NOT_NULL(empty_files);
+  ASSERT_EQ(vxcore_file_search_result_view(empty_files)->file_count, size_t(0));
+  vxcore_file_search_result_free(empty_files);
+  auto *output = content.get();
+  ASSERT_EQ(vxcore_search_content_typed(nullptr, notebook_id, content_query, nullptr, &output),
+            VXCORE_ERR_NULL_POINTER);
+  ASSERT_NULL(output);
+  output = content.get();
+  ASSERT_EQ(vxcore_search_content_typed(ctx, notebook_id, "{", nullptr, &output),
+            VXCORE_ERR_JSON_PARSE);
+  ASSERT_NULL(output);
+  output = content.get();
+  volatile int cancel = 1;
+  ASSERT_EQ(
+      vxcore_search_content_ex_typed(ctx, notebook_id, content_query, nullptr, &cancel, &output),
+      VXCORE_ERR_CANCELLED);
+  ASSERT_NULL(output);
+  ASSERT_EQ(
+      vxcore_search_content_ex_typed(ctx, notebook_id, content_query, nullptr, nullptr, nullptr),
+      VXCORE_ERR_NULL_POINTER);
+  output = content.get();
+  ASSERT_EQ(vxcore_search_content_typed(ctx, notebook_id, R"({"pattern":"no-such-content"})",
+                                        nullptr, &output),
+            VXCORE_OK);
+  ASSERT_NOT_NULL(output);
+  ASSERT_EQ(vxcore_content_search_result_view(output)->file_count, size_t(0));
+  vxcore_content_search_result_free(output);
+  ASSERT_NULL(vxcore_file_search_result_view(nullptr));
+  ASSERT_NULL(vxcore_content_search_result_view(nullptr));
+  vxcore_file_search_result_free(nullptr);
+  vxcore_content_search_result_free(nullptr);
+
+  write_file(root + "/" + name, "changed after acquisition\n");
+  ASSERT_EQ(vxcore_file_untag(ctx, notebook_id, name.c_str(), "second"), VXCORE_OK);
+  ASSERT_EQ(vxcore_notebook_close(ctx, notebook_id), VXCORE_OK);
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  // Owners contain no notebook/config/SQLite/context pointers, including nested strings.
+  ASSERT_TRUE(typed_file_json(*files_view) == files_expected);
+  ASSERT_TRUE(typed_file_json(*tags_view) == tags_expected);
+  ASSERT_TRUE(typed_content_json(*content_view) == content_expected);
+  cleanup_test_dir(root);
+  return 0;
+}
+
+struct TypedInterleavedCollector {
+  CApiStreamCollector collected;
+  std::condition_variable later;
+  bool later_arrived = false;
+  bool timed_out = false;
+  std::vector<int> arrival_order;
+};
+
+static void typed_interleaved_cb(int index, int total, const VxCoreContentSearchView *batch,
+                                 void *userdata) noexcept {
+  auto *state = static_cast<TypedInterleavedCollector *>(userdata);
+  try {
+    // Keep batch zero's borrowed text alive across another concurrent callback.
+    std::unique_lock<std::mutex> lock(state->collected.mu);
+    if (index == 0) {
+      state->timed_out = !state->later.wait_for(lock, std::chrono::seconds(5),
+                                                [&]() { return state->later_arrived; });
+    } else {
+      state->later_arrived = true;
+      state->later.notify_all();
+    }
+    state->arrival_order.push_back(index);
+    state->collected.by_index[index] = typed_content_json(*batch);
+    state->collected.total_batches = total;
+    ++state->collected.callback_count;
+  } catch (...) {
+    std::terminate();
+  }
+}
+
+int test_typed_streaming_interleaving_and_boundaries() {
+  const std::string root = get_test_path("typed_search_streaming");
+  cleanup_test_dir(root);
+  VxCoreContextHandle ctx = nullptr;
+  ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
+  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["simple"]}})"), VXCORE_OK);
+  char *notebook_id = nullptr;
+  ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"Typed streaming"})",
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
+  for (const char *name : {"first.md", "empty.md", "last.md", "protected.md"}) {
+    char *id = nullptr;
+    ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", name, &id), VXCORE_OK);
+    vxcore_string_free(id);
+    write_file(root + "/" + name,
+               std::string(name) == "empty.md" ? "no match\n" : "needle needle\n");
+  }
+  ASSERT_EQ(vxcore_node_update_metadata(ctx, notebook_id, "protected.md", R"({"encrypted":true})"),
+            VXCORE_OK);
+  const char *input = R"({"files":["first.md","empty.md","last.md","protected.md"]})";
+  const char *query = R"({"pattern":"needle","maxResults":1})";
+
+  TypedInterleavedCollector interleaved;
+  std::atomic<bool> stop{false};
+  std::thread drainer([&]() {
+    while (!stop.load(std::memory_order_acquire)) {
+      vxcore_work_queue_process_next(ctx, "vxcore.search", 10);
+    }
+  });
+  const auto err = vxcore_search_content_streaming_typed(
+      ctx, notebook_id, query, input, 1, typed_interleaved_cb, &interleaved, nullptr);
+  stop.store(true, std::memory_order_release);
+  drainer.join();
+  ASSERT_EQ(err, VXCORE_OK);
+  ASSERT_FALSE(interleaved.timed_out);
+  ASSERT_EQ(interleaved.collected.callback_count, 3);
+  ASSERT_EQ(interleaved.collected.total_batches, 3);
+  ASSERT_TRUE(interleaved.arrival_order.front() != 0);
+  const auto &batches = interleaved.collected.by_index;
+  ASSERT_EQ(batches.at(0)["encryptedSkippedCount"].get<int>(), 1);
+  ASSERT_FALSE(batches.at(1).contains("encryptedSkippedCount"));
+  ASSERT_FALSE(batches.at(2).contains("encryptedSkippedCount"));
+  ASSERT_EQ(batches.at(0)["matches"][0]["matches"].size(), size_t(2));
+  ASSERT_EQ(batches.at(1)["matchCount"].get<int>(), 0);  // Empty chunk still completes.
+  for (const auto &batch : batches) {
+    ASSERT_FALSE(batch.second["truncated"].get<bool>());
+  }
+  char *json = nullptr;
+  ASSERT_EQ(vxcore_search_content(ctx, notebook_id, R"({"pattern":"needle","maxResults":0})", input,
+                                  &json),
+            VXCORE_OK);
+  const auto baseline = nlohmann::json::parse(json);
+  vxcore_string_free(json);
+  ASSERT_TRUE(nlohmann::json(interleaved.collected.reassembleMatches()) == baseline["matches"]);
+
+  CApiStreamCollector encrypted;
+  ASSERT_EQ(vxcore_search_content_streaming_typed(ctx, notebook_id, query,
+                                                  R"({"files":["protected.md"]})", 1,
+                                                  typed_stream_cb, &encrypted, nullptr),
+            VXCORE_OK);
+  ASSERT_EQ(encrypted.callback_count, 1);
+  ASSERT_EQ(encrypted.total_batches, 1);
+  ASSERT_EQ(encrypted.by_index.at(0)["matchCount"].get<int>(), 0);
+  ASSERT_EQ(encrypted.by_index.at(0)["encryptedSkippedCount"].get<int>(), 1);
+
+  CApiStreamCollector empty;
+  ASSERT_EQ(
+      vxcore_search_content_streaming_typed(ctx, notebook_id, query, R"({"files":["missing.md"]})",
+                                            1, typed_stream_cb, &empty, nullptr),
+      VXCORE_OK);
+  ASSERT_EQ(empty.callback_count, 0);
+  volatile int cancel = 1;
+  ASSERT_EQ(vxcore_search_content_streaming_typed(ctx, notebook_id, query, input, 1,
+                                                  typed_stream_cb, &empty, &cancel),
+            VXCORE_ERR_CANCELLED);
+  ASSERT_EQ(empty.callback_count, 0);
+  ASSERT_EQ(vxcore_search_content_streaming_typed(ctx, notebook_id, "{", input, 1, typed_stream_cb,
+                                                  &empty, nullptr),
+            VXCORE_ERR_JSON_PARSE);
+  ASSERT_EQ(empty.callback_count, 0);
+  ASSERT_EQ(vxcore_search_content_streaming_typed(ctx, notebook_id, query, input, 1, nullptr,
+                                                  nullptr, nullptr),
+            VXCORE_ERR_NULL_POINTER);
+
+  struct CancelAfterFirst {
+    volatile int flag = 0;
+    int calls = 0;
+  } cancellation;
+  const auto cancel_callback = [](int, int, const VxCoreContentSearchView *, void *data) {
+    auto *state = static_cast<CancelAfterFirst *>(data);
+    ++state->calls;
+    state->flag = 1;
+  };
+  ASSERT_EQ(
+      vxcore_search_content_streaming_typed(ctx, notebook_id, query, input, 1, cancel_callback,
+                                            &cancellation, &cancellation.flag),
+      VXCORE_ERR_CANCELLED);
+  ASSERT_EQ(cancellation.calls, 1);
+  ASSERT_EQ(vxcore_work_queue_size(ctx, "vxcore.search"), size_t(0));
+
+  // Callback/projection failures take the backend's settled exception path, not a
+  // partial success. Existing scan-throw seam also exercises the typed C boundary.
+  vxcore::SimpleSearchBackend::TestArmScanThrowOnce();
+  ASSERT_EQ(vxcore_search_content_streaming_typed(ctx, notebook_id, query, input, 1,
+                                                  typed_stream_cb, &empty, nullptr),
+            VXCORE_ERR_UNKNOWN);
+  ASSERT_EQ(vxcore_work_queue_size(ctx, "vxcore.search"), size_t(0));
+  vxcore_string_free(notebook_id);
+  vxcore_context_destroy(ctx);
+  cleanup_test_dir(root);
+  return 0;
+}
+
 int test_content_search_first_match_per_file() {
   std::cout << "  Running test_content_search_first_match_per_file..." << std::endl;
   const std::string root = get_test_path("test_first_match_capi");
   cleanup_test_dir(root);
   VxCoreContextHandle ctx = nullptr;
   ASSERT_EQ(vxcore_context_create(nullptr, &ctx), VXCORE_OK);
-  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["simple"]}})"),
-            VXCORE_OK);
+  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["simple"]}})"), VXCORE_OK);
   char *notebook_id = nullptr;
   ASSERT_EQ(vxcore_notebook_create(ctx, root.c_str(), R"({"name":"First match"})",
-                                  VXCORE_NOTEBOOK_BUNDLED, &notebook_id), VXCORE_OK);
+                                   VXCORE_NOTEBOOK_BUNDLED, &notebook_id),
+            VXCORE_OK);
   char *file_id = nullptr;
   ASSERT_EQ(vxcore_file_create(ctx, notebook_id, ".", "note.md", &file_id), VXCORE_OK);
   const std::string id = file_id;
@@ -1410,8 +1765,8 @@ int test_content_search_first_match_per_file() {
   const std::string line = u8"\U0001F600needle needle";
   write_file(root + "/note.md", "skip needle\n" + line + "\nneedle later\n");
   const char *input = R"({"files":["note.md"]})";
-  nlohmann::json query = {{"pattern", "needle"}, {"excludePatterns", {"skip"}},
-                           {"firstMatchPerFile", true}};
+  nlohmann::json query = {
+      {"pattern", "needle"}, {"excludePatterns", {"skip"}}, {"firstMatchPerFile", true}};
   char *results = nullptr;
   ASSERT_EQ(vxcore_search_content(ctx, notebook_id, query.dump().c_str(), input, &results),
             VXCORE_OK);
@@ -1429,15 +1784,28 @@ int test_content_search_first_match_per_file() {
   ASSERT_EQ(file["matches"][0]["columnStart"].get<int>(), 2);
   ASSERT_EQ(file["matches"][0]["columnEnd"].get<int>(), 8);
   ASSERT_EQ(file["matches"][0]["lineText"].get<std::string>(), line);
+  VxCoreContentSearchResult *typed = nullptr;
+  ASSERT_EQ(vxcore_search_content_typed(ctx, notebook_id, query.dump().c_str(), input, &typed),
+            VXCORE_OK);
+  ASSERT_TRUE(typed_content_json(*vxcore_content_search_result_view(typed)) == bounded);
+  vxcore_content_search_result_free(typed);
+  CApiStreamCollector typed_collector;
+  ASSERT_EQ(vxcore_search_content_streaming_typed(ctx, notebook_id, query.dump().c_str(), input, 1,
+                                                  typed_stream_cb, &typed_collector, nullptr),
+            VXCORE_OK);
+  ASSERT_EQ(typed_collector.callback_count, 1);
+  ASSERT_TRUE(typed_collector.by_index.at(0) == bounded);
 
   CApiStreamCollector collector;
   ASSERT_EQ(vxcore_search_content_streaming(ctx, notebook_id, query.dump().c_str(), input, 1,
-                                           capi_stream_cb, &collector, nullptr), VXCORE_OK);
+                                            capi_stream_cb, &collector, nullptr),
+            VXCORE_OK);
   ASSERT_EQ(collector.callback_count, 1);
   ASSERT_TRUE(collector.by_index.at(0) == bounded);
   results = nullptr;
-  ASSERT_EQ(vxcore_search_content_ex(ctx, notebook_id, query.dump().c_str(), input, nullptr,
-                                    &results), VXCORE_OK);
+  ASSERT_EQ(
+      vxcore_search_content_ex(ctx, notebook_id, query.dump().c_str(), input, nullptr, &results),
+      VXCORE_OK);
   ASSERT_TRUE(nlohmann::json::parse(results) == bounded);
   vxcore_string_free(results);
 
@@ -1457,7 +1825,8 @@ int test_content_search_first_match_per_file() {
   vxcore_string_free(results);
   CApiStreamCollector ordinary_collector;
   ASSERT_EQ(vxcore_search_content_streaming(ctx, notebook_id, query.dump().c_str(), input, 1,
-                                           capi_stream_cb, &ordinary_collector, nullptr), VXCORE_OK);
+                                            capi_stream_cb, &ordinary_collector, nullptr),
+            VXCORE_OK);
   ASSERT_TRUE(ordinary_collector.by_index.at(0) == ordinary);
 
   query["firstMatchPerFile"] = "true";
@@ -1467,7 +1836,7 @@ int test_content_search_first_match_per_file() {
   ASSERT_TRUE(results == nullptr);
   CApiStreamCollector invalid_collector;
   ASSERT_EQ(vxcore_search_content_streaming(ctx, notebook_id, query.dump().c_str(), input, 1,
-                                           capi_stream_cb, &invalid_collector, nullptr),
+                                            capi_stream_cb, &invalid_collector, nullptr),
             VXCORE_ERR_JSON_PARSE);
   ASSERT_EQ(invalid_collector.callback_count, 0);
 
@@ -1476,12 +1845,28 @@ int test_content_search_first_match_per_file() {
   ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["rg"]}})"), VXCORE_OK);
   query["firstMatchPerFile"] = true;
   results = nullptr;
-  const auto rg_error = vxcore_search_content(ctx, notebook_id, query.dump().c_str(), input,
-                                             &results);
+  const auto rg_error =
+      vxcore_search_content(ctx, notebook_id, query.dump().c_str(), input, &results);
   ASSERT_TRUE(rg_error == VXCORE_ERR_UNSUPPORTED || rg_error == VXCORE_OK);
   CApiStreamCollector rg_collector;
   ASSERT_EQ(vxcore_search_content_streaming(ctx, notebook_id, query.dump().c_str(), input, 1,
-                                           capi_stream_cb, &rg_collector, nullptr), rg_error);
+                                            capi_stream_cb, &rg_collector, nullptr),
+            rg_error);
+  typed = nullptr;
+  ASSERT_EQ(vxcore_search_content_ex_typed(ctx, notebook_id, query.dump().c_str(), input, nullptr,
+                                           &typed),
+            rg_error);
+  if (rg_error == VXCORE_OK) {
+    ASSERT_TRUE(typed_content_json(*vxcore_content_search_result_view(typed)) == bounded);
+  } else {
+    ASSERT_NULL(typed);
+  }
+  vxcore_content_search_result_free(typed);
+  CApiStreamCollector typed_rg_collector;
+  ASSERT_EQ(vxcore_search_content_streaming_typed(ctx, notebook_id, query.dump().c_str(), input, 1,
+                                                  typed_stream_cb, &typed_rg_collector, nullptr),
+            rg_error);
+  ASSERT_EQ(typed_rg_collector.callback_count, rg_collector.callback_count);
   if (rg_error == VXCORE_ERR_UNSUPPORTED) {
     ASSERT_TRUE(results == nullptr);
     ASSERT_EQ(rg_collector.callback_count, 0);
@@ -1491,8 +1876,7 @@ int test_content_search_first_match_per_file() {
     vxcore_string_free(results);
     std::cout << "    rg unavailable: verified simple fallback" << std::endl;
   }
-  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["simple"]}})"),
-            VXCORE_OK);
+  ASSERT_EQ(vxcore_context_update_config(ctx, R"({"search":{"backends":["simple"]}})"), VXCORE_OK);
   vxcore_string_free(notebook_id);
   vxcore_context_destroy(ctx);
   cleanup_test_dir(root);
@@ -4011,6 +4395,10 @@ int test_raw_search_files_by_name() {
   }
   ASSERT(found_notes);
   ASSERT(found_readme);
+  VxCoreFileSearchResult *typed = nullptr;
+  ASSERT_EQ(vxcore_search_files_typed(ctx, notebook_id, query_json, nullptr, &typed), VXCORE_OK);
+  ASSERT_TRUE(typed_file_json(*vxcore_file_search_result_view(typed)) == json_results);
+  vxcore_file_search_result_free(typed);
 
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
@@ -4075,6 +4463,10 @@ int test_raw_search_content() {
   ASSERT_EQ(json_results["matches"][0]["matches"][0]["lineNumber"].get<int>(), 1);
   ASSERT_EQ(json_results["matches"][0]["matches"][0]["lineText"].get<std::string>(),
             "The quick brown fox jumps over the lazy dog");
+  VxCoreContentSearchResult *typed = nullptr;
+  ASSERT_EQ(vxcore_search_content_typed(ctx, notebook_id, query_json, nullptr, &typed), VXCORE_OK);
+  ASSERT_TRUE(typed_content_json(*vxcore_content_search_result_view(typed)) == json_results);
+  vxcore_content_search_result_free(typed);
 
   vxcore_string_free(results);
   vxcore_string_free(notebook_id);
@@ -4782,6 +5174,8 @@ int main() {
   RUN_TEST(test_search_content_exclude_patterns);
   RUN_TEST(test_content_search_first_match_per_file);
   RUN_TEST(test_streaming_capi_blob_parity);
+  RUN_TEST(test_typed_search_owners_and_errors);
+  RUN_TEST(test_typed_streaming_interleaving_and_boundaries);
   RUN_TEST(test_streaming_capi_cancel);
   RUN_TEST(test_search_by_tags_with_exclude_tags);
 
